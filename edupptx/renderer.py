@@ -145,8 +145,16 @@ class PresentationRenderer:
             self._add_closing_decoration(slide)
 
         # 3. Title
-        if content.type == "big_quote":
-            # Big quote gets special large italic treatment
+        if content.type == "cover":
+            # Cover title: centered, larger, with accent underline
+            self._add_textbox(
+                slide, content.title, slots.title,
+                size_pt=self.design.size_title + 4, bold=True,
+                align=PP_ALIGN.CENTER,
+            )
+            self._add_title_underline(slide, slots.title, centered=True)
+        elif content.type == "big_quote":
+            # Big quote: large centered text
             self._add_textbox(
                 slide, content.title, slots.title,
                 size_pt=self.design.size_title + 4, bold=False,
@@ -165,8 +173,8 @@ class PresentationRenderer:
                 size_pt=self.design.size_title, bold=True,
             )
 
-        # 4. Title accent underline (content slides only)
-        if content.type not in _NO_UNDERLINE_TYPES:
+        # 4. Title accent underline (content slides, not cover — cover handled above)
+        if content.type not in _NO_UNDERLINE_TYPES and content.type != "cover":
             self._add_title_underline(slide, slots.title)
 
         # 5. Subtitle
@@ -426,11 +434,14 @@ class PresentationRenderer:
             align=PP_ALIGN.CENTER,
         )
 
-    def _add_title_underline(self, slide, title_slot: SlotPosition):
+    def _add_title_underline(self, slide, title_slot: SlotPosition, centered: bool = False):
         """Add a short accent-colored line under the title."""
         line_w = 762000   # 60pt
         line_h = 38100    # 3pt
-        line_x = title_slot.x
+        if centered:
+            line_x = title_slot.x + (title_slot.width - line_w) // 2
+        else:
+            line_x = title_slot.x
         line_y = title_slot.y + title_slot.height + 50800  # 4pt below title
 
         shape = slide.shapes.add_shape(
@@ -525,7 +536,7 @@ class PresentationRenderer:
 
         Creates visual depth: background → panel → cards.
         """
-        pad = 152400  # 12pt padding around content
+        pad = 190500  # 15pt padding around content
         panel_x = MARGIN_X - pad
         panel_y = CARD_TOP - pad
         panel_w = CONTENT_W + pad * 2
@@ -544,14 +555,29 @@ class PresentationRenderer:
         shape.fill.solid()
         shape.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
         shape.line.fill.background()
-        self._patch_corner_radius(shape, 3000)
+        self._patch_corner_radius(shape, 4000)
 
-        # Patch alpha for translucency (25% white)
+        # Patch alpha for translucency (35% white — visible but not heavy)
         ns_a = _NSMAP["a"]
         solid_fill = shape._element.find(f".//{{{ns_a}}}solidFill")
         if solid_fill is not None and len(solid_fill):
             alpha_el = etree.SubElement(solid_fill[0], f"{{{ns_a}}}alpha")
-            alpha_el.set("val", "25000")  # 25% opacity
+            alpha_el.set("val", "35000")  # 35% opacity
+
+        # Subtle shadow for depth
+        sp_pr = shape._element.find(f".//{{{ns_a}}}spPr")
+        if sp_pr is not None:
+            effect_lst = etree.SubElement(sp_pr, f"{{{ns_a}}}effectLst")
+            outer_shdw = etree.SubElement(effect_lst, f"{{{ns_a}}}outerShdw")
+            outer_shdw.set("blurRad", "457200")   # 36pt — very soft
+            outer_shdw.set("dist", "63500")        # 5pt distance
+            outer_shdw.set("dir", "5400000")
+            outer_shdw.set("algn", "t")
+            outer_shdw.set("rotWithShape", "0")
+            srgb = etree.SubElement(outer_shdw, f"{{{ns_a}}}srgbClr")
+            srgb.set("val", "000000")
+            a = etree.SubElement(srgb, f"{{{ns_a}}}alpha")
+            a.set("val", "8000")  # 8% — barely visible, just adds depth
 
     def _add_illustration(
         self, slide, img_path: Path, slot: SlotPosition,
