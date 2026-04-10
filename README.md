@@ -1,22 +1,23 @@
 # EduPPTX
 
-AI 驱动的教育演示文稿生成器。输入主题和要求，自动生成带有教案备注的专业 PPT。
+AI Agent 驱动的教育演示文稿生成器。输入主题和要求，Agent 自动完成内容规划、素材准备、排版渲染，一次性输出专业教学 PPT。
 
 面向 AI Agent 设计 —— 可作为 Python 库集成到教学 Agent、备课系统、出题工具中。
 
 ## 项目起源
 
-本项目通过逆向分析豆包生成的教学 PPT，提炼出四层生成管线架构，用 Python 完整复现。详见 [设计理念文档](docs/design-philosophy.md)。
+本项目通过逆向分析豆包生成的教学 PPT，提炼出架构，用 Python 完整复现。详见 [设计理念文档](docs/design-philosophy.md)。
 
 ## 特性
 
-- **LLM 内容规划** —— 自动生成 10-15 页教学结构（引入、定义、例题、练习、总结）
+- **薄 Agent 架构** —— 1 次 LLM 调用完成内容规划 + 素材决策，其余全部确定性执行
+- **并行素材执行** —— 背景图、图表、AI 插图并发生成，结果进入持久化素材库
+- **思考过程可观测** —— `thinking.jsonl` 记录 Agent 决策轨迹，便于人类和其他 Agent 检查
 - **6 套配色方案** —— emerald / blue / violet / amber / rose / slate（基于 Tailwind 色板）
 - **109 个 Lucide 图标** —— 自动着色匹配主题，SVG+PNG 双格式嵌入
 - **卡片式布局** —— 圆角阴影卡片 + 半透明蒙版，10 种页面模板
 - **教案备注** —— 每页自动生成口语化教学脚本（Speaker Notes）
-- **三级背景系统** —— 缓存库 → 程序生成 → AI 生图，结果自动缓存
-- **Agent 友好** —— 可拦截修改 Plan 后再渲染，支持 `generate_from_plan()`
+- **持久素材库** —— 素材跨会话复用，避免重复生成
 
 ## 快速开始
 
@@ -50,11 +51,11 @@ VISION_GEN_APIKEY=your-image-key
 ### 生成 PPT
 
 ```bash
-# 最简用法
+# 最简用法，输出到 output/session_xxx/ 目录
 uv run edupptx gen "勾股定理"
 
-# 指定要求和配色
-uv run edupptx gen "光合作用" -r "适合高中生，强调实验部分" -p blue -o biology.pptx
+# 指定要求和配色，输出到指定目录
+uv run edupptx gen "光合作用" -r "适合高中生，强调实验部分" -p blue -o output/
 
 # 查看可用配色
 uv run edupptx palettes
@@ -63,59 +64,134 @@ uv run edupptx palettes
 uv run edupptx icons
 ```
 
+## 架构概览
+
+```
+用户输入 (主题 + 要求)
+        │
+        ▼
+┌──────────────────────────────────────┐
+│  Enriched LLM Planning (1 call)     │
+│  Slides + Material Decisions        │
+├──────────────────────────────────────┤
+│  Parallel Material Execution        │
+│  Backgrounds + Diagrams + AI Images │
+├──────────────────────────────────────┤
+│  Sequential Slide Rendering         │
+│  Layout Engine + python-pptx        │
+└──────────────────────────────────────┘
+        │
+        ▼
+output/session_xxx/
+├── thinking.jsonl
+├── plan.json
+├── materials/
+├── slides/
+└── output.pptx
+```
+
+详细架构设计见 [docs/design-philosophy.md](docs/design-philosophy.md)。
+
+## 思考过程可观测
+
+Agent 每次运行都会在会话目录输出 `thinking.jsonl`，记录规划决策的完整轨迹：
+
+```jsonl
+{"step": "plan", "topic": "勾股定理", "slide_count": 12, "ts": "2026-04-10T10:00:00"}
+{"step": "material_decision", "slide": 3, "background": "geometry_abstract", "icon": "triangle"}
+{"step": "material_execution", "type": "background", "key": "geometry_abstract", "source": "library"}
+{"step": "render", "slide": 3, "layout": "definition", "duration_ms": 45}
+```
+
+这个文件的价值：
+- **人类可读** —— 出错时可以快速定位是规划阶段还是渲染阶段的问题
+- **Agent 可读** —— 外层编排 Agent 可以解析 thinking.jsonl，判断是否需要干预或重试
+- **调试友好** —— 结合 `plan.json` 可以复现任意会话，修改 plan 后重新渲染
+
+## 素材库
+
+Agent 维护一个跨会话的持久素材库，生成过的背景图、图表、AI 插图会自动入库复用。
+
+```bash
+# 列出素材库中的所有素材
+uv run edupptx library list
+
+# 搜索素材
+uv run edupptx library search "几何"
+
+# 查看素材库统计
+uv run edupptx library stats
+```
+
+素材库位于项目根目录的 `materials_library/`，结构如下：
+
+```
+materials_library/
+├── backgrounds/    # 背景图（程序生成 + AI 生图）
+├── diagrams/       # 图表（流程图、示意图）
+└── illustrations/  # AI 插图
+```
+
+## 会话输出结构
+
+每次运行 `edupptx gen` 都会创建一个独立的会话目录：
+
+```
+output/
+└── session_20260410_100000_勾股定理/
+    ├── thinking.jsonl   # Agent 决策轨迹
+    ├── plan.json        # 结构化内容方案
+    ├── materials/       # 本次用到的素材快照
+    ├── slides/          # 逐页渲染中间产物
+    └── output.pptx      # 最终输出
+```
+
 ## 作为 Python 库使用
 
-### 基础用法
+### 主要 API
+
+```python
+from edupptx import run_agent
+
+# 运行 Agent，返回会话目录路径
+session_dir = run_agent("勾股定理")
+session_dir = run_agent(
+    topic="光合作用",
+    requirements="适合高中生，强调实验部分",
+    palette="emerald",
+    output_dir="output/",
+)
+```
+
+### 更多控制
+
+```python
+from edupptx import PPTXAgent
+
+agent = PPTXAgent()
+
+# 单独执行规划阶段，可以检查和修改方案
+plan = agent.plan("勾股定理", "适合初中生")
+for slide in plan.slides:
+    print(f"[{slide.type}] {slide.title}")
+
+# 修改方案后再执行后续阶段
+session_dir = agent.execute(plan, output_dir="output/")
+```
+
+### 向后兼容
 
 ```python
 from edupptx import generate
 
-# 一行生成
+# 原有 API 保持不变
 path = generate("勾股定理")
-
-# 带参数
 path = generate(
     topic="光合作用",
     requirements="适合高中生，强调实验部分",
     palette="emerald",
     output_path="photosynthesis.pptx",
 )
-```
-
-### Agent 集成
-
-Agent 可以生成 Plan、检查修改、再渲染 —— 完全控制内容：
-
-```python
-from edupptx.config import Config
-from edupptx.content_planner import ContentPlanner
-from edupptx.generator import generate_from_plan
-from edupptx.llm_client import LLMClient
-from edupptx.models import SlideCard, SlideContent
-
-# 1. 用 LLM 生成内容方案
-config = Config.from_env()
-llm = LLMClient(config)
-planner = ContentPlanner(llm)
-plan = planner.plan("勾股定理", "适合初中生")
-
-# 2. Agent 可以检查和修改方案
-for slide in plan.slides:
-    print(f"[{slide.type}] {slide.title} ({len(slide.cards)} cards)")
-
-# 3. 插入自定义页面
-plan.slides.insert(-1, SlideContent(
-    type="content",
-    title="趣味数学：勾股数",
-    cards=[
-        SlideCard(icon="sparkles", title="经典三元组", body="(3,4,5) (5,12,13) (8,15,17)"),
-        SlideCard(icon="search", title="发现规律", body="尝试找出更多满足 a²+b²=c² 的整数组合"),
-    ],
-    notes="这是一个扩展探索环节，鼓励学生自主发现勾股数的规律。",
-))
-
-# 4. 渲染修改后的方案
-path = generate_from_plan(plan, output_path="agent_modified.pptx")
 ```
 
 ### 纯数据驱动（不调用 LLM）
@@ -149,35 +225,6 @@ plan = PresentationPlan(
 path = generate_from_plan(plan)
 ```
 
-## 架构概览
-
-```
-用户输入: 主题 + 要求
-         │
-         ▼
-┌─────────────────────────────────────────────┐
-│  Phase 1: ContentPlanner (LLM)              │
-│  主题 → 结构化 JSON (PresentationPlan)       │
-│  10-15 页教学结构 + 图标选择 + 教案备注       │
-├─────────────────────────────────────────────┤
-│  Phase 2: DesignSystem                      │
-│  配色方案 → 9 个设计令牌 (颜色/字体/字号)     │
-├─────────────────────────────────────────────┤
-│  Phase 3: BackgroundManager                 │
-│  缓存库 → 程序生成(Pillow) → AI 生图         │
-│  结果自动缓存到 backgrounds_cache/           │
-├─────────────────────────────────────────────┤
-│  Phase 4: PresentationRenderer              │
-│  LayoutEngine (槽位坐标) + python-pptx       │
-│  + XML 补丁 (阴影/透明度/SVG图标)            │
-└─────────────────────────────────────────────┘
-         │
-         ▼
-      output.pptx
-```
-
-详细架构设计见 [docs/design-philosophy.md](docs/design-philosophy.md)。
-
 ## 页面类型
 
 | 类型 | 用途 | 卡片数 | 特殊字段 |
@@ -210,13 +257,16 @@ path = generate_from_plan(plan)
 
 ```
 edupptx/
-├── generator.py          # 主编排器：topic → .pptx
-├── content_planner.py    # LLM 内容规划
+├── __init__.py           # 公开 API: run_agent(), PPTXAgent, generate()
+├── agent.py              # Agent 编排器（规划 + 并行素材执行）
+├── generator.py          # 向后兼容编排器
+├── content_planner.py    # LLM 内容规划 + 素材决策
 ├── design_system.py      # 6 套配色 + 字体定义
 ├── layout_engine.py      # 10 种槽位模板 → EMU 坐标
 ├── renderer.py           # python-pptx + XML 补丁渲染
 ├── icons.py              # 109 个 Lucide SVG 图标管理
-├── backgrounds.py        # 三级背景管理器
+├── backgrounds.py        # 背景管理器
+├── materials.py          # 素材库管理
 ├── models.py             # Pydantic 数据模型
 ├── llm_client.py         # OpenAI 兼容客户端
 ├── config.py             # 环境变量配置
@@ -227,9 +277,10 @@ edupptx/
 ## CLI 参考
 
 ```
-edupptx gen TOPIC [OPTIONS]     生成演示文稿
-edupptx palettes                列出配色方案
-edupptx icons                   列出可用图标
+edupptx gen TOPIC [OPTIONS]          生成演示文稿（输出到会话目录）
+edupptx library list|search|stats   素材库管理
+edupptx palettes                     列出配色方案
+edupptx icons                        列出可用图标
 ```
 
 `gen` 选项：
@@ -237,7 +288,7 @@ edupptx icons                   列出可用图标
 | 选项 | 说明 |
 |------|------|
 | `-r`, `--requirements` | 附加要求（如"适合初中生"） |
-| `-o`, `--output` | 输出文件路径 |
+| `-o`, `--output` | 输出目录路径（默认 `output/`） |
 | `-p`, `--palette` | 配色方案名称 |
 | `-v`, `--verbose` | 详细日志 |
 | `--env-file` | .env 文件路径（默认 `.env`） |
