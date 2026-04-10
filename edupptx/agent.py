@@ -362,8 +362,17 @@ class PPTXAgent:
                     logger.warning("Image API returned no URLs for slide {}", i)
                     return None
                 import urllib.request
-                path = Path(tempfile.mktemp(suffix=".png"))
+                path = Path(tempfile.mktemp(suffix=".jpg"))
                 urllib.request.urlretrieve(urls[0], str(path))
+                # Compress: resize to max 1920px wide and save as JPEG
+                from PIL import Image as PILImage
+                with PILImage.open(path) as img:
+                    if img.width > 1920:
+                        ratio = 1920 / img.width
+                        new_size = (1920, int(img.height * ratio))
+                        img = img.resize(new_size, PILImage.LANCZOS)
+                    img.convert("RGB").save(path, "JPEG", quality=85, optimize=True)
+                logger.debug("Compressed illustration to {}KB", path.stat().st_size // 1024)
             except Exception as e:
                 logger.warning("Illustration generation failed for slide {}: {}", i, e)
                 return None

@@ -28,14 +28,14 @@ FOOTER_Y = 5_334_000    # 420pt
 FOOTER_H = 889_000      # 70pt
 
 # Icon sizing within cards
-ICON_SIZE = 762_000      # 60pt
-ICON_MARGIN = 127_000    # 10pt
+ICON_SIZE = 609_600      # 48pt
+ICON_MARGIN = 152_400    # 12pt
 
 # Card internal padding
-CARD_PAD = 190_500       # 15pt
+CARD_PAD = 228_600       # 18pt
 
 # Spacing between cards
-CARD_GAP = 254_000       # 20pt
+CARD_GAP = 304_800       # 24pt
 
 # Material area proportions
 MAT_RATIO = 0.45      # material area takes 45% of content width

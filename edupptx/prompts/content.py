@@ -3,7 +3,7 @@
 ICON_CATALOG = """
 triangle, book, library, school, graduation-cap, lightbulb, brain,
 beaker, flask-conical, microscope, atom, globe, calculator, ruler,
-trophy, medal, award, star, target, flag, bookmark, check-circle,
+trophy, medal, award, star, target, flag, bookmark, circle-check,
 chart-line, chart-bar, calendar, clock, video, play, mic, file,
 folder, list, tag, layers, map, compass, puzzle-piece, users, heart,
 sparkles, zap, shield, lock, key, search, eye, message-circle,
@@ -16,8 +16,7 @@ pen, pencil, notebook, clipboard, scroll, newspaper,
 cpu, monitor, smartphone, wifi, cloud, download, upload,
 music, headphones, image, camera, film, volume-2,
 earth, mountain, sun, moon, thermometer, droplets, wind, flame,
-apple, cookie, leaf, flower, tree-pine, sprout,
-hand, hand-helping, accessibility, footprints, person-standing
+apple, leaf, sprout
 """.strip()
 
 AVAILABLE_PALETTES = "emerald, blue, violet, amber, rose, slate"

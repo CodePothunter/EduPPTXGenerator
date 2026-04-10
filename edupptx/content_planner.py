@@ -21,7 +21,9 @@ def _get_valid_icons() -> set[str]:
 
 # Semantic fallback mapping for common invalid icon names
 _ICON_FALLBACKS = {
+    "check-circle": "circle-check", "check-mark": "check",
     "car": "compass", "truck": "compass", "vehicle": "compass",
+    "rocket": "zap", "airplane": "zap", "plane": "zap",
     "archery": "target", "bow": "target", "arrow": "arrow-right",
     "scale": "ruler", "weight": "ruler", "balance": "ruler", "weight-scale": "ruler",
     "trampoline": "arrow-up", "jump": "arrow-up", "bounce": "arrow-up",

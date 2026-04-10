@@ -31,11 +31,11 @@ class DesignTokens:
     font_fallback: str = "Arial"
 
     # Font sizes (pt)
-    size_title: int = 36
+    size_title: int = 38
     size_subtitle: int = 20
-    size_card_title: int = 16
-    size_card_body: int = 13
-    size_footer: int = 14
+    size_card_title: int = 15
+    size_card_body: int = 12
+    size_footer: int = 13
     size_formula: int = 18
 
 
@@ -49,7 +49,7 @@ PALETTES: dict[str, DesignTokens] = {
         accent_light="#D1FAE5",
         icon_color="#10B981",
         shadow_color="#6EE7B7",
-        card_bg="#D1FAE5",
+        card_bg="#FFFFFF",
     ),
     "blue": DesignTokens(
         bg_overlay="#EFF6FF",
@@ -60,7 +60,7 @@ PALETTES: dict[str, DesignTokens] = {
         accent_light="#DBEAFE",
         icon_color="#3B82F6",
         shadow_color="#93C5FD",
-        card_bg="#DBEAFE",
+        card_bg="#FFFFFF",
     ),
     "violet": DesignTokens(
         bg_overlay="#F5F3FF",
@@ -71,7 +71,7 @@ PALETTES: dict[str, DesignTokens] = {
         accent_light="#EDE9FE",
         icon_color="#8B5CF6",
         shadow_color="#C4B5FD",
-        card_bg="#EDE9FE",
+        card_bg="#FFFFFF",
     ),
     "amber": DesignTokens(
         bg_overlay="#FFFBEB",
@@ -82,7 +82,7 @@ PALETTES: dict[str, DesignTokens] = {
         accent_light="#FEF3C7",
         icon_color="#F59E0B",
         shadow_color="#FCD34D",
-        card_bg="#FEF3C7",
+        card_bg="#FFFFFF",
     ),
     "rose": DesignTokens(
         bg_overlay="#FFF1F2",
@@ -93,7 +93,7 @@ PALETTES: dict[str, DesignTokens] = {
         accent_light="#FFE4E6",
         icon_color="#FB7185",
         shadow_color="#FDA4AF",
-        card_bg="#FFE4E6",
+        card_bg="#FFFFFF",
     ),
     "slate": DesignTokens(
         bg_overlay="#F8FAFC",
@@ -104,7 +104,7 @@ PALETTES: dict[str, DesignTokens] = {
         accent_light="#E2E8F0",
         icon_color="#64748B",
         shadow_color="#94A3B8",
-        card_bg="#E2E8F0",
+        card_bg="#FFFFFF",
     ),
 }
 

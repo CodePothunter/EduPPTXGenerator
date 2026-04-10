@@ -239,11 +239,11 @@ class PresentationRenderer:
         shape.fill.fore_color.rgb = _hex_to_rgb(self.design.card_bg)
         shape.line.fill.background()
 
-        # Patch: add shadow
+        # Patch: add shadow (stronger for depth)
         self._patch_card_shadow(shape)
 
-        # Patch: adjust corner radius
-        self._patch_corner_radius(shape, 5000)  # ~5% roundness
+        # Patch: adjust corner radius (larger for modern feel)
+        self._patch_corner_radius(shape, 8000)  # ~8% roundness
 
         # Icon (as PNG image — SVG embedding is complex, PNG is reliable)
         if icon_slot:
@@ -269,7 +269,18 @@ class PresentationRenderer:
             )
 
     def _add_icon(self, slide, icon_name: str, slot: SlotPosition):
-        """Add an icon as a PNG image (with SVG extension if possible)."""
+        """Add an icon with a circular accent background."""
+        # Add circular background behind icon
+        bg_pad = int(slot.width * 0.15)
+        bg_shape = slide.shapes.add_shape(
+            9,  # MSO_SHAPE.OVAL
+            Emu(slot.x - bg_pad), Emu(slot.y - bg_pad),
+            Emu(slot.width + bg_pad * 2), Emu(slot.height + bg_pad * 2),
+        )
+        bg_shape.fill.solid()
+        bg_shape.fill.fore_color.rgb = _hex_to_rgb(self.design.accent_light)
+        bg_shape.line.fill.background()
+
         # Generate PNG
         png_bytes = get_icon_png(icon_name, self.design.icon_color, size=48)
         png_stream = io.BytesIO(png_bytes)
@@ -374,16 +385,16 @@ class PresentationRenderer:
 
         effect_lst = etree.SubElement(sp_pr, f"{{{ns_a}}}effectLst")
         outer_shdw = etree.SubElement(effect_lst, f"{{{ns_a}}}outerShdw")
-        outer_shdw.set("blurRad", "190500")   # ~15pt blur
-        outer_shdw.set("dist", "101600")       # ~8pt distance
-        outer_shdw.set("dir", "2700000")       # Bottom-right
-        outer_shdw.set("algn", "tl")
+        outer_shdw.set("blurRad", "254000")   # ~20pt blur
+        outer_shdw.set("dist", "76200")        # ~6pt distance
+        outer_shdw.set("dir", "5400000")       # Straight down
+        outer_shdw.set("algn", "t")
         outer_shdw.set("rotWithShape", "0")
 
         srgb_clr = etree.SubElement(outer_shdw, f"{{{ns_a}}}srgbClr")
         srgb_clr.set("val", shadow_color)
         alpha = etree.SubElement(srgb_clr, f"{{{ns_a}}}alpha")
-        alpha.set("val", "25000")  # 25% opacity
+        alpha.set("val", "18000")  # 18% opacity — softer but wider spread
 
     def _patch_corner_radius(self, shape, adj_val: int = 5000):
         """Set the corner radius of a rounded rectangle."""
