@@ -27,32 +27,52 @@ class LLMClient:
         self,
         messages: list[dict[str, str]],
         temperature: float = 0.7,
+        max_tokens: int = 16384,
     ) -> str:
         resp = self._client.chat.completions.create(
             model=self._model,
             messages=messages,
             temperature=temperature,
+            max_tokens=max_tokens,
             extra_body={"thinking": {"type": "disabled"}},
         )
         return resp.choices[0].message.content or ""
+
+    @staticmethod
+    def _strip_fences(text: str) -> str:
+        """Strip markdown code fences from LLM response."""
+        text = text.strip()
+        if text.startswith("```"):
+            lines = text.split("\n")
+            lines = lines[1:]
+            if lines and lines[-1].strip() == "```":
+                lines = lines[:-1]
+            text = "\n".join(lines)
+        return text
 
     def chat_json(
         self,
         messages: list[dict[str, str]],
         temperature: float = 0.7,
+        max_tokens: int = 16384,
+        max_retries: int = 1,
     ) -> dict[str, Any]:
-        """Chat expecting a JSON response. Parses and returns dict."""
-        raw = self.chat(messages, temperature=temperature)
-        # Strip markdown code fences if present
-        text = raw.strip()
-        if text.startswith("```"):
-            lines = text.split("\n")
-            # Remove first and last fence lines
-            lines = lines[1:]
-            if lines and lines[-1].strip() == "```":
-                lines = lines[:-1]
-            text = "\n".join(lines)
-        return json.loads(text)
+        """Chat expecting a JSON response. Retries on parse failure."""
+        for attempt in range(1 + max_retries):
+            raw = self.chat(messages, temperature=temperature, max_tokens=max_tokens)
+            text = self._strip_fences(raw)
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError as e:
+                if attempt < max_retries:
+                    logger.warning(
+                        "JSON parse failed (attempt {}), retrying: {}",
+                        attempt + 1, str(e)[:80],
+                    )
+                    continue
+                logger.error("JSON parse failed after {} attempts, raw length: {} chars",
+                             attempt + 1, len(raw))
+                raise
 
 
 class ImageClient:

@@ -17,33 +17,23 @@ DIAGRAM_TYPES_REFERENCE = """
 """
 
 MATERIAL_INSTRUCTIONS = """
-## 素材决策指南
+## 素材决策
 
-每个 slide 可以包含：
-1. **bg_action** — 背景图决策：
-   - `{{"action": "generate", "style": "diagonal_gradient|radial_gradient|geometric_circles|geometric_triangles", "tags": ["主题标签"]}}`
-   - `{{"action": "reuse", "material_id": "mat_xxxx"}}` — 复用素材库中已有的素材
+每个 slide 必须包含 bg_action，可选包含 content_materials。
 
-2. **content_materials** — 内容素材（图表/插图）：
-   - 图表生成：`{{"action": "generate_diagram", "position": "center|full|left|right", "diagram_type": "flowchart|timeline|comparison|hierarchy|cycle", "diagram_data": {{...}}, "tags": [...]}}`
-   - AI插图生成：`{{"action": "generate_illustration", "position": "center|full|left|right", "illustration_description": "描述", "illustration_style": "flat|realistic|sketch|watercolor", "tags": [...]}}`
-   - 复用素材：`{{"action": "reuse", "position": "center", "material_id": "mat_xxxx"}}`
+**bg_action**（必填）: {{"action":"generate","style":"diagonal_gradient","tags":["标签"]}}
+style 可选: diagonal_gradient, radial_gradient, geometric_circles, geometric_triangles
 
-### position 说明
-- `"full"`: 素材占满内容区域，替换卡片（此时 cards 应为空）
-- `"left"` / `"right"`: 素材占一半，卡片占另一半
-- `"center"`: 素材在标题和卡片之间
+**content_materials**（可选，仅在内容确实适合图表时添加，大多数页面不需要）:
+- 图表: {{"action":"generate_diagram","position":"center","diagram_type":"flowchart","diagram_data":{{...}},"tags":[]}}
+- diagram_type: flowchart / timeline / comparison / hierarchy / cycle
 
-### 何时使用素材
-- **流程/步骤类内容** → flowchart
-- **历史/时间线** → timeline
-- **对比/优劣** → comparison
-- **分类/组织结构** → hierarchy
-- **循环过程** → cycle
-- **抽象概念需要可视化** → AI 插图
-- **背景图** → 每页都需要，优先复用库中已有的
+**重要：输出精简**
+- 值为 null 的字段直接省略，不要输出
+- content_materials 为空时省略该字段，不要输出空数组
+- bg_action 的 tags 只写1-2个关键词
+- 大多数页面只需要 bg_action，不需要 content_materials
 
-### 素材库当前状态
 {library_summary}
 """
 
@@ -64,5 +54,5 @@ def build_agent_user_message(topic: str, requirements: str = "") -> str:
     parts = [f"请为以下教学主题设计完整的演示文稿方案：\n\n主题：{topic}"]
     if requirements:
         parts.append(f"\n附加要求：{requirements}")
-    parts.append("\n请在每个 slide 中包含 bg_action 和 content_materials 决策。")
+    parts.append("\n每个 slide 必须包含 bg_action。仅在内容适合图表展示时才添加 content_materials，省略值为 null 的字段。")
     return "\n".join(parts)
