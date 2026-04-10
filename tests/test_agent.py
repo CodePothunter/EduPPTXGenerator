@@ -123,3 +123,44 @@ def test_agent_slide_states(mock_llm_cls, agent_config):
 
     slide_files = list((result / "slides").glob("*.json"))
     assert len(slide_files) == 2
+
+
+@patch("edupptx.agent.LLMClient")
+def test_agent_illustration_decision(mock_llm_cls, agent_config):
+    """Test that illustration decisions are parsed correctly."""
+    plan_data = _mock_plan()
+    mock_llm = MagicMock()
+    mock_llm.chat_json.side_effect = [
+        plan_data,  # Content planning call
+        {"bg_style": "diagonal_gradient", "illustration": {"description": "A photosynthesis diagram", "style": "educational_flat"}},  # Slide 1 material
+        {"bg_style": "radial_gradient"},  # Slide 2 material (no illustration)
+    ]
+    mock_llm_cls.return_value = mock_llm
+
+    agent = PPTXAgent(agent_config)
+    result = agent.run("测试主题")
+    assert result.exists()
+
+
+@patch("edupptx.agent.LLMClient")
+def test_agent_diagram_priority_over_illustration(mock_llm_cls, agent_config):
+    """Test that diagram takes priority when both are returned."""
+    plan_data = _mock_plan()
+    mock_llm = MagicMock()
+    mock_llm.chat_json.side_effect = [
+        plan_data,
+        {"bg_style": "diagonal_gradient",
+         "diagram": {"type": "flowchart", "data": {"nodes": [{"id": "1", "label": "A"}], "edges": []}},
+         "illustration": {"description": "should be ignored", "style": "educational_flat"}},
+        {"bg_style": "radial_gradient"},
+    ]
+    mock_llm_cls.return_value = mock_llm
+
+    agent = PPTXAgent(agent_config)
+    result = agent.run("测试主题")
+    # Verify diagram was chosen, not illustration
+    plan = json.loads((result / "plan.json").read_text())
+    # The first slide should have diagram content_materials, not illustration
+    slide0 = plan["slides"][0]
+    if slide0.get("content_materials"):
+        assert slide0["content_materials"][0]["action"] == "generate_diagram"

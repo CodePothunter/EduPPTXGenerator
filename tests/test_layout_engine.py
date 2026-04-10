@@ -1,12 +1,19 @@
 """Tests for the layout engine."""
 
 from edupptx.layout_engine import (
+    CONTENT_W,
+    MARGIN_X,
     SLIDE_H,
     SLIDE_W,
     get_layout,
+    layout_big_quote,
     layout_closing,
     layout_content,
     layout_cover,
+    layout_full_image,
+    layout_image_left,
+    layout_image_right,
+    layout_section,
     layout_summary,
 )
 
@@ -42,8 +49,13 @@ def test_content_layout_variable_cards():
 def test_cards_within_slide_bounds():
     """All card positions should be within the slide canvas."""
     for slide_type in ["cover", "lead_in", "definition", "content", "example",
-                       "exercise", "summary", "extension", "closing"]:
-        n_cards = 3 if slide_type != "closing" else 0
+                       "exercise", "summary", "extension", "closing",
+                       "big_quote", "full_image", "image_left", "image_right",
+                       "section"]:
+        if slide_type in ("closing", "big_quote", "full_image", "section"):
+            n_cards = 0
+        else:
+            n_cards = 3
         layout = get_layout(slide_type, n_cards)
 
         for i, card in enumerate(layout.cards):
@@ -102,3 +114,49 @@ def test_layout_without_material_unchanged():
     layout = get_layout("content", 3)
     assert layout.material_slot is None
     assert len(layout.cards) == 3
+
+
+# ── New layout tests ──────────────────────────────────────────────
+
+
+def test_big_quote_layout():
+    """big_quote: title and footer exist, no cards."""
+    layout = layout_big_quote()
+    assert layout.title is not None
+    assert layout.footer is not None
+    assert len(layout.cards) == 0
+
+
+def test_full_image_layout():
+    """full_image: material_slot exists with full content width, no cards."""
+    layout = layout_full_image()
+    assert layout.material_slot is not None
+    assert layout.material_slot.width == CONTENT_W
+    assert len(layout.cards) == 0
+
+
+def test_image_left_layout():
+    """image_left: material_slot on left, cards on right, no overlap."""
+    layout = layout_image_left(2)
+    assert layout.material_slot is not None
+    assert layout.material_slot.x == MARGIN_X
+    assert len(layout.cards) == 2
+    mat_right = layout.material_slot.x + layout.material_slot.width
+    assert layout.cards[0].x > mat_right, "Cards must be to the right of material_slot"
+
+
+def test_image_right_layout():
+    """image_right: cards on left, material_slot on right."""
+    layout = layout_image_right(2)
+    assert layout.material_slot is not None
+    assert len(layout.cards) == 2
+    # Cards should be on the left side
+    cards_right = layout.cards[-1].x + layout.cards[-1].width
+    assert layout.material_slot.x > cards_right, "Material must be to the right of cards"
+
+
+def test_section_layout():
+    """section: title exists, no cards."""
+    layout = layout_section()
+    assert layout.title is not None
+    assert len(layout.cards) == 0

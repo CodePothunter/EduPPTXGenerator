@@ -37,6 +37,10 @@ CARD_PAD = 190_500       # 15pt
 # Spacing between cards
 CARD_GAP = 254_000       # 20pt
 
+# Material area proportions
+MAT_RATIO = 0.45      # material area takes 45% of content width
+MAT_GAP_RATIO = 0.05  # gap between material and cards
+
 PT = 12_700  # 1 point in EMU
 
 
@@ -249,6 +253,92 @@ def layout_closing() -> SlotLayout:
     )
 
 
+def layout_big_quote() -> SlotLayout:
+    """Big quote slide — centered large quote + source footer, no cards."""
+    return SlotLayout(
+        title=SlotPosition(
+            MARGIN_X,
+            int(SLIDE_H * 0.3),
+            CONTENT_W,
+            TITLE_H * 2,  # large area for quote text
+        ),
+        footer=SlotPosition(MARGIN_X, FOOTER_Y, CONTENT_W, FOOTER_H),
+    )
+
+
+def layout_full_image() -> SlotLayout:
+    """Full image slide — title + material_slot filling content area, no cards."""
+    return SlotLayout(
+        material_slot=SlotPosition(
+            MARGIN_X, CARD_TOP, CONTENT_W, FOOTER_Y - CARD_TOP
+        ),
+    )
+
+
+def layout_image_left(n_cards: int = 2) -> SlotLayout:
+    """Image-left slide — material on left 45%, cards on right 50%."""
+    content_h = FOOTER_Y - CARD_TOP
+
+    mat_w = int(CONTENT_W * MAT_RATIO)
+    mat_gap = int(CONTENT_W * MAT_GAP_RATIO)
+    cards_x = MARGIN_X + mat_w + mat_gap
+    cards_w = CONTENT_W - mat_w - mat_gap
+
+    cards, icons, titles, bodies = _make_card_columns(
+        n_cards, top=CARD_TOP, height=content_h,
+        left=cards_x, total_width=cards_w,
+    )
+    return SlotLayout(
+        material_slot=SlotPosition(MARGIN_X, CARD_TOP, mat_w, content_h),
+        cards=cards,
+        card_icons=icons,
+        card_titles=titles,
+        card_bodies=bodies,
+        footer=SlotPosition(MARGIN_X, FOOTER_Y, CONTENT_W, FOOTER_H),
+    )
+
+
+def layout_image_right(n_cards: int = 2) -> SlotLayout:
+    """Image-right slide — cards on left 50%, material on right 45%."""
+    content_h = FOOTER_Y - CARD_TOP
+
+    mat_w = int(CONTENT_W * MAT_RATIO)
+    mat_gap = int(CONTENT_W * MAT_GAP_RATIO)
+    cards_w = CONTENT_W - mat_w - mat_gap
+    mat_x = MARGIN_X + cards_w + mat_gap
+
+    cards, icons, titles, bodies = _make_card_columns(
+        n_cards, top=CARD_TOP, height=content_h,
+        left=MARGIN_X, total_width=cards_w,
+    )
+    return SlotLayout(
+        material_slot=SlotPosition(mat_x, CARD_TOP, mat_w, content_h),
+        cards=cards,
+        card_icons=icons,
+        card_titles=titles,
+        card_bodies=bodies,
+        footer=SlotPosition(MARGIN_X, FOOTER_Y, CONTENT_W, FOOTER_H),
+    )
+
+
+def layout_section() -> SlotLayout:
+    """Section transition slide — centered title + subtitle, no cards."""
+    return SlotLayout(
+        title=SlotPosition(
+            MARGIN_X,
+            SLIDE_H // 2 - 952_500,  # slightly higher than closing
+            CONTENT_W,
+            762_000,
+        ),
+        subtitle=SlotPosition(
+            MARGIN_X,
+            SLIDE_H // 2 - 63_500,
+            CONTENT_W,
+            508_000,
+        ),
+    )
+
+
 # ── Dispatcher ─────────────────────────────────────────────────────
 
 _LAYOUT_MAP = {
@@ -264,6 +354,11 @@ _LAYOUT_MAP = {
     "summary": layout_summary,
     "extension": layout_content,
     "closing": layout_closing,
+    "big_quote": layout_big_quote,
+    "full_image": layout_full_image,
+    "image_left": layout_image_left,
+    "image_right": layout_image_right,
+    "section": layout_section,
 }
 
 
@@ -273,7 +368,7 @@ def get_layout(slide_type: str, card_count: int, material_position: str | None =
     material_position: full | left | right | center | None
     """
     func = _LAYOUT_MAP.get(slide_type, layout_content)
-    if slide_type == "closing":
+    if slide_type in ("closing", "big_quote", "full_image", "section"):
         layout = func()
     else:
         layout = func(card_count)
@@ -296,8 +391,8 @@ def get_layout(slide_type: str, card_count: int, material_position: str | None =
 
     elif material_position == "left":
         # Material takes left 45%, cards squeezed into right 50%
-        mat_w = int(content_w * 0.45)
-        mat_gap = int(content_w * 0.05)
+        mat_w = int(content_w * MAT_RATIO)
+        mat_gap = int(content_w * MAT_GAP_RATIO)
         cards_x = content_x + mat_w + mat_gap
         cards_w = content_w - mat_w - mat_gap
         layout.material_slot = SlotPosition(content_x, content_y, mat_w, content_h)
@@ -312,9 +407,9 @@ def get_layout(slide_type: str, card_count: int, material_position: str | None =
 
     elif material_position == "right":
         # Material takes right 45%, cards squeezed into left 50%
-        mat_w = int(content_w * 0.45)
-        cards_w = content_w - mat_w - int(content_w * 0.05)
-        mat_x = content_x + cards_w + int(content_w * 0.05)
+        mat_w = int(content_w * MAT_RATIO)
+        cards_w = content_w - mat_w - int(content_w * MAT_GAP_RATIO)
+        mat_x = content_x + cards_w + int(content_w * MAT_GAP_RATIO)
         layout.material_slot = SlotPosition(mat_x, content_y, mat_w, content_h)
         cards, icons, titles, bodies = _make_card_columns(
             card_count, top=content_y, height=content_h,

@@ -132,7 +132,7 @@ class PresentationRenderer:
                 color=self.design.text_secondary,
             )
 
-        # 5. Content material (diagram) — native pptx shapes
+        # 5. Content material (diagram or illustration)
         if content.content_materials and slots.material_slot:
             mat = content.content_materials[0]
             if mat.diagram_type and mat.diagram_data:
@@ -140,6 +140,11 @@ class PresentationRenderer:
                 draw_diagram_on_slide(
                     slide, mat.diagram_type, mat.diagram_data,
                     slots.material_slot, self.design,
+                )
+            elif mat.action == "generate_illustration" and material_path and material_path.exists():
+                self._add_illustration(
+                    slide, material_path, slots.material_slot,
+                    anchor=mat.image_anchor, scale=mat.image_scale,
                 )
 
         # 6. Cards with icons
@@ -305,6 +310,53 @@ class PresentationRenderer:
             color=self.design.text_secondary,
             align=PP_ALIGN.CENTER,
         )
+
+    def _add_illustration(
+        self, slide, img_path: Path, slot: SlotPosition,
+        anchor: str = "center", scale: float = 0.85,
+    ):
+        """Add an illustration image, maintaining aspect ratio.
+
+        anchor: 'top' | 'center' | 'bottom' — vertical alignment within slot.
+        scale:  0.4-1.0 — how much of the slot the image fills.
+        """
+        try:
+            from PIL import Image as PILImage
+            with PILImage.open(img_path) as img:
+                img_w, img_h = img.size
+
+            # Scale the available area
+            avail_w = int(slot.width * scale)
+            avail_h = int(slot.height * scale)
+
+            # Fit image within the scaled area, preserving aspect ratio
+            img_ratio = img_w / img_h
+            avail_ratio = avail_w / avail_h
+
+            if img_ratio > avail_ratio:
+                fit_w = avail_w
+                fit_h = int(avail_w / img_ratio)
+            else:
+                fit_h = avail_h
+                fit_w = int(avail_h * img_ratio)
+
+            # Horizontal: always center within slot
+            fit_x = slot.x + (slot.width - fit_w) // 2
+
+            # Vertical: align by anchor
+            if anchor == "top":
+                fit_y = slot.y + (slot.height - avail_h) // 4  # slight top margin
+            elif anchor == "bottom":
+                fit_y = slot.y + slot.height - fit_h - (slot.height - avail_h) // 4
+            else:  # center
+                fit_y = slot.y + (slot.height - fit_h) // 2
+
+            slide.shapes.add_picture(
+                str(img_path),
+                Emu(fit_x), Emu(fit_y), Emu(fit_w), Emu(fit_h),
+            )
+        except Exception as e:
+            logger.warning("Failed to add illustration {}: {}", img_path, e)
 
     # ── XML Patches ──────────────────────────────────────────────
 

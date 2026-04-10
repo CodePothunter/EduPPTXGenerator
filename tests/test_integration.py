@@ -149,11 +149,9 @@ def test_agent_with_diagram_material(mock_llm_cls, config):
     agent = PPTXAgent(config)
     session_dir = agent.run("勾股定理")
 
-    # Should succeed without error
+    # Should succeed without error — diagrams are rendered natively by the renderer
+    # (no PNG generation needed, diagram_native.py draws pptx shapes from data)
     assert (session_dir / "output.pptx").exists()
-    # Library should have backgrounds + at least 1 diagram
-    diagrams = agent.library.list_all(type="diagram")
-    assert len(diagrams) >= 1
 
 
 @patch("edupptx.agent.LLMClient")

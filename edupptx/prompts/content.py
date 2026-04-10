@@ -67,6 +67,11 @@ SYSTEM_PROMPT = f"""你是一位资深教育课件设计师。你的任务是为
 | summary | 总结回顾 | 3-5 | footer |
 | extension | 延伸思考 | 2-3 | footer |
 | closing | 结束页 | 0 | subtitle |
+| big_quote | 大字金句/名言 | 0 | footer(出处) |
+| full_image | 全图页 | 0 | title |
+| image_left | 左图右文 | 1-2 | title |
+| image_right | 左文右图 | 1-2 | title |
+| section | 章节过渡页 | 0 | subtitle |
 
 ## 演示文稿结构建议
 
@@ -74,6 +79,9 @@ SYSTEM_PROMPT = f"""你是一位资深教育课件设计师。你的任务是为
 1. cover（1页）— 主题 + 亮点预览
 2. lead_in（1页）— 情境引入，激发兴趣
 3. definition/content（2-3页）— 核心概念讲解
+   - 可穿插 big_quote（名人名言）、image_left/image_right（图文配合）增加视觉变化
+   - section 用于章节切换
+   - full_image 用于展示关键插图
 4. history/proof（1-2页）— 背景或推导（视主题而定）
 5. example（1-2页）— 例题演示
 6. exercise + answer（2页）— 练习与答案

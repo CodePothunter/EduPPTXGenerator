@@ -19,6 +19,11 @@ SlideType = Literal[
     "summary",
     "extension",
     "closing",
+    "big_quote",
+    "full_image",
+    "image_left",
+    "image_right",
+    "section",
 ]
 
 
@@ -63,6 +68,13 @@ class ContentMaterial(BaseModel):
     diagram_data: dict | None = None
     illustration_description: str | None = None
     illustration_style: str | None = None
+    image_anchor: Literal["top", "center", "bottom"] = Field(
+        default="center", description="Vertical alignment of illustration within its slot"
+    )
+    image_scale: float = Field(
+        default=0.85, ge=0.4, le=1.0,
+        description="How much of the slot the illustration fills (0.4-1.0)"
+    )
     tags: list[str] = Field(default_factory=list)
 
 

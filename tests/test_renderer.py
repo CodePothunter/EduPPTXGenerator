@@ -107,3 +107,41 @@ def test_renderer_speaker_notes():
         assert slide.has_notes_slide
         notes_text = slide.notes_slide.notes_text_frame.text
         assert "Test speaker notes" in notes_text
+
+
+def test_renderer_with_illustration():
+    """Test rendering a slide with an illustration material."""
+    design = get_design_tokens("emerald")
+    renderer = PresentationRenderer(design)
+
+    # Create a test illustration image
+    from PIL import Image
+    img = Image.new("RGB", (1024, 768), (200, 220, 200))
+    img_path = Path(tempfile.mktemp(suffix=".png"))
+    img.save(img_path, "PNG")
+
+    from edupptx.models import ContentMaterial
+    slide = SlideContent(
+        type="content",
+        title="Test with illustration",
+        cards=[SlideCard(icon="star", title="Point 1", body="Body 1")],
+        notes="Notes",
+        content_materials=[
+            ContentMaterial(
+                action="generate_illustration",
+                position="center",
+                illustration_description="test illustration",
+            )
+        ],
+    )
+
+    renderer.render_slide(slide, material_path=img_path)
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "test.pptx"
+        renderer.save(out)
+        assert out.exists()
+        prs = Presentation(str(out))
+        assert len(prs.slides) == 1
+
+    img_path.unlink(missing_ok=True)

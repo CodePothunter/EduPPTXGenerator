@@ -27,6 +27,12 @@ style 可选: diagonal_gradient, radial_gradient, geometric_circles, geometric_t
 **content_materials**（可选，仅在内容确实适合图表时添加，大多数页面不需要）:
 - 图表: {{"action":"generate_diagram","position":"center","diagram_type":"flowchart","diagram_data":{{...}},"tags":[]}}
 - diagram_type: flowchart / timeline / comparison / hierarchy / cycle
+- 插图: {{"action":"generate_illustration","position":"center","illustration_description":"具体英文描述50-100词","illustration_style":"educational_flat","image_anchor":"center","image_scale":0.85,"tags":[]}}
+- illustration_style: educational_flat / scientific_realistic / watercolor_soft
+- image_anchor: top（图片靠上，适合有地面/底部留白的场景）/ center（居中）/ bottom（靠下，适合有天空/顶部留白的场景）
+- image_scale: 0.4-1.0，图片占区域的比例。全图页用0.95，配文字的页面用0.7-0.85，小装饰用0.5
+- **重要：图表和插图二选一，一页不能同时有 diagram 和 illustration**
+- image_left/image_right 类型的页面建议配插图（position 设为对应方向）
 
 **重要：输出精简**
 - 值为 null 的字段直接省略，不要输出
@@ -54,5 +60,5 @@ def build_agent_user_message(topic: str, requirements: str = "") -> str:
     parts = [f"请为以下教学主题设计完整的演示文稿方案：\n\n主题：{topic}"]
     if requirements:
         parts.append(f"\n附加要求：{requirements}")
-    parts.append("\n每个 slide 必须包含 bg_action。仅在内容适合图表展示时才添加 content_materials，省略值为 null 的字段。")
+    parts.append("\n每个 slide 必须包含 bg_action。图表和插图二选一使用，大多数页面不需要。建议穿插使用 big_quote/section/image_left/image_right 等新布局增加视觉变化。省略值为 null 的字段。")
     return "\n".join(parts)
