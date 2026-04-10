@@ -24,7 +24,7 @@ class ContentPlanner:
             {"role": "user", "content": build_user_message(topic, requirements)},
         ]
 
-        logger.info("Generating content plan for topic=%s", topic)
+        logger.info("Generating content plan for topic={}", topic)
         data = self._llm.chat_json(messages, temperature=0.7)
 
         # Override palette if user specified
@@ -32,9 +32,5 @@ class ContentPlanner:
             data["palette"] = palette
 
         plan = PresentationPlan.model_validate(data)
-        logger.info(
-            "Plan generated: %d slides, palette=%s",
-            len(plan.slides),
-            plan.palette,
-        )
+        logger.info("Plan generated: {} slides, palette={}", len(plan.slides), plan.palette)
         return plan
