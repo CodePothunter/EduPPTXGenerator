@@ -2,12 +2,18 @@
 
 ## Summary
 
-Redesign EduPPTX from a rigid 4-phase pipeline into a ReAct tool-use agent. The agent
-reasons step-by-step, decides what materials to generate vs reuse, and renders slides
-incrementally. All intermediate state is observable via a structured session directory.
+Redesign EduPPTX from a rigid 4-phase pipeline into a thin-agent architecture.
+One enriched LLM call plans slides AND material decisions. A deterministic executor
+generates materials (parallel) and renders slides. All intermediate state is observable
+via a structured session directory.
+
+> **Eng Review Decision (2026-04-10)**: Reduced from full ReAct (20-40 LLM calls) to
+> thin agent (1-2 LLM calls). Reason: as a CLI tool called by other agents, an inner
+> ReAct loop creates expensive/slow agent-in-agent nesting. Thin agent gets 80% of
+> the benefits with 2-3 calls instead of 30+.
 
 Five changes:
-1. **Agent architecture** — ReAct loop replaces the fixed pipeline
+1. **Agent architecture** — thin agent (enriched planning + deterministic execution)
 2. **Material library** — persistent, searchable asset library with AI + programmatic generation
 3. **Session & artifacts** — structured output directory with thinking.jsonl
 4. **Diagram generation** — new Pillow-based diagram renderer (flowchart, timeline, etc.)
@@ -19,30 +25,27 @@ Five changes:
 User: "做一个勾股定理的PPT"
          │
          ▼
-┌─────────────────────────────────────────────────────┐
-│  PPTXAgent (ReAct loop)                             │
-│                                                     │
-│  while not done:                                    │
-│    response = llm.chat(messages, tools=TOOL_BELT)   │
-│    session.log_thinking(response)                   │
-│    for tool_call in response.tool_calls:            │
-│      result = execute_tool(tool_call)               │
-│      session.log_tool(tool_call, result)            │
-│      messages.append(tool_result(...))              │
-│                                                     │
-│  TOOL BELT:                                         │
-│  ┌─────────────┐ ┌──────────────────┐               │
-│  │ plan_slides  │ │ search_library   │               │
-│  ├─────────────┤ ├──────────────────┤               │
-│  │ gen_bg      │ │ gen_illustration │               │
-│  ├─────────────┤ ├──────────────────┤               │
-│  │ gen_diagram │ │ render_slide     │               │
-│  ├─────────────┤ ├──────────────────┤               │
-│  │ assemble    │ │ list_icons       │               │
-│  ├─────────────┤ ├──────────────────┤               │
-│  │ get_palettes│ │                  │               │
-│  └─────────────┘ └──────────────────┘               │
-└─────────────────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  LLM Call 1: Enriched Content Planning               │
+│  Input: topic + requirements + library_summary +     │
+│         icon_catalog + diagram_types                 │
+│  Output: EnrichedPlan {                              │
+│    slides: [{type, title, cards, bg_action,          │
+│              content_materials}],                     │
+│    palette                                           │
+│  }                                                   │
+├──────────────────────────────────────────────────────┤
+│  Deterministic Executor                              │
+│  1. Execute material_actions (ThreadPoolExecutor)    │
+│     - generate backgrounds (Pillow)                  │
+│     - generate diagrams (Pillow)                     │
+│     - generate illustrations (AI image API)          │
+│     - fetch reusable materials from library          │
+│  2. Render slides (sequential, layout_engine)        │
+│  3. Assemble .pptx (renderer.save)                   │
+├──────────────────────────────────────────────────────┤
+│  LLM Call 2 (optional): Quality review               │
+└──────────────────────────────────────────────────────┘
          │
          ▼
 output/session_YYYYMMDD_HHMMSS/
@@ -57,7 +60,12 @@ output/session_YYYYMMDD_HHMMSS/
 
 ### New files
 
-#### `edupptx/agent.py` — Agent core
+#### `edupptx/agent.py` — Thin agent (replaces generator.py)
+
+> **Eng Review Decision**: Named `agent.py` (not `generator.py`) for signal value to
+> calling agents, even though it's a thin agent, not a ReAct loop.
+> **No tools.py**: Generation functions live where they belong (backgrounds.py,
+> diagram_gen.py, material_library.py). No tool dispatch or JSON schemas needed.
 
 ```python
 class PPTXAgent:
@@ -65,107 +73,57 @@ class PPTXAgent:
         self.config = config
         self.session = Session(session_dir)
         self.library = MaterialLibrary(config.library_dir)
-        self.llm = LLMClient(config)  # extended with tool-use
-        self.renderer = PresentationRenderer(...)  # lazy init after palette known
-        self.tools = register_tools(self)
+        self.llm = LLMClient(config)
 
     def run(self, topic: str, requirements: str = "") -> Path:
-        """Main ReAct loop. Returns path to session directory."""
-        messages = [
-            {"role": "system", "content": agent_system_prompt(self.library, self.tools)},
-            {"role": "user", "content": f"Topic: {topic}\nRequirements: {requirements}"},
-        ]
+        """Thin agent: 1 enriched LLM call + deterministic execution."""
+        # Step 1: Enriched planning (1 LLM call)
+        plan = self._plan(topic, requirements)
+        self.session.save_plan(plan.model_dump())
 
-        while True:
-            response = self.llm.chat_with_tools(messages, tools=self.tool_schemas)
-            self.session.log_thinking(response)
+        # Step 2: Execute material actions (parallel)
+        design = get_design_tokens(plan.palette)
+        materials = self._execute_materials(plan, design)
 
-            if not response.tool_calls:
-                break  # agent is done
+        # Step 3: Render slides (sequential)
+        renderer = PresentationRenderer(design)
+        for i, slide in enumerate(plan.slides):
+            bg = materials.get_background(i)
+            content_mats = materials.get_content_materials(i)
+            renderer.render_slide(slide, bg, content_mats)
+            self.session.save_slide_state(i, slide.type, slide.model_dump())
 
-            for tool_call in response.tool_calls:
-                result = self._execute_tool(tool_call)
-                self.session.log_tool(tool_call, result)
-                messages.append(make_tool_result(tool_call.id, result))
-
+        # Step 4: Assemble
+        renderer.save(self.session.output_path)
         return self.session.dir
 ```
 
-Key behaviors:
-- Agent system prompt includes: available tools, library contents summary, palette options,
-  icon catalog, slide type reference. The agent has full context to make decisions.
-- Each tool returns structured JSON. The agent sees the result and decides what to do next.
-- Loop terminates when the agent responds without tool calls (natural end).
-- Max iterations safety: 50 tool calls. If exceeded, assemble whatever is rendered so far.
+**Enriched planning prompt** includes:
+- Library contents summary (so LLM knows what's reusable)
+- Available palettes and icons
+- Diagram type reference + data format specs
+- Slide type reference (from existing content.py)
+- Guidelines: prefer reusing materials, use diagrams for structured content,
+  use AI illustrations for conceptual/artistic content
 
-#### `edupptx/tools.py` — Tool definitions + implementations
+**Material execution** uses `concurrent.futures.ThreadPoolExecutor` to parallelize:
+- Background generation (Pillow, CPU-bound, <1s each)
+- Diagram generation (Pillow, CPU-bound, <1s each)
+- AI illustration generation (network-bound, 5-15s each)
+- Library lookups (instant)
 
-Each tool is a function + JSON schema for OpenAI tool_use format.
+**Diagram data formats** (embedded in enriched plan by LLM):
+- flowchart: `{nodes: [{id, label}], edges: [{from, to, label?}], direction: "TB" | "LR"}`
+- timeline: `{events: [{year, label, description?}]}`
+- comparison: `{columns: [{header, items: [str]}]}`
+- hierarchy: `{root: {label, children: [{label, children: [...]}]}}`
+- cycle: `{steps: [{label, description?}]}`
 
-**Tool: `plan_slides`**
-- Input: `{topic: str, requirements: str, palette: str}`
-- Behavior: Calls LLM with the existing content planning prompt (from `prompts/content.py`).
-  Returns structured slide plan.
-- Output: `{slides: [{type, title, subtitle, cards, formula, footer, notes}], palette: str}`
-- Side effect: Saves to `session/plan.json`
-
-**Tool: `search_library`**
-- Input: `{tags: list[str], type: str | null, palette: str | null}`
-- Behavior: Searches MaterialLibrary by tag overlap. Scores by tag match + palette bonus.
-- Output: `{matches: [{id, type, tags, palette, description, path}]}`
-- No side effects.
-
-**Tool: `generate_background`**
-- Input: `{style: "diagonal_gradient" | "radial_gradient" | "geometric_circles" | "geometric_triangles", palette: str, tags: list[str]}`
-- Behavior: Uses existing Pillow generation code from backgrounds.py.
-  Saves to library. Copies to session materials/.
-- Output: `{material_id: str, path: str}`
-
-**Tool: `generate_illustration`**
-- Input: `{description: str, style: "flat" | "realistic" | "sketch" | "watercolor", palette: str, tags: list[str]}`
-- Behavior: Calls AI image model via ImageClient. Downloads result.
-  Saves to library. Copies to session materials/.
-- Output: `{material_id: str, path: str}`
-- Requires: `config.image_api_key` and `config.image_model`. If not configured, returns error
-  telling agent to use programmatic alternatives.
-
-**Tool: `generate_diagram`**
-- Input: `{diagram_type: "flowchart" | "timeline" | "comparison" | "hierarchy" | "cycle", data: dict, palette: str, tags: list[str]}`
-- Behavior: Uses diagram_gen.py to render diagram with Pillow.
-  Saves to library. Copies to session materials/.
-- Output: `{material_id: str, path: str}`
-- Data format per type:
-  - flowchart: `{nodes: [{id, label}], edges: [{from, to, label?}], direction: "TB" | "LR"}`
-  - timeline: `{events: [{year, label, description?}]}`
-  - comparison: `{columns: [{header, items: [str]}]}`
-  - hierarchy: `{root: {label, children: [{label, children: [...]}]}}`
-  - cycle: `{steps: [{label, description?}]}`
-
-**Tool: `render_slide`**
-- Input: `{index: int, slide_type: str, title: str, subtitle: str | null, cards: [{icon, title, body}], formula: str | null, footer: str | null, notes: str | null, background_material_id: str | null, content_materials: [{material_id: str, position: "left" | "right" | "center" | "full"}] | null}`
-- Behavior: Uses existing layout_engine.py + renderer.py to render one slide.
-  If background_material_id provided, uses that material as background.
-  If content_materials provided, embeds illustrations/diagrams into the slide.
-  Material positioning: "full" replaces the cards area entirely (full-bleed image with title),
-  "left"/"right" splits the content area 50/50 (image + cards), "center" places the image
-  between title and cards. The layout_engine handles these as new layout variants.
-  Saves slide state to session/slides/.
-- Output: `{slide_index: int, status: "rendered"}`
-
-**Tool: `assemble_pptx`**
-- Input: `{filename: str}`
-- Behavior: Calls renderer.save(). Copies to session/output.pptx.
-- Output: `{output_path: str, slide_count: int, file_size_kb: int}`
-
-**Tool: `list_icons`**
-- Input: `{}`
-- Behavior: Returns available Lucide icon names from icons.py.
-- Output: `{icons: [str], count: int}`
-
-**Tool: `get_palettes`**
-- Input: `{}`
-- Behavior: Returns all palette names with color details from design_system.py.
-- Output: `{palettes: [{name, accent, bg_overlay, text_primary, ...}]}`
+**Content material positioning** on slides:
+- `"full"`: replaces cards area entirely (full-bleed image with title)
+- `"left"` / `"right"`: splits content area 50/50 (image + cards)
+- `"center"`: places image between title and cards
+- Layout engine handles these as new layout variants
 
 #### `edupptx/session.py` — Session management
 
@@ -380,16 +338,29 @@ Add:
 - `library_dir: Path` — material library location (default: `./materials_library`)
 - `output_dir: Path` — session output base directory (default: `./output`)
 
-#### `edupptx/models.py` — New models
+#### `edupptx/models.py` — Extended models
 
-Add `MaterialEntry` Pydantic model (for serialization in index.json).
+> **Eng Review Decision**: MaterialEntry lives in models.py (single source of truth
+> for all data models). SlideContent extended with optional material fields (backward
+> compatible).
+
+Add:
+- `MaterialEntry` Pydantic model (for index.json serialization)
+- `BackgroundAction` model: `{action: "generate" | "reuse", style: str | None, material_id: str | None, tags: list[str]}`
+- `ContentMaterial` model: `{action: "generate_diagram" | "generate_illustration" | "reuse", position: "full" | "left" | "right" | "center", ...}`
+
+Extend `SlideContent` with optional fields:
+- `bg_action: BackgroundAction | None = None`
+- `content_materials: list[ContentMaterial] | None = None`
+
+When these fields are None, executor uses fallback behavior (programmatic backgrounds, no diagrams).
 
 #### `edupptx/backgrounds.py` — Refactor
 
-Extract the 4 Pillow generation functions into standalone functions (they become the
-backend for `generate_background` tool). Remove BackgroundManager class — its
-responsibilities are split between MaterialLibrary (caching/search) and the tool
-(generation).
+Extract the 4 Pillow generation functions into standalone functions. Remove BackgroundManager
+class — its responsibilities split between MaterialLibrary (caching/search) and the executor
+in agent.py (generation). Functions: `generate_diagonal_gradient()`, `generate_radial_gradient()`,
+`generate_geometric_circles()`, `generate_geometric_triangles()`.
 
 #### `edupptx/cli.py` — Agent-driven flow + loguru
 
@@ -485,6 +456,10 @@ def generate(topic: str, requirements: str = "", **kwargs) -> Path:
 
 - `edupptx/generator.py` — replaced by `agent.py`
 
+### NOT created (removed from original plan)
+
+- `edupptx/tools.py` — no tool dispatch needed in thin-agent architecture
+
 ### Migration
 
 - `backgrounds_cache/` contents are migrated into `materials_library/backgrounds/` on first run.
@@ -528,17 +503,31 @@ Rewrite README.md to:
 
 ## Error Handling
 
-- LLM call failures: retry once, then log error and continue with partial output
-- Material generation failures: log warning, agent sees error and adapts (uses alternative)
-- Max iterations (50 tool calls): force assemble with whatever is rendered
-- Missing image API config: generate_illustration tool returns error, agent falls back to
-  programmatic alternatives
-- Invalid tool arguments: return structured error, agent can retry with corrected args
+- LLM call failures: retry once, then log error and exit with clear message
+- Material generation failures: log warning, use fallback (programmatic background, skip diagram)
+- Missing image API config: skip AI illustrations, use programmatic backgrounds only
+- **Diagram data validation**: Each diagram generator validates input structure before rendering.
+  Empty nodes/events/steps, missing required fields, and malformed data return a placeholder
+  image with error text (not a crash). This is a critical gap identified in eng review.
 
 ## Non-Goals (explicitly out of scope)
 
 - Real-time streaming of agent events (directory artifacts are sufficient)
 - Multi-agent architecture (single agent with tools)
+- Full ReAct tool-use loop (reduced to thin agent per eng review)
+- tools.py / JSON schema tool definitions (not needed for thin agent)
 - Custom slide template editor
 - Web UI or API server
 - Slide preview/thumbnail generation
+
+## GSTACK REVIEW REPORT
+
+| Review | Trigger | Why | Runs | Status | Findings |
+|--------|---------|-----|------|--------|----------|
+| CEO Review | `/plan-ceo-review` | Scope & strategy | 0 | — | — |
+| Codex Review | `/codex review` | Independent 2nd opinion | 0 | — | — |
+| Eng Review | `/plan-eng-review` | Architecture & tests (required) | 1 | CLEAR (PLAN) | 6 issues, 1 critical gap, scope reduced |
+| Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
+| DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
+
+**VERDICT:** ENG CLEARED (scope reduced: ReAct → thin agent). Ready to implement.
