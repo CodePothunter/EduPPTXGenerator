@@ -20,10 +20,16 @@ from pptx.util import Emu, Pt
 from edupptx.design_system import DesignTokens
 from edupptx.icons import get_icon_png, get_icon_svg
 from edupptx.layout_engine import (
+    CARD_GAP,
+    CARD_TOP,
+    FOOTER_H,
+    FOOTER_Y,
     MARGIN_X,
+    MARGIN_Y,
     CONTENT_W,
     SLIDE_H,
     SLIDE_W,
+    TITLE_Y,
     SlotLayout,
     SlotPosition,
     get_layout,
@@ -32,6 +38,9 @@ from edupptx.models import PresentationPlan, SlideCard, SlideContent
 
 # Slide types that get special visual treatment (no standard title underline)
 _NO_UNDERLINE_TYPES = {"cover", "closing", "section", "big_quote"}
+
+# Slide types that skip the content panel (use background directly)
+_NO_PANEL_TYPES = {"closing", "section", "big_quote", "full_image"}
 
 # XML namespaces
 _NSMAP = {
@@ -122,6 +131,10 @@ class PresentationRenderer:
 
         # 1. Background image (full canvas)
         self._add_background(slide, bg_path, slots.background)
+
+        # 1.5. Content area panel (frosted glass effect for depth)
+        if content.type not in _NO_PANEL_TYPES and content.cards:
+            self._add_content_panel(slide, slots)
 
         # 2. Special page decorations (behind content)
         if content.type == "big_quote":
@@ -506,6 +519,39 @@ class PresentationRenderer:
         if solid_fill is not None and len(solid_fill):
             alpha_el = etree.SubElement(solid_fill[0], f"{{{ns_a}}}alpha")
             alpha_el.set("val", "30000")  # 30% opacity
+
+    def _add_content_panel(self, slide, slots: SlotLayout):
+        """Add a semi-transparent rounded panel behind the content area.
+
+        Creates visual depth: background → panel → cards.
+        """
+        pad = 152400  # 12pt padding around content
+        panel_x = MARGIN_X - pad
+        panel_y = CARD_TOP - pad
+        panel_w = CONTENT_W + pad * 2
+
+        # Panel extends to cover cards + footer area
+        if slots.footer:
+            panel_bottom = FOOTER_Y + FOOTER_H + pad
+        else:
+            panel_bottom = CARD_TOP + (slots.cards[0].height if slots.cards else 2540000) + pad
+        panel_h = panel_bottom - panel_y
+
+        shape = slide.shapes.add_shape(
+            5,  # ROUNDED_RECTANGLE
+            Emu(panel_x), Emu(panel_y), Emu(panel_w), Emu(panel_h),
+        )
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = RGBColor(0xFF, 0xFF, 0xFF)
+        shape.line.fill.background()
+        self._patch_corner_radius(shape, 3000)
+
+        # Patch alpha for translucency (25% white)
+        ns_a = _NSMAP["a"]
+        solid_fill = shape._element.find(f".//{{{ns_a}}}solidFill")
+        if solid_fill is not None and len(solid_fill):
+            alpha_el = etree.SubElement(solid_fill[0], f"{{{ns_a}}}alpha")
+            alpha_el.set("val", "25000")  # 25% opacity
 
     def _add_illustration(
         self, slide, img_path: Path, slot: SlotPosition,
