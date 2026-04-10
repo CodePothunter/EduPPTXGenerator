@@ -327,11 +327,12 @@ class PPTXAgent:
             style = mat.illustration_style or "educational_flat"
             desc_hash = hashlib.md5(desc.encode()).hexdigest()[:8]
 
-            # Try to reuse from library first
+            # Try to reuse from library — require desc_hash match to avoid
+            # returning unrelated illustrations from previous runs
             cached = self.library.search(
-                mat.tags + [style, desc_hash], type="illustration", palette=plan.palette,
+                [desc_hash, style], type="illustration", palette=plan.palette,
             )
-            if cached:
+            if cached and desc_hash in cached[0].tags:
                 lib_path = self.library.dir / cached[0].path
                 if lib_path.exists():
                     dest = session.dir / "materials" / lib_path.name

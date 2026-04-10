@@ -23,7 +23,7 @@ def _get_valid_icons() -> set[str]:
 _ICON_FALLBACKS = {
     "car": "compass", "truck": "compass", "vehicle": "compass",
     "archery": "target", "bow": "target", "arrow": "arrow-right",
-    "scale": "ruler", "weight": "ruler", "balance": "ruler",
+    "scale": "ruler", "weight": "ruler", "balance": "ruler", "weight-scale": "ruler",
     "trampoline": "arrow-up", "jump": "arrow-up", "bounce": "arrow-up",
     "spring": "zap", "elastic": "zap", "stretch": "zap",
     "file-text": "file", "document": "file", "paper": "file",
