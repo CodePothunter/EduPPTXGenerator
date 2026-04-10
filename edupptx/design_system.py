@@ -33,7 +33,7 @@ class DesignTokens:
     # Font sizes (pt)
     size_title: int = 38
     size_subtitle: int = 20
-    size_card_title: int = 15
+    size_card_title: int = 16
     size_card_body: int = 12
     size_footer: int = 13
     size_formula: int = 18

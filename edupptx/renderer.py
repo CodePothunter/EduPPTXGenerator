@@ -255,6 +255,16 @@ class PresentationRenderer:
         run.text = text
         _set_font(run, self.design, size_pt, bold=bold, color=color)
 
+    def _tint_color(self, hex_color: str, amount: float = 0.12) -> str:
+        """Mix hex_color toward white. amount=0 → white, amount=1 → full color."""
+        r = int(hex_color.lstrip('#')[0:2], 16)
+        g = int(hex_color.lstrip('#')[2:4], 16)
+        b = int(hex_color.lstrip('#')[4:6], 16)
+        r = int(255 + (r - 255) * amount)
+        g = int(255 + (g - 255) * amount)
+        b = int(255 + (b - 255) * amount)
+        return f"#{r:02X}{g:02X}{b:02X}"
+
     def _add_card(
         self, slide, card: SlideCard,
         card_slot: SlotPosition,
@@ -262,32 +272,48 @@ class PresentationRenderer:
         title_slot: SlotPosition | None,
         body_slot: SlotPosition | None,
     ):
-        """Add a card component: container + icon + title + body."""
+        """Add a card component: container + accent header + icon + title + body."""
         # Card container (rounded rectangle with shadow)
+        card_fill = self._tint_color(self.design.accent_light, 0.15)
         shape = slide.shapes.add_shape(
             5,  # MSO_SHAPE.ROUNDED_RECTANGLE
             Emu(card_slot.x), Emu(card_slot.y),
             Emu(card_slot.width), Emu(card_slot.height),
         )
         shape.fill.solid()
-        shape.fill.fore_color.rgb = _hex_to_rgb(self.design.card_bg)
+        shape.fill.fore_color.rgb = _hex_to_rgb(card_fill)
         shape.line.fill.background()
 
-        # Patch: add shadow (stronger for depth)
+        # Patch: add shadow
         self._patch_card_shadow(shape)
 
-        # Patch: adjust corner radius (larger for modern feel)
-        self._patch_corner_radius(shape, 8000)  # ~8% roundness
+        # Patch: adjust corner radius
+        self._patch_corner_radius(shape, 8000)
 
-        # Icon (as PNG image — SVG embedding is complex, PNG is reliable)
+        # Accent header strip inside card top
+        strip_inset = int(card_slot.width * 0.08)  # match corner radius
+        strip_h = 50800  # 4pt
+        strip_y = card_slot.y + strip_inset
+        strip = slide.shapes.add_shape(
+            5,  # ROUNDED_RECTANGLE
+            Emu(card_slot.x + strip_inset), Emu(strip_y),
+            Emu(card_slot.width - 2 * strip_inset), Emu(strip_h),
+        )
+        strip.fill.solid()
+        strip.fill.fore_color.rgb = _hex_to_rgb(self.design.accent)
+        strip.line.fill.background()
+        self._patch_corner_radius(strip, 50000)
+
+        # Icon
         if icon_slot:
             self._add_icon(slide, card.icon, icon_slot)
 
-        # Card title
+        # Card title — use accent color for hierarchy
         if title_slot:
             self._add_textbox(
                 slide, card.title, title_slot,
                 size_pt=self.design.size_card_title, bold=True,
+                color=self.design.accent,
                 align=PP_ALIGN.CENTER,
             )
 
@@ -303,9 +329,22 @@ class PresentationRenderer:
             )
 
     def _add_icon(self, slide, icon_name: str, slot: SlotPosition):
-        """Add an icon with a circular accent background."""
-        # Add circular background behind icon
-        bg_pad = int(slot.width * 0.15)
+        """Add an icon with a circular accent background and outer ring."""
+        bg_pad = int(slot.width * 0.20)
+
+        # Outer ring (subtle border effect for depth)
+        ring_pad = bg_pad + int(slot.width * 0.06)
+        ring = slide.shapes.add_shape(
+            9,  # MSO_SHAPE.OVAL
+            Emu(slot.x - ring_pad), Emu(slot.y - ring_pad),
+            Emu(slot.width + ring_pad * 2), Emu(slot.height + ring_pad * 2),
+        )
+        ring.fill.solid()
+        ring_color = self._tint_color(self.design.accent_light, 0.5)
+        ring.fill.fore_color.rgb = _hex_to_rgb(ring_color)
+        ring.line.fill.background()
+
+        # Inner circle background
         bg_shape = slide.shapes.add_shape(
             9,  # MSO_SHAPE.OVAL
             Emu(slot.x - bg_pad), Emu(slot.y - bg_pad),
@@ -331,7 +370,7 @@ class PresentationRenderer:
             pass  # PNG fallback is fine
 
     def _add_formula_bar(self, slide, formula: str, slot: SlotPosition):
-        """Add a formula highlight bar."""
+        """Add a formula highlight bar with accent border."""
         # Background shape
         shape = slide.shapes.add_shape(
             5,  # ROUNDED_RECTANGLE
@@ -339,8 +378,9 @@ class PresentationRenderer:
         )
         shape.fill.solid()
         shape.fill.fore_color.rgb = _hex_to_rgb(self.design.accent_light)
-        shape.line.fill.background()
-        self._patch_corner_radius(shape, 3000)
+        shape.line.color.rgb = _hex_to_rgb(self.design.accent)
+        shape.line.width = Pt(1.5)
+        self._patch_corner_radius(shape, 5000)
 
         # Formula text
         self._add_textbox(
