@@ -259,9 +259,12 @@ class PresentationRenderer:
 
         # Card body
         if body_slot:
+            body_size = self.design.size_card_body
+            if len(card.body) > 50:
+                body_size = max(8, body_size - 2)
             self._add_textbox(
                 slide, card.body, body_slot,
-                size_pt=self.design.size_card_body,
+                size_pt=body_size,
                 color=self.design.text_secondary,
             )
 

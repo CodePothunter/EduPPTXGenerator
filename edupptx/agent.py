@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tempfile
@@ -73,6 +74,12 @@ scale: 0.4-1.0，图片占区域比例。全图页用0.95，配文字页用0.7-0
 素材库当前状态: {library_summary}
 """
 
+# Slide types that skip LLM material decision (use default bg only)
+_SKIP_MATERIAL_TYPES = {"big_quote", "closing", "section"}
+
+# Background styles for forced rotation
+_BG_STYLES = ["diagonal_gradient", "radial_gradient", "geometric_circles", "geometric_triangles"]
+
 
 class PPTXAgent:
     """Thin agent: content planning → per-slide material decisions → parallel execution."""
@@ -131,6 +138,10 @@ class PPTXAgent:
         system = _MATERIAL_PROMPT.replace("{library_summary}", library_summary)
 
         def _decide_one(i: int, slide: SlideContent) -> tuple[int, dict]:
+            # Skip LLM call for simple slide types
+            if slide.type in _SKIP_MATERIAL_TYPES:
+                return i, {"bg_style": _BG_STYLES[i % len(_BG_STYLES)]}
+
             user_msg = (
                 f"幻灯片 {i+1}/{len(plan.slides)}\n"
                 f"类型: {slide.type}\n"
@@ -162,8 +173,8 @@ class PPTXAgent:
                 idx, decision = future.result()
                 slide = plan.slides[idx]
 
-                # Apply background decision
-                bg_style = decision.get("bg_style", "diagonal_gradient")
+                # Apply background decision — force rotation instead of trusting LLM
+                bg_style = _BG_STYLES[idx % len(_BG_STYLES)]
                 slide.bg_action = BackgroundAction(
                     action="generate",
                     style=bg_style,
@@ -314,10 +325,11 @@ class PPTXAgent:
         def _gen_illustration(i: int, mat: ContentMaterial, slide: SlideContent) -> tuple[tuple[str, int], Path] | None:
             desc = mat.illustration_description or "educational illustration"
             style = mat.illustration_style or "educational_flat"
+            desc_hash = hashlib.md5(desc.encode()).hexdigest()[:8]
 
             # Try to reuse from library first
             cached = self.library.search(
-                mat.tags + [style], type="illustration", palette=plan.palette,
+                mat.tags + [style, desc_hash], type="illustration", palette=plan.palette,
             )
             if cached:
                 lib_path = self.library.dir / cached[0].path
@@ -354,7 +366,7 @@ class PPTXAgent:
                 path = _make_placeholder(desc, design)
 
             self.library.add(
-                path, "illustration", mat.tags + [style], plan.palette,
+                path, "illustration", mat.tags + [style, desc_hash], plan.palette,
                 "ai_generated" if self.config.image_api_key else "programmatic",
                 f"Slide {i}: {desc[:50]}",
             )

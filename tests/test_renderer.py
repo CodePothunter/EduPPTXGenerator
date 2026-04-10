@@ -145,3 +145,22 @@ def test_renderer_with_illustration():
         assert len(prs.slides) == 1
 
     img_path.unlink(missing_ok=True)
+
+
+def test_renderer_long_card_body():
+    """Verify that long card body text doesn't crash the renderer."""
+    design = get_design_tokens("emerald")
+    renderer = PresentationRenderer(design)
+    slide = SlideContent(
+        type="content",
+        title="Test",
+        cards=[SlideCard(icon="star", title="Title", body="这是一段超过五十个字的卡片正文内容，用来测试当文本过长时渲染器是否能自动缩小字号而不报错。这段文字故意写得很长很长。")],
+        notes="Notes",
+    )
+    renderer.render_slide(slide)
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out = Path(tmpdir) / "test.pptx"
+        renderer.save(out)
+        assert out.exists()

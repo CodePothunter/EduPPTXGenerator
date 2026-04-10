@@ -421,8 +421,8 @@ def get_layout(slide_type: str, card_count: int, material_position: str | None =
         layout.card_bodies = bodies
 
     elif material_position == "center":
-        # Material placed between title and cards, using ~35% of content height
-        mat_h = int(content_h * 0.35)
+        # Material placed between title and cards, using ~50% of content height
+        mat_h = int(content_h * 0.50)
         mat_y = content_y
         cards_top = mat_y + mat_h + CARD_GAP
         cards_h = FOOTER_Y - cards_top - CARD_GAP

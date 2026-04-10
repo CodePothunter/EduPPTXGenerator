@@ -7,6 +7,7 @@ import re
 from pathlib import Path
 
 import cairosvg
+from loguru import logger
 
 _ASSETS_DIR = Path(__file__).resolve().parent.parent / "assets" / "icons"
 
@@ -37,6 +38,7 @@ def get_icon_svg(name: str, color: str = "currentColor") -> str:
     """
     path = _ASSETS_DIR / f"{name}.svg"
     if not path.exists():
+        logger.warning("Icon '{}' not found in assets, using fallback circle", name)
         return _FALLBACK_SVG.format(color=color)
 
     svg = path.read_text(encoding="utf-8")
