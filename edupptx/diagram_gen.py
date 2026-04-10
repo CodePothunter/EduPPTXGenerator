@@ -13,6 +13,15 @@ def _hex_to_rgb(hex_color: str) -> tuple[int, int, int]:
 
 
 def _get_font(size: int = 16) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    import os
+    # Bundled font (best option — guaranteed CJK support)
+    bundled = os.path.join(os.path.dirname(__file__), "..", "assets", "fonts", "NotoSansSC-Regular.ttf")
+    if os.path.exists(bundled):
+        try:
+            return ImageFont.truetype(bundled, size)
+        except OSError:
+            pass
+    # System font fallbacks
     for name in ["NotoSansSC-Regular.otf", "NotoSansSC-Regular.ttf", "Arial.ttf", "DejaVuSans.ttf"]:
         try:
             return ImageFont.truetype(name, size)
