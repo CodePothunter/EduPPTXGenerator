@@ -339,6 +339,11 @@ class PPTXAgent:
                     logger.debug("Reused cached illustration for slide {}: {}", i, cached[0].id)
                     return ("mat", i), lib_path
 
+            # No API key → skip illustration entirely (no ugly placeholders)
+            if not self.config.image_api_key:
+                logger.debug("No image API key, skipping illustration for slide {}", i)
+                return None
+
             style_prompts = {
                 "educational_flat": "flat design, clean lines, vibrant colors, educational",
                 "scientific_realistic": "scientific illustration, detailed, accurate, textbook style",
@@ -348,27 +353,23 @@ class PPTXAgent:
             image_size = _pick_image_size(slide.type, mat.position, len(slide.cards))
 
             try:
-                if self.config.image_api_key:
-                    from edupptx.llm_client import ImageClient
-                    client = ImageClient(self.config)
-                    prompt = f"{desc}. Style: {style_suffix}. No text or labels in the image."
-                    urls = client.generate(prompt, size=image_size, n=1)
-                    if urls:
-                        import urllib.request
-                        path = Path(tempfile.mktemp(suffix=".png"))
-                        urllib.request.urlretrieve(urls[0], str(path))
-                    else:
-                        path = _make_placeholder(desc, design)
-                else:
-                    path = _make_placeholder(desc, design)
+                from edupptx.llm_client import ImageClient
+                client = ImageClient(self.config)
+                prompt = f"{desc}. Style: {style_suffix}. No text or labels in the image."
+                urls = client.generate(prompt, size=image_size, n=1)
+                if not urls:
+                    logger.warning("Image API returned no URLs for slide {}", i)
+                    return None
+                import urllib.request
+                path = Path(tempfile.mktemp(suffix=".png"))
+                urllib.request.urlretrieve(urls[0], str(path))
             except Exception as e:
                 logger.warning("Illustration generation failed for slide {}: {}", i, e)
-                path = _make_placeholder(desc, design)
+                return None
 
             self.library.add(
                 path, "illustration", mat.tags + [style, desc_hash], plan.palette,
-                "ai_generated" if self.config.image_api_key else "programmatic",
-                f"Slide {i}: {desc[:50]}",
+                "ai_generated", f"Slide {i}: {desc[:50]}",
             )
             dest = session.dir / "materials" / path.name
             shutil.copy2(path, dest)

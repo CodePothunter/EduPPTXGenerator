@@ -19,14 +19,47 @@ def _get_valid_icons() -> set[str]:
     return _VALID_ICONS
 
 
+# Semantic fallback mapping for common invalid icon names
+_ICON_FALLBACKS = {
+    "car": "compass", "truck": "compass", "vehicle": "compass",
+    "archery": "target", "bow": "target", "arrow": "arrow-right",
+    "scale": "ruler", "weight": "ruler", "balance": "ruler",
+    "trampoline": "arrow-up", "jump": "arrow-up", "bounce": "arrow-up",
+    "spring": "zap", "elastic": "zap", "stretch": "zap",
+    "file-text": "file", "document": "file", "paper": "file",
+    "check-circle": "check", "check-mark": "check",
+    "arrow-left-right": "arrow-right", "arrows": "arrow-right",
+    "hand-shake": "hand", "handshake": "hand",
+    "plant": "sprout", "seedling": "sprout", "grow": "sprout",
+    "bulb": "lightbulb", "lamp": "lightbulb", "idea": "lightbulb",
+    "graph": "chart-line", "chart": "chart-line", "plot": "chart-line",
+    "experiment": "flask-conical", "lab": "flask-conical", "test-tube": "flask-conical",
+    "magnifier": "search", "magnifying-glass": "search", "zoom": "search",
+    "clock-2": "clock", "timer": "clock", "stopwatch": "clock",
+    "photo": "image", "picture": "image", "gallery": "image",
+    "mail": "message-circle", "email": "message-circle", "letter": "message-circle",
+    "gear": "settings", "config": "settings", "cog": "settings",
+    "tool": "wrench", "tools": "wrench", "repair": "wrench",
+    "world": "globe", "earth-2": "globe", "planet": "globe",
+    "fire": "flame", "hot": "flame", "burn": "flame",
+    "rain": "droplets", "water": "droplets", "liquid": "droplets",
+    "tree": "tree-pine", "forest": "tree-pine", "wood": "tree-pine",
+    "flower-2": "flower", "rose": "flower", "blossom": "flower",
+    "music-2": "music", "note": "music", "song": "music",
+}
+
+
 def _validate_plan_icons(plan: PresentationPlan) -> None:
-    """Replace invalid icon names with 'circle'."""
+    """Replace invalid icon names with semantically similar alternatives."""
     valid = _get_valid_icons()
     for slide in plan.slides:
         for card in slide.cards:
             if card.icon not in valid:
-                logger.warning("Invalid icon '{}' in slide '{}', replacing with 'circle'", card.icon, slide.title)
-                card.icon = "circle"
+                fallback = _ICON_FALLBACKS.get(card.icon, "circle")
+                if fallback not in valid:
+                    fallback = "circle"
+                logger.warning("Invalid icon '{}' → '{}' in slide '{}'", card.icon, fallback, slide.title)
+                card.icon = fallback
 
 
 class ContentPlanner:
