@@ -32,6 +32,65 @@ def _blend(c1: tuple[int, int, int], c2: tuple[int, int, int], t: float) -> tupl
     )
 
 
+def _make_smooth_gradient(
+    w: int, h: int,
+    stops: list[tuple[tuple[int, int, int], float]],
+    angle: float = 0,
+) -> Image.Image:
+    """Create a smooth multi-stop gradient via tiny-image upscale.
+
+    Works at 1/30 resolution then upscales with LANCZOS for buttery smooth
+    color transitions — 900x faster than pixel-by-pixel rendering.
+
+    stops: list of (rgb_tuple, position_0_to_1)
+    angle: degrees — 0=top-to-bottom, 90=left-to-right, 30=diagonal
+    """
+    sw, sh = max(w // 30, 4), max(h // 30, 4)
+    small = Image.new("RGB", (sw, sh))
+    px = small.load()
+
+    sorted_stops = sorted(stops, key=lambda s: s[1])
+    rad = math.radians(angle)
+    sin_a, cos_a = math.sin(rad), math.cos(rad)
+
+    for y in range(sh):
+        for x in range(sw):
+            t = (x / sw) * sin_a + (y / sh) * cos_a
+            t = max(0.0, min(1.0, t))
+
+            # Interpolate between surrounding color stops
+            color = sorted_stops[-1][0]
+            for j in range(len(sorted_stops) - 1):
+                if sorted_stops[j][1] <= t <= sorted_stops[j + 1][1]:
+                    span = sorted_stops[j + 1][1] - sorted_stops[j][1]
+                    lt = (t - sorted_stops[j][1]) / span if span > 0 else 0
+                    # Smooth-step for less banding
+                    lt = lt * lt * (3 - 2 * lt)
+                    color = _blend(sorted_stops[j][0], sorted_stops[j + 1][0], lt)
+                    break
+
+            px[x, y] = color
+
+    return small.resize((w, h), Image.LANCZOS)
+
+
+def _add_soft_circle(
+    base: Image.Image,
+    cx: int, cy: int, radius: int,
+    color: tuple[int, int, int], alpha: int,
+    blur: int = 40,
+) -> Image.Image:
+    """Add a single soft glowing circle overlay to the base image."""
+    overlay = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    draw.ellipse(
+        [cx - radius, cy - radius, cx + radius, cy + radius],
+        fill=(*color, alpha),
+    )
+    overlay = overlay.filter(ImageFilter.GaussianBlur(radius=blur))
+    return Image.alpha_composite(base.convert("RGBA"), overlay).convert("RGB")
+
+
 def generate_background(
     design: DesignTokens,
     style: str = "diagonal_gradient",
@@ -41,8 +100,6 @@ def generate_background(
     """Generate a single background image. Returns path to saved file.
 
     style: diagonal_gradient | radial_gradient | geometric_circles | geometric_triangles
-    output_dir: Where to save. Defaults to a temp directory.
-    seed_extra: Extra string to make each background unique (e.g. slide index).
     """
     if output_dir is None:
         output_dir = Path(tempfile.mkdtemp())
@@ -57,70 +114,107 @@ def generate_background(
     if out_path.exists():
         return out_path
 
-    img = Image.new("RGB", (BG_WIDTH, BG_HEIGHT))
-    draw = ImageDraw.Draw(img)
-
     base = _hex_to_rgb(design.bg_overlay)
     accent = _hex_to_rgb(design.accent_light)
     highlight = _hex_to_rgb(design.accent)
+    rng = random.Random(seed)
 
     if style == "diagonal_gradient":
-        for y in range(BG_HEIGHT):
-            for x in range(BG_WIDTH):
-                t = (x / BG_WIDTH * 0.5 + y / BG_HEIGHT * 0.5)
-                c = _blend(base, accent, t * 0.6)
-                img.putpixel((x, y), c)
+        # Multi-stop diagonal gradient with warm glow spots
+        img = _make_smooth_gradient(BG_WIDTH, BG_HEIGHT, [
+            (base, 0.0),
+            (_blend(base, accent, 0.25), 0.35),
+            (_blend(base, accent, 0.35), 0.65),
+            (_blend(base, accent, 0.10), 1.0),
+        ], angle=30)
+
+        # Soft warm glows for depth
+        for _ in range(rng.randint(2, 3)):
+            cx = rng.randint(BG_WIDTH // 4, BG_WIDTH * 3 // 4)
+            cy = rng.randint(BG_HEIGHT // 4, BG_HEIGHT * 3 // 4)
+            r = rng.randint(250, 500)
+            img = _add_soft_circle(img, cx, cy, r, accent, rng.randint(18, 32), blur=80)
 
     elif style == "radial_gradient":
-        cx, cy = BG_WIDTH * 0.3, BG_HEIGHT * 0.4
-        max_dist = math.sqrt(BG_WIDTH ** 2 + BG_HEIGHT ** 2)
-        for y in range(BG_HEIGHT):
-            for x in range(BG_WIDTH):
-                dist = math.sqrt((x - cx) ** 2 + (y - cy) ** 2)
-                t = min(dist / max_dist, 1.0)
-                c = _blend(accent, base, t)
-                img.putpixel((x, y), c)
+        # Off-center radial glow with secondary highlight
+        img = Image.new("RGB", (BG_WIDTH, BG_HEIGHT), base)
+
+        # Main glow (off-center for visual interest)
+        cx = int(BG_WIDTH * rng.uniform(0.2, 0.4))
+        cy = int(BG_HEIGHT * rng.uniform(0.25, 0.45))
+        img = _add_soft_circle(img, cx, cy, 600, accent, 45, blur=120)
+        img = _add_soft_circle(img, cx, cy, 300, accent, 28, blur=60)
+
+        # Secondary glow — opposite corner for balance
+        cx2 = int(BG_WIDTH * rng.uniform(0.65, 0.85))
+        cy2 = int(BG_HEIGHT * rng.uniform(0.55, 0.75))
+        mixed = _blend(accent, highlight, 0.3)
+        img = _add_soft_circle(img, cx2, cy2, 350, mixed, 22, blur=80)
 
     elif style == "geometric_circles":
-        img.paste(base, (0, 0, BG_WIDTH, BG_HEIGHT))
-        rng = random.Random(seed)
-        for _ in range(15):
+        # Gradient base + bokeh-style floating circles
+        img = _make_smooth_gradient(BG_WIDTH, BG_HEIGHT, [
+            (base, 0.0),
+            (_blend(base, accent, 0.12), 0.5),
+            (base, 1.0),
+        ], angle=15)
+
+        # Large background circles (soft, atmospheric)
+        for _ in range(3):
+            cx = rng.randint(-200, BG_WIDTH + 200)
+            cy = rng.randint(-200, BG_HEIGHT + 200)
+            r = rng.randint(350, 600)
+            img = _add_soft_circle(img, cx, cy, r, accent, rng.randint(10, 20), blur=60)
+
+        # Medium bokeh circles (more visible)
+        for _ in range(5):
             cx = rng.randint(0, BG_WIDTH)
             cy = rng.randint(0, BG_HEIGHT)
-            r = rng.randint(80, 300)
-            alpha = rng.randint(15, 40)
-            overlay = Image.new("RGBA", (BG_WIDTH, BG_HEIGHT), (0, 0, 0, 0))
-            overlay_draw = ImageDraw.Draw(overlay)
-            fill = (*accent, alpha)
-            overlay_draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=fill)
-            overlay = overlay.filter(ImageFilter.GaussianBlur(radius=30))
-            img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+            r = rng.randint(100, 220)
+            img = _add_soft_circle(img, cx, cy, r, accent, rng.randint(16, 30), blur=28)
 
     elif style == "geometric_triangles":
-        img.paste(base, (0, 0, BG_WIDTH, BG_HEIGHT))
-        rng = random.Random(seed)
-        for _ in range(10):
-            cx = rng.randint(0, BG_WIDTH)
-            cy = rng.randint(0, BG_HEIGHT)
-            size = rng.randint(100, 400)
-            alpha = rng.randint(10, 30)
-            overlay = Image.new("RGBA", (BG_WIDTH, BG_HEIGHT), (0, 0, 0, 0))
-            overlay_draw = ImageDraw.Draw(overlay)
-            points = [
-                (cx, cy - size),
-                (cx - size, cy + size // 2),
-                (cx + size, cy + size // 2),
-            ]
-            fill = (*highlight, alpha)
-            overlay_draw.polygon(points, fill=fill)
-            overlay = overlay.filter(ImageFilter.GaussianBlur(radius=20))
-            img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+        # Gradient base + abstract triangular facets with soft glow
+        img = _make_smooth_gradient(BG_WIDTH, BG_HEIGHT, [
+            (_blend(base, accent, 0.06), 0.0),
+            (base, 0.5),
+            (_blend(base, accent, 0.08), 1.0),
+        ], angle=55)
 
-    # Slight blur for smoothness
-    img = img.filter(ImageFilter.GaussianBlur(radius=2))
-    img.save(out_path, "JPEG", quality=85)
+        overlay = Image.new("RGBA", (BG_WIDTH, BG_HEIGHT), (0, 0, 0, 0))
+        draw = ImageDraw.Draw(overlay)
 
-    logger.info("Generated programmatic background: {}", filename)
+        for _ in range(5):
+            cx = rng.randint(-50, BG_WIDTH + 50)
+            cy = rng.randint(-50, BG_HEIGHT + 50)
+            size = rng.randint(200, 500)
+            alpha = rng.randint(6, 18)
+            rotation = rng.uniform(0, math.pi * 2)
+
+            points = []
+            for k in range(3):
+                a = rotation + k * (2 * math.pi / 3)
+                px = cx + int(size * math.cos(a))
+                py = cy + int(size * math.sin(a))
+                points.append((px, py))
+
+            draw.polygon(points, fill=(*highlight, alpha))
+
+        overlay = overlay.filter(ImageFilter.GaussianBlur(radius=22))
+        img = Image.alpha_composite(img.convert("RGBA"), overlay).convert("RGB")
+
+        # Soft highlight spots
+        for _ in range(rng.randint(1, 2)):
+            cx = rng.randint(BG_WIDTH // 4, BG_WIDTH * 3 // 4)
+            cy = rng.randint(BG_HEIGHT // 4, BG_HEIGHT * 3 // 4)
+            r = rng.randint(200, 400)
+            img = _add_soft_circle(img, cx, cy, r, accent, rng.randint(12, 22), blur=50)
+
+    # Final gentle blur for smoothness
+    img = img.filter(ImageFilter.GaussianBlur(radius=1))
+    img.save(out_path, "JPEG", quality=92)
+
+    logger.info("Generated background: {}", filename)
     return out_path
 
 

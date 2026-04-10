@@ -20,6 +20,8 @@ from pptx.util import Emu, Pt
 from edupptx.design_system import DesignTokens
 from edupptx.icons import get_icon_png, get_icon_svg
 from edupptx.layout_engine import (
+    MARGIN_X,
+    CONTENT_W,
     SLIDE_H,
     SLIDE_W,
     SlotLayout,
@@ -27,6 +29,9 @@ from edupptx.layout_engine import (
     get_layout,
 )
 from edupptx.models import PresentationPlan, SlideCard, SlideContent
+
+# Slide types that get special visual treatment (no standard title underline)
+_NO_UNDERLINE_TYPES = {"cover", "closing", "section", "big_quote"}
 
 # XML namespaces
 _NSMAP = {
@@ -118,21 +123,50 @@ class PresentationRenderer:
         # 1. Background image (full canvas)
         self._add_background(slide, bg_path, slots.background)
 
-        # 2. Title
-        self._add_textbox(
-            slide, content.title, slots.title,
-            size_pt=self.design.size_title, bold=True,
-        )
+        # 2. Special page decorations (behind content)
+        if content.type == "big_quote":
+            self._add_quote_decoration(slide, slots.title)
+        elif content.type == "section":
+            self._add_section_decoration(slide, slots.title)
+        elif content.type == "closing":
+            self._add_closing_decoration(slide)
 
-        # 4. Subtitle
+        # 3. Title
+        if content.type == "big_quote":
+            # Big quote gets special large italic treatment
+            self._add_textbox(
+                slide, content.title, slots.title,
+                size_pt=self.design.size_title + 4, bold=False,
+                color=self.design.text_primary,
+                align=PP_ALIGN.CENTER,
+            )
+        elif content.type in ("section", "closing"):
+            self._add_textbox(
+                slide, content.title, slots.title,
+                size_pt=self.design.size_title, bold=True,
+                align=PP_ALIGN.CENTER,
+            )
+        else:
+            self._add_textbox(
+                slide, content.title, slots.title,
+                size_pt=self.design.size_title, bold=True,
+            )
+
+        # 4. Title accent underline (content slides only)
+        if content.type not in _NO_UNDERLINE_TYPES:
+            self._add_title_underline(slide, slots.title)
+
+        # 5. Subtitle
         if content.subtitle and slots.subtitle:
+            sub_align = PP_ALIGN.CENTER if content.type in ("section", "closing", "cover") else PP_ALIGN.LEFT
             self._add_textbox(
                 slide, content.subtitle, slots.subtitle,
                 size_pt=self.design.size_subtitle,
                 color=self.design.text_secondary,
+                align=sub_align,
             )
 
-        # 5. Content material (diagram or illustration)
+        # 6. Content material (diagram or illustration)
         if content.content_materials and slots.material_slot:
             mat = content.content_materials[0]
             if mat.diagram_type and mat.diagram_data:
@@ -147,7 +181,7 @@ class PresentationRenderer:
                     anchor=mat.image_anchor, scale=mat.image_scale,
                 )
 
-        # 6. Cards with icons
+        # 7. Cards with icons
         for j, card in enumerate(content.cards):
             if j >= len(slots.cards):
                 break
@@ -159,15 +193,15 @@ class PresentationRenderer:
                 slots.card_bodies[j] if j < len(slots.card_bodies) else None,
             )
 
-        # 7. Formula
+        # 8. Formula
         if content.formula and slots.formula:
             self._add_formula_bar(slide, content.formula, slots.formula)
 
-        # 8. Footer
+        # 9. Footer
         if content.footer and slots.footer:
             self._add_footer(slide, content.footer, slots.footer)
 
-        # 9. Speaker notes
+        # 10. Speaker notes
         if content.notes:
             notes_slide = slide.notes_slide
             tf = notes_slide.notes_text_frame
@@ -317,13 +351,121 @@ class PresentationRenderer:
         )
 
     def _add_footer(self, slide, text: str, slot: SlotPosition):
-        """Add a footer text line."""
+        """Add a footer text line with subtle accent separator."""
+        # Thin accent line above footer
+        line_w = int(CONTENT_W * 0.3)
+        line_h = 19050  # 1.5pt
+        line_x = MARGIN_X + (CONTENT_W - line_w) // 2
+        line_y = slot.y - 76200  # 6pt above footer
+
+        sep = slide.shapes.add_shape(
+            5, Emu(line_x), Emu(line_y), Emu(line_w), Emu(line_h),
+        )
+        sep.fill.solid()
+        sep.fill.fore_color.rgb = _hex_to_rgb(self.design.accent_light)
+        sep.line.fill.background()
+        self._patch_corner_radius(sep, 50000)
+
         self._add_textbox(
             slide, text, slot,
             size_pt=self.design.size_footer,
             color=self.design.text_secondary,
             align=PP_ALIGN.CENTER,
         )
+
+    def _add_title_underline(self, slide, title_slot: SlotPosition):
+        """Add a short accent-colored line under the title."""
+        line_w = 762000   # 60pt
+        line_h = 38100    # 3pt
+        line_x = title_slot.x
+        line_y = title_slot.y + title_slot.height + 50800  # 4pt below title
+
+        shape = slide.shapes.add_shape(
+            5, Emu(line_x), Emu(line_y), Emu(line_w), Emu(line_h),
+        )
+        shape.fill.solid()
+        shape.fill.fore_color.rgb = _hex_to_rgb(self.design.accent)
+        shape.line.fill.background()
+        self._patch_corner_radius(shape, 50000)
+
+    def _add_quote_decoration(self, slide, title_slot: SlotPosition):
+        """Add large decorative quotation marks for big_quote slides."""
+        quote_size = 1524000  # 120pt — very large decorative mark
+        quote_x = title_slot.x - 127000  # 10pt left of title
+        quote_y = title_slot.y - int(quote_size * 0.6)
+
+        # Large opening quotation mark in accent_light (watermark style)
+        self._add_textbox(
+            slide, "\u201C",
+            SlotPosition(quote_x, quote_y, quote_size, quote_size),
+            size_pt=96, bold=True,
+            color=self.design.accent_light,
+        )
+
+        # Vertical accent bar on the left
+        bar_w = 50800    # 4pt
+        bar_h = title_slot.height + 254000  # extends beyond title
+        bar_x = title_slot.x - 254000  # 20pt left of title
+        bar_y = title_slot.y - 127000
+
+        bar = slide.shapes.add_shape(
+            5, Emu(bar_x), Emu(bar_y), Emu(bar_w), Emu(bar_h),
+        )
+        bar.fill.solid()
+        bar.fill.fore_color.rgb = _hex_to_rgb(self.design.accent)
+        bar.line.fill.background()
+        self._patch_corner_radius(bar, 50000)
+
+    def _add_section_decoration(self, slide, title_slot: SlotPosition):
+        """Add decorative elements for section transition slides."""
+        # Horizontal accent line above the title
+        line_w = 1270000  # 100pt
+        line_h = 50800    # 4pt
+        line_x = (SLIDE_W - line_w) // 2
+        line_y = title_slot.y - 254000  # 20pt above title
+
+        line = slide.shapes.add_shape(
+            5, Emu(line_x), Emu(line_y), Emu(line_w), Emu(line_h),
+        )
+        line.fill.solid()
+        line.fill.fore_color.rgb = _hex_to_rgb(self.design.accent)
+        line.line.fill.background()
+        self._patch_corner_radius(line, 50000)
+
+        # Small decorative diamond in center
+        diamond_size = 127000  # 10pt
+        diamond_x = (SLIDE_W - diamond_size) // 2
+        diamond_y = line_y - diamond_size - 63500  # 5pt above line
+
+        diamond = slide.shapes.add_shape(
+            4,  # MSO_SHAPE.DIAMOND
+            Emu(diamond_x), Emu(diamond_y), Emu(diamond_size), Emu(diamond_size),
+        )
+        diamond.fill.solid()
+        diamond.fill.fore_color.rgb = _hex_to_rgb(self.design.accent)
+        diamond.line.fill.background()
+
+    def _add_closing_decoration(self, slide):
+        """Add decorative elements for closing slides."""
+        # Centered accent circle (decorative background element)
+        circle_size = 2540000  # 200pt
+        circle_x = (SLIDE_W - circle_size) // 2
+        circle_y = (SLIDE_H - circle_size) // 2 - 381000  # slightly above center
+
+        circle = slide.shapes.add_shape(
+            9,  # MSO_SHAPE.OVAL
+            Emu(circle_x), Emu(circle_y), Emu(circle_size), Emu(circle_size),
+        )
+        circle.fill.solid()
+        circle.fill.fore_color.rgb = _hex_to_rgb(self.design.accent_light)
+        circle.line.fill.background()
+
+        # Patch alpha for translucency
+        ns_a = _NSMAP["a"]
+        solid_fill = circle._element.find(f".//{{{ns_a}}}solidFill")
+        if solid_fill is not None and len(solid_fill):
+            alpha_el = etree.SubElement(solid_fill[0], f"{{{ns_a}}}alpha")
+            alpha_el.set("val", "30000")  # 30% opacity
 
     def _add_illustration(
         self, slide, img_path: Path, slot: SlotPosition,
@@ -385,8 +527,8 @@ class PresentationRenderer:
 
         effect_lst = etree.SubElement(sp_pr, f"{{{ns_a}}}effectLst")
         outer_shdw = etree.SubElement(effect_lst, f"{{{ns_a}}}outerShdw")
-        outer_shdw.set("blurRad", "254000")   # ~20pt blur
-        outer_shdw.set("dist", "76200")        # ~6pt distance
+        outer_shdw.set("blurRad", "381000")   # ~30pt blur — larger, softer spread
+        outer_shdw.set("dist", "101600")       # ~8pt distance — more depth
         outer_shdw.set("dir", "5400000")       # Straight down
         outer_shdw.set("algn", "t")
         outer_shdw.set("rotWithShape", "0")
@@ -394,7 +536,7 @@ class PresentationRenderer:
         srgb_clr = etree.SubElement(outer_shdw, f"{{{ns_a}}}srgbClr")
         srgb_clr.set("val", shadow_color)
         alpha = etree.SubElement(srgb_clr, f"{{{ns_a}}}alpha")
-        alpha.set("val", "18000")  # 18% opacity — softer but wider spread
+        alpha.set("val", "14000")  # 14% opacity — subtle, natural depth
 
     def _patch_corner_radius(self, shape, adj_val: int = 5000):
         """Set the corner radius of a rounded rectangle."""
