@@ -30,6 +30,42 @@ class SlideCard(BaseModel):
     body: str
 
 
+class MaterialEntry(BaseModel):
+    """A material asset in the library (background, illustration, or diagram)."""
+
+    id: str
+    type: Literal["background", "illustration", "diagram"]
+    tags: list[str] = Field(default_factory=list)
+    palette: str = ""
+    source: Literal["programmatic", "ai_generated", "user_uploaded"] = "programmatic"
+    description: str = ""
+    resolution: tuple[int, int] = (1920, 1080)
+    path: str = Field(description="Relative path within library directory")
+    created_at: str = ""
+
+
+class BackgroundAction(BaseModel):
+    """LLM-specified background decision for a slide."""
+
+    action: Literal["generate", "reuse"]
+    style: str | None = Field(default=None, description="Pillow style for generate action")
+    material_id: str | None = Field(default=None, description="Library ID for reuse action")
+    tags: list[str] = Field(default_factory=list)
+
+
+class ContentMaterial(BaseModel):
+    """LLM-specified content material decision for a slide."""
+
+    action: Literal["generate_diagram", "generate_illustration", "reuse"]
+    position: Literal["full", "left", "right", "center"] = "center"
+    material_id: str | None = None
+    diagram_type: str | None = Field(default=None, description="flowchart|timeline|comparison|hierarchy|cycle")
+    diagram_data: dict | None = None
+    illustration_description: str | None = None
+    illustration_style: str | None = None
+    tags: list[str] = Field(default_factory=list)
+
+
 class SlideContent(BaseModel):
     """Content specification for a single slide."""
 
@@ -47,6 +83,8 @@ class SlideContent(BaseModel):
     content_blocks: list[dict] | None = Field(
         default=None, description="Additional structured content for complex slides"
     )
+    bg_action: BackgroundAction | None = None
+    content_materials: list[ContentMaterial] | None = None
 
 
 class PresentationPlan(BaseModel):
