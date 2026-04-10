@@ -8,7 +8,7 @@ from pptx import Presentation
 from edupptx.design_system import get_design_tokens
 from edupptx.models import PresentationPlan, SlideCard, SlideContent
 from edupptx.renderer import PresentationRenderer
-from edupptx.backgrounds import BackgroundManager
+from edupptx.backgrounds import generate_background
 
 
 def _make_simple_plan() -> PresentationPlan:
@@ -54,8 +54,12 @@ def test_renderer_creates_valid_pptx():
 
     with tempfile.TemporaryDirectory() as tmpdir:
         # Generate backgrounds
-        bg_mgr = BackgroundManager(Path(tmpdir) / "cache")
-        backgrounds = bg_mgr.get_backgrounds("Test", plan.palette, len(plan.slides), design)
+        cache_dir = Path(tmpdir) / "cache"
+        styles = ["diagonal_gradient", "radial_gradient", "geometric_circles"]
+        backgrounds = [
+            generate_background(design, styles[i % len(styles)], cache_dir)
+            for i in range(len(plan.slides))
+        ]
 
         renderer = PresentationRenderer(design)
         renderer.render(plan, backgrounds)
@@ -85,8 +89,12 @@ def test_renderer_speaker_notes():
     design = get_design_tokens(plan.palette)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        bg_mgr = BackgroundManager(Path(tmpdir) / "cache")
-        backgrounds = bg_mgr.get_backgrounds("Test", plan.palette, len(plan.slides), design)
+        cache_dir = Path(tmpdir) / "cache"
+        styles = ["diagonal_gradient", "radial_gradient", "geometric_circles"]
+        backgrounds = [
+            generate_background(design, styles[i % len(styles)], cache_dir)
+            for i in range(len(plan.slides))
+        ]
 
         renderer = PresentationRenderer(design)
         renderer.render(plan, backgrounds)

@@ -75,3 +75,30 @@ def test_no_card_overlap():
         right_edge = layout.cards[i].x + layout.cards[i].width
         next_left = layout.cards[i + 1].x
         assert right_edge <= next_left, f"Card {i} overlaps card {i+1}"
+
+
+def test_content_layout_with_full_material():
+    layout = get_layout("content", 0, material_position="full")
+    assert layout.material_slot is not None
+    assert layout.material_slot.width > 0
+    assert len(layout.cards) == 0
+
+
+def test_content_layout_with_left_material():
+    layout = get_layout("content", 2, material_position="left")
+    assert layout.material_slot is not None
+    assert layout.material_slot.x < layout.cards[0].x
+
+
+def test_content_layout_with_center_material():
+    layout = get_layout("content", 2, material_position="center")
+    assert layout.material_slot is not None
+    assert layout.material_slot.y > layout.title.y
+    assert layout.material_slot.y < layout.cards[0].y
+
+
+def test_layout_without_material_unchanged():
+    """Existing layouts should be unchanged when material_position is None."""
+    layout = get_layout("content", 3)
+    assert layout.material_slot is None
+    assert len(layout.cards) == 3

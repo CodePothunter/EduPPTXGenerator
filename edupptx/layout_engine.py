@@ -71,6 +71,7 @@ class SlotLayout:
     card_bodies: list[SlotPosition] = field(default_factory=list)
     footer: SlotPosition | None = None
     formula: SlotPosition | None = None
+    material_slot: SlotPosition | None = None
 
 
 def _make_card_columns(
@@ -266,9 +267,77 @@ _LAYOUT_MAP = {
 }
 
 
-def get_layout(slide_type: str, n_cards: int) -> SlotLayout:
-    """Get the layout for a slide type with the given card count."""
+def get_layout(slide_type: str, card_count: int, material_position: str | None = None) -> SlotLayout:
+    """Get the layout for a slide type with the given card count.
+
+    material_position: full | left | right | center | None
+    """
     func = _LAYOUT_MAP.get(slide_type, layout_content)
     if slide_type == "closing":
-        return func()
-    return func(n_cards)
+        layout = func()
+    else:
+        layout = func(card_count)
+
+    if material_position is None:
+        return layout
+
+    # Content area boundaries (EMU)
+    content_x = MARGIN_X                      # 80pt
+    content_y = CARD_TOP                      # 170pt
+    content_w = CONTENT_W                     # 800pt
+    content_h = FOOTER_Y - CARD_TOP           # 420pt - 170pt = 250pt
+
+    if material_position == "full":
+        layout.material_slot = SlotPosition(content_x, content_y, content_w, content_h)
+        layout.cards = []
+        layout.card_icons = []
+        layout.card_titles = []
+        layout.card_bodies = []
+
+    elif material_position == "left":
+        # Material takes left 45%, cards squeezed into right 50%
+        mat_w = int(content_w * 0.45)
+        mat_gap = int(content_w * 0.05)
+        cards_x = content_x + mat_w + mat_gap
+        cards_w = content_w - mat_w - mat_gap
+        layout.material_slot = SlotPosition(content_x, content_y, mat_w, content_h)
+        cards, icons, titles, bodies = _make_card_columns(
+            card_count, top=content_y, height=content_h,
+            left=cards_x, total_width=cards_w,
+        )
+        layout.cards = cards
+        layout.card_icons = icons
+        layout.card_titles = titles
+        layout.card_bodies = bodies
+
+    elif material_position == "right":
+        # Material takes right 45%, cards squeezed into left 50%
+        mat_w = int(content_w * 0.45)
+        cards_w = content_w - mat_w - int(content_w * 0.05)
+        mat_x = content_x + cards_w + int(content_w * 0.05)
+        layout.material_slot = SlotPosition(mat_x, content_y, mat_w, content_h)
+        cards, icons, titles, bodies = _make_card_columns(
+            card_count, top=content_y, height=content_h,
+            left=content_x, total_width=cards_w,
+        )
+        layout.cards = cards
+        layout.card_icons = icons
+        layout.card_titles = titles
+        layout.card_bodies = bodies
+
+    elif material_position == "center":
+        # Material placed between title and cards, using ~35% of content height
+        mat_h = int(content_h * 0.35)
+        mat_y = content_y
+        cards_top = mat_y + mat_h + CARD_GAP
+        cards_h = FOOTER_Y - cards_top - CARD_GAP
+        layout.material_slot = SlotPosition(content_x, mat_y, content_w, mat_h)
+        cards, icons, titles, bodies = _make_card_columns(
+            card_count, top=cards_top, height=cards_h,
+        )
+        layout.cards = cards
+        layout.card_icons = icons
+        layout.card_titles = titles
+        layout.card_bodies = bodies
+
+    return layout
