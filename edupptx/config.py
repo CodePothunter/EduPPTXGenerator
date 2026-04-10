@@ -20,6 +20,8 @@ class Config:
     image_model: str = ""
     image_base_url: str = _DEFAULT_BASE_URL
     cache_dir: Path = field(default_factory=lambda: Path("./backgrounds_cache"))
+    library_dir: Path = field(default_factory=lambda: Path("./materials_library"))
+    output_dir: Path = field(default_factory=lambda: Path("./output"))
 
     @classmethod
     def from_env(cls, env_path: str | Path | None = None) -> Config:
@@ -32,4 +34,6 @@ class Config:
             image_model=os.getenv("VISION_GEN_MODEL", "").split("#")[0].strip(),
             image_base_url=os.getenv("API_BASE_URL", _DEFAULT_BASE_URL),
             cache_dir=Path(os.getenv("CACHE_DIR", "./backgrounds_cache")),
+            library_dir=Path(os.getenv("LIBRARY_DIR", "./materials_library")),
+            output_dir=Path(os.getenv("OUTPUT_DIR", "./output")),
         )

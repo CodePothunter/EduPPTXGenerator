@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import io
-import logging
 import os
 import tempfile
 from copy import deepcopy
 from pathlib import Path
 from typing import BinaryIO
 
+from loguru import logger
 from lxml import etree
 from pptx import Presentation
 from pptx.dml.color import RGBColor
@@ -27,8 +27,6 @@ from edupptx.layout_engine import (
     get_layout,
 )
 from edupptx.models import PresentationPlan, SlideCard, SlideContent
-
-log = logging.getLogger(__name__)
 
 # XML namespaces
 _NSMAP = {
@@ -77,12 +75,12 @@ class PresentationRenderer:
         """Render all slides and save to a .pptx file."""
         for i, slide_content in enumerate(plan.slides):
             bg = backgrounds[i % len(backgrounds)]
-            log.info("Rendering slide %d/%d: %s", i + 1, len(plan.slides), slide_content.type)
+            logger.info("Rendering slide %d/%d: %s", i + 1, len(plan.slides), slide_content.type)
             self._render_slide(slide_content, bg)
 
         output = Path(f"{plan.topic}.pptx")
         self.prs.save(str(output))
-        log.info("Saved presentation: %s", output)
+        logger.info("Saved presentation: %s", output)
         return output
 
     def save(self, path: str | Path) -> Path:

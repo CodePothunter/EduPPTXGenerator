@@ -4,18 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import json
-import logging
 import math
 import random
 import urllib.request
 from pathlib import Path
 
+from loguru import logger
 from PIL import Image, ImageDraw, ImageFilter
 
 from edupptx.config import Config
 from edupptx.design_system import DesignTokens
-
-log = logging.getLogger(__name__)
 
 BG_WIDTH = 1920
 BG_HEIGHT = 1080
@@ -180,13 +178,13 @@ class BackgroundManager:
         img.save(out_path, "JPEG", quality=85)
 
         self._add_to_index(filename, tags or [], "programmatic", design.accent)
-        log.info("Generated programmatic background: %s", filename)
+        logger.info("Generated programmatic background: %s", filename)
         return out_path
 
     def generate_ai(self, topic: str, design: DesignTokens) -> Path | None:
         """Generate a background using the image generation API."""
         if not self.config or not self.config.image_api_key:
-            log.warning("No image API configured, skipping AI background generation")
+            logger.warning("No image API configured, skipping AI background generation")
             return None
 
         try:
@@ -210,9 +208,9 @@ class BackgroundManager:
             self._add_to_index(
                 filename, topic.lower().split(), "ai_generated", design.accent
             )
-            log.info("Generated AI background: %s", filename)
+            logger.info("Generated AI background: %s", filename)
             return out_path
 
         except Exception as e:
-            log.warning("AI background generation failed: %s", e)
+            logger.warning("AI background generation failed: %s", e)
             return None
