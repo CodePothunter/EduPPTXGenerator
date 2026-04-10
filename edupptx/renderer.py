@@ -118,8 +118,16 @@ class PresentationRenderer:
         # 1. Background image (full canvas)
         self._add_background(slide, bg_path, slots.background)
 
-        # 2. Semi-transparent overlay
-        self._add_overlay(slide, slots.overlay)
+        # 2. Title bar background (semi-transparent strip behind title area only)
+        title_bar_h = slots.title.height
+        if content.subtitle and slots.subtitle:
+            title_bar_h = (slots.subtitle.y + slots.subtitle.height) - slots.title.y
+        title_bar = SlotPosition(
+            x=0, y=0,
+            width=SLIDE_W,
+            height=slots.title.y + title_bar_h + 254000,  # +20pt padding
+        )
+        self._add_overlay(slide, title_bar)
 
         # 3. Title
         self._add_textbox(
@@ -138,9 +146,26 @@ class PresentationRenderer:
         # 5. Content material (diagram/illustration) at material_slot
         if material_path and material_path.exists() and slots.material_slot:
             ms = slots.material_slot
+            # Fit image into slot while preserving aspect ratio
+            from PIL import Image as PILImage
+            with PILImage.open(material_path) as img:
+                img_w, img_h = img.size
+            aspect = img_w / img_h
+            slot_aspect = ms.width / ms.height
+            if aspect > slot_aspect:
+                # Image wider than slot — fit by width
+                fit_w = ms.width
+                fit_h = int(ms.width / aspect)
+            else:
+                # Image taller than slot — fit by height
+                fit_h = ms.height
+                fit_w = int(ms.height * aspect)
+            # Center in slot
+            x = ms.x + (ms.width - fit_w) // 2
+            y = ms.y + (ms.height - fit_h) // 2
             slide.shapes.add_picture(
                 str(material_path),
-                Emu(ms.x), Emu(ms.y), Emu(ms.width), Emu(ms.height),
+                Emu(x), Emu(y), Emu(fit_w), Emu(fit_h),
             )
 
         # 6. Cards with icons
