@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from edupptx.backgrounds import BackgroundManager
+from edupptx.backgrounds import generate_background
 from edupptx.config import Config
 from edupptx.content_planner import ContentPlanner
 from edupptx.design_system import get_design_tokens
@@ -53,13 +53,8 @@ def generate(
 
     # Phase 3: Background images
     log.info("Phase 3: Generating backgrounds")
-    bg_manager = BackgroundManager(config.cache_dir, config)
-    backgrounds = bg_manager.get_backgrounds(
-        topic=topic,
-        palette=plan.palette,
-        count=len(plan.slides),
-        design=design,
-    )
+    bg_path = generate_background(design, output_dir=config.cache_dir)
+    backgrounds = [bg_path] * len(plan.slides)
 
     # Phase 4: Render
     log.info("Phase 4: Rendering slides")
@@ -88,13 +83,8 @@ def generate_from_plan(
 
     design = get_design_tokens(plan.palette)
 
-    bg_manager = BackgroundManager(config.cache_dir, config)
-    backgrounds = bg_manager.get_backgrounds(
-        topic=plan.topic,
-        palette=plan.palette,
-        count=len(plan.slides),
-        design=design,
-    )
+    bg_path = generate_background(design, output_dir=config.cache_dir)
+    backgrounds = [bg_path] * len(plan.slides)
 
     renderer = PresentationRenderer(design)
     renderer.render(plan, backgrounds)
