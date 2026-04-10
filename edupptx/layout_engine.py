@@ -38,8 +38,8 @@ CARD_PAD = 228_600       # 18pt
 CARD_GAP = 304_800       # 24pt
 
 # Material area proportions
-MAT_RATIO = 0.45      # material area takes 45% of content width
-MAT_GAP_RATIO = 0.05  # gap between material and cards
+MAT_RATIO = 0.50      # material area takes 50% of content width
+MAT_GAP_RATIO = 0.04  # gap between material and cards
 
 PT = 12_700  # 1 point in EMU
 
@@ -422,7 +422,7 @@ def get_layout(slide_type: str, card_count: int, material_position: str | None =
 
     elif material_position == "center":
         # Material placed between title and cards, using ~50% of content height
-        mat_h = int(content_h * 0.50)
+        mat_h = int(content_h * 0.65)
         mat_y = content_y
         cards_top = mat_y + mat_h + CARD_GAP
         cards_h = FOOTER_Y - cards_top - CARD_GAP

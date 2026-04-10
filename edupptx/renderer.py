@@ -327,7 +327,7 @@ class PresentationRenderer:
 
     def _add_illustration(
         self, slide, img_path: Path, slot: SlotPosition,
-        anchor: str = "center", scale: float = 0.85,
+        anchor: str = "center", scale: float = 0.95,
     ):
         """Add an illustration image, maintaining aspect ratio.
 
