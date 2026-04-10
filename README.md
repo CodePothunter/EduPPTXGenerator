@@ -200,7 +200,8 @@ path = generate(
 
 ```python
 from edupptx.models import PresentationPlan, SlideContent, SlideCard
-from edupptx.generator import generate_from_plan
+from edupptx.design_system import get_design_tokens
+from edupptx.renderer import PresentationRenderer
 
 plan = PresentationPlan(
     topic="自定义主题",
@@ -222,7 +223,11 @@ plan = PresentationPlan(
     ],
 )
 
-path = generate_from_plan(plan)
+design = get_design_tokens(plan.palette)
+renderer = PresentationRenderer(design)
+for slide in plan.slides:
+    renderer.render_slide(slide)
+renderer.save("output.pptx")
 ```
 
 ## 页面类型
@@ -259,14 +264,15 @@ path = generate_from_plan(plan)
 edupptx/
 ├── __init__.py           # 公开 API: run_agent(), PPTXAgent, generate()
 ├── agent.py              # Agent 编排器（规划 + 并行素材执行）
-├── generator.py          # 向后兼容编排器
-├── content_planner.py    # LLM 内容规划 + 素材决策
+├── session.py            # 会话目录 + thinking.jsonl 管理
+├── material_library.py   # 持久素材库（搜索/添加/复用）
+├── diagram_gen.py        # 5 种图表程序化生成器
+├── content_planner.py    # LLM 内容规划
 ├── design_system.py      # 6 套配色 + 字体定义
 ├── layout_engine.py      # 10 种槽位模板 → EMU 坐标
 ├── renderer.py           # python-pptx + XML 补丁渲染
 ├── icons.py              # 109 个 Lucide SVG 图标管理
-├── backgrounds.py        # 背景管理器
-├── materials.py          # 素材库管理
+├── backgrounds.py        # 背景图生成（Pillow + AI）
 ├── models.py             # Pydantic 数据模型
 ├── llm_client.py         # OpenAI 兼容客户端
 ├── config.py             # 环境变量配置
