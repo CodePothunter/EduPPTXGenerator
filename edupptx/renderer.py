@@ -88,25 +88,32 @@ class PresentationRenderer:
         self.prs.save(str(out))
         return out
 
-    def render_slide(self, content: SlideContent, bg_path: Path | None = None) -> None:
+    def render_slide(
+        self, content: SlideContent,
+        bg_path: Path | None = None,
+        material_path: Path | None = None,
+    ) -> None:
         """Render a single slide into the presentation."""
         if bg_path is None:
-            # Solid color fallback
             from PIL import Image
             import tempfile
             img = Image.new("RGB", (1920, 1080), tuple(int(self.design.bg_overlay.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)))
             bg_path = Path(tempfile.mktemp(suffix=".jpg"))
             img.save(bg_path, "JPEG")
-        self._render_slide(content, bg_path)
+        self._render_slide(content, bg_path, material_path)
 
-    def _render_slide(self, content: SlideContent, bg_path: Path):
+    def _render_slide(self, content: SlideContent, bg_path: Path, material_path: Path | None = None):
         """Render a single slide with all its components."""
-        # Use blank layout (index 6, or fallback to last)
         layout_idx = min(6, len(self.prs.slide_layouts) - 1)
         layout = self.prs.slide_layouts[layout_idx]
         slide = self.prs.slides.add_slide(layout)
 
-        slots = get_layout(content.type, len(content.cards))
+        # Determine material position from content_materials
+        mat_position = None
+        if material_path and material_path.exists() and content.content_materials:
+            mat_position = content.content_materials[0].position
+
+        slots = get_layout(content.type, len(content.cards), material_position=mat_position)
 
         # 1. Background image (full canvas)
         self._add_background(slide, bg_path, slots.background)
@@ -128,7 +135,15 @@ class PresentationRenderer:
                 color=self.design.text_secondary,
             )
 
-        # 5. Cards with icons
+        # 5. Content material (diagram/illustration) at material_slot
+        if material_path and material_path.exists() and slots.material_slot:
+            ms = slots.material_slot
+            slide.shapes.add_picture(
+                str(material_path),
+                Emu(ms.x), Emu(ms.y), Emu(ms.width), Emu(ms.height),
+            )
+
+        # 6. Cards with icons
         for j, card in enumerate(content.cards):
             if j >= len(slots.cards):
                 break
@@ -140,15 +155,15 @@ class PresentationRenderer:
                 slots.card_bodies[j] if j < len(slots.card_bodies) else None,
             )
 
-        # 6. Formula
+        # 7. Formula
         if content.formula and slots.formula:
             self._add_formula_bar(slide, content.formula, slots.formula)
 
-        # 7. Footer
+        # 8. Footer
         if content.footer and slots.footer:
             self._add_footer(slide, content.footer, slots.footer)
 
-        # 8. Speaker notes
+        # 9. Speaker notes
         if content.notes:
             notes_slide = slide.notes_slide
             tf = notes_slide.notes_text_frame

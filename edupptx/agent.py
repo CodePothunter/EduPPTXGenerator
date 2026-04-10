@@ -92,7 +92,8 @@ class PPTXAgent:
         renderer = PresentationRenderer(design)
         for i, slide in enumerate(plan.slides):
             bg = slide_assets.get(("bg", i))
-            renderer.render_slide(slide, bg)
+            material = slide_assets.get(("mat", i))
+            renderer.render_slide(slide, bg, material)
             session.save_slide_state(i, slide.type, slide.model_dump())
             logger.debug("Rendered slide {}/{}: {}", i + 1, len(plan.slides), slide.type)
 
@@ -181,7 +182,7 @@ class PPTXAgent:
                 style = slide.bg_action.style
             tags = slide.bg_action.tags if slide.bg_action else []
 
-            bg_path = generate_background(design, style)
+            bg_path = generate_background(design, style, seed_extra=f"slide{i}")
             self.library.add(
                 bg_path, "background", tags, plan.palette, "programmatic",
                 f"Slide {i}: {slide.title}",

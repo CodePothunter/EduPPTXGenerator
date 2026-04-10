@@ -36,11 +36,13 @@ def generate_background(
     design: DesignTokens,
     style: str = "diagonal_gradient",
     output_dir: Path | None = None,
+    seed_extra: str = "",
 ) -> Path:
     """Generate a single background image. Returns path to saved file.
 
     style: diagonal_gradient | radial_gradient | geometric_circles | geometric_triangles
     output_dir: Where to save. Defaults to a temp directory.
+    seed_extra: Extra string to make each background unique (e.g. slide index).
     """
     if output_dir is None:
         output_dir = Path(tempfile.mkdtemp())
@@ -48,7 +50,7 @@ def generate_background(
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    seed = hashlib.md5(f"{style}-{design.accent}".encode()).hexdigest()[:8]
+    seed = hashlib.md5(f"{style}-{design.accent}-{seed_extra}".encode()).hexdigest()[:8]
     filename = f"bg_prog_{style}_{seed}.jpeg"
     out_path = output_dir / filename
 
