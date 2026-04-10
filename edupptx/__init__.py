@@ -1,12 +1,21 @@
 """EduPPTX - AI-powered educational presentation generator."""
 
+from edupptx.agent import PPTXAgent
+from edupptx.config import Config
+
 __version__ = "0.2.0"
 
-# Lazy imports to avoid circular dependency during v0.2.0 migration
-# generator.py will be deleted once agent.py is ready
 
-def generate(*args, **kwargs):
-    from edupptx.generator import generate as _generate
-    return _generate(*args, **kwargs)
+def run_agent(topic: str, requirements: str = "", **kwargs):
+    """Main API entry point. Returns session directory path."""
+    config = Config.from_env(kwargs.get("env_file", ".env"))
+    agent = PPTXAgent(config)
+    return agent.run(topic, requirements)
 
-__all__ = ["generate"]
+
+# Backward compat
+def generate(topic: str, requirements: str = "", **kwargs):
+    return run_agent(topic, requirements, **kwargs)
+
+
+__all__ = ["PPTXAgent", "run_agent", "generate"]

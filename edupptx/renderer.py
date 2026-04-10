@@ -88,6 +88,17 @@ class PresentationRenderer:
         self.prs.save(str(out))
         return out
 
+    def render_slide(self, content: SlideContent, bg_path: Path | None = None) -> None:
+        """Render a single slide into the presentation."""
+        if bg_path is None:
+            # Solid color fallback
+            from PIL import Image
+            import tempfile
+            img = Image.new("RGB", (1920, 1080), tuple(int(self.design.bg_overlay.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)))
+            bg_path = Path(tempfile.mktemp(suffix=".jpg"))
+            img.save(bg_path, "JPEG")
+        self._render_slide(content, bg_path)
+
     def _render_slide(self, content: SlideContent, bg_path: Path):
         """Render a single slide with all its components."""
         # Use blank layout (index 6, or fallback to last)

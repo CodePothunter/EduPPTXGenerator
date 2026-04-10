@@ -7,8 +7,8 @@ import sys
 
 import click
 
+from edupptx.agent import PPTXAgent
 from edupptx.config import Config
-from edupptx.generator import generate
 
 
 @click.group()
@@ -26,27 +26,21 @@ def main(verbose: bool):
 @main.command()
 @click.argument("topic")
 @click.option("--requirements", "-r", default="", help="Additional requirements")
-@click.option("--output", "-o", default=None, help="Output file path")
-@click.option("--palette", "-p", default=None, help="Color palette (emerald/blue/violet/amber/rose/slate)")
 @click.option("--env-file", default=".env", help="Path to .env file")
-def gen(topic: str, requirements: str, output: str | None, palette: str | None, env_file: str):
+def gen(topic: str, requirements: str, env_file: str):
     """Generate an educational presentation from a topic.
 
     Examples:
 
         edupptx gen "勾股定理"
 
-        edupptx gen "光合作用" -r "适合高中生" -p blue -o biology.pptx
+        edupptx gen "光合作用" -r "适合高中生"
     """
     try:
-        path = generate(
-            topic=topic,
-            requirements=requirements,
-            output_path=output,
-            palette=palette,
-            env_path=env_file,
-        )
-        click.echo(f"Generated: {path}")
+        config = Config.from_env(env_file)
+        agent = PPTXAgent(config)
+        session_dir = agent.run(topic, requirements)
+        click.echo(f"Generated: {session_dir / 'output.pptx'}")
     except Exception as e:
         click.echo(f"Error: {e}", err=True)
         sys.exit(1)
