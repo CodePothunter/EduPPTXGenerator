@@ -78,12 +78,16 @@ def _set_font(run, design: DesignTokens, size_pt: int, bold: bool = False, color
 class PresentationRenderer:
     """Renders a PresentationPlan into a .pptx file."""
 
+    # Project-bundled font for text measurement
+    _FONT_PATH = Path(__file__).parent.parent / "assets" / "fonts" / "NotoSansSC-Regular.ttf"
+
     def __init__(self, design: DesignTokens):
         self.prs = Presentation()
         self.prs.slide_width = Emu(SLIDE_W)
         self.prs.slide_height = Emu(SLIDE_H)
         self.design = design
         self._temp_dir = tempfile.mkdtemp(prefix="edupptx_")
+        self._pil_font_cache: dict[int, object] = {}
 
     def render(self, plan: PresentationPlan, backgrounds: list[Path]) -> Path:
         """Render all slides and save to a .pptx file."""
@@ -145,37 +149,45 @@ class PresentationRenderer:
             self._add_closing_decoration(slide)
 
         # 3. Title
+        title_size = self.design.size_title
         if content.type == "cover":
-            # Cover title: centered, larger, with accent underline
+            title_size = self.design.size_title + 4
             self._add_textbox(
                 slide, content.title, slots.title,
-                size_pt=self.design.size_title + 4, bold=True,
+                size_pt=title_size, bold=True,
                 align=PP_ALIGN.CENTER,
             )
-            self._add_title_underline(slide, slots.title, centered=True)
+            self._add_title_underline(
+                slide, slots.title, text=content.title,
+                font_size_pt=title_size, centered=True,
+            )
         elif content.type == "big_quote":
-            # Big quote: large centered text
+            title_size = self.design.size_title + 4
             self._add_textbox(
                 slide, content.title, slots.title,
-                size_pt=self.design.size_title + 4, bold=False,
+                size_pt=title_size, bold=False,
                 color=self.design.text_primary,
                 align=PP_ALIGN.CENTER,
+                auto_shrink=True,
             )
         elif content.type in ("section", "closing"):
             self._add_textbox(
                 slide, content.title, slots.title,
-                size_pt=self.design.size_title, bold=True,
+                size_pt=title_size, bold=True,
                 align=PP_ALIGN.CENTER,
             )
         else:
             self._add_textbox(
                 slide, content.title, slots.title,
-                size_pt=self.design.size_title, bold=True,
+                size_pt=title_size, bold=True,
             )
 
         # 4. Title accent underline (content slides, not cover — cover handled above)
         if content.type not in _NO_UNDERLINE_TYPES and content.type != "cover":
-            self._add_title_underline(slide, slots.title)
+            self._add_title_underline(
+                slide, slots.title, text=content.title,
+                font_size_pt=title_size,
+            )
 
         # 5. Subtitle
         if content.subtitle and slots.subtitle:
@@ -185,6 +197,7 @@ class PresentationRenderer:
                 size_pt=self.design.size_subtitle,
                 color=self.design.text_secondary,
                 align=sub_align,
+                auto_shrink=True,
             )
 
         # 6. Content material (diagram or illustration)
@@ -259,22 +272,89 @@ class PresentationRenderer:
                 alpha_el = etree.SubElement(color_el, f"{{{ns_a}}}alpha")
                 alpha_el.set("val", str(alpha_val))
 
+    # ── Text measurement ──────────────────────────────────────────
+
+    def _get_pil_font(self, size_pt: int):
+        """Load PIL font for text measurement. Cached per size."""
+        if size_pt in self._pil_font_cache:
+            return self._pil_font_cache[size_pt]
+
+        from PIL import ImageFont
+        font = None
+        if self._FONT_PATH.exists():
+            try:
+                font = ImageFont.truetype(str(self._FONT_PATH), size_pt)
+            except Exception:
+                pass
+        self._pil_font_cache[size_pt] = font
+        return font
+
+    def _estimate_text_height(self, text: str, font_size_pt: int, width_emu: int) -> int:
+        """Estimate the EMU height needed for wrapped text.
+
+        Uses PIL font metrics when available, otherwise heuristic.
+        """
+        PT = 12_700
+        # Account for text box internal horizontal insets (3.6pt each side)
+        effective_w_pt = max((width_emu - 91_440) / PT, 10)
+
+        font = self._get_pil_font(font_size_pt)
+        if font:
+            num_lines = 1
+            current_w = 0.0
+            for ch in text:
+                cw = font.getlength(ch)
+                if current_w + cw > effective_w_pt:
+                    num_lines += 1
+                    current_w = cw
+                else:
+                    current_w += cw
+        else:
+            avg_cw = font_size_pt * 0.9
+            chars_per_line = max(1, int(effective_w_pt / avg_cw))
+            num_lines = max(1, -(-len(text) // chars_per_line))
+
+        # CJK line height ≈ 1.3× font size (ascent + descent + leading)
+        return int(num_lines * font_size_pt * PT * 1.3)
+
+    # ── Text box rendering ─────────────────────────────────────
+
     def _add_textbox(
         self, slide, text: str, slot: SlotPosition,
         size_pt: int = 16, bold: bool = False, color: str | None = None,
         align: PP_ALIGN = PP_ALIGN.LEFT,
+        v_anchor: str = "t",
+        auto_shrink: bool = False,
     ):
-        """Add a text box at the given slot position."""
+        """Add a text box at the given slot position.
+
+        v_anchor: "t" (top), "ctr" (middle), "b" (bottom)
+        auto_shrink: enable normAutofit — PowerPoint/LibreOffice will shrink
+                     font to fit within the text box if text overflows.
+        """
         txbox = slide.shapes.add_textbox(
             Emu(slot.x), Emu(slot.y), Emu(slot.width), Emu(slot.height),
         )
         tf = txbox.text_frame
         tf.word_wrap = True
+
+        # Set bodyPr for precise vertical alignment and auto-shrink
+        ns_a = _NSMAP["a"]
+        body_pr = txbox._element.find(f".//{{{ns_a}}}bodyPr")
+        if body_pr is not None:
+            body_pr.set("anchor", v_anchor)
+            if auto_shrink:
+                for tag in ["noAutofit", "spAutoFit", "normAutofit"]:
+                    for el in body_pr.findall(f"{{{ns_a}}}{tag}"):
+                        body_pr.remove(el)
+                etree.SubElement(body_pr, f"{{{ns_a}}}normAutofit")
+
         p = tf.paragraphs[0]
         p.alignment = align
         run = p.add_run()
         run.text = text
         _set_font(run, self.design, size_pt, bold=bold, color=color)
+        return txbox
 
     def _tint_color(self, hex_color: str, amount: float = 0.12) -> str:
         """Mix hex_color toward white. amount=0 → white, amount=1 → full color."""
@@ -329,16 +409,17 @@ class PresentationRenderer:
         if icon_slot:
             self._add_icon(slide, card.icon, icon_slot)
 
-        # Card title — use accent color for hierarchy
+        # Card title — accent color, vertically centered in slot
         if title_slot:
             self._add_textbox(
                 slide, card.title, title_slot,
                 size_pt=self.design.size_card_title, bold=True,
                 color=self.design.accent,
                 align=PP_ALIGN.CENTER,
+                v_anchor="ctr",
             )
 
-        # Card body
+        # Card body — auto-shrink to prevent overflow
         if body_slot:
             body_size = self.design.size_card_body
             if len(card.body) > 50:
@@ -347,6 +428,7 @@ class PresentationRenderer:
                 slide, card.body, body_slot,
                 size_pt=body_size,
                 color=self.design.text_secondary,
+                auto_shrink=True,
             )
 
     def _add_icon(self, slide, icon_name: str, slot: SlotPosition):
@@ -434,15 +516,28 @@ class PresentationRenderer:
             align=PP_ALIGN.CENTER,
         )
 
-    def _add_title_underline(self, slide, title_slot: SlotPosition, centered: bool = False):
-        """Add a short accent-colored line under the title."""
+    def _add_title_underline(
+        self, slide, title_slot: SlotPosition,
+        text: str = "", font_size_pt: int = 38,
+        centered: bool = False,
+    ):
+        """Add a short accent line below the title, positioned by actual text height."""
         line_w = 762000   # 60pt
         line_h = 38100    # 3pt
+
+        # Position based on estimated text height, not fixed slot height
+        if text:
+            text_h = self._estimate_text_height(text, font_size_pt, title_slot.width)
+            text_h = min(text_h, title_slot.height)  # clamp to slot
+        else:
+            text_h = title_slot.height
+        gap = 63500  # 5pt below actual text bottom
+        line_y = title_slot.y + text_h + gap
+
         if centered:
             line_x = title_slot.x + (title_slot.width - line_w) // 2
         else:
             line_x = title_slot.x
-        line_y = title_slot.y + title_slot.height + 50800  # 4pt below title
 
         shape = slide.shapes.add_shape(
             5, Emu(line_x), Emu(line_y), Emu(line_w), Emu(line_h),
