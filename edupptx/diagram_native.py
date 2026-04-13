@@ -7,8 +7,17 @@ from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.util import Emu, Pt
 
-from edupptx.design_system import DesignTokens
-from edupptx.layout_engine import SlotPosition
+from dataclasses import dataclass
+from edupptx.style_schema import ResolvedStyle
+
+
+@dataclass
+class SlotPosition:
+    """A rectangular region on the slide (EMU coordinates)."""
+    x: int
+    y: int
+    width: int
+    height: int
 
 _NSMAP = {"a": "http://schemas.openxmlformats.org/drawingml/2006/main"}
 
@@ -100,7 +109,7 @@ def _add_circle(slide, cx: int, cy: int, radius: int, fill_color: str):
 
 # ── Diagram Renderers ──────────────────────────────────────
 
-def _draw_flowchart(slide, data: dict, slot: SlotPosition, design: DesignTokens):
+def _draw_flowchart(slide, data: dict, slot: SlotPosition, style: ResolvedStyle):
     """Draw flowchart with native shapes: rounded boxes + line connectors."""
     nodes = data.get("nodes", [])
     edges = data.get("edges", [])
@@ -124,10 +133,10 @@ def _draw_flowchart(slide, data: dict, slot: SlotPosition, design: DesignTokens)
             y = start_y + i * (box_h + gap)
             node_positions[node.get("id", str(i))] = (x, y)
             _add_rounded_box(slide, x, y, box_w, box_h,
-                             design.accent_light, design.accent)
+                             style.palette.get("accent_light", "#E0E0E0"), style.accent_color)
             _add_text_shape(slide, node["label"],
                             x, y, box_w, box_h,
-                            font_size=12, color=design.text_primary, bold=True)
+                            font_size=12, color=style.heading_color, bold=True)
 
         for edge in edges:
             src = node_positions.get(edge.get("from"))
@@ -136,7 +145,7 @@ def _draw_flowchart(slide, data: dict, slot: SlotPosition, design: DesignTokens)
                 _add_line(slide,
                           src[0] + box_w // 2, src[1] + box_h,
                           dst[0] + box_w // 2, dst[1],
-                          design.accent, width_pt=2)
+                          style.accent_color, width_pt=2)
     else:  # LR
         total_w = n * box_w + (n - 1) * gap
         start_x = slot.x + (slot.width - total_w) // 2
@@ -148,10 +157,10 @@ def _draw_flowchart(slide, data: dict, slot: SlotPosition, design: DesignTokens)
             y = cy - box_h // 2
             node_positions[node.get("id", str(i))] = (x, y)
             _add_rounded_box(slide, x, y, box_w, box_h,
-                             design.accent_light, design.accent)
+                             style.palette.get("accent_light", "#E0E0E0"), style.accent_color)
             _add_text_shape(slide, node["label"],
                             x, y, box_w, box_h,
-                            font_size=12, color=design.text_primary, bold=True)
+                            font_size=12, color=style.heading_color, bold=True)
 
         for edge in edges:
             src = node_positions.get(edge.get("from"))
@@ -160,10 +169,10 @@ def _draw_flowchart(slide, data: dict, slot: SlotPosition, design: DesignTokens)
                 _add_line(slide,
                           src[0] + box_w, src[1] + box_h // 2,
                           dst[0], dst[1] + box_h // 2,
-                          design.accent, width_pt=2)
+                          style.accent_color, width_pt=2)
 
 
-def _draw_timeline(slide, data: dict, slot: SlotPosition, design: DesignTokens):
+def _draw_timeline(slide, data: dict, slot: SlotPosition, style: ResolvedStyle):
     """Draw timeline with native shapes: circles on a line + labels."""
     events = data.get("events", [])
     if not events:
@@ -177,7 +186,7 @@ def _draw_timeline(slide, data: dict, slot: SlotPosition, design: DesignTokens):
     line_w = line_x2 - line_x1
 
     # Horizontal line
-    _add_line(slide, line_x1, line_y, line_x2, line_y, design.accent, width_pt=3)
+    _add_line(slide, line_x1, line_y, line_x2, line_y, style.accent_color, width_pt=3)
 
     # Events
     dot_r = 76200  # 6pt radius
@@ -185,13 +194,13 @@ def _draw_timeline(slide, data: dict, slot: SlotPosition, design: DesignTokens):
     for i, event in enumerate(events):
         cx = line_x1 + (line_w * i) // max(n - 1, 1) if n > 1 else line_x1 + line_w // 2
         # Dot
-        _add_circle(slide, cx, line_y, dot_r, design.accent)
+        _add_circle(slide, cx, line_y, dot_r, style.accent_color)
         # Year label above
         year = event.get("year", "")
         _add_text_shape(slide, year,
                         cx - label_w // 2, line_y - 381000,  # 30pt above
                         label_w, 254000,  # 20pt high
-                        font_size=10, color=design.accent, bold=True)
+                        font_size=10, color=style.accent_color, bold=True)
         # Description below
         label = event.get("label", "")
         desc = event.get("description", "")
@@ -199,10 +208,10 @@ def _draw_timeline(slide, data: dict, slot: SlotPosition, design: DesignTokens):
         _add_text_shape(slide, text,
                         cx - label_w // 2, line_y + 127000,  # 10pt below
                         label_w, 508000,  # 40pt high
-                        font_size=9, color=design.text_secondary)
+                        font_size=9, color=style.body_color)
 
 
-def _draw_comparison(slide, data: dict, slot: SlotPosition, design: DesignTokens):
+def _draw_comparison(slide, data: dict, slot: SlotPosition, style: ResolvedStyle):
     """Draw comparison columns with native shapes."""
     columns = data.get("columns", [])
     if not columns:
@@ -217,7 +226,7 @@ def _draw_comparison(slide, data: dict, slot: SlotPosition, design: DesignTokens
         x = slot.x + i * (col_w + col_gap)
         # Header box
         _add_rounded_box(slide, x, slot.y, col_w, header_h,
-                         design.accent, design.accent, radius=3000)
+                         style.accent_color, style.accent_color, radius=3000)
         _add_text_shape(slide, col.get("header", ""),
                         x, slot.y, col_w, header_h,
                         font_size=13, color="#FFFFFF", bold=True)
@@ -228,11 +237,11 @@ def _draw_comparison(slide, data: dict, slot: SlotPosition, design: DesignTokens
             iy = slot.y + header_h + 127000 + j * (item_h + 63500)
             _add_text_shape(slide, f"  {item}",
                             x + 63500, iy, col_w - 127000, item_h,
-                            font_size=11, color=design.text_primary,
+                            font_size=11, color=style.heading_color,
                             align=PP_ALIGN.LEFT)
 
 
-def _draw_hierarchy(slide, data: dict, slot: SlotPosition, design: DesignTokens):
+def _draw_hierarchy(slide, data: dict, slot: SlotPosition, style: ResolvedStyle):
     """Draw hierarchy tree with native shapes."""
     root = data.get("root")
     if not root:
@@ -250,12 +259,12 @@ def _draw_hierarchy(slide, data: dict, slot: SlotPosition, design: DesignTokens)
         bx = x + (available_w - box_w) // 2
 
         _add_rounded_box(slide, bx, y, box_w, box_h,
-                         design.accent_light if depth > 0 else design.accent,
-                         design.accent, radius=4000)
+                         style.palette.get("accent_light", "#E0E0E0") if depth > 0 else style.accent_color,
+                         style.accent_color, radius=4000)
         _add_text_shape(slide, node.get("label", ""),
                         bx, y, box_w, box_h,
                         font_size=11,
-                        color="#FFFFFF" if depth == 0 else design.text_primary,
+                        color="#FFFFFF" if depth == 0 else style.heading_color,
                         bold=True)
 
         children = node.get("children", [])
@@ -274,7 +283,7 @@ def _draw_hierarchy(slide, data: dict, slot: SlotPosition, design: DesignTokens)
 
             # Line from parent bottom to child top
             _add_line(slide, parent_cx, y + box_h, child_cx, child_y,
-                      design.accent, width_pt=1.5)
+                      style.accent_color, width_pt=1.5)
 
             _draw_node(child, child_x, child_y, child_w, depth + 1)
             child_x += child_w
@@ -282,7 +291,7 @@ def _draw_hierarchy(slide, data: dict, slot: SlotPosition, design: DesignTokens)
     _draw_node(root, slot.x, slot.y, slot.width, 0)
 
 
-def _draw_cycle(slide, data: dict, slot: SlotPosition, design: DesignTokens):
+def _draw_cycle(slide, data: dict, slot: SlotPosition, style: ResolvedStyle):
     """Draw cycle diagram with native shapes arranged in a circle."""
     import math
     steps = data.get("steps", [])
@@ -307,10 +316,10 @@ def _draw_cycle(slide, data: dict, slot: SlotPosition, design: DesignTokens):
         bx = px - box_w // 2
         by = py - box_h // 2
         _add_rounded_box(slide, bx, by, box_w, box_h,
-                         design.accent_light, design.accent)
+                         style.palette.get("accent_light", "#E0E0E0"), style.accent_color)
         _add_text_shape(slide, steps[i].get("label", ""),
                         bx, by, box_w, box_h,
-                        font_size=11, color=design.text_primary, bold=True)
+                        font_size=11, color=style.heading_color, bold=True)
 
     # Arrows between steps (lines from edge of one box toward next)
     for i in range(n):
@@ -328,7 +337,7 @@ def _draw_cycle(slide, data: dict, slot: SlotPosition, design: DesignTokens):
         ly1 = int(y1 + uy * offset)
         lx2 = int(x2 - ux * offset)
         ly2 = int(y2 - uy * offset)
-        _add_line(slide, lx1, ly1, lx2, ly2, design.accent, width_pt=1.5)
+        _add_line(slide, lx1, ly1, lx2, ly2, style.accent_color, width_pt=1.5)
 
 
 # ── Dispatcher ──────────────────────────────────────
@@ -344,9 +353,9 @@ _RENDERERS = {
 
 def draw_diagram_on_slide(
     slide, diagram_type: str, data: dict,
-    slot: SlotPosition, design: DesignTokens,
+    slot: SlotPosition, style: ResolvedStyle,
 ) -> None:
     """Draw a diagram using native pptx shapes directly on the slide."""
     renderer = _RENDERERS.get(diagram_type)
     if renderer:
-        renderer(slide, data, slot, design)
+        renderer(slide, data, slot, style)
