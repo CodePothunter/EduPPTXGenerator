@@ -449,9 +449,12 @@ def _resolve_content(slide: SlideContent, style: ResolvedStyle) -> list[Resolved
     card_w = style.content_w
 
     if mat_pos == "center":
-        # Material on top (~45%), cards squeezed below
-        mat_h = int(content_h * 0.45)
+        # Material on top, cards below. Ratio adapts to ensure cards have enough space.
         half_gap = style.card_gap // 2
+        # Minimum card height: 2*pad + title(24pt) + gap(6pt) + body(38pt)
+        min_card_h = 2 * style.card_pad + 304_800 + 76_200 + 38 * PT
+        max_mat_ratio = max(0.25, 1.0 - (min_card_h + half_gap * 2) / content_h)
+        mat_h = int(content_h * min(0.45, max_mat_ratio))
         card_top = CARD_TOP + mat_h + half_gap
         card_h = FOOTER_Y - card_top - half_gap
     elif mat_pos == "left":
