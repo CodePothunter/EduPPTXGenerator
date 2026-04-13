@@ -109,10 +109,17 @@ def library_stats(env_file: str):
 
 @main.command()
 def palettes():
-    """List available color palettes."""
-    from edupptx.design_system import PALETTES
-    for name, tokens in PALETTES.items():
-        click.echo(f"  {name:10s}  accent={tokens.accent}  overlay={tokens.bg_overlay}")
+    """List available style themes."""
+    from edupptx.style_schema import load_style
+    styles_dir = Path(__file__).parent.parent / "styles"
+    if not styles_dir.exists():
+        click.echo("No styles directory found.")
+        return
+    for f in sorted(styles_dir.glob("*.json")):
+        schema = load_style(f)
+        accent = schema.global_tokens.palette.get("accent", "?")
+        bg = schema.global_tokens.palette.get("bg", "?")
+        click.echo(f"  {f.stem:10s}  accent={accent}  bg={bg}  — {schema.meta.description}")
 
 
 @main.command()
