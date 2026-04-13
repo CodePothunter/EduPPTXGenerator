@@ -264,7 +264,7 @@ class PPTXAgent:
 
                 mat_info = (
                     f"diagram={diagram.get('type')}" if diagram and isinstance(diagram, dict) and diagram.get("type")
-                    else f"illustration={illust_desc[:30]}..." if illust_desc
+                    else f"illustration={illust_desc}" if illust_desc
                     else "none"
                 )
                 session.log_step(
