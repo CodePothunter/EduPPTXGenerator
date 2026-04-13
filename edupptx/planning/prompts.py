@@ -6,7 +6,11 @@ from __future__ import annotations
 def build_planning_system_prompt() -> str:
     from edupptx.materials.icons import list_icons
     icon_list = ", ".join(list_icons())
-    return f"""你是一位资深的教育演示文稿策划师，擅长运用金字塔原理构建清晰的教学逻辑。
+    template = _SYSTEM_PROMPT_TEMPLATE.replace("{icon_list}", icon_list)
+    return template
+
+
+_SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，擅长运用金字塔原理构建清晰的教学逻辑。
 
 你的任务是根据用户提供的主题和背景资料，输出一份结构化的 PPT 策划稿（JSON 格式）。
 

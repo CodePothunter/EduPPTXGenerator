@@ -61,7 +61,7 @@ SVG_CONSTRAINTS = """\
 
 ### 文字
 - 只用 <text> + <tspan> 渲染文字
-- 安全字体：font-family="微软雅黑, Arial, Helvetica, sans-serif"
+- 安全字体：font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif"（所有 <text> 元素都必须使用这个完整的 font-family 列表）
 - 用 dy 属性控制行间距（如 dy="1.4em"）
 - 长文本手动分行，每个 <tspan> 一行，约 20-25 个中文字符换行
 - 文字不能超出卡片边界

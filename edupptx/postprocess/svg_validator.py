@@ -10,8 +10,8 @@ EXPECTED_VIEWBOX = "0 0 1280 720"
 MAX_X = 1280
 MAX_Y = 720
 
-SAFE_FONTS = {"微软雅黑", "Microsoft YaHei", "Arial", "Helvetica", "sans-serif"}
-FALLBACK_FONT = "Microsoft YaHei, Arial, sans-serif"
+SAFE_FONTS = {"Noto Sans SC", "微软雅黑", "Microsoft YaHei", "Arial", "Helvetica", "sans-serif"}
+FALLBACK_FONT = "Noto Sans SC, Microsoft YaHei, Arial, sans-serif"
 
 
 def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
@@ -81,9 +81,14 @@ def _is_font_safe(font_family: str) -> bool:
 def _fix_fonts(root: etree._Element, warnings: list[str]) -> None:
     for el in root.iter():
         ff = el.get("font-family")
-        if ff and not _is_font_safe(ff):
+        if not ff:
+            continue
+        if not _is_font_safe(ff):
             el.set("font-family", FALLBACK_FONT)
-            warnings.append(f"Replaced unsafe font '{ff}' with '{FALLBACK_FONT}'")
+            warnings.append(f"Replaced unsafe font '{ff}'")
+        elif "Noto Sans SC" not in ff:
+            # Ensure Noto Sans SC is first for cross-platform rendering
+            el.set("font-family", f"Noto Sans SC, {ff}")
 
 
 def _clamp_value(val_str: str, lo: float, hi: float) -> tuple[str, bool]:
