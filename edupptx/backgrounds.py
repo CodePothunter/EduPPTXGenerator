@@ -13,7 +13,7 @@ from loguru import logger
 from PIL import Image, ImageDraw, ImageFilter
 
 from edupptx.config import Config
-from edupptx.design_system import DesignTokens
+from edupptx.style_schema import ResolvedStyle
 
 BG_WIDTH = 1920
 BG_HEIGHT = 1080
@@ -92,7 +92,7 @@ def _add_soft_circle(
 
 
 def generate_background(
-    design: DesignTokens,
+    resolved: ResolvedStyle,
     style: str = "diagonal_gradient",
     output_dir: Path | None = None,
     seed_extra: str = "",
@@ -107,16 +107,16 @@ def generate_background(
         output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
 
-    seed = hashlib.md5(f"{style}-{design.accent}-{seed_extra}".encode()).hexdigest()[:8]
+    seed = hashlib.md5(f"{style}-{resolved.accent_color}-{seed_extra}".encode()).hexdigest()[:8]
     filename = f"bg_prog_{style}_{seed}.jpeg"
     out_path = output_dir / filename
 
     if out_path.exists():
         return out_path
 
-    base = _hex_to_rgb(design.bg_overlay)
-    accent = _hex_to_rgb(design.accent_light)
-    highlight = _hex_to_rgb(design.accent)
+    base = _hex_to_rgb(resolved.bg_overlay_color)
+    accent = _hex_to_rgb(resolved.palette.get("accent_light", "#E0E0E0"))
+    highlight = _hex_to_rgb(resolved.accent_color)
     rng = random.Random(seed)
 
     if style == "diagonal_gradient":
@@ -221,7 +221,7 @@ def generate_background(
     return out_path
 
 
-def generate_ai_background(topic: str, design: DesignTokens, config: Config) -> Path | None:
+def generate_ai_background(topic: str, resolved: ResolvedStyle, config: Config) -> Path | None:
     """Generate a background using the AI image API. Returns path or None on failure."""
     if not config.image_api_key:
         logger.warning("No image API configured, skipping AI background generation")
@@ -232,7 +232,7 @@ def generate_ai_background(topic: str, design: DesignTokens, config: Config) -> 
         client = ImageClient(config)
         prompt = (
             f"Abstract minimalist academic background illustration for '{topic}'. "
-            f"Soft {design.accent} tones, clean, professional, suitable as a "
+            f"Soft {resolved.accent_color} tones, clean, professional, suitable as a "
             f"presentation slide background. No text, no diagrams."
         )
         urls = client.generate(prompt, size="1792x1024", n=1)
