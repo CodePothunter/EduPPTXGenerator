@@ -8,7 +8,8 @@ from pptx import Presentation
 from edupptx.models import PresentationPlan, SlideCard, SlideContent, ContentMaterial
 from edupptx.pipeline_v2 import render_with_schema
 from edupptx.backgrounds import generate_background
-from edupptx.design_system import get_design_tokens
+from edupptx.style_resolver import resolve_style
+from edupptx.style_schema import load_style
 
 
 STYLES_DIR = Path(__file__).parent.parent / "styles"
@@ -53,13 +54,13 @@ def _make_simple_plan() -> PresentationPlan:
 def test_renderer_creates_valid_pptx():
     """Render a simple plan and verify the output is a valid PPTX."""
     plan = _make_simple_plan()
-    design = get_design_tokens(plan.palette)
+    resolved = resolve_style(load_style(STYLES_DIR / "emerald.json"))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cache_dir = Path(tmpdir) / "cache"
         styles = ["diagonal_gradient", "radial_gradient", "geometric_circles"]
         backgrounds = [
-            generate_background(design, styles[i % len(styles)], cache_dir)
+            generate_background(resolved, styles[i % len(styles)], cache_dir)
             for i in range(len(plan.slides))
         ]
 
@@ -88,13 +89,13 @@ def test_renderer_slide_dimensions():
 def test_renderer_speaker_notes():
     """Verify speaker notes are embedded."""
     plan = _make_simple_plan()
-    design = get_design_tokens(plan.palette)
+    resolved = resolve_style(load_style(STYLES_DIR / "emerald.json"))
 
     with tempfile.TemporaryDirectory() as tmpdir:
         cache_dir = Path(tmpdir) / "cache"
         styles = ["diagonal_gradient", "radial_gradient", "geometric_circles"]
         backgrounds = [
-            generate_background(design, styles[i % len(styles)], cache_dir)
+            generate_background(resolved, styles[i % len(styles)], cache_dir)
             for i in range(len(plan.slides))
         ]
 

@@ -1,16 +1,20 @@
 """Shared test fixtures."""
 
 import pytest
+from pathlib import Path
 
 from edupptx.config import Config
-from edupptx.design_system import get_design_tokens
 from edupptx.material_library import MaterialLibrary
 from edupptx.session import Session
+from edupptx.style_resolver import resolve_style
+from edupptx.style_schema import load_style
+
+STYLES_DIR = Path(__file__).parent.parent / "styles"
 
 
 @pytest.fixture
-def design_emerald():
-    return get_design_tokens("emerald")
+def resolved_emerald():
+    return resolve_style(load_style(STYLES_DIR / "emerald.json"))
 
 
 @pytest.fixture
