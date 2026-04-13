@@ -55,15 +55,15 @@ SYSTEM_PROMPT = f"""你是一位资深教育课件设计师。你的任务是为
 | type | 用途 | cards 数量 | 必须字段 |
 |------|------|-----------|---------|
 | cover | 封面 | 3 | subtitle, formula(可选) |
-| lead_in | 引入/情境创设 | 3-4 | subtitle |
-| definition | 核心定义 | 2-4 | - |
-| content | 通用内容页 | 2-4 | - |
-| history | 历史背景 | 3-4 | - |
+| lead_in | 引入/情境创设 | 3 | subtitle |
+| definition | 核心定义 | 2-3 | - |
+| content | 通用内容页 | 2-3 | - |
+| history | 历史背景 | 3 | - |
 | proof | 推导/证明 | 2-3 | formula |
 | example | 例题讲解 | 1-2 | - |
 | exercise | 练习题 | 2-3 | - |
 | answer | 答案揭晓 | 2-3 | - |
-| summary | 总结回顾 | 3-5 | footer |
+| summary | 总结回顾 | 3-4 | footer |
 | extension | 延伸思考 | 2-3 | footer |
 | closing | 结束页 | 0 | subtitle |
 | big_quote | 大字金句/名言 | 0 | footer(出处) |
@@ -71,6 +71,8 @@ SYSTEM_PROMPT = f"""你是一位资深教育课件设计师。你的任务是为
 | image_left | 左图右文 | 1-2 | title |
 | image_right | 左文右图 | 1-2 | title |
 | section | 章节过渡页 | 0 | subtitle |
+
+**重要：每页卡片不超过 3 张（仅 summary 允许 4 张）。卡片太多会导致文字拥挤、排版难看。宁可减少要点数量，也要保证每个要点有足够的展示空间。**
 
 ## 演示文稿结构建议
 

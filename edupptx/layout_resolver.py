@@ -90,6 +90,22 @@ def _resolve_cards(
     usable_h = height - 2 * pad
     full_threshold = 1_778_000
     compact_threshold = 1_016_000
+    MIN_BODY_H = 38 * PT  # 30pt minimum + 8pt buffer
+
+    # Adaptive mode selection: predict body_h and downgrade if too small
+    _full_overhead = icon_sz + icon_margin + card_title_h + icon_margin
+    _full_body_h = usable_h - _full_overhead
+    if usable_h >= full_threshold and _full_body_h >= MIN_BODY_H:
+        layout_mode = "full"
+    elif usable_h >= compact_threshold:
+        _compact_overhead = 406_400 + 101_600 + 304_800 + 101_600  # 32pt icon + 8pt + 24pt title + 8pt
+        _compact_body_h = usable_h - _compact_overhead
+        if _compact_body_h >= MIN_BODY_H:
+            layout_mode = "compact"
+        else:
+            layout_mode = "minimal"
+    else:
+        layout_mode = "minimal"
 
     card_fill = _tint_color(style.card_fill_color, 0.15)
 
@@ -109,7 +125,7 @@ def _resolve_cards(
             z_order=z,
         ))
 
-        if usable_h >= full_threshold:
+        if layout_mode == "full":
             # Full layout: icon + title + body
             actual_icon_sz = icon_sz
             icon_x = cx + (card_w - actual_icon_sz) // 2
@@ -139,7 +155,7 @@ def _resolve_cards(
             body_y = title_y + card_title_h + icon_margin
             body_h = max(card_bottom - body_y, 0)
 
-        elif usable_h >= compact_threshold:
+        elif layout_mode == "compact":
             # Compact: smaller icon + title + body
             actual_icon_sz = 406_400  # 32pt
             icon_x = cx + (card_w - actual_icon_sz) // 2
