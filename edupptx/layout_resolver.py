@@ -782,14 +782,21 @@ _SLIDE_RESOLVERS = {
 }
 
 
+_NO_MATERIAL_TYPES = {"cover", "big_quote", "closing", "section"}
+
+
 def _compute_material_slot(
     slide_type: str, style: ResolvedStyle,
     material_position: str | None,
 ) -> tuple[int, int, int, int] | None:
     """Compute the EMU rectangle for material (illustration/diagram) placement.
 
-    Returns (x, y, w, h) or None.
+    Returns (x, y, w, h) or None. Returns None for slide types that have no
+    material area (cover, big_quote, closing, section).
     """
+    if slide_type in _NO_MATERIAL_TYPES:
+        return None
+
     content_x = style.margin_left
     content_y = CARD_TOP
     content_w = style.content_w
@@ -813,7 +820,11 @@ def _compute_material_slot(
         return (mat_x, content_y, mat_w, content_h)
 
     if material_position == "center":
-        mat_h = int(content_h * 0.45)
+        # Match dynamic ratio from _resolve_content
+        half_gap = style.card_gap // 2
+        min_card_h = 2 * style.card_pad + 304_800 + 76_200 + 38 * PT
+        max_mat_ratio = max(0.25, 1.0 - (min_card_h + half_gap * 2) / content_h)
+        mat_h = int(content_h * min(0.45, max_mat_ratio))
         return (content_x, content_y, content_w, mat_h)
 
     return None

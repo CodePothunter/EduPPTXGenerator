@@ -77,7 +77,7 @@ scale: 0.4-1.0，图片占区域比例。全图页用0.95，配文字页用0.7-0
 """
 
 # Slide types that skip LLM material decision (use default bg only)
-_SKIP_MATERIAL_TYPES = {"big_quote", "closing", "section"}
+_SKIP_MATERIAL_TYPES = {"cover", "big_quote", "closing", "section"}
 
 # Background styles for forced rotation
 _BG_STYLES = ["diagonal_gradient", "radial_gradient", "geometric_circles", "geometric_triangles"]
