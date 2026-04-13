@@ -200,8 +200,7 @@ path = generate(
 
 ```python
 from edupptx.models import PresentationPlan, SlideContent, SlideCard
-from edupptx.design_system import get_design_tokens
-from edupptx.renderer import PresentationRenderer
+from edupptx.pipeline_v2 import render_with_schema
 
 plan = PresentationPlan(
     topic="自定义主题",
@@ -223,11 +222,7 @@ plan = PresentationPlan(
     ],
 )
 
-design = get_design_tokens(plan.palette)
-renderer = PresentationRenderer(design)
-for slide in plan.slides:
-    renderer.render_slide(slide)
-renderer.save("output.pptx")
+render_with_schema(plan, "styles/blue.json", output_path="output.pptx")
 ```
 
 ## 页面类型
@@ -273,11 +268,17 @@ edupptx/
 ├── material_library.py   # 持久素材库（搜索/添加/复用）
 ├── diagram_native.py     # 5 种原生 pptx 矢量图表
 ├── content_planner.py    # LLM 内容规划 + 图标校验
-├── design_system.py      # 6 套配色 + 字体定义
-├── layout_engine.py      # 17 种槽位模板 → EMU 坐标
-├── renderer.py           # python-pptx + XML 补丁渲染
+├── style_schema.py       # StyleSchema Pydantic 模型
+├── style_resolver.py     # palette ref → hex, intent → EMU
+├── style_negotiator.py   # LLM 自然语言风格协商
+├── layout_resolver.py    # Plan + Style → list[ResolvedSlide]
+├── validator.py          # 布局验证（越界/重叠/最小尺寸）
+├── pptx_writer.py        # 纯形状写入器
+├── xml_patches.py        # XML 工具函数
+├── pipeline_v2.py        # 端到端入口 render_with_schema()
 ├── icons.py              # 109 个 Lucide SVG 图标管理
 ├── backgrounds.py        # 背景图生成（Pillow + AI）
+├── diagram_native.py     # 程序化图表（5 种类型）
 ├── models.py             # Pydantic 数据模型
 ├── llm_client.py         # OpenAI 兼容客户端
 ├── config.py             # 环境变量配置
@@ -290,7 +291,7 @@ edupptx/
 ```
 edupptx gen TOPIC [OPTIONS]          生成演示文稿（输出到会话目录）
 edupptx library list|search|stats   素材库管理
-edupptx palettes                     列出配色方案
+edupptx palettes                     列出样式主题
 edupptx icons                        列出可用图标
 ```
 

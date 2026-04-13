@@ -30,7 +30,7 @@ output/session_xxx/
 └── output.pptx
 ```
 
-### v2 管线（Schema 驱动，与 v1 并存）
+### 渲染管线（Schema 驱动）
 
 ```
 StyleSchema JSON ──→ style_resolver ──→ ResolvedStyle
@@ -55,16 +55,14 @@ edupptx/
   __init__.py             # 公开 API: run_agent(), PPTXAgent, generate()
   agent.py                # Agent 编排器（规划 + 并行素材执行）
   content_planner.py      # LLM 内容规划 + 素材决策
-  design_system.py        # 6 套配色方案 (v1)
-  layout_engine.py        # 10 种槽位模板 → EMU 坐标 (v1)
-  renderer.py             # python-pptx + XML 补丁渲染 (v1)
-  style_schema.py         # v2: StyleSchema Pydantic 模型 + 命名意图查表
-  style_resolver.py       # v2: palette ref 解引用 + intent → EMU
-  layout_resolver.py      # v2: Plan + Style → list[ResolvedSlide]
-  validator.py            # v2: 布局验证（越界/重叠/最小尺寸）
-  pptx_writer.py          # v2: 纯形状写入器
-  xml_patches.py          # v2: XML 工具函数（阴影/透明/圆角/字体）
-  pipeline_v2.py          # v2: 端到端入口 render_with_schema()
+  style_schema.py         # StyleSchema Pydantic 模型 + 命名意图查表
+  style_resolver.py       # palette ref 解引用 + intent → EMU
+  style_negotiator.py     # LLM 自然语言风格协商
+  layout_resolver.py      # Plan + Style → list[ResolvedSlide]
+  validator.py            # 布局验证（越界/重叠/最小尺寸）
+  pptx_writer.py          # 纯形状写入器
+  xml_patches.py          # XML 工具函数（阴影/透明/圆角/字体）
+  pipeline_v2.py          # 端到端入口 render_with_schema()
   icons.py                # 109 个 Lucide SVG 图标管理
   backgrounds.py          # 背景管理器
   material_library.py     # 素材库管理
@@ -77,7 +75,7 @@ edupptx/
   prompts/
     content.py            # LLM 内容规划提示词
     agent.py              # LLM Agent 提示词
-styles/                   # 样式 JSON 文件 (v2)
+styles/                   # 样式 JSON 文件
   emerald.json            # 翠绿主题
   blue.json               # 蓝色主题
 assets/icons/             # Lucide SVG 图标 (24x24)
@@ -125,7 +123,7 @@ VISION_GEN_APIKEY=image-api-key
 
 ### 布局系统
 - **EMU 坐标** — 所有位置/尺寸用 EMU 整数值 (1pt = 12700 EMU)
-- **槽位模板** — 新 slide type 加 layout 函数 + 注册到 `_LAYOUT_MAP`
+- **槽位模板** — 新 slide type 加 resolver 函数 + 注册到 `_SLIDE_RESOLVERS`
 - **卡片自适应** — `_make_card_columns(n)` 等分内容区宽度
 
 ### 渲染
@@ -133,18 +131,18 @@ VISION_GEN_APIKEY=image-api-key
 - **XML 补丁为辅** — 阴影/透明度/SVG 用 lxml 操作 `shape._element`
 - **SVG+PNG 双轨** — 现代 PPT 用 SVG，旧版降级 PNG
 
-## 样式系统 (v2)
+## 样式系统
 
 - **JSON Schema 驱动**: `styles/` 目录下的 JSON 文件定义完整视觉风格
 - **三层 Token 层级**: global (palette/fonts) → semantic (sizes/colors as palette refs) → layout (named intents)
 - **命名意图**: margin=comfortable/tight/spacious, card_spacing=normal/tight/wide, icon_size=small/medium/large
 - **入口**: `from edupptx.pipeline_v2 import render_with_schema`
-- **当前支持**: cover, content, big_quote 三种 slide 类型
+- **支持 17 种 slide 类型**: cover, content, lead_in, definition, history, proof, example, exercise, answer, summary, extension, big_quote, closing, section, full_image, image_left, image_right
 
 ## 测试
 
 - **框架**: pytest
-- **112 个测试**: 63 个 v1 管线测试 + 49 个 v2 管线测试
+- **112 个测试**: 全量 Schema 管线测试
 - **运行**: `uv run pytest tests/ -v`
 
 ## 设计文档
