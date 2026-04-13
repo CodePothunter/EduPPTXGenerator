@@ -14,7 +14,6 @@ from loguru import logger
 from edupptx.backgrounds import generate_background
 from edupptx.config import Config
 from edupptx.content_planner import ContentPlanner
-from edupptx.design_system import DesignTokens, get_design_tokens
 from edupptx.llm_client import LLMClient
 from edupptx.material_library import MaterialLibrary
 from edupptx.models import (
@@ -26,7 +25,8 @@ from edupptx.models import (
 from edupptx.pipeline_v2 import render_with_schema
 from edupptx.session import Session
 from edupptx.style_negotiator import negotiate_style
-from edupptx.style_schema import StyleSchema, load_style
+from edupptx.style_resolver import resolve_style
+from edupptx.style_schema import ResolvedStyle, StyleSchema, load_style
 
 # Per-slide material decision prompt — small, focused
 _MATERIAL_PROMPT = """你是一位教育演示文稿的素材规划师。给定一页幻灯片的内容，决定它需要什么素材。
@@ -104,7 +104,6 @@ class PPTXAgent:
         logger.info("Plan: {} slides, palette={}", len(plan.slides), plan.palette)
 
         # Phase 2: Style negotiation — LLM interprets NL style requirements
-        design = get_design_tokens(plan.palette)
         style_path = Path(__file__).parent.parent / "styles" / f"{plan.palette}.json"
         if not style_path.exists():
             style_path = Path(__file__).parent.parent / "styles" / "emerald.json"
@@ -116,13 +115,15 @@ class PPTXAgent:
         else:
             negotiated_schema = base_schema
 
+        resolved_style = resolve_style(negotiated_schema)
+
         # Phase 3: Per-slide material decisions (N small LLM calls, parallel)
         session.log_step("materials", f"Deciding materials for {len(plan.slides)} slides")
         self._decide_materials(plan, session)
 
         # Phase 4: Execute material actions (parallel, no LLM)
         session.log_step("executing", "Generating materials")
-        slide_assets = self._execute_materials(plan, design, session)
+        slide_assets = self._execute_materials(plan, resolved_style, session)
 
         # Phase 5: Render via v2 schema-driven pipeline
         session.log_step("rendering", f"Rendering {len(plan.slides)} slides (v2 pipeline)")
@@ -148,10 +149,7 @@ class PPTXAgent:
         # Render using negotiated schema directly (not from file)
         from edupptx.layout_resolver import resolve_layout
         from edupptx.pptx_writer import PptxWriter
-        from edupptx.style_resolver import resolve_style
         from edupptx.validator import validate_slides
-
-        resolved_style = resolve_style(negotiated_schema)
         slides = resolve_layout(plan, resolved_style, bg_paths or None, material_paths or None)
         warnings = validate_slides(slides)
         if warnings:
@@ -275,20 +273,20 @@ class PPTXAgent:
                 )
 
     def _execute_materials(
-        self, plan: PresentationPlan, design: DesignTokens, session: Session,
+        self, plan: PresentationPlan, style: ResolvedStyle, session: Session,
     ) -> dict[tuple[str, int], Path]:
         """Execute all material actions in parallel (no LLM, pure generation)."""
         results: dict[tuple[str, int], Path] = {}
 
         def _gen_bg(i: int, slide: SlideContent) -> tuple[tuple[str, int], Path]:
-            style = "diagonal_gradient"
+            bg_style = "diagonal_gradient"
             if slide.bg_action and slide.bg_action.style:
-                style = slide.bg_action.style
+                bg_style = slide.bg_action.style
             tags = slide.bg_action.tags if slide.bg_action else []
 
             # Try to reuse from library first
             cached = self.library.search(
-                tags + [style], type="background", palette=plan.palette,
+                tags + [bg_style], type="background", palette=plan.palette,
             )
             if cached:
                 lib_path = self.library.dir / cached[0].path
@@ -298,19 +296,19 @@ class PPTXAgent:
                     logger.debug("Reused cached background for slide {}: {}", i, cached[0].id)
                     return ("bg", i), lib_path
 
-            bg_path = generate_background(design, style, seed_extra=f"slide{i}")
+            bg_path = generate_background(style, bg_style, seed_extra=f"slide{i}")
             self.library.add(
-                bg_path, "background", tags + [style], plan.palette, "programmatic",
+                bg_path, "background", tags + [bg_style], plan.palette, "programmatic",
                 f"Slide {i}: {slide.title}",
             )
             dest = session.dir / "materials" / bg_path.name
             shutil.copy2(bg_path, dest)
             return ("bg", i), bg_path
 
-        def _make_placeholder(desc: str, design: DesignTokens) -> Path:
-            """Generate a placeholder illustration image."""
+        def _make_placeholder(desc: str, rs: ResolvedStyle) -> Path:
             from PIL import Image, ImageDraw, ImageFont
-            img = Image.new("RGB", (1024, 768), tuple(int(design.accent_light.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)))
+            accent_light = rs.palette.get("accent_light", "#E0E0E0")
+            img = Image.new("RGB", (1024, 768), tuple(int(accent_light.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)))
             draw = ImageDraw.Draw(img)
             text = desc[:80] + ("..." if len(desc) > 80 else "")
             try:
@@ -321,7 +319,7 @@ class PPTXAgent:
             tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
             x = (1024 - tw) // 2
             y = (768 - th) // 2
-            text_color = tuple(int(design.text_secondary.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
+            text_color = tuple(int(rs.body_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
             draw.text((x, y), text, fill=text_color, font=font)
             path = Path(tempfile.mktemp(suffix=".png"))
             img.save(path, "PNG")
