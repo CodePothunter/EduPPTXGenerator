@@ -26,7 +26,7 @@ from edupptx.pipeline_v2 import render_with_schema
 from edupptx.session import Session
 from edupptx.style_negotiator import negotiate_style
 from edupptx.style_resolver import resolve_style
-from edupptx.style_schema import ResolvedStyle, StyleSchema, load_style
+from edupptx.style_schema import ResolvedStyle, load_style
 
 # Per-slide material decision prompt — small, focused
 _MATERIAL_PROMPT = """你是一位教育演示文稿的素材规划师。给定一页幻灯片的内容，决定它需要什么素材。
