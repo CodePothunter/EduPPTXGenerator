@@ -340,14 +340,8 @@ class PPTXAgent:
         def _pick_image_size(slide_type: str, position: str, card_count: int) -> str:
             """Pick the best 2K size by computing the material_slot aspect ratio."""
             from edupptx.layout_resolver import _compute_material_slot
-            from edupptx.style_resolver import resolve_style
-            from edupptx.style_schema import load_style
 
-            style_path = Path(__file__).parent.parent / "styles" / f"{plan.palette}.json"
-            if not style_path.exists():
-                style_path = Path(__file__).parent.parent / "styles" / "emerald.json"
-            resolved = resolve_style(load_style(style_path))
-            slot = _compute_material_slot(slide_type, resolved, position)
+            slot = _compute_material_slot(slide_type, style, position)
             if not slot:
                 return "2848x1600"  # fallback 16:9
             sx, sy, sw, sh = slot
