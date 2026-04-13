@@ -120,19 +120,21 @@ def _clamp_boundaries(root: etree._Element, warnings: list[str]) -> None:
 
 
 def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
-    """Detect and fix overlapping <text> elements by pushing them apart."""
+    """Detect and fix overlapping <text> elements in the same horizontal column."""
     texts = list(root.iter(f"{{{SVG_NS}}}text"))
     if len(texts) < 2:
         return
 
-    # Collect (element, y, font_size) for top-level text elements
+    # Collect (element, x, y, font_size) for text elements
     text_info = []
     for t in texts:
         y_str = t.get("y")
+        x_str = t.get("x", "0")
         if not y_str:
             continue
         try:
             y = float(y_str)
+            x = float(x_str)
         except (ValueError, TypeError):
             continue
         fs_str = t.get("font-size", "16")
@@ -140,24 +142,36 @@ def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
             fs = float(fs_str.replace("px", ""))
         except (ValueError, TypeError):
             fs = 16.0
-        text_info.append((t, y, fs))
+        text_info.append((t, x, y, fs))
 
     if len(text_info) < 2:
         return
 
-    # Sort by y coordinate
-    text_info.sort(key=lambda x: x[1])
+    # Group by horizontal column (texts within 100px x-range are in the same column)
+    text_info.sort(key=lambda t: (t[1], t[2]))  # sort by x, then y
+    columns: list[list] = []
+    for item in text_info:
+        placed = False
+        for col in columns:
+            if abs(col[0][1] - item[1]) < 100:  # same x-column (100px tolerance)
+                col.append(item)
+                placed = True
+                break
+        if not placed:
+            columns.append([item])
 
-    # Check for overlaps and push down
-    for i in range(1, len(text_info)):
-        _, prev_y, prev_fs = text_info[i - 1]
-        el, curr_y, _ = text_info[i]
-        min_gap = prev_fs + 6  # font-size + 6px minimum
-        if curr_y < prev_y + min_gap:
-            new_y = prev_y + min_gap
-            el.set("y", str(int(new_y)))
-            text_info[i] = (el, new_y, text_info[i][2])
-            warnings.append(f"Fixed text overlap: pushed y from {curr_y} to {new_y}")
+    # Fix overlaps within each column
+    for col in columns:
+        col.sort(key=lambda t: t[2])  # sort by y within column
+        for i in range(1, len(col)):
+            _, _, prev_y, prev_fs = col[i - 1]
+            el, x, curr_y, fs = col[i]
+            min_gap = prev_fs + 6
+            if curr_y < prev_y + min_gap:
+                new_y = prev_y + min_gap
+                el.set("y", str(int(new_y)))
+                col[i] = (el, x, new_y, fs)
+                warnings.append(f"Fixed text overlap: pushed y from {curr_y} to {new_y}")
 
 
 def _check_image_hrefs(root: etree._Element, warnings: list[str]) -> None:
