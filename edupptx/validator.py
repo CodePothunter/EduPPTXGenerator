@@ -45,10 +45,15 @@ def _check_text_min_width(shape: ResolvedShape) -> list[str]:
 
 
 def _check_card_body_height(shape: ResolvedShape) -> list[str]:
-    """Warn if a card body textbox is shorter than 30pt."""
+    """Warn if a card body textbox is shorter than 30pt.
+
+    Only checks textboxes with long text (> 20 chars), since short card titles
+    don't need the minimum height guarantee.
+    """
     if shape.shape_type != "textbox" or shape.font is None:
         return []
-    if shape.auto_shrink and shape.height < 30 * PT:
+    text_len = len(shape.text) if shape.text else 0
+    if shape.auto_shrink and shape.height < 30 * PT and text_len > 20:
         return [f"Card body '{shape.text[:20] if shape.text else ''}...' height={shape.height/PT:.0f}pt < 30pt minimum"]
     return []
 
