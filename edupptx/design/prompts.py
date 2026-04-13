@@ -2,7 +2,27 @@
 
 from __future__ import annotations
 
+import base64
+import io
+from pathlib import Path
+
 from edupptx.models import PagePlan, SlideAssets
+
+
+def _compress_and_encode(image_path: Path, max_width: int = 400, quality: int = 50) -> str | None:
+    """Compress image to thumbnail JPEG and return data URI string."""
+    try:
+        from PIL import Image
+        with Image.open(image_path) as img:
+            if img.width > max_width:
+                ratio = max_width / img.width
+                img = img.resize((max_width, int(img.height * ratio)), Image.LANCZOS)
+            buf = io.BytesIO()
+            img.convert("RGB").save(buf, "JPEG", quality=quality, optimize=True)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            return f"data:image/jpeg;base64,{b64}"
+    except Exception:
+        return None
 
 
 BENTO_GRID_SPEC = """\
@@ -107,12 +127,20 @@ def build_svg_system_prompt(style_guide: str) -> str:
 
 {style_guide}
 
+## 防重叠规则（强制遵守）
+1. **标题区安全间距**：主标题 y 坐标从 50 开始，副标题/描述文字 y 坐标 ≥ 主标题 y + 字号 + 20。装饰线不能压在文字上。
+2. **文本垂直间距**：相邻 <text> 元素的 y 坐标差 ≥ 上方文字的 font-size + 8（最小呼吸间距）
+3. **卡片内部**：卡片标题 y 与卡片顶部 y 至少差 40px；正文 <tspan> 的 dy 至少为 font-size × 1.4
+4. **元素不出界**：所有 <text>、<rect>、<image> 的 x 和 y 必须 ≥ 0，x + width ≤ 1280，y + height ≤ 720
+5. **生成后自检**：输出 SVG 前在脑中逐一检查每个 <text> 元素的 y 坐标，确认不与前一个元素重叠
+
 ## 设计原则
 1. **留白充分**：不要填满每一寸空间，给内容呼吸感
 2. **配色克制**：主色 + 中性色，强调色只用于关键元素
 3. **层次清晰**：通过字号、字重、颜色深浅建立 3-4 个视觉层次
-4. **图文配合**：有图片时合理分配图文空间，图片不小于 200x150
+4. **图文配合**：有图片时必须使用提供的 data URI 图片。合理分配图文空间，图片不小于 200x150
 5. **中文优化**：中文内容适当增大字号（比英文大 2-4px），行距更宽松
+6. **充实内容**：避免大片空白。封面页标题应居中偏上，章节页要有装饰图形或引导语填充空间
 """
 
 
@@ -147,16 +175,23 @@ def build_svg_user_prompt(
     if page.design_notes:
         lines.append(f"\n### 设计备注\n{page.design_notes}")
 
-    # 可用图片
+    # 可用图片 — 压缩后转 base64 data URI 嵌入
     image_lines: list[str] = []
     for role, path in assets.image_paths.items():
-        image_lines.append(f"- {role}：`{path}`")
-    if assets.background_path:
-        image_lines.append(f"- 背景图：`{assets.background_path}`")
+        data_uri = _compress_and_encode(path)
+        if data_uri:
+            image_lines.append(
+                f"- **{role}** 图片 — 直接复制下面这行作为 `<image>` 的 href 属性值：\n"
+                f"  {data_uri}"
+            )
     if image_lines:
-        lines.append("\n### 可用图片资源")
+        lines.append("\n### 可用图片（data URI 格式，必须在 SVG 中使用）")
         lines.extend(image_lines)
-        lines.append("\n用 `<image href=\"路径\">` 引用上述图片。")
+        lines.append(
+            "\n**必须** 用 `<image href=\"data:image/jpeg;base64,...\" "
+            "x=\"...\" y=\"...\" width=\"...\" height=\"...\"/>` 嵌入这些图片。"
+            "图片是内容的重要组成部分，不能省略。"
+        )
 
     # 可用图标
     if assets.icon_svgs:

@@ -39,6 +39,7 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
     _remove_css_animations(root, warnings)
     _fix_fonts(root, warnings)
     _clamp_boundaries(root, warnings)
+    _fix_text_overlaps(root, warnings)
     _check_image_hrefs(root, warnings)
 
     fixed = etree.tostring(root, encoding="unicode", xml_declaration=False)
@@ -116,6 +117,47 @@ def _clamp_boundaries(root: etree._Element, warnings: list[str]) -> None:
                         warnings.append(
                             f"Clamped <{tag_name}> {attr}={val} to {new_val}"
                         )
+
+
+def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
+    """Detect and fix overlapping <text> elements by pushing them apart."""
+    texts = list(root.iter(f"{{{SVG_NS}}}text"))
+    if len(texts) < 2:
+        return
+
+    # Collect (element, y, font_size) for top-level text elements
+    text_info = []
+    for t in texts:
+        y_str = t.get("y")
+        if not y_str:
+            continue
+        try:
+            y = float(y_str)
+        except (ValueError, TypeError):
+            continue
+        fs_str = t.get("font-size", "16")
+        try:
+            fs = float(fs_str.replace("px", ""))
+        except (ValueError, TypeError):
+            fs = 16.0
+        text_info.append((t, y, fs))
+
+    if len(text_info) < 2:
+        return
+
+    # Sort by y coordinate
+    text_info.sort(key=lambda x: x[1])
+
+    # Check for overlaps and push down
+    for i in range(1, len(text_info)):
+        _, prev_y, prev_fs = text_info[i - 1]
+        el, curr_y, _ = text_info[i]
+        min_gap = prev_fs + 6  # font-size + 6px minimum
+        if curr_y < prev_y + min_gap:
+            new_y = prev_y + min_gap
+            el.set("y", str(int(new_y)))
+            text_info[i] = (el, new_y, text_info[i][2])
+            warnings.append(f"Fixed text overlap: pushed y from {curr_y} to {new_y}")
 
 
 def _check_image_hrefs(root: etree._Element, warnings: list[str]) -> None:
