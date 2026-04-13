@@ -10,7 +10,12 @@ EVENT_ATTRS = re.compile(r"^on[a-z]+$", re.IGNORECASE)
 
 def sanitize_for_ppt(svg_content: str) -> str:
     """Apply PPT-specific fixes to SVG content."""
-    root = etree.fromstring(svg_content.encode("utf-8"))
+    # Pre-clean unescaped &
+    svg_content = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#)", "&amp;", svg_content)
+    try:
+        root = etree.fromstring(svg_content.encode("utf-8"))
+    except etree.XMLSyntaxError:
+        return svg_content  # Return as-is if unparseable
 
     _remove_scripts(root)
     _remove_event_handlers(root)

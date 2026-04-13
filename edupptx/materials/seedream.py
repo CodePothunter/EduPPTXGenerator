@@ -26,7 +26,7 @@ class SeedreamProvider:
     async def search(self, query: str, count: int = 3) -> list[ImageResult]:
         return []
 
-    async def generate(self, prompt: str, size: str = "1280x720") -> list[ImageResult]:
+    async def generate(self, prompt: str, size: str = "2848x1600") -> list[ImageResult]:
         if not self._model:
             return []
 

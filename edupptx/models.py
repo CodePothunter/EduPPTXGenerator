@@ -26,6 +26,7 @@ class InputContext:
 
 PageType = Literal[
     "cover", "toc", "section", "content", "data", "case", "closing",
+    "timeline", "comparison", "exercise", "summary",
 ]
 
 LayoutHint = Literal[

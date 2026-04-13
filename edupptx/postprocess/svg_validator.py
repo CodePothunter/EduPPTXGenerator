@@ -18,10 +18,21 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
     """Validate SVG, auto-fix issues. Returns (fixed_svg, list_of_warnings)."""
     warnings: list[str] = []
 
+    # Pre-clean unescaped & (common LLM artifact)
+    import re
+    svg_content = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#)", "&amp;", svg_content)
+
     try:
         root = etree.fromstring(svg_content.encode("utf-8"))
     except etree.XMLSyntaxError as e:
-        return svg_content, [f"SVG parse error: {e}"]
+        warnings = [f"SVG parse error: {e}"]
+        # Try recovery: wrap in minimal SVG if missing root
+        try:
+            wrapped = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">{svg_content}</svg>'
+            root = etree.fromstring(wrapped.encode("utf-8"))
+            warnings.append("Recovered by wrapping in <svg> root")
+        except etree.XMLSyntaxError:
+            return svg_content, warnings
 
     _fix_viewbox(root, warnings)
     _remove_foreign_objects(root, warnings)

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 
 def build_planning_system_prompt() -> str:
-    return """你是一位资深的教育演示文稿策划师，擅长运用金字塔原理构建清晰的教学逻辑。
+    from edupptx.materials.icons import list_icons
+    icon_list = ", ".join(list_icons())
+    return f"""你是一位资深的教育演示文稿策划师，擅长运用金字塔原理构建清晰的教学逻辑。
 
 你的任务是根据用户提供的主题和背景资料，输出一份结构化的 PPT 策划稿（JSON 格式）。
 
@@ -83,6 +85,13 @@ def build_planning_system_prompt() -> str:
 }
 ```
 
+## 可用图标
+
+material_needs.icons 必须从以下列表中选择（Lucide 图标集）：
+{icon_list}
+
+**重要：不要使用不在上面列表中的图标名称。** 如果找不到完全匹配的图标，选择语义最接近的。
+
 ## 约束
 
 - 页数范围：8-15 页（根据主题复杂度自行判断）
@@ -91,6 +100,7 @@ def build_planning_system_prompt() -> str:
 - design_notes 用一句话说明页面设计意图
 - notes 写教学话术，帮助老师讲课
 - layout_hint 要根据内容特点选择，避免连续多页使用相同布局
+- icons 只使用上面列出的可用图标名称
 """
 
 
