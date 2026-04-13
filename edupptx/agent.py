@@ -23,8 +23,10 @@ from edupptx.models import (
     PresentationPlan,
     SlideContent,
 )
-from edupptx.renderer import PresentationRenderer
+from edupptx.pipeline_v2 import render_with_schema
 from edupptx.session import Session
+from edupptx.style_negotiator import negotiate_style
+from edupptx.style_schema import StyleSchema, load_style
 
 # Per-slide material decision prompt — small, focused
 _MATERIAL_PROMPT = """你是一位教育演示文稿的素材规划师。给定一页幻灯片的内容，决定它需要什么素材。
@@ -101,8 +103,18 @@ class PPTXAgent:
         session.save_plan(plan.model_dump())
         logger.info("Plan: {} slides, palette={}", len(plan.slides), plan.palette)
 
-        # Phase 2: Design tokens
+        # Phase 2: Style negotiation — LLM interprets NL style requirements
         design = get_design_tokens(plan.palette)
+        style_path = Path(__file__).parent.parent / "styles" / f"{plan.palette}.json"
+        if not style_path.exists():
+            style_path = Path(__file__).parent.parent / "styles" / "emerald.json"
+        base_schema = load_style(style_path)
+
+        if requirements.strip():
+            session.log_step("style", f"Negotiating style from: {requirements[:80]}")
+            negotiated_schema = negotiate_style(self.llm, base_schema, requirements)
+        else:
+            negotiated_schema = base_schema
 
         # Phase 3: Per-slide material decisions (N small LLM calls, parallel)
         session.log_step("materials", f"Deciding materials for {len(plan.slides)} slides")
@@ -112,18 +124,41 @@ class PPTXAgent:
         session.log_step("executing", "Generating materials")
         slide_assets = self._execute_materials(plan, design, session)
 
-        # Phase 5: Render slides (sequential)
-        session.log_step("rendering", f"Rendering {len(plan.slides)} slides")
-        renderer = PresentationRenderer(design)
+        # Phase 5: Render via v2 schema-driven pipeline
+        session.log_step("rendering", f"Rendering {len(plan.slides)} slides (v2 pipeline)")
+
+        # Collect background and material paths
+        bg_paths = []
+        material_paths: dict[int, Path] = {}
         for i, slide in enumerate(plan.slides):
             bg = slide_assets.get(("bg", i))
-            material = slide_assets.get(("mat", i))
-            renderer.render_slide(slide, bg, material)
+            if bg:
+                bg_paths.append(bg)
+            mat = slide_assets.get(("mat", i))
+            if mat:
+                material_paths[i] = mat
             session.save_slide_state(i, slide.type, slide.model_dump())
-            logger.debug("Rendered slide {}/{}: {}", i + 1, len(plan.slides), slide.type)
 
-        # Phase 6: Assemble
-        renderer.save(session.output_path)
+        # Save negotiated schema for debugging
+        import json as _json
+        schema_dump_path = session.dir / "style_schema.json"
+        with open(schema_dump_path, "w", encoding="utf-8") as f:
+            _json.dump(negotiated_schema.model_dump(by_alias=True), f, ensure_ascii=False, indent=2)
+
+        # Render using negotiated schema directly (not from file)
+        from edupptx.layout_resolver import resolve_layout
+        from edupptx.pptx_writer import PptxWriter
+        from edupptx.style_resolver import resolve_style
+        from edupptx.validator import validate_slides
+
+        resolved_style = resolve_style(negotiated_schema)
+        slides = resolve_layout(plan, resolved_style, bg_paths or None, material_paths or None)
+        warnings = validate_slides(slides)
+        if warnings:
+            logger.warning("Validation: {} warnings", len(warnings))
+        writer = PptxWriter()
+        writer.write_slides(slides, bg_paths or None)
+        writer.save(session.output_path)
         session.log_step("done", f"Saved {len(plan.slides)} slides to {session.output_path}")
         logger.info("Done! {} slides, output: {}", len(plan.slides), session.output_path)
 
@@ -305,14 +340,22 @@ class PPTXAgent:
         ]
 
         def _pick_image_size(slide_type: str, position: str, card_count: int) -> str:
-            """Pick the best 2K size by computing the actual material_slot aspect ratio."""
-            from edupptx.layout_engine import get_layout
-            layout = get_layout(slide_type, card_count, material_position=position)
-            slot = layout.material_slot
-            if not slot or slot.width <= 0 or slot.height <= 0:
+            """Pick the best 2K size by computing the material_slot aspect ratio."""
+            from edupptx.layout_resolver import _compute_material_slot
+            from edupptx.style_resolver import resolve_style
+            from edupptx.style_schema import load_style
+
+            style_path = Path(__file__).parent.parent / "styles" / f"{plan.palette}.json"
+            if not style_path.exists():
+                style_path = Path(__file__).parent.parent / "styles" / "emerald.json"
+            resolved = resolve_style(load_style(style_path))
+            slot = _compute_material_slot(slide_type, resolved, position)
+            if not slot:
                 return "2848x1600"  # fallback 16:9
-            slot_ratio = slot.width / slot.height
-            # Find the closest recommended ratio
+            sx, sy, sw, sh = slot
+            if sw <= 0 or sh <= 0:
+                return "2848x1600"
+            slot_ratio = sw / sh
             best_size = _RECOMMENDED_SIZES[-1][1]
             best_diff = float("inf")
             for ratio, size in _RECOMMENDED_SIZES:
@@ -325,10 +368,10 @@ class PPTXAgent:
         def _gen_illustration(i: int, mat: ContentMaterial, slide: SlideContent) -> tuple[tuple[str, int], Path] | None:
             desc = mat.illustration_description or "educational illustration"
             style = mat.illustration_style or "educational_flat"
+            # Cache key: hash of description only (no slide index)
             desc_hash = hashlib.md5(desc.encode()).hexdigest()[:8]
 
-            # Try to reuse from library — require desc_hash match to avoid
-            # returning unrelated illustrations from previous runs
+            # Try to reuse from library — match on desc_hash + style
             cached = self.library.search(
                 [desc_hash, style], type="illustration", palette=plan.palette,
             )
@@ -379,7 +422,7 @@ class PPTXAgent:
 
             self.library.add(
                 path, "illustration", mat.tags + [style, desc_hash], plan.palette,
-                "ai_generated", f"Slide {i}: {desc[:50]}",
+                "ai_generated", desc[:80],
             )
             dest = session.dir / "materials" / path.name
             shutil.copy2(path, dest)

@@ -87,6 +87,11 @@ def _make_card_columns(
 ) -> tuple[list[SlotPosition], list[SlotPosition], list[SlotPosition], list[SlotPosition]]:
     """Generate n equal-width card columns with icons, titles, and bodies.
 
+    Adapts internal layout based on available card height:
+    - Full (>= 140pt): icon + title + body
+    - Compact (>= 80pt): icon shrunk, title + body
+    - Minimal (< 80pt): title + body only, no icon
+
     Returns: (cards, icons, titles, bodies)
     """
     if n <= 0:
@@ -94,31 +99,63 @@ def _make_card_columns(
 
     gap = CARD_GAP
     card_w = (total_width - gap * (n - 1)) // n
+    pad = CARD_PAD
+    usable_h = height - 2 * pad  # vertical space inside card
+
+    # Decide layout mode based on usable height
+    full_threshold = 1_778_000    # ~140pt — enough for 48pt icon + title + body
+    compact_threshold = 1_016_000  # ~80pt — enough for small icon + title + body
 
     cards, icons, titles, bodies = [], [], [], []
     for i in range(n):
         cx = left + i * (card_w + gap)
-
         cards.append(SlotPosition(cx, top, card_w, height))
 
-        # Icon: centered at top of card
-        icon_x = cx + (card_w - ICON_SIZE) // 2
-        icon_y = top + CARD_PAD
-        icons.append(SlotPosition(icon_x, icon_y, ICON_SIZE, ICON_SIZE))
+        text_w = card_w - 2 * pad
+        card_bottom = top + height - pad  # absolute Y of usable bottom
 
-        # Title: below icon
-        title_y = icon_y + ICON_SIZE + ICON_MARGIN
-        title_h = 381_000  # 30pt
-        titles.append(SlotPosition(
-            cx + CARD_PAD, title_y, card_w - 2 * CARD_PAD, title_h
-        ))
+        if usable_h >= full_threshold:
+            # Full layout: icon (48pt) + title + body
+            icon_sz = ICON_SIZE
+            icon_x = cx + (card_w - icon_sz) // 2
+            icon_y = top + pad
+            icons.append(SlotPosition(icon_x, icon_y, icon_sz, icon_sz))
 
-        # Body: below title, fill remaining card space
-        body_y = title_y + title_h + ICON_MARGIN
-        body_h = top + height - body_y - CARD_PAD
-        bodies.append(SlotPosition(
-            cx + CARD_PAD, body_y, card_w - 2 * CARD_PAD, max(body_h, 200_000)
-        ))
+            title_y = icon_y + icon_sz + ICON_MARGIN
+            title_h = 381_000  # 30pt
+            titles.append(SlotPosition(cx + pad, title_y, text_w, title_h))
+
+            body_y = title_y + title_h + ICON_MARGIN
+            body_h = card_bottom - body_y
+            bodies.append(SlotPosition(cx + pad, body_y, text_w, max(body_h, 0)))
+
+        elif usable_h >= compact_threshold:
+            # Compact: smaller icon (32pt) + title + body
+            icon_sz = 406_400  # 32pt
+            icon_x = cx + (card_w - icon_sz) // 2
+            icon_y = top + pad
+            icons.append(SlotPosition(icon_x, icon_y, icon_sz, icon_sz))
+
+            margin = 101_600  # 8pt
+            title_y = icon_y + icon_sz + margin
+            title_h = 304_800  # 24pt
+            titles.append(SlotPosition(cx + pad, title_y, text_w, title_h))
+
+            body_y = title_y + title_h + margin
+            body_h = card_bottom - body_y
+            bodies.append(SlotPosition(cx + pad, body_y, text_w, max(body_h, 0)))
+
+        else:
+            # Minimal: no icon, just title + body
+            icons.append(SlotPosition(0, 0, 0, 0))
+
+            title_y = top + pad
+            title_h = 304_800  # 24pt
+            titles.append(SlotPosition(cx + pad, title_y, text_w, title_h))
+
+            body_y = title_y + title_h + 76_200  # 6pt gap
+            body_h = card_bottom - body_y
+            bodies.append(SlotPosition(cx + pad, body_y, text_w, max(body_h, 0)))
 
     return cards, icons, titles, bodies
 
@@ -421,11 +458,12 @@ def get_layout(slide_type: str, card_count: int, material_position: str | None =
         layout.card_bodies = bodies
 
     elif material_position == "center":
-        # Material placed between title and cards, using ~50% of content height
-        mat_h = int(content_h * 0.65)
+        # Material on top (~45%), cards below (~55% minus gaps)
+        mat_h = int(content_h * 0.45)
         mat_y = content_y
-        cards_top = mat_y + mat_h + CARD_GAP
-        cards_h = FOOTER_Y - cards_top - CARD_GAP
+        half_gap = CARD_GAP // 2  # tighter gap for center layout
+        cards_top = mat_y + mat_h + half_gap
+        cards_h = FOOTER_Y - cards_top - half_gap
         layout.material_slot = SlotPosition(content_x, mat_y, content_w, mat_h)
         cards, icons, titles, bodies = _make_card_columns(
             card_count, top=cards_top, height=cards_h,

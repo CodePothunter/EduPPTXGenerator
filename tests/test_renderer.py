@@ -1,14 +1,17 @@
-"""Tests for the OOXML renderer."""
+"""Tests for the v2 rendering pipeline (replaces old renderer tests)."""
 
 import tempfile
 from pathlib import Path
 
 from pptx import Presentation
 
-from edupptx.design_system import get_design_tokens
-from edupptx.models import PresentationPlan, SlideCard, SlideContent
-from edupptx.renderer import PresentationRenderer
+from edupptx.models import PresentationPlan, SlideCard, SlideContent, ContentMaterial
+from edupptx.pipeline_v2 import render_with_schema
 from edupptx.backgrounds import generate_background
+from edupptx.design_system import get_design_tokens
+
+
+STYLES_DIR = Path(__file__).parent.parent / "styles"
 
 
 def _make_simple_plan() -> PresentationPlan:
@@ -53,7 +56,6 @@ def test_renderer_creates_valid_pptx():
     design = get_design_tokens(plan.palette)
 
     with tempfile.TemporaryDirectory() as tmpdir:
-        # Generate backgrounds
         cache_dir = Path(tmpdir) / "cache"
         styles = ["diagonal_gradient", "radial_gradient", "geometric_circles"]
         backgrounds = [
@@ -61,26 +63,26 @@ def test_renderer_creates_valid_pptx():
             for i in range(len(plan.slides))
         ]
 
-        renderer = PresentationRenderer(design)
-        renderer.render(plan, backgrounds)
-
         out_path = Path(tmpdir) / "test.pptx"
-        renderer.save(out_path)
+        render_with_schema(plan, STYLES_DIR / "emerald.json",
+                           bg_paths=backgrounds, output_path=out_path)
 
         assert out_path.exists()
-        assert out_path.stat().st_size > 10000  # Reasonable file size
+        assert out_path.stat().st_size > 10000
 
-        # Verify with python-pptx
         prs = Presentation(str(out_path))
         assert len(prs.slides) == 3
 
 
 def test_renderer_slide_dimensions():
     """Verify slide dimensions match 16:9 standard."""
-    design = get_design_tokens("emerald")
-    renderer = PresentationRenderer(design)
-    assert renderer.prs.slide_width == 12192000
-    assert renderer.prs.slide_height == 6858000
+    plan = _make_simple_plan()
+    with tempfile.TemporaryDirectory() as tmpdir:
+        out_path = Path(tmpdir) / "test.pptx"
+        render_with_schema(plan, STYLES_DIR / "emerald.json", output_path=out_path)
+        prs = Presentation(str(out_path))
+        assert prs.slide_width == 12192000
+        assert prs.slide_height == 6858000
 
 
 def test_renderer_speaker_notes():
@@ -96,11 +98,9 @@ def test_renderer_speaker_notes():
             for i in range(len(plan.slides))
         ]
 
-        renderer = PresentationRenderer(design)
-        renderer.render(plan, backgrounds)
-
         out_path = Path(tmpdir) / "test.pptx"
-        renderer.save(out_path)
+        render_with_schema(plan, STYLES_DIR / "emerald.json",
+                           bg_paths=backgrounds, output_path=out_path)
 
         prs = Presentation(str(out_path))
         slide = prs.slides[0]
@@ -111,35 +111,38 @@ def test_renderer_speaker_notes():
 
 def test_renderer_with_illustration():
     """Test rendering a slide with an illustration material."""
-    design = get_design_tokens("emerald")
-    renderer = PresentationRenderer(design)
-
-    # Create a test illustration image
     from PIL import Image
     img = Image.new("RGB", (1024, 768), (200, 220, 200))
     img_path = Path(tempfile.mktemp(suffix=".png"))
     img.save(img_path, "PNG")
 
-    from edupptx.models import ContentMaterial
-    slide = SlideContent(
-        type="content",
-        title="Test with illustration",
-        cards=[SlideCard(icon="star", title="Point 1", body="Body 1")],
-        notes="Notes",
-        content_materials=[
-            ContentMaterial(
-                action="generate_illustration",
-                position="center",
-                illustration_description="test illustration",
-            )
+    plan = PresentationPlan(
+        topic="Test",
+        palette="emerald",
+        slides=[
+            SlideContent(
+                type="content",
+                title="Test with illustration",
+                cards=[SlideCard(icon="star", title="Point 1", body="Body 1")],
+                notes="Notes",
+                content_materials=[
+                    ContentMaterial(
+                        action="generate_illustration",
+                        position="center",
+                        illustration_description="test illustration",
+                    )
+                ],
+            ),
         ],
     )
 
-    renderer.render_slide(slide, material_path=img_path)
-
     with tempfile.TemporaryDirectory() as tmpdir:
         out = Path(tmpdir) / "test.pptx"
-        renderer.save(out)
+        render_with_schema(
+            plan, STYLES_DIR / "emerald.json",
+            material_paths={0: img_path},
+            output_path=out,
+        )
         assert out.exists()
         prs = Presentation(str(out))
         assert len(prs.slides) == 1
@@ -149,18 +152,20 @@ def test_renderer_with_illustration():
 
 def test_renderer_long_card_body():
     """Verify that long card body text doesn't crash the renderer."""
-    design = get_design_tokens("emerald")
-    renderer = PresentationRenderer(design)
-    slide = SlideContent(
-        type="content",
-        title="Test",
-        cards=[SlideCard(icon="star", title="Title", body="这是一段超过五十个字的卡片正文内容，用来测试当文本过长时渲染器是否能自动缩小字号而不报错。这段文字故意写得很长很长。")],
-        notes="Notes",
+    plan = PresentationPlan(
+        topic="Test",
+        palette="emerald",
+        slides=[
+            SlideContent(
+                type="content",
+                title="Test",
+                cards=[SlideCard(icon="star", title="Title",
+                                 body="这是一段超过五十个字的卡片正文内容，用来测试当文本过长时渲染器是否能自动缩小字号而不报错。这段文字故意写得很长很长。")],
+                notes="Notes",
+            ),
+        ],
     )
-    renderer.render_slide(slide)
-    import tempfile
-    from pathlib import Path
     with tempfile.TemporaryDirectory() as tmpdir:
         out = Path(tmpdir) / "test.pptx"
-        renderer.save(out)
+        render_with_schema(plan, STYLES_DIR / "emerald.json", output_path=out)
         assert out.exists()

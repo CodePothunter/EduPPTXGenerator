@@ -30,31 +30,62 @@ output/session_xxx/
 └── output.pptx
 ```
 
+### v2 管线（Schema 驱动，与 v1 并存）
+
+```
+StyleSchema JSON ──→ style_resolver ──→ ResolvedStyle
+                                            │
+PresentationPlan ───────+                   │
+                        │                   ▼
+                        +→ layout_resolver → list[ResolvedSlide]
+                                                 │
+                                                 ▼
+                                          validator (clamp+warn)
+                                                 │
+                                                 ▼
+                                          pptx_writer → .pptx
+```
+
+三层架构：样式(JSON) → 解析(EMU) → 写入(PPTX)。换 JSON 即换风格，无需改 Python。
+
 ## 目录结构
 
 ```
 edupptx/
   __init__.py             # 公开 API: run_agent(), PPTXAgent, generate()
   agent.py                # Agent 编排器（规划 + 并行素材执行）
-  generator.py            # 向后兼容编排器
   content_planner.py      # LLM 内容规划 + 素材决策
-  design_system.py        # 6 套配色方案
-  layout_engine.py        # 10 种槽位模板 → EMU 坐标
-  renderer.py             # python-pptx + XML 补丁渲染
+  design_system.py        # 6 套配色方案 (v1)
+  layout_engine.py        # 10 种槽位模板 → EMU 坐标 (v1)
+  renderer.py             # python-pptx + XML 补丁渲染 (v1)
+  style_schema.py         # v2: StyleSchema Pydantic 模型 + 命名意图查表
+  style_resolver.py       # v2: palette ref 解引用 + intent → EMU
+  layout_resolver.py      # v2: Plan + Style → list[ResolvedSlide]
+  validator.py            # v2: 布局验证（越界/重叠/最小尺寸）
+  pptx_writer.py          # v2: 纯形状写入器
+  xml_patches.py          # v2: XML 工具函数（阴影/透明/圆角/字体）
+  pipeline_v2.py          # v2: 端到端入口 render_with_schema()
   icons.py                # 109 个 Lucide SVG 图标管理
   backgrounds.py          # 背景管理器
-  materials.py            # 素材库管理
-  models.py               # Pydantic 数据模型
+  material_library.py     # 素材库管理
+  diagram_native.py       # 程序化图表生成
+  models.py               # Pydantic + dataclass 数据模型
   llm_client.py           # OpenAI 兼容客户端
   config.py               # 环境变量配置
+  session.py              # 会话目录管理
   cli.py                  # CLI 入口
-  prompts/content.py      # LLM 提示词模板
+  prompts/
+    content.py            # LLM 内容规划提示词
+    agent.py              # LLM Agent 提示词
+styles/                   # 样式 JSON 文件 (v2)
+  emerald.json            # 翠绿主题
+  blue.json               # 蓝色主题
 assets/icons/             # Lucide SVG 图标 (24x24)
 materials_library/        # 持久素材库 (gitignored)
 output/                   # 会话输出目录 (gitignored)
 docs/
-  design-philosophy.md    # 设计理念（逆向分析+架构决策）
-  layout-system.md        # 布局系统（EMU坐标+模板机制）
+  design-philosophy.md    # 设计理念
+  layout-system.md        # 布局系统
 tests/
 examples/
 ```
@@ -102,10 +133,18 @@ VISION_GEN_APIKEY=image-api-key
 - **XML 补丁为辅** — 阴影/透明度/SVG 用 lxml 操作 `shape._element`
 - **SVG+PNG 双轨** — 现代 PPT 用 SVG，旧版降级 PNG
 
+## 样式系统 (v2)
+
+- **JSON Schema 驱动**: `styles/` 目录下的 JSON 文件定义完整视觉风格
+- **三层 Token 层级**: global (palette/fonts) → semantic (sizes/colors as palette refs) → layout (named intents)
+- **命名意图**: margin=comfortable/tight/spacious, card_spacing=normal/tight/wide, icon_size=small/medium/large
+- **入口**: `from edupptx.pipeline_v2 import render_with_schema`
+- **当前支持**: cover, content, big_quote 三种 slide 类型
+
 ## 测试
 
 - **框架**: pytest
-- **14 个单元测试**: 模型序列化、布局边界检查、渲染输出验证
+- **112 个测试**: 63 个 v1 管线测试 + 49 个 v2 管线测试
 - **运行**: `uv run pytest tests/ -v`
 
 ## 设计文档

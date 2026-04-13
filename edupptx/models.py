@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, Field
@@ -108,3 +110,62 @@ class PresentationPlan(BaseModel):
     )
     slides: list[SlideContent]
     language: str = "zh"
+
+
+# ── Resolved shapes (v2 pipeline) ────────────────────────
+
+
+@dataclass
+class ResolvedFont:
+    """Fully resolved font specification — no references, all concrete."""
+
+    family: str
+    fallback: str
+    size_pt: int
+    bold: bool = False
+    color: str = "#000000"
+
+
+@dataclass
+class ResolvedShadow:
+    """Fully resolved shadow specification."""
+
+    blur_emu: int
+    dist_emu: int
+    color: str
+    alpha_pct: int  # 0-100
+
+
+@dataclass
+class ResolvedShape:
+    """A single resolved shape ready for the PPTX writer.
+
+    All values are concrete — no style lookups, no named intents.
+    The writer reads these fields and creates python-pptx objects directly.
+    """
+
+    shape_type: str  # textbox, rounded_rect, oval, image, line
+    left: int
+    top: int
+    width: int
+    height: int
+    text: str | None = None
+    font: ResolvedFont | None = None
+    fill_color: str | None = None
+    line_color: str | None = None
+    corner_radius: int = 0  # OOXML 0-100000
+    shadow: ResolvedShadow | None = None
+    alpha_pct: int = 100  # 0-100, 100=opaque
+    z_order: int = 0
+    auto_shrink: bool = False
+    v_anchor: str = "t"  # t, ctr, b
+    image_path: str | None = None  # for shape_type="image"
+
+
+@dataclass
+class ResolvedSlide:
+    """A fully resolved slide — list of shapes ready for the writer."""
+
+    background_path: Path | None = None
+    shapes: list[ResolvedShape] = field(default_factory=list)
+    notes: str = ""

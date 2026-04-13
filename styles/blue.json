@@ -1,0 +1,76 @@
+{
+  "meta": {
+    "schema_version": "0.1",
+    "name": "blue",
+    "description": "Professional blue theme for technology and science topics"
+  },
+
+  "global": {
+    "palette": {
+      "primary": "#1E293B",
+      "accent": "#2563EB",
+      "accent_light": "#DBEAFE",
+      "bg": "#EFF6FF",
+      "text": "#1E293B",
+      "text_secondary": "#475569",
+      "card_fill": "#FFFFFF",
+      "shadow": "#93C5FD",
+      "icon": "#3B82F6"
+    },
+    "fonts": {
+      "heading": {"family": "Noto Sans SC", "fallback": "Arial"},
+      "body": {"family": "Noto Sans SC", "fallback": "Arial"}
+    },
+    "background": {
+      "type": "diagonal_gradient",
+      "seed_extra": ""
+    }
+  },
+
+  "semantic": {
+    "title_size_pt": 38,
+    "subtitle_size_pt": 20,
+    "body_size_pt": 12,
+    "card_title_size_pt": 16,
+    "footer_size_pt": 13,
+    "formula_size_pt": 18,
+
+    "heading_color": "palette.text",
+    "body_color": "palette.text_secondary",
+    "accent_color": "palette.accent",
+    "card_fill_color": "palette.card_fill",
+    "card_title_color": "palette.accent",
+    "icon_color": "palette.icon",
+
+    "bg_overlay_color": "palette.bg",
+    "bg_overlay_alpha": 0.55,
+
+    "card_corner_radius": 8000,
+    "card_shadow": {
+      "blur_pt": 30,
+      "dist_pt": 8,
+      "color": "palette.shadow",
+      "alpha_pct": 14
+    }
+  },
+
+  "layout": {
+    "margin": "comfortable",
+    "card_spacing": "normal",
+    "icon_size": "large",
+    "title_position": "top_left",
+    "content_density": "standard"
+  },
+
+  "decorations": {
+    "title_underline": true,
+    "content_panel": true,
+    "panel_alpha_pct": 35,
+    "footer_separator": true,
+    "quote_bar": true,
+    "section_diamond": true,
+    "closing_circle": true
+  },
+
+  "slide_overrides": {}
+}

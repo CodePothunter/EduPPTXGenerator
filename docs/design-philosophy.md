@@ -220,8 +220,38 @@ python-pptx 不支持以下特性，我们通过 lxml 直接操作 XML 来实现
 
 ### 未来可能的增强
 
-- 文本溢出检测和动态字号调整
 - 更多布局模板（时间线、对比表、流程图）
 - 图表嵌入（matplotlib/echarts → 图片 → slide）
 - 多轮对话式 PPT 编辑（"把第 3 页的例题换成..."）
 - MCP Server 接口（供 Claude Code 等工具直接调用）
+
+## 6. 三层 Schema 架构（v2 管线）
+
+v1 管线的核心问题：所有视觉决策硬编码在 Python 中。renderer.py 同时扮演布局引擎、样式解析器和形状写入器，771 行代码无法通过数据驱动控制。
+
+v2 管线引入 "CSS for PPTX" 理念，将渲染拆分为三层：
+
+### 6.1 Layer 1: StyleSchema（样式表）
+
+JSON 文件，三层 token 层级：
+- **global**: palette（调色板）、fonts（字体）、background（背景配置）
+- **semantic**: 字号、颜色引用（`"palette.accent"` 点路径）、阴影参数
+- **layout**: 命名意图（`"comfortable"` → 具体 EMU 值），不用比例或绝对坐标
+- **decorations**: 装饰元素开关（下划线、面板、引用栏等 boolean flag）
+
+### 6.2 Layer 2: Resolution Pipeline（解析管线）
+
+纯函数链：
+1. `style_resolver`: 解引用 palette ref + 解析 named intent → ResolvedStyle
+2. `layout_resolver`: Plan + ResolvedStyle → list[ResolvedSlide]（全部 EMU 坐标）
+3. `validator`: 越界检查、重叠检测、最小尺寸验证（clamp + warn，不 crash）
+
+### 6.3 Layer 3: PptxWriter（形状写入器）
+
+~200 行的 match/case 循环。不做任何决策，只读取 ResolvedShape 字段并调用 python-pptx API。XML 补丁委托给 xml_patches.py。
+
+### 6.4 设计决策
+
+- **EMU 坐标而非比例**: 固定画布不需要响应式布局，命名意图解析为 EMU 比比例转换更直接
+- **新旧并存**: v2 管线独立运行，不修改 v1 代码，通过对比测试验证等价性
+- **换 JSON 换风格**: 添加新风格只需创建 JSON 文件，零 Python 代码变更

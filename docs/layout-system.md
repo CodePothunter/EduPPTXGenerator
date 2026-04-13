@@ -213,3 +213,47 @@ SlideType = Literal[..., "timeline"]
 ```
 
 布局系统不关心内容，只负责坐标计算。渲染器会根据 `SlotLayout` 中的坐标放置元素。
+
+## v2 布局系统：命名意图 + ResolvedShape
+
+v2 管线用命名意图（named intents）替代硬编码常量：
+
+### 命名意图预设
+
+| 意图 | tight | comfortable | spacious |
+|------|-------|-------------|----------|
+| margin_left | 635,000 (50pt) | 1,016,000 (80pt) | 1,524,000 (120pt) |
+| margin_top | 508,000 (40pt) | 635,000 (50pt) | 762,000 (60pt) |
+| content_w | 10,922,000 (860pt) | 10,160,000 (800pt) | 9,144,000 (720pt) |
+
+| 意图 | tight | normal | wide |
+|------|-------|--------|------|
+| card_spacing | 152,400 (12pt) | 304,800 (24pt) | 457,200 (36pt) |
+
+| 意图 | small | medium | large |
+|------|-------|--------|-------|
+| icon_size | 304,800 (24pt) | 457,200 (36pt) | 609,600 (48pt) |
+
+**comfortable + normal + large** 的值等于 v1 管线的硬编码常量，确保视觉一致。
+
+### ResolvedShape 数据模型
+
+v2 管线的中间表示。所有值都是具体的（EMU 坐标、hex 颜色），无引用：
+
+```python
+@dataclass
+class ResolvedShape:
+    shape_type: str       # textbox, rounded_rect, oval, image, line
+    left: int; top: int; width: int; height: int  # EMU
+    text: str | None
+    font: ResolvedFont | None
+    fill_color: str | None    # hex
+    corner_radius: int        # OOXML 0-100000
+    shadow: ResolvedShadow | None
+    alpha_pct: int            # 0-100
+    z_order: int              # 层叠顺序
+    auto_shrink: bool         # normAutofit
+    v_anchor: str             # t/ctr/b
+```
+
+PPTX writer 读取这些字段直接生成形状，不做任何决策。
