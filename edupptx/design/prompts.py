@@ -175,22 +175,17 @@ def build_svg_user_prompt(
     if page.design_notes:
         lines.append(f"\n### 设计备注\n{page.design_notes}")
 
-    # 可用图片 — 压缩后转 base64 data URI 嵌入
+    # 可用图片 — 告知 LLM 使用占位符，后处理注入真实图片
     image_lines: list[str] = []
     for role, path in assets.image_paths.items():
-        data_uri = _compress_and_encode(path)
-        if data_uri:
-            image_lines.append(
-                f"- **{role}** 图片 — 直接复制下面这行作为 `<image>` 的 href 属性值：\n"
-                f"  {data_uri}"
-            )
+        image_lines.append(f"- **{role}** 图片可用，请用 `<image href=\"__IMAGE_{role.upper()}__\" .../>` 作为占位")
     if image_lines:
-        lines.append("\n### 可用图片（data URI 格式，必须在 SVG 中使用）")
+        lines.append("\n### 可用图片资源")
         lines.extend(image_lines)
         lines.append(
-            "\n**必须** 用 `<image href=\"data:image/jpeg;base64,...\" "
-            "x=\"...\" y=\"...\" width=\"...\" height=\"...\"/>` 嵌入这些图片。"
-            "图片是内容的重要组成部分，不能省略。"
+            "\n**必须** 在合适位置放置 `<image>` 元素。"
+            " 使用 `href=\"__IMAGE_HERO__\"` 或 `href=\"__IMAGE_ILLUSTRATION__\"` 等占位符。"
+            " 系统会自动替换为真实图片。给 image 设置合理的 x, y, width, height 属性。"
         )
 
     # 可用图标

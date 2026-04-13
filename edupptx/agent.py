@@ -78,8 +78,8 @@ class PPTXAgent:
         logger.info("Generated {} SVG slides", len(slides))
 
         # ── Phase 4: Post-processing ────────────────────────
-        session.log_step("postprocess", "Validating and fixing SVGs")
-        svg_paths = self._phase4_postprocess(slides, session)
+        session.log_step("postprocess", "Validating, fixing SVGs, injecting images")
+        svg_paths = self._phase4_postprocess(slides, session, all_assets)
         logger.info("Post-processed {} SVGs", len(svg_paths))
 
         # ── Phase 5: Output ─────────────────────────────────
@@ -184,6 +184,7 @@ class PPTXAgent:
 
     def _phase4_postprocess(
         self, slides: list[GeneratedSlide], session: Session,
+        all_assets: dict[int, SlideAssets] | None = None,
     ) -> list[Path]:
         from edupptx.postprocess.svg_validator import validate_and_fix
         from edupptx.postprocess.svg_sanitizer import sanitize_for_ppt
@@ -201,12 +202,42 @@ class PPTXAgent:
             # Sanitize for PPT
             clean_svg = sanitize_for_ppt(fixed_svg)
 
+            # Inject real images (replace __IMAGE_XXX__ placeholders with base64)
+            if all_assets and slide.page_number in all_assets:
+                clean_svg = self._inject_images(clean_svg, all_assets[slide.page_number])
+
             # Save
             path = slides_dir / f"slide_{slide.page_number:02d}.svg"
             path.write_text(clean_svg, encoding="utf-8")
             svg_paths.append(path)
 
         return svg_paths
+
+    @staticmethod
+    def _inject_images(svg_content: str, assets: SlideAssets) -> str:
+        """Replace __IMAGE_XXX__ placeholders with base64 data URIs."""
+        import base64
+        import io
+        for role, path in assets.image_paths.items():
+            placeholder = f"__IMAGE_{role.upper()}__"
+            if placeholder not in svg_content:
+                continue
+            try:
+                from PIL import Image
+                with Image.open(path) as img:
+                    # Compress for SVG embedding: max 800px wide, JPEG quality 70
+                    if img.width > 800:
+                        ratio = 800 / img.width
+                        img = img.resize((800, int(img.height * ratio)), Image.LANCZOS)
+                    buf = io.BytesIO()
+                    img.convert("RGB").save(buf, "JPEG", quality=70, optimize=True)
+                    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                    data_uri = f"data:image/jpeg;base64,{b64}"
+                    svg_content = svg_content.replace(placeholder, data_uri)
+                    logger.debug("Injected image for {} ({}KB)", role, len(b64) // 1024)
+            except Exception as e:
+                logger.warning("Failed to inject image {}: {}", role, e)
+        return svg_content
 
     def _phase5_output(self, svg_paths: list[Path], session: Session) -> None:
         from edupptx.output.pptx_assembler import assemble_pptx
