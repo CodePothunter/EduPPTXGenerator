@@ -1,63 +1,30 @@
 # 设计理念
 
-EduPPTX 的架构源于对豆包 AI 生成 PPT 的逆向工程分析，后演进为 Schema 驱动的三层管线。本文记录关键发现、设计决策和技术选型背后的思考。
+EduPPTX 是一个 Schema 驱动的教育演示文稿生成器。用户给出主题和自然语言风格要求，Agent 编排 LLM 完成内容规划、风格协商、素材生成，最终通过三层渲染管线输出 PPTX 文件。
 
-## 1. 逆向分析：豆包是怎么做的
+本文记录架构选型、核心设计决策和背后的思考。
 
-我们拆解了一份豆包生成的教学 PPT（"探索勾股定理的奥秘"，15 页），得出以下关键发现：
+## 1. 设计原则
 
-### 1.1 空白 Layout 策略
+### 数据驱动，代码不做视觉决策
 
-豆包的 15 张 slide 全部引用同一个 `slideLayout12`，这是一个**完全空白**的 layout（仅 3 行 XML，无任何 placeholder）。每个形状都是**绝对定位**手动放置的 `<p:sp>` 和 `<p:pic>`。
+所有视觉参数（配色、字号、间距、装饰开关）定义在 JSON 文件里，而不是 Python 代码中。渲染管线只是一个"JSON → EMU 坐标 → PPTX 形状"的机械映射。换风格 = 换 JSON 文件，零代码变更。
 
-这告诉我们：**模板化 layout 不适合动态内容生成**。卡片数量、文本长度、图标数量都在变化，placeholder 的固定位槽无法适应。正确的做法是用坐标计算引擎动态生成布局。
+### Agent 做决策，管线做执行
 
-### 1.2 SVG+PNG 双轨图标
+LLM 负责两类决策：内容规划（选什么 slide 类型、写什么文案）和风格协商（把"清新活泼"翻译成具体的 margin/spacing/density 参数）。管线收到决策结果后纯机械执行，不再有任何智能判断。
 
-每个图标由一对文件组成（如 `image3.svg` + `image2.png`）。XML 中使用 `asvg:svgBlip` 扩展嵌入 SVG，同时保留 PNG 作为低版本 PowerPoint 的降级方案。
+### 防御性布局
 
-```xml
-<a:blip r:embed="rId3">  <!-- PNG (fallback) -->
-  <a:extLst>
-    <a:ext uri="{96DAC541-7B7A-43D3-8B79-37D633B846F1}">
-      <asvg:svgBlip r:embed="rId4"/>  <!-- SVG (modern) -->
-    </a:ext>
-  </a:extLst>
-</a:blip>
-```
+LLM 的决策不可完全信任。风格协商可能选出让卡片空间不足的参数组合。布局引擎的回应不是报错，而是自动降级（去掉图标、缩小标题）保证文字始终有足够空间。任何样式组合都能产出合法的 PPTX。
 
-这是 Office 2019+ 的标准做法。我们在 `xml_patches.py` 中复现了这个模式。
+### 单一配置源
 
-### 1.3 Tailwind 色系
-
-分析所有 slide 的颜色值，完全匹配 Tailwind CSS 的 emerald 色系：
-
-| 用途 | 色值 | Tailwind 对应 |
-|------|------|--------------|
-| 蒙版 | `#F0FDF4` | emerald-50 |
-| 图标 | `#10B981` | emerald-500 |
-| 强调 | `#059669` | emerald-600 |
-| 阴影 | `#6EE7B7` | emerald-300 |
-| 主文字 | `#1F2937` | gray-800 |
-| 副文字 | `#4B5563` | gray-600 |
-
-我们直接采用了相同策略，将配色定义在 `styles/*.json` 中，每套主题一个文件。
-
-### 1.4 坐标模板化
-
-分析多页 XML 中形状的 `<a:off>` 和 `<a:ext>` 值，发现同类型元素的 Y 坐标几乎完全一致。这说明布局引擎使用了**预定义的槽位模板**，根据 slide type 选择模板，然后按卡片数量等分宽度填入内容。
-
-### 1.5 媒体文件结构
-
-| 类型 | 数量 | 用途 |
-|------|------|------|
-| JPEG | 9 | 每页一张全屏背景图（AI 生成的抽象学术场景） |
-| SVG | 33 | Lucide 风格线性图标（48x48 viewBox） |
-| PNG | 34 | 同一图标的 PNG 降级版本 |
+颜色、字体、间距的定义只存在于 `styles/*.json`。不存在第二套配色定义。Agent、背景生成器、图表渲染器、测试 fixture 全部从同一个 `ResolvedStyle` 取值。
 
 ## 2. Agent 架构
 
-我们没有采用固定的四层管线，而是构建了一个 **薄 Agent**，由 5 个阶段串联，其中内容规划和素材执行可以利用 LLM 做智能决策：
+5 个阶段串联。前 3 个阶段用 LLM 做决策，后 2 个阶段纯执行：
 
 ```
 用户输入 (主题 + 要求)
@@ -97,24 +64,20 @@ output/session_xxx/
 
 ### Phase 2: 风格协商
 
-详见 [style-negotiation.md](style-negotiation.md)。用户的自然语言要求（如"简约商务风"）被 LLM 转译为 JSON 补丁，深度合并到基础 StyleSchema 上。
+用户的自然语言要求（如"简约商务风"）被 LLM 转译为 JSON 补丁，深度合并到基础 StyleSchema 上。详见 [style-negotiation.md](style-negotiation.md)。
 
 ### Phase 3: 素材决策
 
 对每张非简单类型的 slide（跳过 big_quote/closing/section），发起一次小型 LLM 调用，决定：
 - 背景风格（diagonal_gradient/radial_gradient/geometric_circles/geometric_triangles）
-- 是否需要图表（5 种类型），或
-- 是否需要 AI 插图（描述、风格、锚点、缩放）
+- 是否需要图表（5 种类型），或 AI 插图（描述、风格、锚点、缩放）
 
-使用 4 个线程并行执行。背景风格额外做了**强制轮转**（`_BG_STYLES[idx % 4]`），防止 LLM 每页都选同一种。
+使用 4 个线程并行执行。背景风格做了**强制轮转**（`_BG_STYLES[idx % 4]`），防止 LLM 每页都选同一种。
 
 ### Phase 4: 素材执行
 
-纯执行，无 LLM 调用。并行生成：
-- **背景图**：Pillow 程序生成（渐变+装饰几何体），或从素材库缓存复用
-- **AI 插图**：调用图片生成 API（Seedream），自动选择最佳分辨率比例
+纯执行，无 LLM 调用。并行生成背景图和 AI 插图。三级降级策略：
 
-三级降级策略：
 ```
 缓存库命中 → 直接复用（0ms）
            → 程序生成（Pillow，~50ms）
@@ -128,7 +91,7 @@ output/session_xxx/
 
 ## 3. 三层 Schema 架构
 
-这是渲染管线的核心设计。受 CSS 启发，将所有视觉决策从代码中抽离到 JSON 文件：
+渲染管线的核心。受 CSS 启发，将视觉决策从代码中抽离到 JSON：
 
 ```
 styles/emerald.json ──→ style_resolver ──→ ResolvedStyle
@@ -169,23 +132,17 @@ JSON 文件，三层 token 层级：
 
 ### 为什么这样分
 
-- **换 JSON 换风格**: 不需要改 Python 就能完全改变视觉风格
+- **换 JSON 换风格**: 不改 Python 就能完全改变视觉风格
 - **EMU 坐标而非比例**: 固定画布不需要响应式，命名意图解析为 EMU 比比例转换更直接
 - **Writer 不做决策**: 渲染层是纯机械映射，所有智能在 resolver 层完成
 
 ## 4. 核心设计决策
 
-### 4.1 为什么不用 python-pptx 的 Layout/Placeholder
+### 4.1 绝对定位，不用 Placeholder
 
-python-pptx 支持 slide layout 中的 placeholder，但我们不用：
+PowerPoint 的 slide layout placeholder 体系适合编辑已有模板，不适合动态内容生成。卡片数量在 1-4 之间变化，阴影、透明度、SVG 嵌入需要操控底层 XML，placeholder 反而增加了间接性。我们选择**绝对定位 + 坐标计算**，由 layout resolver 动态生成每个形状的 EMU 坐标。
 
-1. **卡片数量动态变化** — 同一种 slide type，可能有 2、3、4 张卡片
-2. **精细控制需求** — 阴影、透明度、SVG 嵌入都需要操控 XML
-3. **复现分析** — 豆包自己也没用 placeholder
-
-选择了**绝对定位 + 坐标计算**，与豆包一致。
-
-### 4.2 为什么用 Pydantic 做中间表示
+### 4.2 Pydantic 做中间表示
 
 `PresentationPlan` 是 LLM 输出和渲染器之间的桥梁：
 
@@ -195,7 +152,7 @@ python-pptx 支持 slide layout 中的 placeholder，但我们不用：
 
 ### 4.3 自适应卡片布局
 
-卡片区域高度固定（200pt），但卡片内部布局会根据可用空间自动选择三种模式：
+卡片区域高度固定（200pt），但内部布局根据可用空间自动选择三种模式：
 
 | 模式 | 条件 | 图标 | 标题 | Body 高度 |
 |------|------|------|------|-----------|
@@ -203,46 +160,25 @@ python-pptx 支持 slide layout 中的 placeholder，但我们不用：
 | Compact | body_h >= 38pt（compact） | 32pt | 24pt | 中等 |
 | Minimal | 以上都不满足 | 无 | 24pt | 最大化 |
 
-当 LLM 风格协商选择了 `relaxed` 密度（更大的内部间距），full 模式的 body 区域可能不足 30pt。此时布局引擎自动降级到 compact 或 minimal 模式，保证文字始终有足够空间。这个机制使得任何样式组合都能正确渲染。
+当风格协商选择了 `relaxed` 密度（更大的内部间距），full 模式的 body 区域可能不足。布局引擎自动降级到 compact 或 minimal 模式。这个机制使得**任何样式组合都能正确渲染**。
 
-### 4.4 XML 补丁而非原生 API
+### 4.4 XML 补丁
 
-python-pptx 不支持以下特性，通过 lxml 直接操作 XML 实现：
+python-pptx 不支持卡片阴影、蒙版透明度、SVG 图标嵌入、圆角半径、CJK 字体。通过 lxml 直接操作 XML 的 `<a:outerShdw>`、`<a:alpha>`、`<asvg:svgBlip>`、`<a:gd>`、`<a:ea>` 等元素实现。"高层 API + 底层补丁" 的混合方式兼顾开发效率和视觉效果。
 
-| 特性 | XML 元素 |
-|------|---------|
-| 卡片阴影 | `<a:outerShdw>` |
-| 蒙版透明度 | `<a:alpha>` |
-| SVG 图标嵌入 | `<asvg:svgBlip>` |
-| 圆角半径 | `<a:gd name="adj">` |
-| CJK 字体 | `<a:ea>`, `<a:cs>` |
-
-"高层 API + 底层补丁" 的混合方式兼顾开发效率和视觉效果。
-
-### 4.5 LLM 提示词设计
+### 4.5 LLM 提示词约束
 
 **约束化输出** — 明确指定 JSON schema、每种 slide type 的卡片数量范围、可用图标名单。约束越明确，LLM 输出越稳定。
 
-**教学结构引导** — 提示词中给出推荐的页面顺序（引入→定义→例题→练习→总结），但不强制。
+**图标目录注入** — 109 个可用图标名直接写进提示词，LLM 只能从中选择。无效图标被自动替换为 `circle` fallback。
 
-**图标目录注入** — 109 个可用图标名直接写进提示词，LLM 只能从中选择。无效图标会被自动替换为 `circle` fallback。
+**卡片数量上限** — 大多数 slide 类型限制为 2-3 张卡片，仅 summary 允许 4 张。过多卡片导致文字拥挤，约束比修布局成本低。
 
-## 5. 与豆包生成结果的对比
-
-| 维度 | 豆包 | EduPPTX |
-|------|------|---------|
-| 背景图 | AI 生成（高质量） | 三级策略（缓存→程序→AI） |
-| 图标 | 自定义 SVG | Lucide 开源图标库（109 个） |
-| 布局精度 | 像素级精调 | Schema 驱动（命名意图→EMU） |
-| 风格控制 | 固定 | 自然语言风格协商 |
-| 渲染方式 | 原始 OOXML 拼装 | python-pptx + XML 补丁 |
-| 可扩展性 | 闭源 | JSON 换风格，函数注册换布局 |
-
-## 6. 扩展点
+## 5. 扩展点
 
 ### 添加新主题
 
-在 `styles/` 目录创建 JSON 文件即可。结构参考 `styles/emerald.json`。无需改代码。
+在 `styles/` 目录创建 JSON 文件。结构参考 `styles/emerald.json`。CLI 的 `palettes` 命令会自动发现。
 
 ### 添加新 slide 类型
 
@@ -253,3 +189,48 @@ python-pptx 不支持以下特性，通过 lxml 直接操作 XML 实现：
 ### 添加新图标
 
 将 24x24 的 SVG 放入 `assets/icons/` 目录，文件名即图标名。
+
+---
+
+## 附录：设计考古 — 豆包逆向分析
+
+项目早期拆解了一份豆包 AI 生成的教学 PPT（"探索勾股定理的奥秘"，15 页），获得了几个关键洞察，影响了后续的架构选型。
+
+### 空白 Layout 策略
+
+豆包的 15 张 slide 全部引用同一个完全空白的 `slideLayout12`（无任何 placeholder），每个形状都是绝对定位的 `<p:sp>` 和 `<p:pic>`。这验证了我们"不用 placeholder，用坐标计算"的方向。
+
+### SVG+PNG 双轨图标
+
+每个图标由 SVG + PNG 一对文件组成，通过 `asvg:svgBlip` 扩展嵌入 SVG，PNG 作为低版本降级。这是 Office 2019+ 的标准做法，我们在 `xml_patches.py` 中复现了这个模式。
+
+```xml
+<a:blip r:embed="rId3">  <!-- PNG fallback -->
+  <a:extLst>
+    <a:ext uri="{96DAC541-7B7A-43D3-8B79-37D633B846F1}">
+      <asvg:svgBlip r:embed="rId4"/>  <!-- SVG modern -->
+    </a:ext>
+  </a:extLst>
+</a:blip>
+```
+
+### Tailwind 色系
+
+分析色值发现完全匹配 Tailwind CSS 的 emerald 色系。我们沿用了 Tailwind 色板作为主题基础。
+
+### 坐标模板化
+
+同类型元素的 Y 坐标几乎完全一致，证明背后有预定义的槽位模板。这与我们的 layout resolver 方案一致。
+
+### 已超越的部分
+
+EduPPTX 在以下方面已经超出了对豆包的逆向复现：
+
+| 能力 | 豆包 | EduPPTX |
+|------|------|---------|
+| 风格控制 | 固定风格 | **自然语言风格协商**，LLM 实时转译 |
+| 主题扩展 | 闭源，不可扩展 | **JSON 驱动**，加文件即加主题 |
+| 布局自适应 | 固定参数 | **预计算降级**，任意样式组合都安全 |
+| 可观测性 | 黑盒 | **会话目录**，每阶段产物可检视 |
+| 素材管理 | 一次性生成 | **素材库缓存**，跨会话复用 |
+| 架构 | 单体管线 | **Agent 编排**，5 阶段可独立替换 |
