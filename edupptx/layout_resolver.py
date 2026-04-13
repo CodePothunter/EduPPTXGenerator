@@ -838,7 +838,7 @@ def resolve_layout(
         resolver = _SLIDE_RESOLVERS.get(slide_content.type, _resolve_content)
         shapes = resolver(slide_content, style)
 
-        # Add material image if present
+        # Add material image if present (aspect-ratio preserving fit)
         mat_path = material_paths.get(i) if material_paths else None
         if mat_path and mat_path.exists() and slide_content.content_materials:
             mat = slide_content.content_materials[0]
@@ -846,16 +846,32 @@ def resolve_layout(
             slot = _compute_material_slot(slide_content.type, style, mat_pos)
             if slot:
                 mx, my, mw, mh = slot
-                # Scale down slightly for padding
                 scale = getattr(mat, "image_scale", 0.85)
-                scaled_w = int(mw * scale)
-                scaled_h = int(mh * scale)
-                img_x = mx + (mw - scaled_w) // 2
-                img_y = my + (mh - scaled_h) // 2
+                avail_w = int(mw * scale)
+                avail_h = int(mh * scale)
+
+                # Read image dimensions and fit within slot preserving aspect ratio
+                try:
+                    from PIL import Image as _PILImage
+                    with _PILImage.open(str(mat_path)) as _img:
+                        img_w, img_h = _img.size
+                    if img_w > 0 and img_h > 0:
+                        ratio_w = avail_w / img_w
+                        ratio_h = avail_h / img_h
+                        fit_ratio = min(ratio_w, ratio_h)
+                        final_w = int(img_w * fit_ratio)
+                        final_h = int(img_h * fit_ratio)
+                    else:
+                        final_w, final_h = avail_w, avail_h
+                except Exception:
+                    final_w, final_h = avail_w, avail_h
+
+                img_x = mx + (mw - final_w) // 2
+                img_y = my + (mh - final_h) // 2
                 shapes.append(ResolvedShape(
                     shape_type="image",
                     left=img_x, top=img_y,
-                    width=scaled_w, height=scaled_h,
+                    width=final_w, height=final_h,
                     image_path=str(mat_path),
                     z_order=Z_MATERIAL,
                 ))
