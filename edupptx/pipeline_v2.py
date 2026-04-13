@@ -24,6 +24,7 @@ def render_with_schema(
     style_path: Path,
     bg_paths: list[Path] | None = None,
     material_paths: dict[int, Path] | None = None,
+    diagram_specs: dict[int, tuple[str, dict]] | None = None,
     output_path: Path | str = "output_v2.pptx",
 ) -> Path:
     """Render a presentation using the v2 schema-driven pipeline.
@@ -35,6 +36,7 @@ def render_with_schema(
     5. Write PPTX
 
     material_paths: {slide_index: Path} for illustration/diagram images.
+    diagram_specs: {slide_index: (diagram_type, diagram_data)} for native diagrams.
     """
     # Layer 1: Load schema
     schema = load_style(style_path)
@@ -44,7 +46,7 @@ def render_with_schema(
     resolved_style = resolve_style(schema)
 
     # Layer 2b: Resolve layout
-    slides = resolve_layout(plan, resolved_style, bg_paths, material_paths)
+    slides = resolve_layout(plan, resolved_style, bg_paths, material_paths, diagram_specs)
     logger.info("V2 pipeline: resolved {} slides", len(slides))
 
     # Layer 2c: Validate
@@ -54,7 +56,7 @@ def render_with_schema(
 
     # Layer 3: Write PPTX
     writer = PptxWriter()
-    writer.write_slides(slides, bg_paths)
+    writer.write_slides(slides, bg_paths, style=resolved_style)
     out = writer.save(output_path)
     logger.info("V2 pipeline: saved to {}", out)
     return out

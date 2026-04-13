@@ -169,3 +169,5 @@ class ResolvedSlide:
     background_path: Path | None = None
     shapes: list[ResolvedShape] = field(default_factory=list)
     notes: str = ""
+    # Native diagram info: (diagram_type, diagram_data, (x, y, w, h) in EMU)
+    diagram_info: tuple[str, dict, tuple[int, int, int, int]] | None = None

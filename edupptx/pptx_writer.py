@@ -16,9 +16,10 @@ from pptx import Presentation
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Emu, Pt
 
+from edupptx.diagram_native import SlotPosition, draw_diagram_on_slide
 from edupptx.icons import get_icon_png, get_icon_svg
 from edupptx.models import ResolvedShape, ResolvedSlide
-from edupptx.style_schema import SLIDE_H, SLIDE_W
+from edupptx.style_schema import SLIDE_H, SLIDE_W, ResolvedStyle
 from edupptx.xml_patches import (
     hex_to_rgb,
     patch_alpha,
@@ -43,7 +44,8 @@ class PptxWriter:
         self._temp_dir = tempfile.mkdtemp(prefix="edupptx_v2_")
 
     def write_slides(self, slides: list[ResolvedSlide],
-                     bg_paths: list[Path] | None = None) -> None:
+                     bg_paths: list[Path] | None = None,
+                     style: ResolvedStyle | None = None) -> None:
         """Write all resolved slides into the presentation."""
         for i, rs in enumerate(slides):
             slide = self.prs.slides.add_slide(self.prs.slide_layouts[6])  # blank
@@ -60,6 +62,14 @@ class PptxWriter:
             # Shapes sorted by z_order
             for shape in sorted(rs.shapes, key=lambda s: s.z_order):
                 self._write_shape(slide, shape)
+
+            # Native diagram (vector shapes drawn directly on slide)
+            if rs.diagram_info and style:
+                d_type, d_data, (sx, sy, sw, sh) = rs.diagram_info
+                draw_diagram_on_slide(
+                    slide, d_type, d_data,
+                    SlotPosition(sx, sy, sw, sh), style,
+                )
 
             # Speaker notes
             if rs.notes:

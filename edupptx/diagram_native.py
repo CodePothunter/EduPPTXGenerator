@@ -110,7 +110,7 @@ def _add_circle(slide, cx: int, cy: int, radius: int, fill_color: str):
 # ── Diagram Renderers ──────────────────────────────────────
 
 def _draw_flowchart(slide, data: dict, slot: SlotPosition, style: ResolvedStyle):
-    """Draw flowchart with native shapes: rounded boxes + line connectors."""
+    """Draw flowchart with native shapes, scaled to fit slot."""
     nodes = data.get("nodes", [])
     edges = data.get("edges", [])
     direction = data.get("direction", "TB")
@@ -123,8 +123,16 @@ def _draw_flowchart(slide, data: dict, slot: SlotPosition, style: ResolvedStyle)
     gap = 381000      # 30pt
 
     if direction == "TB":
+        # Scale down to fit slot height
+        needed_h = n * box_h + (n - 1) * gap
+        if needed_h > slot.height:
+            scale = slot.height / needed_h
+            box_h = int(box_h * scale)
+            gap = int(gap * scale)
+            box_w = max(762000, int(box_w * scale))
+
         total_h = n * box_h + (n - 1) * gap
-        start_y = slot.y + (slot.height - total_h) // 2
+        start_y = slot.y + max(0, (slot.height - total_h) // 2)
         cx = slot.x + slot.width // 2
 
         node_positions = {}
@@ -147,8 +155,16 @@ def _draw_flowchart(slide, data: dict, slot: SlotPosition, style: ResolvedStyle)
                           dst[0] + box_w // 2, dst[1],
                           style.accent_color, width_pt=2)
     else:  # LR
+        # Scale down to fit slot width
+        needed_w = n * box_w + (n - 1) * gap
+        if needed_w > slot.width:
+            scale = slot.width / needed_w
+            box_w = int(box_w * scale)
+            gap = int(gap * scale)
+            box_h = max(254000, int(box_h * scale))
+
         total_w = n * box_w + (n - 1) * gap
-        start_x = slot.x + (slot.width - total_w) // 2
+        start_x = slot.x + max(0, (slot.width - total_w) // 2)
         cy = slot.y + slot.height // 2
 
         node_positions = {}
@@ -242,7 +258,7 @@ def _draw_comparison(slide, data: dict, slot: SlotPosition, style: ResolvedStyle
 
 
 def _draw_hierarchy(slide, data: dict, slot: SlotPosition, style: ResolvedStyle):
-    """Draw hierarchy tree with native shapes."""
+    """Draw hierarchy tree with native shapes, scaled to fit slot height."""
     root = data.get("root")
     if not root:
         return
@@ -253,9 +269,27 @@ def _draw_hierarchy(slide, data: dict, slot: SlotPosition, style: ResolvedStyle)
             return 1
         return sum(_count_leaves(c) for c in children)
 
+    def _max_depth(node, d=0):
+        children = node.get("children", [])
+        if not children:
+            return d
+        return max(_max_depth(c, d + 1) for c in children)
+
+    # Scale box_h and gap to fit within slot.height
+    levels = _max_depth(root) + 1
+    ideal_box_h = 381000   # 30pt
+    ideal_gap = 254000     # 20pt
+    needed = levels * ideal_box_h + (levels - 1) * ideal_gap
+    if needed > slot.height and levels > 1:
+        scale = slot.height / needed
+        box_h = int(ideal_box_h * scale)
+        gap_h = int(ideal_gap * scale)
+    else:
+        box_h = ideal_box_h
+        gap_h = ideal_gap
+
     def _draw_node(node, x, y, available_w, depth):
         box_w = min(1524000, available_w - 254000)  # max 120pt, fit in space
-        box_h = 381000  # 30pt
         bx = x + (available_w - box_w) // 2
 
         _add_rounded_box(slide, bx, y, box_w, box_h,
@@ -271,7 +305,7 @@ def _draw_hierarchy(slide, data: dict, slot: SlotPosition, style: ResolvedStyle)
         if not children:
             return
 
-        child_y = y + box_h + 254000  # 20pt gap
+        child_y = y + box_h + gap_h
         total_leaves = _count_leaves(node)
         child_x = x
         parent_cx = bx + box_w // 2
@@ -281,7 +315,6 @@ def _draw_hierarchy(slide, data: dict, slot: SlotPosition, style: ResolvedStyle)
             child_w = (available_w * leaves) // total_leaves
             child_cx = child_x + child_w // 2
 
-            # Line from parent bottom to child top
             _add_line(slide, parent_cx, y + box_h, child_cx, child_y,
                       style.accent_color, width_pt=1.5)
 

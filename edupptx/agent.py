@@ -128,9 +128,10 @@ class PPTXAgent:
         # Phase 5: Render via v2 schema-driven pipeline
         session.log_step("rendering", f"Rendering {len(plan.slides)} slides (v2 pipeline)")
 
-        # Collect background and material paths
+        # Collect background paths, material paths, and diagram specs
         bg_paths = []
         material_paths: dict[int, Path] = {}
+        diagram_specs: dict[int, tuple[str, dict]] = {}
         for i, slide in enumerate(plan.slides):
             bg = slide_assets.get(("bg", i))
             if bg:
@@ -138,7 +139,16 @@ class PPTXAgent:
             mat = slide_assets.get(("mat", i))
             if mat:
                 material_paths[i] = mat
+            # Collect native diagram specs (not image-based)
+            if slide.content_materials:
+                for m in slide.content_materials:
+                    if m.action == "generate_diagram" and m.diagram_type and m.diagram_data:
+                        diagram_specs[i] = (m.diagram_type, m.diagram_data)
+                        break
             session.save_slide_state(i, slide.type, slide.model_dump())
+
+        if diagram_specs:
+            logger.info("Diagram specs collected for {} slides", len(diagram_specs))
 
         # Save negotiated schema for debugging
         import json as _json
@@ -150,12 +160,15 @@ class PPTXAgent:
         from edupptx.layout_resolver import resolve_layout
         from edupptx.pptx_writer import PptxWriter
         from edupptx.validator import validate_slides
-        slides = resolve_layout(plan, resolved_style, bg_paths or None, material_paths or None)
+        slides = resolve_layout(
+            plan, resolved_style, bg_paths or None, material_paths or None,
+            diagram_specs or None,
+        )
         warnings = validate_slides(slides)
         if warnings:
             logger.warning("Validation: {} warnings", len(warnings))
         writer = PptxWriter()
-        writer.write_slides(slides, bg_paths or None)
+        writer.write_slides(slides, bg_paths or None, style=resolved_style)
         writer.save(session.output_path)
         session.log_step("done", f"Saved {len(plan.slides)} slides to {session.output_path}")
         logger.info("Done! {} slides, output: {}", len(plan.slides), session.output_path)

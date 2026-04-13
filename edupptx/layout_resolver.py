@@ -793,6 +793,9 @@ def _compute_material_slot(
 
     Returns (x, y, w, h) or None. Returns None for slide types that have no
     material area (cover, big_quote, closing, section).
+
+    For image_left/image_right slide types, the material slot follows the
+    slide type's spatial split regardless of the requested position.
     """
     if slide_type in _NO_MATERIAL_TYPES:
         return None
@@ -804,6 +807,18 @@ def _compute_material_slot(
 
     if slide_type == "full_image":
         return (content_x, content_y, content_w, content_h)
+
+    # image_left/image_right: material always goes in the image half
+    if slide_type == "image_left":
+        mat_w = int(content_w * 0.50)
+        return (content_x, content_y, mat_w, content_h)
+
+    if slide_type == "image_right":
+        mat_w = int(content_w * 0.50)
+        mat_gap = int(content_w * 0.04)
+        cards_w = content_w - mat_w - mat_gap
+        mat_x = content_x + cards_w + mat_gap
+        return (mat_x, content_y, mat_w, content_h)
 
     if material_position == "full":
         return (content_x, content_y, content_w, content_h)
@@ -838,6 +853,7 @@ def resolve_layout(
     style: ResolvedStyle,
     bg_paths: list[Path] | None = None,
     material_paths: dict[int, Path] | None = None,
+    diagram_specs: dict[int, tuple[str, dict]] | None = None,
 ) -> list[ResolvedSlide]:
     """Resolve an entire presentation plan into a list of ResolvedSlide.
 
@@ -845,6 +861,7 @@ def resolve_layout(
     concrete. The PPTX writer can render them without any style lookups.
 
     material_paths: {slide_index: Path} for illustration/diagram images.
+    diagram_specs: {slide_index: (diagram_type, diagram_data)} for native diagrams.
     """
     slides: list[ResolvedSlide] = []
 
@@ -852,43 +869,55 @@ def resolve_layout(
         resolver = _SLIDE_RESOLVERS.get(slide_content.type, _resolve_content)
         shapes = resolver(slide_content, style)
 
-        # Add material image if present (aspect-ratio preserving fit)
-        mat_path = material_paths.get(i) if material_paths else None
-        if mat_path and mat_path.exists() and slide_content.content_materials:
-            mat = slide_content.content_materials[0]
-            mat_pos = mat.position
+        diagram_info = None
+
+        # Native diagram: compute slot, pass info to writer (no image shape)
+        if diagram_specs and i in diagram_specs:
+            mat = slide_content.content_materials[0] if slide_content.content_materials else None
+            mat_pos = mat.position if mat else "center"
             slot = _compute_material_slot(slide_content.type, style, mat_pos)
             if slot:
-                mx, my, mw, mh = slot
-                scale = getattr(mat, "image_scale", 0.85)
-                avail_w = int(mw * scale)
-                avail_h = int(mh * scale)
+                diagram_type, diagram_data = diagram_specs[i]
+                diagram_info = (diagram_type, diagram_data, slot)
 
-                # Read image dimensions and fit within slot preserving aspect ratio
-                try:
-                    from PIL import Image as _PILImage
-                    with _PILImage.open(str(mat_path)) as _img:
-                        img_w, img_h = _img.size
-                    if img_w > 0 and img_h > 0:
-                        ratio_w = avail_w / img_w
-                        ratio_h = avail_h / img_h
-                        fit_ratio = min(ratio_w, ratio_h)
-                        final_w = int(img_w * fit_ratio)
-                        final_h = int(img_h * fit_ratio)
-                    else:
+        # Add material image if present (aspect-ratio preserving fit)
+        elif material_paths:
+            mat_path = material_paths.get(i)
+            if mat_path and mat_path.exists() and slide_content.content_materials:
+                mat = slide_content.content_materials[0]
+                mat_pos = mat.position
+                slot = _compute_material_slot(slide_content.type, style, mat_pos)
+                if slot:
+                    mx, my, mw, mh = slot
+                    scale = getattr(mat, "image_scale", 0.85)
+                    avail_w = int(mw * scale)
+                    avail_h = int(mh * scale)
+
+                    # Read image dimensions and fit within slot preserving aspect ratio
+                    try:
+                        from PIL import Image as _PILImage
+                        with _PILImage.open(str(mat_path)) as _img:
+                            img_w, img_h = _img.size
+                        if img_w > 0 and img_h > 0:
+                            ratio_w = avail_w / img_w
+                            ratio_h = avail_h / img_h
+                            fit_ratio = min(ratio_w, ratio_h)
+                            final_w = int(img_w * fit_ratio)
+                            final_h = int(img_h * fit_ratio)
+                        else:
+                            final_w, final_h = avail_w, avail_h
+                    except Exception:
                         final_w, final_h = avail_w, avail_h
-                except Exception:
-                    final_w, final_h = avail_w, avail_h
 
-                img_x = mx + (mw - final_w) // 2
-                img_y = my + (mh - final_h) // 2
-                shapes.append(ResolvedShape(
-                    shape_type="image",
-                    left=img_x, top=img_y,
-                    width=final_w, height=final_h,
-                    image_path=str(mat_path),
-                    z_order=Z_MATERIAL,
-                ))
+                    img_x = mx + (mw - final_w) // 2
+                    img_y = my + (mh - final_h) // 2
+                    shapes.append(ResolvedShape(
+                        shape_type="image",
+                        left=img_x, top=img_y,
+                        width=final_w, height=final_h,
+                        image_path=str(mat_path),
+                        z_order=Z_MATERIAL,
+                    ))
 
         bg = bg_paths[i % len(bg_paths)] if bg_paths else None
 
@@ -896,6 +925,7 @@ def resolve_layout(
             background_path=bg,
             shapes=shapes,
             notes=slide_content.notes,
+            diagram_info=diagram_info,
         ))
 
     return slides
