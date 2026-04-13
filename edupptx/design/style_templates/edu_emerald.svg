@@ -1,0 +1,48 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F0F9F4"/>
+      <stop offset="100%" stop-color="#E6F5EC"/>
+    </linearGradient>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="6" flood-color="#10B981" flood-opacity="0.08"/>
+    </filter>
+    <!-- 调色板：主色 #10B981 翠绿，辅助 #059669 深绿，中性 #374151 深灰，浅灰 #9CA3AF -->
+    <!-- 字体：微软雅黑, Arial, sans-serif -->
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="1280" height="720" fill="url(#bg)"/>
+
+  <!-- 装饰：右上角淡绿圆形 -->
+  <circle cx="1200" cy="80" r="180" fill="#10B981" opacity="0.06"/>
+  <!-- 装饰：左下角弧线 -->
+  <path d="M0 650 Q200 580 400 650" stroke="#10B981" stroke-width="2" fill="none" opacity="0.15"/>
+
+  <!-- 标题区域 -->
+  <text x="60" y="64" font-family="微软雅黑, Arial, sans-serif" font-size="32" font-weight="bold" fill="#065F46">示例标题文本</text>
+  <rect x="60" y="76" width="60" height="4" rx="2" fill="#10B981"/>
+
+  <!-- 卡片 1：大卡片（左侧） -->
+  <rect x="60" y="100" width="740" height="560" rx="14" fill="#FFFFFF" filter="url(#shadow)"/>
+  <text x="92" y="148" font-family="微软雅黑, Arial, sans-serif" font-size="24" font-weight="bold" fill="#065F46">核心内容卡片</text>
+  <text x="92" y="186" font-family="微软雅黑, Arial, sans-serif" font-size="18" fill="#374151">
+    <tspan x="92" dy="0">● 第一个要点：清晰表达主要信息</tspan>
+    <tspan x="92" dy="1.6em">● 第二个要点：支撑论据和数据</tspan>
+    <tspan x="92" dy="1.6em">● 第三个要点：总结与启发</tspan>
+  </text>
+
+  <!-- 卡片 2：右上 -->
+  <rect x="820" y="100" width="400" height="268" rx="14" fill="#FFFFFF" filter="url(#shadow)"/>
+  <rect x="820" y="100" width="400" height="6" rx="3" fill="#10B981"/>
+  <text x="852" y="148" font-family="微软雅黑, Arial, sans-serif" font-size="20" font-weight="bold" fill="#065F46">辅助信息</text>
+  <text x="852" y="182" font-family="微软雅黑, Arial, sans-serif" font-size="16" fill="#6B7280">用于补充说明或展示数据</text>
+
+  <!-- 卡片 3：右下 -->
+  <rect x="820" y="388" width="400" height="272" rx="14" fill="#ECFDF5" filter="url(#shadow)"/>
+  <text x="852" y="436" font-family="微软雅黑, Arial, sans-serif" font-size="20" font-weight="bold" fill="#059669">重点提示</text>
+  <text x="852" y="470" font-family="微软雅黑, Arial, sans-serif" font-size="16" fill="#374151">使用浅绿背景强调关键信息</text>
+
+  <!-- 页码 -->
+  <text x="1220" y="700" font-family="微软雅黑, Arial, sans-serif" font-size="12" fill="#9CA3AF" text-anchor="end">1 / 10</text>
+</svg>

@@ -1,0 +1,48 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="1" stdDeviation="3" flood-color="#000000" flood-opacity="0.05"/>
+    </filter>
+    <!-- 调色板：强调 #6366F1 靛蓝，正文 #374151 深灰，辅助 #9CA3AF 中灰，背景 #FFFFFF 纯白 -->
+    <!-- 字体：微软雅黑, Arial, sans-serif；极简风，大量留白 -->
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="1280" height="720" fill="#FFFFFF"/>
+
+  <!-- 装饰：仅一条细线分隔标题区 -->
+  <line x1="80" y1="80" x2="1200" y2="80" stroke="#E5E7EB" stroke-width="1"/>
+
+  <!-- 标题 -->
+  <text x="80" y="60" font-family="微软雅黑, Arial, sans-serif" font-size="28" font-weight="bold" fill="#111827">培训主题</text>
+  <text x="1200" y="60" font-family="微软雅黑, Arial, sans-serif" font-size="14" fill="#9CA3AF" text-anchor="end">模块一</text>
+
+  <!-- 卡片 1：左侧主内容 -->
+  <rect x="80" y="110" width="720" height="540" rx="10" fill="#FAFAFA" filter="url(#shadow)"/>
+  <text x="116" y="160" font-family="微软雅黑, Arial, sans-serif" font-size="22" font-weight="bold" fill="#111827">核心概念</text>
+  <rect x="116" y="172" width="32" height="3" rx="1.5" fill="#6366F1"/>
+  <text x="116" y="210" font-family="微软雅黑, Arial, sans-serif" font-size="17" fill="#374151">
+    <tspan x="116" dy="0">1. 第一个关键要点，简明扼要</tspan>
+    <tspan x="116" dy="1.7em">2. 第二个关键要点，数据支撑</tspan>
+    <tspan x="116" dy="1.7em">3. 第三个关键要点，实践建议</tspan>
+  </text>
+
+  <!-- 卡片 2：右上 -->
+  <rect x="820" y="110" width="380" height="256" rx="10" fill="#FAFAFA" filter="url(#shadow)"/>
+  <rect x="820" y="110" width="4" height="256" rx="2" fill="#6366F1"/>
+  <text x="852" y="156" font-family="微软雅黑, Arial, sans-serif" font-size="18" font-weight="bold" fill="#111827">关键数据</text>
+  <text x="852" y="206" font-family="微软雅黑, Arial, sans-serif" font-size="36" font-weight="bold" fill="#6366F1">86%</text>
+  <text x="852" y="236" font-family="微软雅黑, Arial, sans-serif" font-size="14" fill="#9CA3AF">有效提升率</text>
+
+  <!-- 卡片 3：右下 -->
+  <rect x="820" y="386" width="380" height="264" rx="10" fill="#FAFAFA" filter="url(#shadow)"/>
+  <rect x="820" y="386" width="4" height="264" rx="2" fill="#6366F1" opacity="0.4"/>
+  <text x="852" y="432" font-family="微软雅黑, Arial, sans-serif" font-size="18" font-weight="bold" fill="#111827">备注</text>
+  <text x="852" y="468" font-family="微软雅黑, Arial, sans-serif" font-size="15" fill="#6B7280">
+    <tspan x="852" dy="0">补充材料见附录</tspan>
+    <tspan x="852" dy="1.6em">下节课继续讨论</tspan>
+  </text>
+
+  <!-- 页码 -->
+  <text x="1200" y="696" font-family="微软雅黑, Arial, sans-serif" font-size="12" fill="#D1D5DB" text-anchor="end">04</text>
+</svg>

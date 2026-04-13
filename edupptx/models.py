@@ -1,4 +1,4 @@
-"""Pydantic data models for the presentation pipeline."""
+"""Data models for the V2 SVG pipeline."""
 
 from __future__ import annotations
 
@@ -8,166 +8,135 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-SlideType = Literal[
-    "cover",
-    "lead_in",
-    "definition",
-    "content",
-    "history",
-    "proof",
-    "example",
-    "exercise",
-    "answer",
-    "summary",
-    "extension",
-    "closing",
-    "big_quote",
+
+# ── Phase 0: Input ──────────────────────────────────────
+
+
+@dataclass
+class InputContext:
+    """Unified input from topic, document, or web research."""
+
+    topic: str
+    source_text: str | None = None
+    research_summary: str | None = None
+    requirements: str = ""
+
+
+# ── Phase 1: Planning Draft ─────────────────────────────
+
+PageType = Literal[
+    "cover", "toc", "section", "content", "data", "case", "closing",
+]
+
+LayoutHint = Literal[
+    "center_hero",
+    "vertical_list",
+    "bento_2col_equal",
+    "bento_2col_asymmetric",
+    "bento_3col",
+    "hero_top_cards_bottom",
+    "cards_top_hero_bottom",
+    "mixed_grid",
     "full_image",
-    "image_left",
-    "image_right",
-    "section",
+    "timeline",
+    "comparison",
 ]
 
 
-class SlideCard(BaseModel):
-    """A card component within a slide — icon + title + body text."""
+class ImageNeed(BaseModel):
+    """A single image request within a page's material_needs."""
 
-    icon: str = Field(description="Lucide icon name, e.g. 'triangle', 'book'")
+    query: str = Field(description="Search keyword or generation prompt")
+    source: Literal["search", "ai_generate"] = "search"
+    role: Literal["hero", "illustration", "icon", "background"] = "illustration"
+
+
+class MaterialNeeds(BaseModel):
+    """Material requirements for a single page."""
+
+    background: str | None = Field(default=None, description="Background style name")
+    images: list[ImageNeed] = Field(default_factory=list)
+    icons: list[str] = Field(default_factory=list, description="Lucide icon names")
+    chart: dict | None = Field(default=None, description="Chart spec if needed")
+
+
+class PagePlan(BaseModel):
+    """Planning draft for a single page."""
+
+    page_number: int
+    page_type: PageType
     title: str
-    body: str
+    subtitle: str | None = None
+    content_points: list = Field(default_factory=list)
+    layout_hint: LayoutHint = "mixed_grid"
+    material_needs: MaterialNeeds = Field(default_factory=MaterialNeeds)
+    design_notes: str = ""
+    notes: str = Field(default="", description="Speaker notes")
+
+
+class PlanningMeta(BaseModel):
+    """Metadata for the planning draft."""
+
+    topic: str
+    audience: str = ""
+    purpose: str = ""
+    style_direction: str = ""
+    total_pages: int = 0
+
+
+class PlanningDraft(BaseModel):
+    """Complete planning draft — Phase 1 output."""
+
+    meta: PlanningMeta
+    research_context: str = ""
+    pages: list[PagePlan]
+
+
+# ── Phase 2: Materials ──────────────────────────────────
+
+
+@dataclass
+class ImageResult:
+    """A fetched or generated image."""
+
+    url: str
+    width: int = 0
+    height: int = 0
+    source: str = ""  # "pixabay" / "unsplash" / "seedream"
+    local_path: Path | None = None
 
 
 class MaterialEntry(BaseModel):
-    """A material asset in the library (background, illustration, or diagram)."""
+    """A material asset in the library."""
 
     id: str
-    type: Literal["background", "illustration", "diagram"]
+    type: Literal["background", "illustration", "image"]
     tags: list[str] = Field(default_factory=list)
     palette: str = ""
-    source: Literal["programmatic", "ai_generated", "user_uploaded"] = "programmatic"
+    source: Literal["programmatic", "ai_generated", "search", "user_uploaded"] = "programmatic"
     description: str = ""
     resolution: tuple[int, int] = (1920, 1080)
     path: str = Field(description="Relative path within library directory")
     created_at: str = ""
 
 
-class BackgroundAction(BaseModel):
-    """LLM-specified background decision for a slide."""
-
-    action: Literal["generate", "reuse"]
-    style: str | None = Field(default=None, description="Pillow style for generate action")
-    material_id: str | None = Field(default=None, description="Library ID for reuse action")
-    tags: list[str] = Field(default_factory=list)
-
-
-class ContentMaterial(BaseModel):
-    """LLM-specified content material decision for a slide."""
-
-    action: Literal["generate_diagram", "generate_illustration", "reuse"]
-    position: Literal["full", "left", "right", "center"] = "center"
-    material_id: str | None = None
-    diagram_type: str | None = Field(default=None, description="flowchart|timeline|comparison|hierarchy|cycle")
-    diagram_data: dict | None = None
-    illustration_description: str | None = None
-    illustration_style: str | None = None
-    image_anchor: Literal["top", "center", "bottom"] = Field(
-        default="center", description="Vertical alignment of illustration within its slot"
-    )
-    image_scale: float = Field(
-        default=0.85, ge=0.4, le=1.0,
-        description="How much of the slot the illustration fills (0.4-1.0)"
-    )
-    tags: list[str] = Field(default_factory=list)
-
-
-class SlideContent(BaseModel):
-    """Content specification for a single slide."""
-
-    type: SlideType
-    title: str
-    subtitle: str | None = None
-    cards: list[SlideCard] = Field(default_factory=list)
-    formula: str | None = Field(
-        default=None, description="Key formula displayed in footer area"
-    )
-    footer: str | None = Field(
-        default=None, description="Footer text / summary line"
-    )
-    notes: str = Field(description="Speaker notes (teaching script)")
-    content_blocks: list[dict] | None = Field(
-        default=None, description="Additional structured content for complex slides"
-    )
-    bg_action: BackgroundAction | None = None
-    content_materials: list[ContentMaterial] | None = None
-
-
-class PresentationPlan(BaseModel):
-    """Complete presentation plan generated by the LLM."""
-
-    topic: str
-    palette: str = Field(
-        default="emerald", description="Color palette name from design system"
-    )
-    slides: list[SlideContent]
-    language: str = "zh"
-
-
-# ── Resolved shapes (v2 pipeline) ────────────────────────
+# ── Phase 3-5: SVG + Output ─────────────────────────────
 
 
 @dataclass
-class ResolvedFont:
-    """Fully resolved font specification — no references, all concrete."""
+class SlideAssets:
+    """Collected assets for a single slide."""
 
-    family: str
-    fallback: str
-    size_pt: int
-    bold: bool = False
-    color: str = "#000000"
-
-
-@dataclass
-class ResolvedShadow:
-    """Fully resolved shadow specification."""
-
-    blur_emu: int
-    dist_emu: int
-    color: str
-    alpha_pct: int  # 0-100
-
-
-@dataclass
-class ResolvedShape:
-    """A single resolved shape ready for the PPTX writer.
-
-    All values are concrete — no style lookups, no named intents.
-    The writer reads these fields and creates python-pptx objects directly.
-    """
-
-    shape_type: str  # textbox, rounded_rect, oval, image, line
-    left: int
-    top: int
-    width: int
-    height: int
-    text: str | None = None
-    font: ResolvedFont | None = None
-    fill_color: str | None = None
-    line_color: str | None = None
-    corner_radius: int = 0  # OOXML 0-100000
-    shadow: ResolvedShadow | None = None
-    alpha_pct: int = 100  # 0-100, 100=opaque
-    z_order: int = 0
-    auto_shrink: bool = False
-    v_anchor: str = "t"  # t, ctr, b
-    image_path: str | None = None  # for shape_type="image"
-
-
-@dataclass
-class ResolvedSlide:
-    """A fully resolved slide — list of shapes ready for the writer."""
-
+    page_number: int
     background_path: Path | None = None
-    shapes: list[ResolvedShape] = field(default_factory=list)
-    notes: str = ""
-    # Native diagram info: (diagram_type, diagram_data, (x, y, w, h) in EMU)
-    diagram_info: tuple[str, dict, tuple[int, int, int, int]] | None = None
+    image_paths: dict[str, Path] = field(default_factory=dict)  # role -> path
+    icon_svgs: dict[str, str] = field(default_factory=dict)     # name -> svg string
+
+
+@dataclass
+class GeneratedSlide:
+    """A generated SVG slide — Phase 3 output."""
+
+    page_number: int
+    svg_content: str
+    svg_path: Path | None = None

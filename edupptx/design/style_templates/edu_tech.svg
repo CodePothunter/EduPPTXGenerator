@@ -1,0 +1,63 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="100%" stop-color="#1E293B"/>
+    </linearGradient>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="2" stdDeviation="8" flood-color="#06B6D4" flood-opacity="0.15"/>
+    </filter>
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#334155" stroke-width="0.5" opacity="0.3"/>
+    </pattern>
+    <!-- 调色板：主色 #06B6D4 青色，辅助 #22D3EE 亮青，强调 #A78BFA 紫色，中性 #CBD5E1 浅灰 -->
+    <!-- 字体：微软雅黑, Arial, sans-serif；暗色科技风 -->
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="1280" height="720" fill="url(#bg)"/>
+  <rect width="1280" height="720" fill="url(#grid)"/>
+
+  <!-- 装饰：发光线条 -->
+  <line x1="0" y1="80" x2="1280" y2="80" stroke="#06B6D4" stroke-width="1" opacity="0.2"/>
+  <circle cx="60" cy="80" r="3" fill="#06B6D4" opacity="0.6"/>
+  <circle cx="1220" cy="80" r="3" fill="#06B6D4" opacity="0.6"/>
+
+  <!-- 标题 -->
+  <text x="60" y="56" font-family="微软雅黑, Arial, sans-serif" font-size="30" font-weight="bold" fill="#F1F5F9">计算机科学导论</text>
+  <text x="60" y="74" font-family="微软雅黑, Arial, sans-serif" font-size="14" fill="#06B6D4">COMPUTER SCIENCE</text>
+
+  <!-- 卡片 1：左上 -->
+  <rect x="60" y="100" width="580" height="290" rx="12" fill="#1E293B" filter="url(#shadow)" stroke="#334155" stroke-width="1"/>
+  <rect x="60" y="100" width="580" height="4" rx="2" fill="#06B6D4"/>
+  <text x="88" y="144" font-family="微软雅黑, Arial, sans-serif" font-size="22" font-weight="bold" fill="#E2E8F0">算法基础</text>
+  <text x="88" y="180" font-family="微软雅黑, Arial, sans-serif" font-size="16" fill="#94A3B8">
+    <tspan x="88" dy="0">▹ 时间复杂度与空间复杂度</tspan>
+    <tspan x="88" dy="1.6em">▹ 常见排序算法对比</tspan>
+    <tspan x="88" dy="1.6em">▹ 算法设计范式</tspan>
+  </text>
+
+  <!-- 卡片 2：右上 -->
+  <rect x="660" y="100" width="560" height="290" rx="12" fill="#1E293B" filter="url(#shadow)" stroke="#334155" stroke-width="1"/>
+  <rect x="660" y="100" width="560" height="4" rx="2" fill="#A78BFA"/>
+  <text x="688" y="144" font-family="微软雅黑, Arial, sans-serif" font-size="22" font-weight="bold" fill="#E2E8F0">代码示例</text>
+  <text x="688" y="184" font-family="微软雅黑, Arial, Courier New, monospace" font-size="15" fill="#22D3EE">
+    <tspan x="688" dy="0">def binary_search(arr, target):</tspan>
+    <tspan x="688" dy="1.5em">    lo, hi = 0, len(arr) - 1</tspan>
+    <tspan x="688" dy="1.5em">    while lo &lt;= hi:</tspan>
+    <tspan x="688" dy="1.5em">        mid = (lo + hi) // 2</tspan>
+    <tspan x="688" dy="1.5em">        ...</tspan>
+  </text>
+
+  <!-- 卡片 3：底部通栏 -->
+  <rect x="60" y="410" width="1160" height="252" rx="12" fill="#1E293B" filter="url(#shadow)" stroke="#334155" stroke-width="1"/>
+  <text x="88" y="454" font-family="微软雅黑, Arial, sans-serif" font-size="22" font-weight="bold" fill="#E2E8F0">关键知识点总结</text>
+  <text x="88" y="494" font-family="微软雅黑, Arial, sans-serif" font-size="17" fill="#CBD5E1">
+    <tspan x="88" dy="0">● 掌握基本数据结构：数组、链表、树、图</tspan>
+    <tspan x="88" dy="1.6em">● 理解递归与迭代的转换</tspan>
+    <tspan x="88" dy="1.6em">● 能够分析算法的时间复杂度</tspan>
+  </text>
+
+  <!-- 页码 -->
+  <text x="1200" y="696" font-family="微软雅黑, Arial, sans-serif" font-size="12" fill="#475569" text-anchor="end">05 / 12</text>
+</svg>

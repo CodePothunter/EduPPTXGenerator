@@ -1,0 +1,64 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#F8FAFC"/>
+    </linearGradient>
+    <filter id="shadow">
+      <feDropShadow dx="0" dy="1" stdDeviation="4" flood-color="#1E3A5F" flood-opacity="0.08"/>
+    </filter>
+    <!-- 调色板：主色 #1E40AF 深蓝，辅助 #3B82F6 亮蓝，强调 #DBEAFE 浅蓝，中性 #1F2937 深灰 -->
+    <!-- 字体：微软雅黑, Arial, sans-serif；标题用 bold + 大字号模拟衬线学术感 -->
+  </defs>
+
+  <!-- 背景 -->
+  <rect width="1280" height="720" fill="url(#bg)"/>
+
+  <!-- 装饰：顶部深蓝色条 -->
+  <rect width="1280" height="5" fill="#1E40AF"/>
+  <!-- 装饰：底部细线 -->
+  <rect y="710" width="1280" height="2" fill="#1E40AF" opacity="0.15"/>
+
+  <!-- 标题区域 -->
+  <text x="640" y="62" font-family="微软雅黑, Arial, sans-serif" font-size="30" font-weight="bold" fill="#1E3A5F" text-anchor="middle">学术报告标题</text>
+  <text x="640" y="88" font-family="微软雅黑, Arial, sans-serif" font-size="16" fill="#6B7280" text-anchor="middle">副标题或作者信息</text>
+
+  <!-- 卡片 1：左列 -->
+  <rect x="60" y="112" width="380" height="560" rx="12" fill="#FFFFFF" filter="url(#shadow)" stroke="#E5E7EB" stroke-width="1"/>
+  <rect x="60" y="112" width="380" height="48" rx="12" fill="#1E40AF"/>
+  <rect x="60" y="148" width="380" height="12" fill="#1E40AF"/>
+  <text x="250" y="144" font-family="微软雅黑, Arial, sans-serif" font-size="18" font-weight="bold" fill="#FFFFFF" text-anchor="middle">研究背景</text>
+  <text x="88" y="196" font-family="微软雅黑, Arial, sans-serif" font-size="16" fill="#374151">
+    <tspan x="88" dy="0">本研究基于以下问题展开：</tspan>
+    <tspan x="88" dy="1.6em">1. 核心研究问题阐述</tspan>
+    <tspan x="88" dy="1.6em">2. 研究方法与数据来源</tspan>
+    <tspan x="88" dy="1.6em">3. 预期研究贡献</tspan>
+  </text>
+
+  <!-- 卡片 2：中列 -->
+  <rect x="460" y="112" width="380" height="560" rx="12" fill="#FFFFFF" filter="url(#shadow)" stroke="#E5E7EB" stroke-width="1"/>
+  <rect x="460" y="112" width="380" height="48" rx="12" fill="#3B82F6"/>
+  <rect x="460" y="148" width="380" height="12" fill="#3B82F6"/>
+  <text x="650" y="144" font-family="微软雅黑, Arial, sans-serif" font-size="18" font-weight="bold" fill="#FFFFFF" text-anchor="middle">核心发现</text>
+  <text x="488" y="196" font-family="微软雅黑, Arial, sans-serif" font-size="16" fill="#374151">
+    <tspan x="488" dy="0">实验结果表明：</tspan>
+    <tspan x="488" dy="1.6em">• 关键发现一</tspan>
+    <tspan x="488" dy="1.6em">• 关键发现二</tspan>
+    <tspan x="488" dy="1.6em">• 数据支撑结论</tspan>
+  </text>
+
+  <!-- 卡片 3：右列 -->
+  <rect x="860" y="112" width="360" height="560" rx="12" fill="#FFFFFF" filter="url(#shadow)" stroke="#E5E7EB" stroke-width="1"/>
+  <rect x="860" y="112" width="360" height="48" rx="12" fill="#1E40AF" opacity="0.8"/>
+  <rect x="860" y="148" width="360" height="12" fill="#1E40AF" opacity="0.8"/>
+  <text x="1040" y="144" font-family="微软雅黑, Arial, sans-serif" font-size="18" font-weight="bold" fill="#FFFFFF" text-anchor="middle">结论与展望</text>
+  <text x="888" y="196" font-family="微软雅黑, Arial, sans-serif" font-size="16" fill="#374151">
+    <tspan x="888" dy="0">综合分析得出：</tspan>
+    <tspan x="888" dy="1.6em">▸ 总结观点一</tspan>
+    <tspan x="888" dy="1.6em">▸ 总结观点二</tspan>
+    <tspan x="888" dy="1.6em">▸ 未来研究方向</tspan>
+  </text>
+
+  <!-- 页码 -->
+  <text x="640" y="700" font-family="微软雅黑, Arial, sans-serif" font-size="12" fill="#9CA3AF" text-anchor="middle">— 3 —</text>
+</svg>
