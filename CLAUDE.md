@@ -147,8 +147,9 @@ VISION_GEN_APIKEY=image-api-key
 
 ## 设计文档
 
-- 设计理念: `docs/design-philosophy.md`
-- 布局系统: `docs/layout-system.md`
+- 设计理念: `docs/design-philosophy.md` — 逆向分析、Agent 架构、三层 Schema 设计
+- 布局系统: `docs/layout-system.md` — EMU 坐标、命名意图、卡片自适应算法
+- 风格协商: `docs/style-negotiation.md` — 自然语言→JSON patch→样式覆盖
 
 ## Git 约定
 
