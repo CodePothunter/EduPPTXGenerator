@@ -39,8 +39,9 @@ class Config:
         load_dotenv(env_path or ".env")
         pkg_dir = Path(__file__).parent
 
-        # LLM base URL: try GEN_BASE_URL first, then API_BASE_URL
-        llm_base = os.getenv("GEN_BASE_URL", "") or os.getenv("API_BASE_URL", "")
+        # LLM base URL: try GEN_BASE_URL, then API_BASE_URL, then default Volcengine
+        _DEFAULT_LLM_BASE = "https://ark.cn-beijing.volces.com/api/v3"
+        llm_base = os.getenv("GEN_BASE_URL", "") or os.getenv("API_BASE_URL", "") or _DEFAULT_LLM_BASE
         # Strip /chat/completions if user included it (OpenAI SDK adds it)
         llm_base = llm_base.rstrip("/")
         if llm_base.endswith("/chat/completions"):

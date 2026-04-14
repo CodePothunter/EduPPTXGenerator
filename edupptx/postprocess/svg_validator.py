@@ -157,12 +157,14 @@ def _clamp_value(val_str: str, lo: float, hi: float) -> tuple[str, bool]:
 
 
 def _clamp_boundaries(root: etree._Element, warnings: list[str]) -> None:
-    for tag in (f"{{{SVG_NS}}}text", f"{{{SVG_NS}}}rect"):
+    # Minimum x=40 (leave some padding from edge, not 0)
+    MIN_X = 40
+    for tag in (f"{{{SVG_NS}}}text", f"{{{SVG_NS}}}rect", f"{{{SVG_NS}}}image"):
         for el in root.iter(tag):
-            for attr, limit in [("x", MAX_X), ("y", MAX_Y)]:
+            for attr, lo, hi in [("x", MIN_X, MAX_X), ("y", 0, MAX_Y)]:
                 val = el.get(attr)
                 if val is not None:
-                    new_val, changed = _clamp_value(val, 0, limit)
+                    new_val, changed = _clamp_value(val, lo, hi)
                     if changed:
                         el.set(attr, new_val)
                         tag_name = etree.QName(el.tag).localname
