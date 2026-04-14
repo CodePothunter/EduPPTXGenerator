@@ -85,10 +85,23 @@ class PlanningMeta(BaseModel):
     total_pages: int = 0
 
 
+class VisualPlan(BaseModel):
+    """Phase 1b output: LLM-recommended visual design for the entire deck."""
+
+    primary_color: str = Field(default="#1E40AF", description="主色 hex")
+    secondary_color: str = Field(default="#3B82F6", description="辅色 hex")
+    accent_color: str = Field(default="#F59E0B", description="强调色 hex")
+    background_prompt: str = Field(default="", description="Seedream 背景生成 prompt")
+    card_bg_color: str = Field(default="#FFFFFF", description="卡片背景色")
+    text_color: str = Field(default="#1E293B", description="正文色")
+    heading_color: str = Field(default="#0F172A", description="标题色")
+
+
 class PlanningDraft(BaseModel):
     """Complete planning draft — Phase 1 output."""
 
     meta: PlanningMeta
+    visual: VisualPlan = Field(default_factory=VisualPlan)
     research_context: str = ""
     pages: list[PagePlan]
 

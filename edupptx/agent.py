@@ -32,10 +32,11 @@ class PPTXAgent:
         research: bool = False,
         style: str = "edu_emerald",
         review: bool = False,
+        debug: bool = False,
     ) -> Path:
         """Run the full pipeline. Returns session directory."""
         return asyncio.run(self._run_async(
-            topic, requirements, file_path, research, style, review,
+            topic, requirements, file_path, research, style, review, debug,
         ))
 
     async def _run_async(
@@ -46,9 +47,10 @@ class PPTXAgent:
         research: bool,
         style: str,
         review: bool,
+        debug: bool,
     ) -> Path:
         session = Session(self.config.output_dir)
-        logger.info("Session: {}", session.dir)
+        logger.info("Session: {} (debug={})", session.dir, debug)
 
         # ── Phase 0: Input ──────────────────────────────────
         session.log_step("input", "Processing input")
@@ -56,30 +58,57 @@ class PPTXAgent:
         logger.info("Input ready: topic={}, has_doc={}, has_research={}",
                      ctx.topic, ctx.source_text is not None, ctx.research_summary is not None)
 
-        # ── Phase 1: Planning ───────────────────────────────
-        session.log_step("planning", "Generating planning draft")
+        # ── Phase 1a: Content Planning ──────────────────────
+        session.log_step("planning", "Generating content plan")
         draft = self._phase1_planning(ctx)
+        logger.info("Content plan: {} pages", len(draft.pages))
+
+        # ── Phase 1b: Visual Planning ───────────────────────
+        session.log_step("visual_planning", "Generating visual plan (colors, background)")
+        draft.visual = self._phase1b_visual_planning(draft)
         session.save_plan(draft.model_dump())
-        logger.info("Planning draft: {} pages", len(draft.pages))
+        logger.info("Visual plan: primary={}, bg_prompt={}...",
+                     draft.visual.primary_color, draft.visual.background_prompt[:40])
 
         if review:
             plan_path = session.dir / "plan.json"
             logger.info("Review mode: edit {} then run `edupptx render {}`", plan_path, plan_path)
             return session.dir
 
-        # ── Phase 2: Materials ──────────────────────────────
-        session.log_step("materials", "Fetching materials")
-        all_assets = await self._phase2_materials(draft, session)
-        logger.info("Materials ready for {} pages", len(all_assets))
+        # ── Phase 2: Background Generation ──────────────────
+        session.log_step("background", "Generating unified background")
+        bg_path = await self._phase2_background(draft.visual, session)
+
+        # ── Phase 2b: Materials (skipped in debug mode) ─────
+        if not debug:
+            session.log_step("materials", "Fetching materials")
+            all_assets = await self._phase2_materials(draft, session)
+            # Attach background to all assets
+            if bg_path:
+                for assets in all_assets.values():
+                    assets.background_path = bg_path
+            logger.info("Materials ready for {} pages", len(all_assets))
+        else:
+            logger.info("Debug mode: skipping material fetch")
+            all_assets = {
+                p.page_number: SlideAssets(
+                    page_number=p.page_number,
+                    background_path=bg_path,
+                )
+                for p in draft.pages
+            }
 
         # ── Phase 3: SVG Design ─────────────────────────────
         session.log_step("design", f"Generating SVG for {len(draft.pages)} pages")
-        slides = await self._phase3_design(draft, all_assets, style)
+        slides = await self._phase3_design(draft, all_assets, style, debug=debug)
         logger.info("Generated {} SVG slides", len(slides))
 
-        # ── Phase 4: Post-processing ────────────────────────
-        session.log_step("postprocess", "Validating, fixing SVGs, injecting images")
-        svg_paths = self._phase4_postprocess(slides, session, all_assets)
+        # ── Phase 4: Validation + LLM Review ────────────────
+        session.log_step("postprocess", "Validating + LLM reviewing SVGs")
+        svg_paths = self._phase4_postprocess(
+            slides, session, all_assets,
+            draft=draft, do_review=True,
+        )
         logger.info("Post-processed {} SVGs", len(svg_paths))
 
         # ── Phase 5: Output ─────────────────────────────────
@@ -90,7 +119,9 @@ class PPTXAgent:
 
         return session.dir
 
-    async def run_from_plan(self, plan_path: Path, style: str = "edu_emerald") -> Path:
+    async def run_from_plan(
+        self, plan_path: Path, style: str = "edu_emerald", debug: bool = False,
+    ) -> Path:
         """Resume from a saved planning draft (for `edupptx render`)."""
         import json
         with open(plan_path, encoding="utf-8") as f:
@@ -102,9 +133,21 @@ class PPTXAgent:
         session.dir = session_dir
         session.output_path = session_dir / "output.pptx"
 
-        all_assets = await self._phase2_materials(draft, session)
-        slides = await self._phase3_design(draft, all_assets, style)
-        svg_paths = self._phase4_postprocess(slides, session)
+        bg_path = await self._phase2_background(draft.visual, session)
+
+        if not debug:
+            all_assets = await self._phase2_materials(draft, session)
+            if bg_path:
+                for assets in all_assets.values():
+                    assets.background_path = bg_path
+        else:
+            all_assets = {
+                p.page_number: SlideAssets(page_number=p.page_number, background_path=bg_path)
+                for p in draft.pages
+            }
+
+        slides = await self._phase3_design(draft, all_assets, style, debug=debug)
+        svg_paths = self._phase4_postprocess(slides, session, all_assets, draft=draft, do_review=True)
         self._phase5_output(svg_paths, session)
         logger.info("Rendered {} slides from plan", len(svg_paths))
         return session_dir
@@ -138,6 +181,14 @@ class PPTXAgent:
     def _phase1_planning(self, ctx: InputContext) -> PlanningDraft:
         from edupptx.planning.content_planner import generate_planning_draft
         return generate_planning_draft(ctx, self.config)
+
+    def _phase1b_visual_planning(self, draft: PlanningDraft):
+        from edupptx.planning.visual_planner import generate_visual_plan
+        return generate_visual_plan(draft, self.config)
+
+    async def _phase2_background(self, visual, session: Session):
+        from edupptx.materials.background_generator import generate_background
+        return await generate_background(visual, self.config, session)
 
     async def _phase2_materials(
         self, draft: PlanningDraft, session: Session,
@@ -178,13 +229,18 @@ class PPTXAgent:
         self, draft: PlanningDraft,
         all_assets: dict[int, SlideAssets],
         style: str,
+        debug: bool = False,
     ) -> list[GeneratedSlide]:
         from edupptx.design.svg_generator import generate_slide_svgs
-        return await generate_slide_svgs(draft, all_assets, style, self.config)
+        return await generate_slide_svgs(
+            draft, all_assets, style, self.config, debug=debug,
+        )
 
     def _phase4_postprocess(
         self, slides: list[GeneratedSlide], session: Session,
         all_assets: dict[int, SlideAssets] | None = None,
+        draft: PlanningDraft | None = None,
+        do_review: bool = False,
     ) -> list[Path]:
         from edupptx.postprocess.svg_validator import validate_and_fix
         from edupptx.postprocess.svg_sanitizer import sanitize_for_ppt
@@ -193,16 +249,31 @@ class PPTXAgent:
         slides_dir.mkdir(exist_ok=True)
         svg_paths: list[Path] = []
 
+        # Build page lookup for review
+        page_lookup: dict[int, "PagePlan"] = {}
+        if draft:
+            page_lookup = {p.page_number: p for p in draft.pages}
+
         for slide in sorted(slides, key=lambda s: s.page_number):
-            # Validate and fix
+            # Step 1: Validate and fix
             fixed_svg, warnings = validate_and_fix(slide.svg_content)
             for w in warnings:
                 logger.warning("Slide {}: {}", slide.page_number, w)
 
-            # Sanitize for PPT
+            # Step 2: LLM Review (if enabled and draft available)
+            if do_review and draft and slide.page_number in page_lookup:
+                from edupptx.postprocess.svg_reviewer import review_and_fix_svg
+                fixed_svg = review_and_fix_svg(
+                    fixed_svg, warnings,
+                    page_lookup[slide.page_number],
+                    draft.visual,
+                    self.config,
+                )
+
+            # Step 3: Sanitize for PPT
             clean_svg = sanitize_for_ppt(fixed_svg)
 
-            # Inject real images (replace __IMAGE_XXX__ placeholders with base64)
+            # Step 4: Inject real images (replace __IMAGE_XXX__ placeholders)
             if all_assets and slide.page_number in all_assets:
                 clean_svg = self._inject_images(clean_svg, all_assets[slide.page_number])
 

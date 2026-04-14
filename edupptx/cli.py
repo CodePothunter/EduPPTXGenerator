@@ -32,15 +32,17 @@ def main(verbose: bool):
 @click.option("--research", is_flag=True, help="启用联网搜索充实内容")
 @click.option("--style", "-s", default="edu_emerald", help="风格模板名称")
 @click.option("--review", is_flag=True, help="策划稿生成后暂停，供审核编辑")
+@click.option("--debug", is_flag=True, help="Debug 模式：跳过素材图片生成，保留背景和 LLM 流程")
 @click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
 @click.option("--env-file", default=".env", help=".env 文件路径")
 def gen(topic: str, requirements: str, file_path: str | None, research: bool,
-        style: str, review: bool, output: str, env_file: str):
+        style: str, review: bool, debug: bool, output: str, env_file: str):
     """从主题生成教育演示文稿。
 
     示例：
         edupptx gen "勾股定理"
         edupptx gen "光合作用" -r "适合高中生" --style edu_academic
+        edupptx gen "光合作用" --debug  # 跳过素材，快速预览布局
         edupptx gen --file report.pdf "基于报告做汇报" --research
         edupptx gen "年度总结" --review
     """
@@ -55,6 +57,7 @@ def gen(topic: str, requirements: str, file_path: str | None, research: bool,
             research=research,
             style=style,
             review=review,
+            debug=debug,
         )
 
         if review:
@@ -72,18 +75,19 @@ def gen(topic: str, requirements: str, file_path: str | None, research: bool,
 @main.command()
 @click.argument("plan_path", type=click.Path(exists=True))
 @click.option("--style", "-s", default="edu_emerald", help="风格模板名称")
+@click.option("--debug", is_flag=True, help="Debug 模式：跳过素材图片生成")
 @click.option("--env-file", default=".env", help=".env 文件路径")
-def render(plan_path: str, style: str, env_file: str):
+def render(plan_path: str, style: str, debug: bool, env_file: str):
     """从策划稿 JSON 渲染 SVG + PPTX。
 
     示例：
         edupptx render output/session_xxx/plan.json
-        edupptx render plan.json --style edu_tech
+        edupptx render plan.json --style edu_tech --debug
     """
     try:
         config = Config.from_env(env_file)
         agent = PPTXAgent(config)
-        session_dir = asyncio.run(agent.run_from_plan(Path(plan_path), style))
+        session_dir = asyncio.run(agent.run_from_plan(Path(plan_path), style, debug=debug))
         click.echo(f"输出: {session_dir / 'output.pptx'}")
     except Exception as e:
         logger.error("Render failed: {}", e)

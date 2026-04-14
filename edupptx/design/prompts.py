@@ -150,8 +150,35 @@ SVG_CONSTRAINTS = """\
 """
 
 
-def build_svg_system_prompt(style_guide: str) -> str:
-    """构建 SVG 生成的系统提示词。"""
+def build_svg_system_prompt(style_guide: str, visual_plan=None) -> str:
+    """构建 SVG 生成的系统提示词。
+
+    Args:
+        style_guide: SVG 风格模板内容
+        visual_plan: VisualPlan 对象，提供统一配色（可选，优先于 style_guide 配色）
+    """
+    color_spec = ""
+    if visual_plan:
+        color_spec = f"""
+## 统一配色方案（必须严格遵守）
+
+本套幻灯片使用以下统一配色，所有页面必须一致：
+
+- **主色 (primary)**: {visual_plan.primary_color} — 用于标题栏、重要元素、页面顶部装饰条
+- **辅色 (secondary)**: {visual_plan.secondary_color} — 用于次级标题、图标、辅助装饰
+- **强调色 (accent)**: {visual_plan.accent_color} — 仅用于关键数据、重点标注（慎用）
+- **卡片背景**: {visual_plan.card_bg_color}
+- **正文色**: {visual_plan.text_color}
+- **标题色**: {visual_plan.heading_color}
+
+**严格要求**：
+- 所有 `<rect>` 卡片的 fill 使用 `{visual_plan.card_bg_color}`
+- 所有正文 `<text>` 的 fill 使用 `{visual_plan.text_color}`
+- 页面标题的 fill 使用 `{visual_plan.heading_color}`
+- 页面顶部装饰条使用 `{visual_plan.primary_color}`
+- 不要自行发明其他颜色，严格在以上色板范围内配色
+"""
+
     return f"""\
 你是一位专业的信息架构师和 SVG 视觉设计专家，专注于教育演示文稿的设计。
 
@@ -167,7 +194,7 @@ def build_svg_system_prompt(style_guide: str) -> str:
 {BENTO_GRID_SPEC}
 
 {SVG_CONSTRAINTS}
-
+{color_spec}
 ## 风格指南
 
 以下是本套幻灯片的视觉风格参考。请严格遵循其中的配色方案、字体、装饰元素风格：
@@ -226,8 +253,13 @@ def build_svg_user_prompt(
     page: PagePlan,
     assets: SlideAssets,
     total_pages: int,
+    debug: bool = False,
 ) -> str:
-    """构建单页 SVG 生成的用户提示词。"""
+    """构建单页 SVG 生成的用户提示词。
+
+    Args:
+        debug: If True, use description placeholders instead of __IMAGE__ tokens.
+    """
     lines: list[str] = []
 
     # 页面基本信息
@@ -253,18 +285,41 @@ def build_svg_user_prompt(
     if page.design_notes:
         lines.append(f"\n### 设计备注\n{page.design_notes}")
 
-    # 可用图片 — 告知 LLM 使用占位符，后处理注入真实图片
-    image_lines: list[str] = []
-    for role, path in assets.image_paths.items():
-        image_lines.append(f"- **{role}** 图片可用，请用 `<image href=\"__IMAGE_{role.upper()}__\" .../>` 作为占位")
-    if image_lines:
-        lines.append("\n### 可用图片资源")
-        lines.extend(image_lines)
-        lines.append(
-            "\n**必须** 在合适位置放置 `<image>` 元素。"
-            " 使用 `href=\"__IMAGE_HERO__\"` 或 `href=\"__IMAGE_ILLUSTRATION__\"` 等占位符。"
-            " 系统会自动替换为真实图片。给 image 设置合理的 x, y, width, height 属性。"
-        )
+    # 图片处理：debug 模式用描述占位，正常模式用 __IMAGE__ token
+    if debug:
+        # Debug mode: describe image needs as visual placeholders
+        image_needs = page.material_needs.images if page.material_needs.images else []
+        if image_needs:
+            lines.append("\n### 图片占位（Debug 模式）")
+            lines.append(
+                "以下位置需要插图。请用**虚线矩形 + 居中灰色描述文字**标注图片区域："
+            )
+            for img in image_needs:
+                lines.append(f"- {img.role}: {img.query}")
+            lines.append(
+                "\n占位示例：\n"
+                "```svg\n"
+                '<rect x="50" y="120" width="300" height="200" rx="8" '
+                'fill="#F1F5F9" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="6,4"/>\n'
+                '<text x="200" y="225" text-anchor="middle" font-size="14" '
+                'fill="#94A3B8" font-family="Noto Sans SC, Arial, sans-serif">'
+                "图片描述文字</text>\n"
+                "```\n"
+                "请在合适位置留出图片空间，居中写上图片描述。"
+            )
+    else:
+        # Normal mode: use __IMAGE__ placeholders for post-processing injection
+        image_lines: list[str] = []
+        for role, path in assets.image_paths.items():
+            image_lines.append(f'- **{role}** 图片可用，请用 `<image href="__IMAGE_{role.upper()}__" .../>` 作为占位')
+        if image_lines:
+            lines.append("\n### 可用图片资源")
+            lines.extend(image_lines)
+            lines.append(
+                "\n**必须** 在合适位置放置 `<image>` 元素。"
+                ' 使用 `href="__IMAGE_HERO__"` 或 `href="__IMAGE_ILLUSTRATION__"` 等占位符。'
+                " 系统会自动替换为真实图片。给 image 设置合理的 x, y, width, height 属性。"
+            )
 
     # 可用图标
     if assets.icon_svgs:

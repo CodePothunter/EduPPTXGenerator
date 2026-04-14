@@ -54,11 +54,12 @@ def _generate_one(
     page_plan: "PagePlan",
     assets: SlideAssets,
     total_pages: int,
+    debug: bool = False,
 ) -> GeneratedSlide:
     """为单页生成 SVG（同步，运行在线程中）。"""
     from edupptx.models import PagePlan  # noqa: F811 — delayed for type hint
 
-    user_prompt = build_svg_user_prompt(page_plan, assets, total_pages)
+    user_prompt = build_svg_user_prompt(page_plan, assets, total_pages, debug=debug)
     logger.info("正在生成第 {}/{} 页 SVG ...", page_plan.page_number, total_pages)
 
     # Try up to 2 times (retry once on timeout)
@@ -95,6 +96,7 @@ async def generate_slide_svgs(
     all_assets: dict[int, SlideAssets],
     style_name: str,
     config: Config,
+    debug: bool = False,
 ) -> list[GeneratedSlide]:
     """为所有页面并行生成 SVG。
 
@@ -106,8 +108,8 @@ async def generate_slide_svgs(
     if not style_guide:
         logger.warning("未找到风格模板 '{}'，将使用默认风格", style_name)
 
-    # 2. 构建共享系统提示词
-    system_prompt = build_svg_system_prompt(style_guide)
+    # 2. 构建共享系统提示词（注入 VisualPlan 配色）
+    system_prompt = build_svg_system_prompt(style_guide, visual_plan=draft.visual)
 
     # 3. 初始化 LLM 客户端
     client = LLMClient(config)
@@ -126,6 +128,7 @@ async def generate_slide_svgs(
             )
             future = executor.submit(
                 _generate_one, client, system_prompt, page, page_assets, total_pages,
+                debug=debug,
             )
             future_to_page[future] = page.page_number
 
