@@ -18,7 +18,7 @@ class LLMClient:
         self._client = OpenAI(
             api_key=config.llm_api_key,
             base_url=config.llm_base_url or None,
-            timeout=180,
+            timeout=300,
             max_retries=1,
         )
         self._model = config.llm_model
