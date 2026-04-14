@@ -61,14 +61,25 @@ def _generate_one(
     user_prompt = build_svg_user_prompt(page_plan, assets, total_pages)
     logger.info("正在生成第 {}/{} 页 SVG ...", page_plan.page_number, total_pages)
 
-    response = client.chat(
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=0.7,
-        max_tokens=16384,
-    )
+    # Try up to 2 times (retry once on timeout)
+    last_err = None
+    for attempt in range(2):
+        try:
+            response = client.chat(
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=0.7,
+                max_tokens=16384,
+            )
+            break
+        except Exception as e:
+            last_err = e
+            if attempt == 0:
+                logger.warning("第 {} 页 SVG 生成失败，重试中: {}", page_plan.page_number, str(e)[:80])
+    else:
+        raise last_err
 
     svg_content = _extract_svg(response)
     logger.info("第 {} 页 SVG 生成完成，长度 {} 字符", page_plan.page_number, len(svg_content))
