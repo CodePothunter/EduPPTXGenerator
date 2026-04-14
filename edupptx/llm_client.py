@@ -17,11 +17,12 @@ class LLMClient:
     def __init__(self, config: Config):
         self._client = OpenAI(
             api_key=config.llm_api_key,
-            base_url=config.llm_base_url,
+            base_url=config.llm_base_url or None,
             timeout=180,
             max_retries=1,
         )
         self._model = config.llm_model
+        self._is_doubao = "volces.com" in (config.llm_base_url or "")
 
     def chat(
         self,
@@ -29,13 +30,16 @@ class LLMClient:
         temperature: float = 0.7,
         max_tokens: int = 16384,
     ) -> str:
-        resp = self._client.chat.completions.create(
+        kwargs: dict = dict(
             model=self._model,
             messages=messages,
             temperature=temperature,
             max_tokens=max_tokens,
-            extra_body={"thinking": {"type": "disabled"}},
         )
+        # Doubao-specific: disable thinking for structured output
+        if self._is_doubao:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        resp = self._client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content or ""
 
     @staticmethod
