@@ -38,6 +38,7 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
     _remove_foreign_objects(root, warnings)
     _remove_css_animations(root, warnings)
     _fix_fonts(root, warnings)
+    _wrap_long_text(root, warnings)
     _clamp_boundaries(root, warnings)
     _fix_text_overlaps(root, warnings)
     _check_image_hrefs(root, warnings)
@@ -90,6 +91,57 @@ def _fix_fonts(root: etree._Element, warnings: list[str]) -> None:
         elif "Noto Sans SC" not in ff:
             # Ensure Noto Sans SC is first for cross-platform rendering
             el.set("font-family", f"Noto Sans SC, {ff}")
+
+
+def _wrap_long_text(root: etree._Element, warnings: list[str]) -> None:
+    """Wrap long <text> content into <tspan> lines to prevent overflow."""
+    MAX_CHARS_PER_LINE = 22  # ~22 Chinese characters fit in a typical card
+
+    for text_el in list(root.iter(f"{{{SVG_NS}}}text")):
+        # Skip if already has tspan children
+        if text_el.find(f"{{{SVG_NS}}}tspan") is not None:
+            continue
+
+        content = (text_el.text or "").strip()
+        if not content or len(content) <= MAX_CHARS_PER_LINE:
+            continue
+
+        # Get text attributes
+        x = text_el.get("x", "0")
+        fs_str = text_el.get("font-size", "16")
+        try:
+            fs = float(fs_str.replace("px", ""))
+        except (ValueError, TypeError):
+            fs = 16
+
+        # Split into lines
+        lines = []
+        while len(content) > MAX_CHARS_PER_LINE:
+            # Try to break at punctuation or space
+            cut = MAX_CHARS_PER_LINE
+            for sep in ("，", "。", "、", "；", " ", ",", ".", ";"):
+                idx = content.rfind(sep, 0, MAX_CHARS_PER_LINE + 1)
+                if idx > MAX_CHARS_PER_LINE // 2:
+                    cut = idx + 1
+                    break
+            lines.append(content[:cut])
+            content = content[cut:]
+        if content:
+            lines.append(content)
+
+        if len(lines) <= 1:
+            continue
+
+        # Replace text content with tspan elements
+        text_el.text = None
+        line_height = int(fs * 1.4)
+        for i, line in enumerate(lines):
+            tspan = etree.SubElement(text_el, f"{{{SVG_NS}}}tspan")
+            tspan.set("x", x)
+            tspan.set("dy", str(line_height) if i > 0 else "0")
+            tspan.text = line
+
+        warnings.append(f"Wrapped long text ({sum(len(l) for l in lines)} chars) into {len(lines)} lines")
 
 
 def _clamp_value(val_str: str, lo: float, hi: float) -> tuple[str, bool]:
