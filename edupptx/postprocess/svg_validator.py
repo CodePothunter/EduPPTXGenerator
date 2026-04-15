@@ -161,6 +161,15 @@ def _clamp_boundaries(root: etree._Element, warnings: list[str]) -> None:
     MIN_X = 50
     for tag in (f"{{{SVG_NS}}}text", f"{{{SVG_NS}}}rect", f"{{{SVG_NS}}}image"):
         for el in root.iter(tag):
+            # Allow full-width top decoration bar (x=0, y=0, height≤8)
+            if tag.endswith("rect"):
+                h = el.get("height", "0")
+                y = el.get("y", "0")
+                try:
+                    if float(h) <= 8 and float(y) <= 2:
+                        continue  # Skip decoration bar
+                except (ValueError, TypeError):
+                    pass
             for attr, lo, hi in [("x", MIN_X, MAX_X), ("y", 0, MAX_Y)]:
                 val = el.get(attr)
                 if val is not None:

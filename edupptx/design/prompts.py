@@ -175,6 +175,15 @@ def build_svg_user_prompt(
         icon_names = ", ".join(assets.icon_svgs.keys())
         lines.append(f"\n### 可用图标\n{icon_names}")
         lines.append("将图标 SVG 内容直接嵌入为 <g> 元素，适当缩放。")
+    elif page.material_needs.icons:
+        # Debug mode: icons not fetched, but hint the LLM to use SVG decorations
+        lines.append("\n### 装饰元素提示")
+        lines.append(
+            "本页建议使用以下视觉元素（请用 SVG 图形替代，不要用 emoji）：\n"
+            f"图标关键词: {', '.join(page.material_needs.icons)}\n"
+            "实现方式：用简单 SVG 图形（圆形+符号、色块+文字）作为装饰，"
+            "例如用主色圆形 `<circle>` 内放白色序号文字，或用辅色矩形做标签。"
+        )
 
     # 页面类型特殊说明
     type_hints = {
