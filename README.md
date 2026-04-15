@@ -201,6 +201,12 @@ uv run pytest tests/ -v
 - [布局系统](docs/layout-system.md)
 - [SVG 管线](docs/svg-pipeline.md)
 
+## 设计参考
+
+V3 的设计系统（色彩层级、字号体系、SVG 技术约束规范）参考了 [PPT Master](https://github.com/hugohe3/ppt-master)（MIT 许可）的设计方法论。PPT Master 专注于咨询类演示文稿的高质量生成，其分层 prompt 架构和设计规范体系对本项目的教育类设计系统建设有重要启发。
+
+EduPPTX 专注于 K12 教育场景，在以下方面有独立的设计：教育专属页面类型（练习题/公式推导/实验步骤/对比表格/知识归纳）、面向课堂投影的内容密度分级（讲授/复习模式）、自动化 SVG→DrawingML 原生形状管线、以及面向教师的一键生成工作流。
+
 ## License
 
 MIT

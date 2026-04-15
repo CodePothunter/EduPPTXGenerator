@@ -71,6 +71,8 @@ edupptx/
     prompts.py                # SVG 生成 prompt (Bento Grid + 约束)
     svg_generator.py          # Phase 3: 并行 SVG 生成
     style_templates/          # SVG 风格模板 (5 套教育主题)
+    references/               # V3 设计参考文档 (design-base, shared-standards, executor-*, page-types)
+    chart_templates/          # 图表 SVG 参考模板 (bar/line/pie/kpi/timeline)
   materials/
     image_provider.py         # 多源图片获取 (Pixabay/Unsplash/Seedream)
     background_generator.py   # Phase 2: Seedream 统一背景生成
@@ -78,7 +80,7 @@ edupptx/
     seedream.py               # Seedream AI 文生图 provider
     pixabay.py                # Pixabay 图片搜索
     unsplash.py               # Unsplash 图片搜索
-    icons.py                  # 109 个 Lucide SVG 图标
+    icons.py                  # 255 个 Lucide SVG 图标
   postprocess/
     svg_validator.py          # SVG 自动修复 (viewBox/字体/边界/重叠)
     svg_sanitizer.py          # PPT 兼容清理 (去 script/事件)
@@ -90,6 +92,8 @@ edupptx/
     document_parser.py        # PDF/Word/MD 文档解析
     web_researcher.py         # Tavily 联网搜索
 styles/                       # 风格主题 JSON (emerald, blue, ...)
+assets/
+  icons/                      # 255 个 Lucide SVG 图标 (MIT)
 output/                       # 会话输出目录 (gitignored)
 docs/
 tests/
