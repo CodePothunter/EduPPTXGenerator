@@ -30,6 +30,13 @@ _SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，
 - `data`: 数据页 — 关键数据、图表展示
 - `case`: 案例页 — 实例分析、应用场景
 - `closing`: 结尾页 — 总结回顾
+- `timeline`: 时间线页 — 横向时间轴+节点事件，适用于历史、发展历程
+- `comparison`: 对比表格页 — 表头+交替行，适用于概念对比分析
+- `exercise`: 练习页 — 题目+留白区域，适用于随堂练习
+- `summary`: 知识归纳页 — 分类卡片+知识点列表+易错点警示，适用于章节总结
+- `quiz`: 练习检测页 — 题目+选项（A/B/C/D），适用于课堂互动和随堂检测
+- `formula`: 公式推导页 — 步骤式推理，序号→公式→说明，适用于数学/物理/化学
+- `experiment`: 实验步骤页 — 左侧器材清单，右侧步骤+现象+结论，适用于理科实验
 
 ## 布局意图 (layout_hint)
 
@@ -105,6 +112,12 @@ material_needs.icons 必须从以下列表中选择（Lucide 图标集）：
 - notes 写教学话术，帮助老师讲课
 - layout_hint 要根据内容特点选择，避免连续多页使用相同布局
 - icons 只使用上面列出的可用图标名称
+- 教育类页面（quiz/formula/experiment/comparison/summary）应根据内容特点选择合适的 layout_hint
+- quiz 适合 mixed_grid（题目大卡+选项小卡）
+- formula 适合 vertical_list（步骤纵向排列）
+- experiment 适合 bento_2col_asymmetric（左窄右宽 3:7）
+- comparison 适合 comparison 布局
+- summary 适合 vertical_list 或 mixed_grid
 """
 
 
