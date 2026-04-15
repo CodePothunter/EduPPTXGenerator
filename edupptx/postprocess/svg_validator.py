@@ -157,8 +157,8 @@ def _clamp_value(val_str: str, lo: float, hi: float) -> tuple[str, bool]:
 
 
 def _clamp_boundaries(root: etree._Element, warnings: list[str]) -> None:
-    # Minimum x=40 (leave some padding from edge, not 0)
-    MIN_X = 40
+    # Minimum x=50 (matches design-base.md spec: all elements x ≥ 50)
+    MIN_X = 50
     for tag in (f"{{{SVG_NS}}}text", f"{{{SVG_NS}}}rect", f"{{{SVG_NS}}}image"):
         for el in root.iter(tag):
             for attr, lo, hi in [("x", MIN_X, MAX_X), ("y", 0, MAX_Y)]:
