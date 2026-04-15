@@ -18,9 +18,11 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
     """Validate SVG, auto-fix issues. Returns (fixed_svg, list_of_warnings)."""
     warnings: list[str] = []
 
-    # Pre-clean unescaped & (common LLM artifact)
+    # Pre-clean XML-unsafe characters (common LLM artifacts)
     import re
     svg_content = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#)", "&amp;", svg_content)
+    # Escape bare < not part of XML tags (e.g., "k < 0" in math formulas)
+    svg_content = re.sub(r"<(?![a-zA-Z/!?])", "&lt;", svg_content)
 
     try:
         root = etree.fromstring(svg_content.encode("utf-8"))
