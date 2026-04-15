@@ -27,6 +27,7 @@ class InputContext:
 PageType = Literal[
     "cover", "toc", "section", "content", "data", "case", "closing",
     "timeline", "comparison", "exercise", "summary",
+    "quiz", "formula", "experiment",
 ]
 
 LayoutHint = Literal[
@@ -93,8 +94,12 @@ class VisualPlan(BaseModel):
     accent_color: str = Field(default="#F59E0B", description="强调色 hex")
     background_prompt: str = Field(default="", description="Seedream 背景生成 prompt")
     card_bg_color: str = Field(default="#FFFFFF", description="卡片背景色")
+    secondary_bg_color: str = Field(default="#F8FAFC", description="次背景色")
     text_color: str = Field(default="#1E293B", description="正文色")
     heading_color: str = Field(default="#0F172A", description="标题色")
+    content_density: Literal["lecture", "review"] = Field(
+        default="lecture", description="内容密度模式"
+    )
 
 
 class PlanningDraft(BaseModel):

@@ -106,6 +106,20 @@ class TestVisualPlan:
         )
         assert vp.background_prompt == "a starry sky"
 
+    def test_visual_plan_new_fields(self):
+        vp = VisualPlan(
+            primary_color="#1E40AF",
+            secondary_bg_color="#F1F5F9",
+            content_density="review",
+        )
+        assert vp.secondary_bg_color == "#F1F5F9"
+        assert vp.content_density == "review"
+
+    def test_visual_plan_defaults_backward_compatible(self):
+        vp = VisualPlan()
+        assert vp.secondary_bg_color == "#F8FAFC"
+        assert vp.content_density == "lecture"
+
 
 class TestSlideAssets:
     def test_defaults(self):
