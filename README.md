@@ -1,21 +1,17 @@
 # EduPPTX
 
-AI Agent 驱动的教育演示文稿生成器。输入主题和自然语言风格要求，Agent 自动完成内容规划、风格协商、素材准备、排版渲染，输出专业教学 PPT。
-
-面向 AI Agent 设计，可作为 Python 库集成到教学 Agent、备课系统、出题工具中。
+AI Agent 驱动的教育演示文稿生成器。输入主题，自动生成全页 SVG 设计稿，转换为可编辑的原生形状 PPTX。
 
 ## 特性
 
-- **薄 Agent 架构** — 5 阶段管线（规划→风格协商→素材决策→并行执行→渲染）
-- **自然语言风格控制** — "简约商务风" / "清新活泼" 等描述自动转译为样式参数
-- **Schema 驱动渲染** — 三层架构（JSON 样式→EMU 解析→PPTX 写入），换 JSON 换风格
-- **自适应卡片布局** — 根据样式组合自动选择最优布局模式，保证任何配置都不崩
-- **并行素材执行** — 背景图、AI 插图并发生成，结果进入持久化素材库
-- **图片智能适配** — 按 slot 比例选择最佳生成尺寸，渲染时 fit-within 保持宽高比
-- **109 个 Lucide 图标** — 自动着色匹配主题，SVG+PNG 双格式嵌入
-- **17 种页面布局** — 卡片页、全图页、左图右文、大字金句、章节过渡等
-- **教案备注** — 每页自动生成口语化教学脚本（Speaker Notes）
-- **思考过程可观测** — `thinking.jsonl` 记录 Agent 完整决策轨迹
+- **V2 SVG Pipeline** — LLM 直接生成整页 SVG (Bento Grid 卡片布局)，SVG→DrawingML 原生形状转换
+- **打开即编辑** — 输出原生 PowerPoint 形状，无需"转换为形状"
+- **策划/设计分离** — Phase 1 专注信息架构 (金字塔原理)，Phase 3 专注视觉设计
+- **5 套教育风格** — emerald / academic / warm / minimal / tech
+- **联网搜索** — Responses API 内置 web_search，规划阶段自动补充实时信息
+- **Debug 模式** — `--debug` 跳过素材获取，快速预览布局
+- **教案备注** — 每页自动生成口语化教学脚本 (Speaker Notes)
+- **LLM Review** — Phase 4 自动检测+LLM 审阅修正 SVG 质量
 
 ## 快速开始
 
@@ -31,17 +27,20 @@ uv sync
 
 ```bash
 cp .env.example .env
-# 编辑 .env，填入 OpenAI 兼容 API 的密钥
+# 编辑 .env，填入 API 密钥
 ```
 
-支持任何 OpenAI 兼容接口（豆包、DeepSeek、OpenAI、Ollama 等）：
+支持火山方舟 (豆包) 或任何 OpenAI 兼容接口：
 
 ```env
-GEN_MODEL=your-model-endpoint       # 文本模型
+# 文本生成 LLM
+GEN_MODEL=your-model-endpoint
 GEN_APIKEY=your-api-key
-API_BASE_URL=https://api.openai.com/v1
 
-# 可选：AI 插图生成（豆包 Seedream / 任何 OpenAI 兼容图像 API）
+# API 模式: "chat" = Chat Completions | "responses" = Responses API
+LLM_PROVIDER=responses
+
+# 图片生成 (Seedream / DALL-E 兼容)
 VISION_GEN_MODEL=your-image-model
 VISION_GEN_APIKEY=your-image-key
 ```
@@ -49,194 +48,156 @@ VISION_GEN_APIKEY=your-image-key
 ### 生成 PPT
 
 ```bash
-# 最简用法
+# 基础用法
 uv run edupptx gen "勾股定理"
 
-# 指定风格要求和输出目录
-uv run edupptx gen "光合作用" -r "适合高中生，风格清新活泼" -o output/
+# 指定风格 + 附加要求
+uv run edupptx gen "光合作用" -r "适合高中生" --style edu_academic
 
-# 查看可用样式主题
-uv run edupptx palettes
+# Debug 模式 (跳过素材，快速预览)
+uv run edupptx gen "计算机网络" --debug
 
-# 查看可用图标
-uv run edupptx icons
+# 启用 LLM 联网搜索 (仅 Responses API)
+uv run edupptx gen "量子计算最新进展" --web-search
+
+# 从文档生成 + Tavily 联网搜索
+uv run edupptx gen "基于报告做汇报" --file report.pdf --research
+
+# 分步：先出策划稿，审核后再渲染
+uv run edupptx plan "人工智能"
+uv run edupptx render output/session_xxx/plan.json
+
+# 查看可用风格
+uv run edupptx styles
 ```
 
-## 架构概览
+## 架构
 
 ```
-用户输入 (主题 + 风格要求)
+用户输入 (主题 + 要求)
         │
         ▼
 ┌──────────────────────────────────────┐
-│  Phase 1: 内容规划 (1 次 LLM 调用)   │  → PresentationPlan (JSON)
+│  Phase 0: Input Processing           │
+│  文档解析 + 联网搜索 (可选)            │
 ├──────────────────────────────────────┤
-│  Phase 2: 风格协商 (1 次 LLM 调用)   │  → StyleSchema → ResolvedStyle
+│  Phase 1a: Content Planning (LLM)    │
+│  金字塔原理 → 大纲+内容 JSON          │
 ├──────────────────────────────────────┤
-│  Phase 3: 素材决策 (N 次并行 LLM)    │  → 每页的背景/插图决策
+│  Phase 1b: Visual Planning (LLM)     │
+│  主题色 + 背景 prompt + 卡片色        │
 ├──────────────────────────────────────┤
-│  Phase 4: 素材执行 (并行，无 LLM)    │  → 背景图 + AI 插图
+│  Phase 2: Background (Seedream AI)   │
+│  Phase 2b: Materials (非 debug 模式)  │
 ├──────────────────────────────────────┤
-│  Phase 5: Schema 渲染               │  → .pptx 文件
-│  StyleSchema → layout_resolver       │
-│  → validator → pptx_writer           │
+│  Phase 3: SVG Generation (并行 LLM)  │
+│  Bento Grid 卡片布局, 1280×720       │
+├──────────────────────────────────────┤
+│  Phase 4: Validate + LLM Review      │
+│  自动修复 + LLM 审阅修正              │
+├──────────────────────────────────────┤
+│  Phase 5: SVG→DrawingML→PPTX         │
+│  原生形状, 直接可编辑                  │
 └──────────────────────────────────────┘
         │
         ▼
 output/session_xxx/
-├── thinking.jsonl    # Agent 决策轨迹
-├── plan.json         # 内容规划
-├── style_schema.json # 协商后的样式
-├── materials/        # 背景图 + 插图
-├── slides/           # 每页状态快照
-└── output.pptx       # 最终文件
+├── plan.json       # Phase 1 输出
+├── materials/      # 背景图 + 素材
+├── slides/         # Phase 4 修正后 SVG
+└── output.pptx     # 原生形状 PPTX
 ```
 
-详细架构设计见 [docs/design-philosophy.md](docs/design-philosophy.md)。
+## LLM Provider
 
-## 作为 Python 库使用
+支持两种 API 模式，通过 `.env` 中 `LLM_PROVIDER` 切换：
 
-### 主要 API
+| 模式 | 环境变量 | 说明 |
+|------|---------|------|
+| Chat Completions | `LLM_PROVIDER=chat` | 默认，兼容所有 OpenAI 兼容 API |
+| Responses API | `LLM_PROVIDER=responses` | 火山方舟专属，支持联网搜索、上下文缓存 |
 
-```python
-from edupptx import run_agent
+Responses API 额外支持 `--web-search` CLI 参数，让 LLM 在规划阶段自动联网搜索补充内容。
 
-# 运行 Agent，返回会话目录路径
-session_dir = run_agent("勾股定理")
-session_dir = run_agent(
-    topic="光合作用",
-    requirements="适合高中生，风格清新活泼",
-)
-```
+## 风格模板
 
-### 纯数据驱动（不调用 LLM）
-
-直接构造 `PresentationPlan`，跳过 LLM 规划阶段：
-
-```python
-from edupptx.models import PresentationPlan, SlideContent, SlideCard
-from edupptx.pipeline_v2 import render_with_schema
-
-plan = PresentationPlan(
-    topic="自定义主题",
-    palette="blue",
-    slides=[
-        SlideContent(
-            type="cover",
-            title="我的演示文稿",
-            subtitle="副标题",
-            cards=[
-                SlideCard(icon="star", title="要点一", body="详细说明"),
-                SlideCard(icon="target", title="要点二", body="详细说明"),
-                SlideCard(icon="check", title="要点三", body="详细说明"),
-            ],
-            formula="E = mc²",
-            notes="开场白",
-        ),
-        SlideContent(type="closing", title="谢谢", subtitle="演示结束", notes="结束语"),
-    ],
-)
-
-render_with_schema(plan, "styles/blue.json", output_path="output.pptx")
-```
-
-## 页面类型
-
-| 类型 | 用途 | 卡片数 | 特殊字段 |
-|------|------|--------|---------|
-| `cover` | 封面 | 3 | subtitle, formula |
-| `lead_in` | 情境引入 | 3 | subtitle |
-| `definition` | 核心定义 | 2-3 | - |
-| `content` | 通用内容 | 2-3 | - |
-| `history` | 历史背景 | 3 | - |
-| `proof` | 推导证明 | 2-3 | formula |
-| `example` | 例题讲解 | 1-2 | - |
-| `exercise` | 练习题 | 2-3 | - |
-| `answer` | 答案揭晓 | 2-3 | - |
-| `summary` | 总结回顾 | 3-4 | footer |
-| `extension` | 延伸思考 | 2-3 | footer |
-| `closing` | 结束页 | 0 | subtitle |
-| `big_quote` | 大字金句 | 0 | title(引文), footer(出处) |
-| `full_image` | 全图页 | 0 | title, AI 插图填满内容区 |
-| `image_left` | 左图右文 | 1-2 | 左侧插图 + 右侧卡片 |
-| `image_right` | 左文右图 | 1-2 | 左侧卡片 + 右侧插图 |
-| `section` | 章节过渡 | 0 | 居中大标题 + 副标题 |
-
-## 样式主题
-
-当前提供 2 套 JSON 主题文件，可通过自然语言风格协商自动调整：
-
-| 主题 | 主色 | 适用场景 |
-|------|------|---------|
-| `emerald` | #059669 | 数学、自然科学、通用 |
-| `blue` | #2563EB | 科技、工程 |
-
-添加新主题只需在 `styles/` 目录创建 JSON 文件，零代码。结构参考 `styles/emerald.json`。
+| 模板 | 适用场景 |
+|------|---------|
+| `edu_emerald` | 数学、自然科学 (默认) |
+| `edu_academic` | 学术、论文汇报 |
+| `edu_warm` | 文科、人文社科 |
+| `edu_minimal` | 简约通用 |
+| `edu_tech` | 计算机、工程技术 |
 
 ## 项目结构
 
 ```
 edupptx/
-├── __init__.py           # 公开 API: run_agent(), PPTXAgent, generate()
-├── agent.py              # Agent 编排器（5 阶段管线）
-├── content_planner.py    # LLM 内容规划 + 图标校验
-├── style_schema.py       # StyleSchema Pydantic 模型
-├── style_resolver.py     # palette ref → hex, intent → EMU
-├── style_negotiator.py   # LLM 自然语言风格协商
-├── layout_resolver.py    # Plan + Style → list[ResolvedSlide]
-├── validator.py          # 布局验证（越界/重叠/最小尺寸）
-├── pptx_writer.py        # 纯形状写入器
-├── xml_patches.py        # XML 工具函数（阴影/透明/圆角/字体）
-├── pipeline_v2.py        # 端到端入口 render_with_schema()
-├── icons.py              # 109 个 Lucide SVG 图标管理
-├── backgrounds.py        # 背景图生成（Pillow + AI）
-├── diagram_native.py     # 程序化图表（5 种类型）
-├── material_library.py   # 持久素材库（搜索/添加/复用）
-├── models.py             # Pydantic 数据模型
-├── llm_client.py         # OpenAI 兼容客户端
-├── config.py             # 环境变量配置
-├── session.py            # 会话目录 + thinking.jsonl 管理
-├── cli.py                # CLI 入口
-└── prompts/content.py    # LLM 提示词模板
-styles/                   # 样式 JSON 文件
-  emerald.json            # 翠绿主题
-  blue.json               # 蓝色主题
+  agent.py                    # 7 阶段管线编排器
+  models.py                   # 数据模型 (InputContext, PlanningDraft, VisualPlan, ...)
+  llm_client.py               # LLM 客户端 (Chat + Responses API)
+  config.py                   # 环境变量配置
+  session.py                  # 会话目录管理
+  cli.py                      # CLI 入口 (gen/render/plan/styles)
+  planning/
+    content_planner.py        # Phase 1a: 内容规划
+    visual_planner.py         # Phase 1b: 视觉规划
+    prompts.py                # 规划阶段 prompt 模板
+  design/
+    prompts.py                # SVG 生成 prompt (Bento Grid + 约束)
+    svg_generator.py          # Phase 3: 并行 SVG 生成
+    style_templates/          # 5 套教育主题 SVG 模板
+  materials/
+    image_provider.py         # 多源图片获取 (Pixabay/Unsplash/Seedream)
+    background_generator.py   # Phase 2: Seedream 背景生成
+    icons.py                  # 109 个 Lucide SVG 图标
+  postprocess/
+    svg_validator.py          # SVG 自动修复 (viewBox/字体/边界/重叠)
+    svg_sanitizer.py          # PPT 兼容清理 (去 script/事件)
+    svg_reviewer.py           # Phase 4: LLM 审阅修正
+  output/
+    svg_to_shapes.py          # SVG→DrawingML 原生形状转换器
+    pptx_assembler.py         # PPTX 组装 (原生形状模式)
+  input/
+    document_parser.py        # PDF/Word/MD 文档解析
+    web_researcher.py         # Tavily 联网搜索
 ```
 
 ## CLI 参考
 
 ```
-edupptx gen TOPIC [OPTIONS]          生成演示文稿
-edupptx library list|search|stats   素材库管理
-edupptx palettes                     列出样式主题
-edupptx icons                        列出可用图标
+edupptx gen TOPIC [OPTIONS]     从主题生成演示文稿
+edupptx plan TOPIC [OPTIONS]    只生成策划稿
+edupptx render PLAN [OPTIONS]   从策划稿渲染
+edupptx styles                  列出可用风格模板
 ```
 
 `gen` 选项：
 
 | 选项 | 说明 |
 |------|------|
-| `-r`, `--requirements` | 风格和内容要求（如"适合初中生，简约风"） |
-| `-o`, `--output` | 输出目录路径（默认 `output/`） |
-| `-p`, `--palette` | 样式主题名称 |
+| `-r`, `--requirements` | 附加要求 (如"适合高中生") |
+| `-s`, `--style` | 风格模板 (默认 `edu_emerald`) |
+| `--file` | 输入文档 (PDF/Word/MD/TXT) |
+| `--research` | 启用 Tavily 联网搜索 |
+| `--web-search` | 启用 LLM 联网搜索 (仅 Responses API) |
+| `--review` | 策划稿生成后暂停审核 |
+| `--debug` | 跳过素材获取，快速预览布局 |
+| `-o`, `--output` | 输出目录 (默认 `./output`) |
 | `-v`, `--verbose` | 详细日志 |
-| `--env-file` | .env 文件路径（默认 `.env`） |
 
 ## 开发
 
 ```bash
-# 安装开发依赖
-uv sync --group dev
-
-# 运行测试（112 个）
+uv sync
 uv run pytest tests/ -v
 ```
 
 ## 文档
 
-- [设计理念](docs/design-philosophy.md) — Agent 架构、三层 Schema 设计、设计决策
-- [布局系统](docs/layout-system.md) — EMU 坐标、命名意图、自适应卡片算法
-- [风格协商](docs/style-negotiation.md) — 自然语言→JSON patch→样式覆盖
+- [设计理念](docs/design-philosophy.md)
+- [布局系统](docs/layout-system.md)
+- [SVG 管线](docs/svg-pipeline.md)
 
 ## License
 

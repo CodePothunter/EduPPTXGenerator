@@ -1,152 +1,125 @@
-"""Tests for data models."""
+"""Tests for V2 data models."""
 
-from edupptx.models import BackgroundAction, ContentMaterial, MaterialEntry, PresentationPlan, SlideCard, SlideContent
+import json
 
+import pytest
 
-def test_slide_card_creation():
-    card = SlideCard(icon="triangle", title="Test", body="Body text")
-    assert card.icon == "triangle"
-    assert card.title == "Test"
-
-
-def test_slide_content_defaults():
-    slide = SlideContent(type="cover", title="Title", notes="Notes")
-    assert slide.subtitle is None
-    assert slide.cards == []
-    assert slide.formula is None
-
-
-def test_presentation_plan_serialization():
-    plan = PresentationPlan(
-        topic="Test",
-        palette="emerald",
-        slides=[
-            SlideContent(
-                type="cover",
-                title="Cover",
-                cards=[SlideCard(icon="star", title="A", body="B")],
-                notes="Notes",
-            )
-        ],
-    )
-    data = plan.model_dump()
-    assert data["topic"] == "Test"
-    assert len(data["slides"]) == 1
-    assert data["slides"][0]["cards"][0]["icon"] == "star"
-
-    # Round-trip
-    plan2 = PresentationPlan.model_validate(data)
-    assert plan2.topic == plan.topic
-    assert len(plan2.slides) == len(plan.slides)
+from edupptx.models import (
+    GeneratedSlide,
+    ImageNeed,
+    InputContext,
+    MaterialNeeds,
+    PagePlan,
+    PlanningDraft,
+    PlanningMeta,
+    SlideAssets,
+    VisualPlan,
+)
 
 
-def test_presentation_plan_from_json():
-    """Test parsing the kind of JSON the LLM would return."""
-    data = {
-        "topic": "勾股定理",
-        "palette": "blue",
-        "slides": [
-            {
-                "type": "cover",
-                "title": "勾股定理",
-                "subtitle": "探索直角三角形的奥秘",
-                "cards": [
-                    {"icon": "triangle", "title": "几何", "body": "面积关系"},
-                    {"icon": "calculator", "title": "代数", "body": "平方关系"},
-                    {"icon": "target", "title": "应用", "body": "实际问题"},
-                ],
-                "formula": "a² + b² = c²",
-                "notes": "开场介绍",
-            },
-            {
-                "type": "closing",
-                "title": "谢谢",
-                "subtitle": "课程结束",
-                "notes": "结束语",
-            },
-        ],
-        "language": "zh",
-    }
-    plan = PresentationPlan.model_validate(data)
-    assert len(plan.slides) == 2
-    assert plan.slides[0].cards[0].icon == "triangle"
-    assert plan.slides[1].type == "closing"
+class TestInputContext:
+    def test_defaults(self):
+        ctx = InputContext(topic="勾股定理")
+        assert ctx.topic == "勾股定理"
+        assert ctx.source_text is None
+        assert ctx.research_summary is None
+        assert ctx.requirements == ""
+
+    def test_with_all_fields(self):
+        ctx = InputContext(
+            topic="光合作用",
+            source_text="Some text",
+            research_summary="Summary",
+            requirements="高中生",
+        )
+        assert ctx.source_text == "Some text"
+        assert ctx.requirements == "高中生"
 
 
-def test_material_entry_creation():
-    entry = MaterialEntry(
-        id="mat_0001",
-        type="background",
-        tags=["math", "geometry"],
-        palette="emerald",
-        source="programmatic",
-        description="Diagonal gradient background",
-        resolution=(1920, 1080),
-        path="backgrounds/mat_0001_bg.jpg",
-        created_at="2026-04-10T14:30:00",
-    )
-    assert entry.id == "mat_0001"
-    assert entry.type == "background"
-    assert entry.tags == ["math", "geometry"]
+class TestPagePlan:
+    def test_defaults(self):
+        page = PagePlan(page_number=1, page_type="cover", title="Hello")
+        assert page.layout_hint == "mixed_grid"
+        assert page.content_points == []
+        assert page.design_notes == ""
+        assert page.notes == ""
+
+    def test_with_material_needs(self):
+        page = PagePlan(
+            page_number=2,
+            page_type="content",
+            title="Intro",
+            material_needs=MaterialNeeds(
+                images=[ImageNeed(query="tree", source="search")],
+                icons=["leaf", "sun"],
+            ),
+        )
+        assert len(page.material_needs.images) == 1
+        assert page.material_needs.icons == ["leaf", "sun"]
 
 
-def test_material_entry_serialization():
-    entry = MaterialEntry(
-        id="mat_0002",
-        type="diagram",
-        tags=["biology"],
-        palette="emerald",
-        source="programmatic",
-        description="Flowchart",
-        resolution=(1200, 800),
-        path="diagrams/mat_0002_flow.png",
-        created_at="2026-04-10T14:30:00",
-    )
-    data = entry.model_dump()
-    restored = MaterialEntry.model_validate(data)
-    assert restored.id == entry.id
-    assert restored.resolution == (1200, 800)
+class TestPlanningDraft:
+    def test_serialization_roundtrip(self):
+        draft = PlanningDraft(
+            meta=PlanningMeta(topic="勾股定理", total_pages=3),
+            pages=[
+                PagePlan(page_number=1, page_type="cover", title="封面"),
+                PagePlan(page_number=2, page_type="content", title="证明"),
+                PagePlan(page_number=3, page_type="closing", title="总结"),
+            ],
+        )
+        data = draft.model_dump()
+        restored = PlanningDraft.model_validate(data)
+        assert restored.meta.topic == "勾股定理"
+        assert len(restored.pages) == 3
+        assert restored.pages[0].page_type == "cover"
+
+    def test_json_roundtrip(self):
+        draft = PlanningDraft(
+            meta=PlanningMeta(topic="光合作用"),
+            visual=VisualPlan(primary_color="#10B981"),
+            pages=[PagePlan(page_number=1, page_type="content", title="T")],
+        )
+        json_str = draft.model_dump_json()
+        restored = PlanningDraft.model_validate_json(json_str)
+        assert restored.visual.primary_color == "#10B981"
+
+    def test_visual_defaults(self):
+        draft = PlanningDraft(
+            meta=PlanningMeta(topic="test"),
+            pages=[],
+        )
+        assert draft.visual.primary_color == "#1E40AF"
+        assert draft.visual.card_bg_color == "#FFFFFF"
 
 
-def test_background_action_generate():
-    action = BackgroundAction(action="generate", style="diagonal_gradient", tags=["math"])
-    assert action.action == "generate"
-    assert action.material_id is None
+class TestVisualPlan:
+    def test_all_fields(self):
+        vp = VisualPlan(
+            primary_color="#FF0000",
+            secondary_color="#00FF00",
+            accent_color="#0000FF",
+            background_prompt="a starry sky",
+            card_bg_color="#F0F0F0",
+            text_color="#333333",
+            heading_color="#111111",
+        )
+        assert vp.background_prompt == "a starry sky"
 
 
-def test_background_action_reuse():
-    action = BackgroundAction(action="reuse", material_id="mat_0001")
-    assert action.action == "reuse"
-    assert action.style is None
+class TestSlideAssets:
+    def test_defaults(self):
+        assets = SlideAssets(page_number=1)
+        assert assets.background_path is None
+        assert assets.image_paths == {}
+        assert assets.icon_svgs == {}
 
 
-def test_content_material_diagram():
-    mat = ContentMaterial(
-        action="generate_diagram",
-        position="center",
-        diagram_type="flowchart",
-        diagram_data={"nodes": [{"id": "1", "label": "Start"}], "edges": [], "direction": "TB"},
-    )
-    assert mat.action == "generate_diagram"
-    assert mat.diagram_type == "flowchart"
-
-
-def test_slide_content_with_materials():
-    slide = SlideContent(
-        type="content",
-        title="Test",
-        notes="Notes",
-        bg_action=BackgroundAction(action="generate", style="radial_gradient", tags=["test"]),
-        content_materials=[
-            ContentMaterial(action="generate_diagram", position="center", diagram_type="timeline",
-                           diagram_data={"events": [{"year": "2020", "label": "Event"}]}),
-        ],
-    )
-    assert slide.bg_action is not None
-    assert len(slide.content_materials) == 1
-
-
-def test_slide_content_backward_compat():
-    slide = SlideContent(type="cover", title="Test", notes="Notes")
-    assert slide.bg_action is None
-    assert slide.content_materials is None
+class TestGeneratedSlide:
+    def test_basic(self):
+        slide = GeneratedSlide(
+            page_number=1,
+            svg_content='<svg viewBox="0 0 1280 720"></svg>',
+        )
+        assert slide.svg_path is None
+        assert "1280" in slide.svg_content

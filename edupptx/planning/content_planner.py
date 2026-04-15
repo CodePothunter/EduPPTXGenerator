@@ -8,7 +8,7 @@ import re
 from loguru import logger
 
 from edupptx.config import Config
-from edupptx.llm_client import LLMClient
+from edupptx.llm_client import create_llm_client
 from edupptx.models import InputContext, PlanningDraft
 from edupptx.planning.prompts import (
     build_planning_system_prompt,
@@ -18,7 +18,7 @@ from edupptx.planning.prompts import (
 
 def generate_planning_draft(ctx: InputContext, config: Config) -> PlanningDraft:
     """Generate a planning draft from input context via a single LLM call."""
-    client = LLMClient(config)
+    client = create_llm_client(config)
 
     system = build_planning_system_prompt()
     user = build_planning_user_prompt(

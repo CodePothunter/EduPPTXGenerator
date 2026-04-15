@@ -10,7 +10,7 @@ from loguru import logger
 
 from edupptx.config import Config
 from edupptx.design.prompts import build_svg_system_prompt, build_svg_user_prompt
-from edupptx.llm_client import LLMClient
+from edupptx.llm_client import create_llm_client
 from edupptx.models import GeneratedSlide, PlanningDraft, SlideAssets
 
 
@@ -112,7 +112,7 @@ async def generate_slide_svgs(
     system_prompt = build_svg_system_prompt(style_guide, visual_plan=draft.visual)
 
     # 3. 初始化 LLM 客户端
-    client = LLMClient(config)
+    client = create_llm_client(config, web_search=False)
     total_pages = len(draft.pages)
 
     # 4. 并行生成

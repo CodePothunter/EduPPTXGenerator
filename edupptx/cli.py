@@ -33,10 +33,11 @@ def main(verbose: bool):
 @click.option("--style", "-s", default="edu_emerald", help="风格模板名称")
 @click.option("--review", is_flag=True, help="策划稿生成后暂停，供审核编辑")
 @click.option("--debug", is_flag=True, help="Debug 模式：跳过素材图片生成，保留背景和 LLM 流程")
+@click.option("--web-search", is_flag=True, help="启用 LLM 联网搜索 (仅 Responses API provider)")
 @click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
 @click.option("--env-file", default=".env", help=".env 文件路径")
 def gen(topic: str, requirements: str, file_path: str | None, research: bool,
-        style: str, review: bool, debug: bool, output: str, env_file: str):
+        style: str, review: bool, debug: bool, web_search: bool, output: str, env_file: str):
     """从主题生成教育演示文稿。
 
     示例：
@@ -45,10 +46,12 @@ def gen(topic: str, requirements: str, file_path: str | None, research: bool,
         edupptx gen "光合作用" --debug  # 跳过素材，快速预览布局
         edupptx gen --file report.pdf "基于报告做汇报" --research
         edupptx gen "年度总结" --review
+        edupptx gen "量子计算" --web-search  # LLM 联网搜索
     """
     try:
         config = Config.from_env(env_file)
         config.output_dir = Path(output)
+        config.web_search = web_search
 
         agent = PPTXAgent(config)
         session_dir = agent.run(

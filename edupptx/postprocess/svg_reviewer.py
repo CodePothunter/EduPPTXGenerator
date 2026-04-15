@@ -7,7 +7,7 @@ import re
 from loguru import logger
 
 from edupptx.config import Config
-from edupptx.llm_client import LLMClient
+from edupptx.llm_client import create_llm_client
 from edupptx.models import PagePlan, VisualPlan
 
 _REVIEW_SYSTEM_PROMPT = """\
@@ -41,7 +41,7 @@ def review_and_fix_svg(
 
     Returns the reviewed SVG (or original if review fails).
     """
-    client = LLMClient(config)
+    client = create_llm_client(config, web_search=False)
 
     # Build user prompt with SVG + context
     warnings_text = "\n".join(f"- {w}" for w in warnings) if warnings else "（无自动检测问题）"

@@ -28,6 +28,10 @@ class Config:
     # Web research
     tavily_api_key: str = ""
 
+    # Provider selection
+    llm_provider: str = "chat"  # "chat" (Chat Completions) | "responses" (Responses API)
+    web_search: bool = False    # 联网搜索 (仅 responses provider 有效)
+
     # Paths
     cache_dir: Path = field(default_factory=lambda: Path("./backgrounds_cache"))
     library_dir: Path = field(default_factory=lambda: Path("./materials_library"))
@@ -56,6 +60,7 @@ class Config:
             llm_api_key=os.getenv("GEN_APIKEY", ""),
             llm_model=os.getenv("GEN_MODEL", "").split("#")[0].strip(),
             llm_base_url=llm_base,
+            llm_provider=os.getenv("LLM_PROVIDER", "chat"),
             image_api_key=os.getenv("VISION_GEN_APIKEY", ""),
             image_model=os.getenv("VISION_GEN_MODEL", "").split("#")[0].strip(),
             image_base_url=image_base,

@@ -8,7 +8,7 @@ import re
 from loguru import logger
 
 from edupptx.config import Config
-from edupptx.llm_client import LLMClient
+from edupptx.llm_client import create_llm_client
 from edupptx.models import PlanningDraft, VisualPlan
 
 _SYSTEM_PROMPT = """\
@@ -48,7 +48,7 @@ _SYSTEM_PROMPT = """\
 
 def generate_visual_plan(draft: PlanningDraft, config: Config) -> VisualPlan:
     """Call LLM to generate a visual plan based on content planning."""
-    client = LLMClient(config)
+    client = create_llm_client(config)
 
     page_types = [f"{p.page_number}. {p.page_type}: {p.title}" for p in draft.pages]
     user_prompt = (

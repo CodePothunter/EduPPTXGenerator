@@ -79,6 +79,79 @@ class LLMClient:
                 raise
 
 
+class DoubaoResponsesClient(LLMClient):
+    """使用火山方舟 Responses API (/responses) 的 LLM client。
+
+    相比 Chat Completions API:
+    - system message 提升为 instructions 参数
+    - 支持内置联网搜索 (web_search)
+    - 服务端自动管理上下文 (本项目暂未使用)
+    """
+
+    def chat(
+        self,
+        messages: list[dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = 16384,
+    ) -> str:
+        instructions, input_items = self._convert_messages(messages)
+
+        kwargs: dict = dict(
+            model=self._model,
+            input=input_items,
+            temperature=temperature,
+            max_output_tokens=max_tokens,
+            store=False,
+        )
+        if instructions:
+            kwargs["instructions"] = instructions
+
+        # 联网搜索
+        if getattr(self, "_web_search", False):
+            kwargs["tools"] = [{"type": "web_search", "max_keyword": 3}]
+
+        # 豆包: 关闭深度思考 (结构化输出场景)
+        if self._is_doubao:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
+        resp = self._client.responses.create(**kwargs)
+        return resp.output_text or ""
+
+    @staticmethod
+    def _convert_messages(
+        messages: list[dict[str, str]],
+    ) -> tuple[str, list[dict[str, str]]]:
+        """将 Chat API messages 格式转换为 Responses API 格式。
+
+        Returns (instructions, input_items):
+          - instructions: 合并的 system prompts
+          - input_items: user/assistant messages
+        """
+        system_parts: list[str] = []
+        input_items: list[dict[str, str]] = []
+        for msg in messages:
+            if msg["role"] == "system":
+                system_parts.append(msg["content"])
+            else:
+                input_items.append({"role": msg["role"], "content": msg["content"]})
+        instructions = "\n\n".join(system_parts)
+        return instructions, input_items
+
+
+def create_llm_client(config: "Config", web_search: bool | None = None) -> LLMClient:
+    """根据配置创建对应的 LLM client。
+
+    Args:
+        config: 全局配置
+        web_search: 覆盖 config.web_search（None 则跟随 config）
+    """
+    if config.llm_provider == "responses":
+        client = DoubaoResponsesClient(config)
+        client._web_search = config.web_search if web_search is None else web_search
+        return client
+    return LLMClient(config)
+
+
 class ImageClient:
     """Thin wrapper around the OpenAI SDK for image generation."""
 
