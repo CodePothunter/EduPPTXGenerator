@@ -1,451 +1,315 @@
-"""Thin agent — content planning + per-slide material decisions + parallel execution."""
+"""V2 Agent: 5-phase SVG pipeline orchestrator."""
 
 from __future__ import annotations
 
-import hashlib
-import json
+import asyncio
 import shutil
-import tempfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from loguru import logger
 
-from edupptx.backgrounds import generate_background
 from edupptx.config import Config
-from edupptx.content_planner import ContentPlanner
-from edupptx.llm_client import LLMClient
-from edupptx.material_library import MaterialLibrary
 from edupptx.models import (
-    BackgroundAction,
-    ContentMaterial,
-    PresentationPlan,
-    SlideContent,
+    GeneratedSlide,
+    InputContext,
+    PlanningDraft,
+    SlideAssets,
 )
-from edupptx.pipeline_v2 import render_with_schema
 from edupptx.session import Session
-from edupptx.style_negotiator import negotiate_style
-from edupptx.style_resolver import resolve_style
-from edupptx.style_schema import ResolvedStyle, load_style
-
-# Per-slide material decision prompt — small, focused
-_MATERIAL_PROMPT = """你是一位教育演示文稿的素材规划师。给定一页幻灯片的内容，决定它需要什么素材。
-
-## 背景图（必选）
-选择一种程序生成风格: diagonal_gradient, radial_gradient, geometric_circles, geometric_triangles
-**重要：不同页面应使用不同风格，避免所有页面都用同一种。**
-
-## 图表（可选，仅在内容确实适合图表表达时才添加）
-可用类型:
-- flowchart: 流程/步骤 → data: {"nodes":[{"id":"1","label":"..."}],"edges":[{"from":"1","to":"2"}],"direction":"TB"}
-- timeline: 时间线 → data: {"events":[{"year":"...","label":"..."}]}
-- comparison: 对比 → data: {"columns":[{"header":"...","items":["..."]}]}
-- hierarchy: 层级 → data: {"root":{"label":"...","children":[{"label":"...","children":[]}]}}
-- cycle: 循环 → data: {"steps":[{"label":"..."}]}
-
-## 插图（可选，仅在内容适合用图片辅助理解时才添加）
-当页面描述具体概念、实验、场景或自然现象时，可以请求 AI 生成一张教育插图。
-**重要：图表和插图二选一，一页不能同时有 diagram 和 illustration。**
-
-## 输出格式（严格 JSON，不要 markdown 代码块）
-{
-  "bg_style": "diagonal_gradient",
-  "diagram": null
-}
-
-如果需要图表:
-{
-  "bg_style": "radial_gradient",
-  "diagram": {"type": "flowchart", "data": {...}}
-}
-
-如果需要插图（不能和图表同时使用）:
-{
-  "bg_style": "radial_gradient",
-  "illustration": {
-    "description": "A flat-style educational illustration showing...",
-    "style": "educational_flat",
-    "anchor": "center",
-    "scale": 0.85
-  }
-}
-style 可选: educational_flat, scientific_realistic, watercolor_soft
-anchor: top（靠上）/ center（居中）/ bottom（靠下），根据画面内容决定
-scale: 0.4-1.0，图片占区域比例。全图页用0.95，配文字页用0.7-0.85，小装饰用0.5
-
-素材库当前状态: {library_summary}
-"""
-
-# Slide types that skip LLM material decision (use default bg only)
-_SKIP_MATERIAL_TYPES = {"cover", "big_quote", "closing", "section"}
-
-# Background styles for forced rotation
-_BG_STYLES = ["diagonal_gradient", "radial_gradient", "geometric_circles", "geometric_triangles"]
 
 
 class PPTXAgent:
-    """Thin agent: content planning → per-slide material decisions → parallel execution."""
+    """Orchestrates the 5-phase SVG pipeline."""
 
     def __init__(self, config: Config):
         self.config = config
-        self.library = MaterialLibrary(config.library_dir)
-        self.llm = LLMClient(config)
 
-    def run(self, topic: str, requirements: str = "") -> Path:
-        """Run the agent. Returns path to session directory."""
+    def run(
+        self,
+        topic: str,
+        requirements: str = "",
+        file_path: str | None = None,
+        research: bool = False,
+        style: str = "edu_emerald",
+        review: bool = False,
+        debug: bool = False,
+    ) -> Path:
+        """Run the full pipeline. Returns session directory."""
+        return asyncio.run(self._run_async(
+            topic, requirements, file_path, research, style, review, debug,
+        ))
+
+    async def _run_async(
+        self,
+        topic: str,
+        requirements: str,
+        file_path: str | None,
+        research: bool,
+        style: str,
+        review: bool,
+        debug: bool,
+    ) -> Path:
         session = Session(self.config.output_dir)
-        logger.info("Session: {}", session.dir)
+        logger.info("Session: {} (debug={})", session.dir, debug)
 
-        # Phase 1: Content planning (1 LLM call, original prompt, small output)
-        session.log_step("planning", f"Planning slides for: {topic}")
-        planner = ContentPlanner(self.llm)
-        plan = planner.plan(topic, requirements)
-        session.save_plan(plan.model_dump())
-        logger.info("Plan: {} slides, palette={}", len(plan.slides), plan.palette)
+        # ── Phase 0: Input ──────────────────────────────────
+        session.log_step("input", "Processing input")
+        ctx = await self._phase0_input(topic, requirements, file_path, research)
+        logger.info("Input ready: topic={}, has_doc={}, has_research={}",
+                     ctx.topic, ctx.source_text is not None, ctx.research_summary is not None)
 
-        # Phase 2: Style negotiation — LLM interprets NL style requirements
-        style_path = Path(__file__).parent.parent / "styles" / f"{plan.palette}.json"
-        if not style_path.exists():
-            style_path = Path(__file__).parent.parent / "styles" / "emerald.json"
-        base_schema = load_style(style_path)
+        # ── Phase 1a: Content Planning ──────────────────────
+        session.log_step("planning", "Generating content plan")
+        draft = self._phase1_planning(ctx)
+        logger.info("Content plan: {} pages", len(draft.pages))
 
-        if requirements.strip():
-            session.log_step("style", f"Negotiating style from: {requirements[:80]}")
-            negotiated_schema = negotiate_style(self.llm, base_schema, requirements)
+        # ── Phase 1b: Visual Planning ───────────────────────
+        session.log_step("visual_planning", "Generating visual plan (colors, background)")
+        draft.visual = self._phase1b_visual_planning(draft)
+        session.save_plan(draft.model_dump())
+        logger.info("Visual plan: primary={}, bg_prompt={}...",
+                     draft.visual.primary_color, draft.visual.background_prompt[:40])
+
+        if review:
+            plan_path = session.dir / "plan.json"
+            logger.info("Review mode: edit {} then run `edupptx render {}`", plan_path, plan_path)
+            return session.dir
+
+        # ── Phase 2: Background Generation ──────────────────
+        session.log_step("background", "Generating unified background")
+        bg_path = await self._phase2_background(draft.visual, session)
+
+        # ── Phase 2b: Materials (skipped in debug mode) ─────
+        if not debug:
+            session.log_step("materials", "Fetching materials")
+            all_assets = await self._phase2_materials(draft, session)
+            # Attach background to all assets
+            if bg_path:
+                for assets in all_assets.values():
+                    assets.background_path = bg_path
+            logger.info("Materials ready for {} pages", len(all_assets))
         else:
-            negotiated_schema = base_schema
+            logger.info("Debug mode: skipping material fetch")
+            all_assets = {
+                p.page_number: SlideAssets(
+                    page_number=p.page_number,
+                    background_path=bg_path,
+                )
+                for p in draft.pages
+            }
 
-        resolved_style = resolve_style(negotiated_schema)
+        # ── Phase 3: SVG Design ─────────────────────────────
+        session.log_step("design", f"Generating SVG for {len(draft.pages)} pages")
+        slides = await self._phase3_design(draft, all_assets, style, debug=debug)
+        logger.info("Generated {} SVG slides", len(slides))
 
-        # Phase 3: Per-slide material decisions (N small LLM calls, parallel)
-        session.log_step("materials", f"Deciding materials for {len(plan.slides)} slides")
-        self._decide_materials(plan, session)
-
-        # Phase 4: Execute material actions (parallel, no LLM)
-        session.log_step("executing", "Generating materials")
-        slide_assets = self._execute_materials(plan, resolved_style, session)
-
-        # Phase 5: Render via v2 schema-driven pipeline
-        session.log_step("rendering", f"Rendering {len(plan.slides)} slides (v2 pipeline)")
-
-        # Collect background paths, material paths, and diagram specs
-        bg_paths = []
-        material_paths: dict[int, Path] = {}
-        diagram_specs: dict[int, tuple[str, dict]] = {}
-        for i, slide in enumerate(plan.slides):
-            bg = slide_assets.get(("bg", i))
-            if bg:
-                bg_paths.append(bg)
-            mat = slide_assets.get(("mat", i))
-            if mat:
-                material_paths[i] = mat
-            # Collect native diagram specs (not image-based)
-            if slide.content_materials:
-                for m in slide.content_materials:
-                    if m.action == "generate_diagram" and m.diagram_type and m.diagram_data:
-                        diagram_specs[i] = (m.diagram_type, m.diagram_data)
-                        break
-            session.save_slide_state(i, slide.type, slide.model_dump())
-
-        if diagram_specs:
-            logger.info("Diagram specs collected for {} slides", len(diagram_specs))
-
-        # Save negotiated schema for debugging
-        import json as _json
-        schema_dump_path = session.dir / "style_schema.json"
-        with open(schema_dump_path, "w", encoding="utf-8") as f:
-            _json.dump(negotiated_schema.model_dump(by_alias=True), f, ensure_ascii=False, indent=2)
-
-        # Render using negotiated schema directly (not from file)
-        from edupptx.layout_resolver import resolve_layout
-        from edupptx.pptx_writer import PptxWriter
-        from edupptx.validator import validate_slides
-        slides = resolve_layout(
-            plan, resolved_style, bg_paths or None, material_paths or None,
-            diagram_specs or None,
+        # ── Phase 4: Validation + LLM Review ────────────────
+        session.log_step("postprocess", "Validating + LLM reviewing SVGs")
+        svg_paths = self._phase4_postprocess(
+            slides, session, all_assets,
+            draft=draft, do_review=True,
         )
-        warnings = validate_slides(slides)
-        if warnings:
-            logger.warning("Validation: {} warnings", len(warnings))
-        writer = PptxWriter()
-        writer.write_slides(slides, bg_paths or None, style=resolved_style)
-        writer.save(session.output_path)
-        session.log_step("done", f"Saved {len(plan.slides)} slides to {session.output_path}")
-        logger.info("Done! {} slides, output: {}", len(plan.slides), session.output_path)
+        logger.info("Post-processed {} SVGs", len(svg_paths))
+
+        # ── Phase 5: Output ─────────────────────────────────
+        session.log_step("output", "Assembling PPTX")
+        self._phase5_output(svg_paths, session)
+        session.log_step("done", f"Saved {len(svg_paths)} slides to {session.output_path}")
+        logger.info("Done! {} slides, output: {}", len(svg_paths), session.output_path)
 
         return session.dir
 
-    def _decide_materials(self, plan: PresentationPlan, session: Session) -> None:
-        """Per-slide material decisions via small parallel LLM calls.
+    async def run_from_plan(
+        self, plan_path: Path, style: str = "edu_emerald", debug: bool = False,
+    ) -> Path:
+        """Resume from a saved planning draft (for `edupptx render`)."""
+        import json
+        with open(plan_path, encoding="utf-8") as f:
+            data = json.load(f)
+        draft = PlanningDraft.model_validate(data)
 
-        Mutates plan.slides in-place, setting bg_action and content_materials.
-        """
-        library_summary = json.dumps(self.library.summary(), ensure_ascii=False)
-        system = _MATERIAL_PROMPT.replace("{library_summary}", library_summary)
+        session_dir = plan_path.parent
+        session = Session.__new__(Session)
+        session.dir = session_dir
+        session.output_path = session_dir / "output.pptx"
 
-        def _decide_one(i: int, slide: SlideContent) -> tuple[int, dict]:
-            # Skip LLM call for simple slide types
-            if slide.type in _SKIP_MATERIAL_TYPES:
-                return i, {"bg_style": _BG_STYLES[i % len(_BG_STYLES)]}
+        bg_path = await self._phase2_background(draft.visual, session)
 
-            user_msg = (
-                f"幻灯片 {i+1}/{len(plan.slides)}\n"
-                f"类型: {slide.type}\n"
-                f"标题: {slide.title}\n"
-            )
-            if slide.subtitle:
-                user_msg += f"副标题: {slide.subtitle}\n"
-            if slide.cards:
-                card_summary = ", ".join(c.title for c in slide.cards)
-                user_msg += f"卡片: {card_summary}\n"
-            if slide.formula:
-                user_msg += f"公式: {slide.formula}\n"
-
-            try:
-                result = self.llm.chat_json(
-                    [{"role": "system", "content": system},
-                     {"role": "user", "content": user_msg}],
-                    max_tokens=1024,
-                )
-                return i, result
-            except Exception as e:
-                logger.warning("Material decision failed for slide {}: {}", i, e)
-                return i, {"bg_style": "diagonal_gradient", "diagram": None}
-
-        # Run per-slide decisions in parallel
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = [pool.submit(_decide_one, i, s) for i, s in enumerate(plan.slides)]
-            for future in as_completed(futures):
-                idx, decision = future.result()
-                slide = plan.slides[idx]
-
-                # Apply background decision — force rotation instead of trusting LLM
-                bg_style = _BG_STYLES[idx % len(_BG_STYLES)]
-                slide.bg_action = BackgroundAction(
-                    action="generate",
-                    style=bg_style,
-                    tags=[plan.topic],
-                )
-
-                # Apply diagram decision
-                diagram = decision.get("diagram")
-                if diagram and isinstance(diagram, dict) and diagram.get("type"):
-                    slide.content_materials = [
-                        ContentMaterial(
-                            action="generate_diagram",
-                            position="center",
-                            diagram_type=diagram["type"],
-                            diagram_data=diagram.get("data", {}),
-                            tags=[plan.topic],
-                        )
-                    ]
-
-                # Apply illustration decision (only if no diagram)
-                illust_desc = None
-                if not diagram:
-                    illust = decision.get("illustration")
-                    if illust and isinstance(illust, dict) and illust.get("description"):
-                        illust_desc = illust["description"]
-                        # Determine position from slide type
-                        illust_position = "center"
-                        if slide.type == "image_left":
-                            illust_position = "left"
-                        elif slide.type == "image_right":
-                            illust_position = "right"
-                        elif slide.type == "full_image":
-                            illust_position = "full"
-
-                        anchor = illust.get("anchor", "center")
-                        if anchor not in ("top", "center", "bottom"):
-                            anchor = "center"
-                        scale = illust.get("scale", 0.85)
-                        if not isinstance(scale, (int, float)):
-                            scale = 0.85
-                        scale = max(0.4, min(1.0, float(scale)))
-
-                        slide.content_materials = [
-                            ContentMaterial(
-                                action="generate_illustration",
-                                position=illust_position,
-                                illustration_description=illust["description"],
-                                illustration_style=illust.get("style", "educational_flat"),
-                                image_anchor=anchor,
-                                image_scale=scale,
-                                tags=[plan.topic],
-                            )
-                        ]
-
-                mat_info = (
-                    f"diagram={diagram.get('type')}" if diagram and isinstance(diagram, dict) and diagram.get("type")
-                    else f"illustration={illust_desc}" if illust_desc
-                    else "none"
-                )
-                session.log_step(
-                    "material_decision",
-                    f"Slide {idx+1}: bg={bg_style}, material={mat_info}",
-                )
-
-    def _execute_materials(
-        self, plan: PresentationPlan, style: ResolvedStyle, session: Session,
-    ) -> dict[tuple[str, int], Path]:
-        """Execute all material actions in parallel (no LLM, pure generation)."""
-        results: dict[tuple[str, int], Path] = {}
-
-        def _gen_bg(i: int, slide: SlideContent) -> tuple[tuple[str, int], Path]:
-            bg_style = "diagonal_gradient"
-            if slide.bg_action and slide.bg_action.style:
-                bg_style = slide.bg_action.style
-            tags = slide.bg_action.tags if slide.bg_action else []
-
-            # Try to reuse from library first
-            cached = self.library.search(
-                tags + [bg_style], type="background", palette=plan.palette,
-            )
-            if cached:
-                lib_path = self.library.dir / cached[0].path
-                if lib_path.exists():
-                    dest = session.dir / "materials" / lib_path.name
-                    shutil.copy2(lib_path, dest)
-                    logger.debug("Reused cached background for slide {}: {}", i, cached[0].id)
-                    return ("bg", i), lib_path
-
-            bg_path = generate_background(style, bg_style, seed_extra=f"slide{i}")
-            self.library.add(
-                bg_path, "background", tags + [bg_style], plan.palette, "programmatic",
-                f"Slide {i}: {slide.title}",
-            )
-            dest = session.dir / "materials" / bg_path.name
-            shutil.copy2(bg_path, dest)
-            return ("bg", i), bg_path
-
-        def _make_placeholder(desc: str, rs: ResolvedStyle) -> Path:
-            from PIL import Image, ImageDraw, ImageFont
-            accent_light = rs.palette.get("accent_light", "#E0E0E0")
-            img = Image.new("RGB", (1024, 768), tuple(int(accent_light.lstrip('#')[i:i+2], 16) for i in (0, 2, 4)))
-            draw = ImageDraw.Draw(img)
-            text = desc[:80] + ("..." if len(desc) > 80 else "")
-            try:
-                font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 24)
-            except (OSError, IOError):
-                font = ImageFont.load_default()
-            bbox = draw.textbbox((0, 0), text, font=font)
-            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
-            x = (1024 - tw) // 2
-            y = (768 - th) // 2
-            text_color = tuple(int(rs.body_color.lstrip('#')[i:i+2], 16) for i in (0, 2, 4))
-            draw.text((x, y), text, fill=text_color, font=font)
-            path = Path(tempfile.mktemp(suffix=".png"))
-            img.save(path, "PNG")
-            return path
-
-        # Recommended 2K pixel sizes sorted by aspect ratio (Seedream API)
-        _RECOMMENDED_SIZES = [
-            (9/16, "1600x2848"),   # 9:16
-            (2/3,  "1664x2496"),   # 2:3
-            (3/4,  "1728x2304"),   # 3:4
-            (1/1,  "2048x2048"),   # 1:1
-            (4/3,  "2304x1728"),   # 4:3
-            (3/2,  "2496x1664"),   # 3:2
-            (16/9, "2848x1600"),   # 16:9
-            (21/9, "3136x1344"),   # 21:9
-        ]
-
-        def _pick_image_size(slide_type: str, position: str, card_count: int) -> str:
-            """Pick the best 2K size by computing the material_slot aspect ratio."""
-            from edupptx.layout_resolver import _compute_material_slot
-
-            slot = _compute_material_slot(slide_type, style, position)
-            if not slot:
-                return "2848x1600"  # fallback 16:9
-            sx, sy, sw, sh = slot
-            if sw <= 0 or sh <= 0:
-                return "2848x1600"
-            slot_ratio = sw / sh
-            best_size = _RECOMMENDED_SIZES[-1][1]
-            best_diff = float("inf")
-            for ratio, size in _RECOMMENDED_SIZES:
-                diff = abs(ratio - slot_ratio)
-                if diff < best_diff:
-                    best_diff = diff
-                    best_size = size
-            return best_size
-
-        def _gen_illustration(i: int, mat: ContentMaterial, slide: SlideContent) -> tuple[tuple[str, int], Path] | None:
-            desc = mat.illustration_description or "educational illustration"
-            style = mat.illustration_style or "educational_flat"
-            # Cache key: hash of description only (no slide index)
-            desc_hash = hashlib.md5(desc.encode()).hexdigest()[:8]
-
-            # Try to reuse from library — match on desc_hash + style
-            cached = self.library.search(
-                [desc_hash, style], type="illustration", palette=plan.palette,
-            )
-            if cached and desc_hash in cached[0].tags:
-                lib_path = self.library.dir / cached[0].path
-                if lib_path.exists():
-                    dest = session.dir / "materials" / lib_path.name
-                    shutil.copy2(lib_path, dest)
-                    logger.debug("Reused cached illustration for slide {}: {}", i, cached[0].id)
-                    return ("mat", i), lib_path
-
-            # No API key → skip illustration entirely (no ugly placeholders)
-            if not self.config.image_api_key:
-                logger.debug("No image API key, skipping illustration for slide {}", i)
-                return None
-
-            style_prompts = {
-                "educational_flat": "flat design, clean lines, vibrant colors, educational",
-                "scientific_realistic": "scientific illustration, detailed, accurate, textbook style",
-                "watercolor_soft": "soft watercolor style, gentle tones, artistic, educational",
+        if not debug:
+            all_assets = await self._phase2_materials(draft, session)
+            if bg_path:
+                for assets in all_assets.values():
+                    assets.background_path = bg_path
+        else:
+            all_assets = {
+                p.page_number: SlideAssets(page_number=p.page_number, background_path=bg_path)
+                for p in draft.pages
             }
-            style_suffix = style_prompts.get(style, style_prompts["educational_flat"])
-            image_size = _pick_image_size(slide.type, mat.position, len(slide.cards))
 
-            try:
-                from edupptx.llm_client import ImageClient
-                client = ImageClient(self.config)
-                prompt = f"{desc}. Style: {style_suffix}. No text or labels in the image."
-                urls = client.generate(prompt, size=image_size, n=1)
-                if not urls:
-                    logger.warning("Image API returned no URLs for slide {}", i)
-                    return None
-                import urllib.request
-                path = Path(tempfile.mktemp(suffix=".jpg"))
-                urllib.request.urlretrieve(urls[0], str(path))
-                # Compress: resize to max 1920px wide and save as JPEG
-                from PIL import Image as PILImage
-                with PILImage.open(path) as img:
-                    if img.width > 1920:
-                        ratio = 1920 / img.width
-                        new_size = (1920, int(img.height * ratio))
-                        img = img.resize(new_size, PILImage.LANCZOS)
-                    img.convert("RGB").save(path, "JPEG", quality=85, optimize=True)
-                logger.debug("Compressed illustration to {}KB", path.stat().st_size // 1024)
-            except Exception as e:
-                logger.warning("Illustration generation failed for slide {}: {}", i, e)
-                return None
+        slides = await self._phase3_design(draft, all_assets, style, debug=debug)
+        svg_paths = self._phase4_postprocess(slides, session, all_assets, draft=draft, do_review=True)
+        self._phase5_output(svg_paths, session)
+        logger.info("Rendered {} slides from plan", len(svg_paths))
+        return session_dir
 
-            self.library.add(
-                path, "illustration", mat.tags + [style, desc_hash], plan.palette,
-                "ai_generated", desc[:80],
+    # ── Phase implementations ───────────────────────────────
+
+    async def _phase0_input(
+        self, topic: str, requirements: str,
+        file_path: str | None, research: bool,
+    ) -> InputContext:
+        source_text = None
+        research_summary = None
+
+        if file_path:
+            from edupptx.input.document_parser import parse_document
+            source_text = parse_document(file_path)
+
+        if research and self.config.tavily_api_key:
+            from edupptx.input.web_researcher import research_topic
+            research_summary = await research_topic(
+                topic, self.config.tavily_api_key,
             )
-            dest = session.dir / "materials" / path.name
-            shutil.copy2(path, dest)
-            return ("mat", i), path
 
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            futures = []
-            for i, slide in enumerate(plan.slides):
-                futures.append(pool.submit(_gen_bg, i, slide))
-                if slide.content_materials:
-                    for mat in slide.content_materials:
-                        if mat.action == "generate_illustration":
-                            futures.append(pool.submit(_gen_illustration, i, mat, slide))
+        return InputContext(
+            topic=topic,
+            source_text=source_text,
+            research_summary=research_summary,
+            requirements=requirements,
+        )
 
-            for future in as_completed(futures):
-                result = future.result()
-                if result is not None:
-                    key, path = result
-                    results[key] = path
+    def _phase1_planning(self, ctx: InputContext) -> PlanningDraft:
+        from edupptx.planning.content_planner import generate_planning_draft
+        return generate_planning_draft(ctx, self.config)
 
-        return results
+    def _phase1b_visual_planning(self, draft: PlanningDraft):
+        from edupptx.planning.visual_planner import generate_visual_plan
+        return generate_visual_plan(draft, self.config)
+
+    async def _phase2_background(self, visual, session: Session):
+        from edupptx.materials.background_generator import generate_background
+        return await generate_background(visual, self.config, session)
+
+    async def _phase2_materials(
+        self, draft: PlanningDraft, session: Session,
+    ) -> dict[int, SlideAssets]:
+        from edupptx.materials.image_provider import fetch_images
+
+        all_assets: dict[int, SlideAssets] = {}
+        materials_dir = session.dir / "materials"
+        materials_dir.mkdir(exist_ok=True)
+
+        for page in draft.pages:
+            assets = SlideAssets(page_number=page.page_number)
+
+            # Fetch images if needed
+            if page.material_needs.images:
+                fetched = await fetch_images(page.material_needs.images, self.config)
+                for role, result in fetched.items():
+                    if result and result.local_path and result.local_path.exists():
+                        dest = materials_dir / result.local_path.name
+                        shutil.copy2(result.local_path, dest)
+                        assets.image_paths[role] = dest
+
+            # Collect icon SVGs
+            if page.material_needs.icons:
+                from edupptx.materials.icons import get_icon_svg
+                for icon_name in page.material_needs.icons:
+                    try:
+                        svg_str = get_icon_svg(icon_name)
+                        assets.icon_svgs[icon_name] = svg_str
+                    except Exception:
+                        logger.warning("Icon not found: {}", icon_name)
+
+            all_assets[page.page_number] = assets
+
+        return all_assets
+
+    async def _phase3_design(
+        self, draft: PlanningDraft,
+        all_assets: dict[int, SlideAssets],
+        style: str,
+        debug: bool = False,
+    ) -> list[GeneratedSlide]:
+        from edupptx.design.svg_generator import generate_slide_svgs
+        return await generate_slide_svgs(
+            draft, all_assets, style, self.config, debug=debug,
+        )
+
+    def _phase4_postprocess(
+        self, slides: list[GeneratedSlide], session: Session,
+        all_assets: dict[int, SlideAssets] | None = None,
+        draft: PlanningDraft | None = None,
+        do_review: bool = False,
+    ) -> list[Path]:
+        from edupptx.postprocess.svg_validator import validate_and_fix
+        from edupptx.postprocess.svg_sanitizer import sanitize_for_ppt
+
+        slides_dir = session.dir / "slides"
+        slides_dir.mkdir(exist_ok=True)
+        svg_paths: list[Path] = []
+
+        # Build page lookup for review
+        page_lookup: dict[int, "PagePlan"] = {}
+        if draft:
+            page_lookup = {p.page_number: p for p in draft.pages}
+
+        for slide in sorted(slides, key=lambda s: s.page_number):
+            # Step 1: Validate and fix
+            fixed_svg, warnings = validate_and_fix(slide.svg_content)
+            for w in warnings:
+                logger.warning("Slide {}: {}", slide.page_number, w)
+
+            # Step 2: LLM Review (if enabled and draft available)
+            if do_review and draft and slide.page_number in page_lookup:
+                from edupptx.postprocess.svg_reviewer import review_and_fix_svg
+                fixed_svg = review_and_fix_svg(
+                    fixed_svg, warnings,
+                    page_lookup[slide.page_number],
+                    draft.visual,
+                    self.config,
+                )
+
+            # Step 3: Sanitize for PPT
+            clean_svg = sanitize_for_ppt(fixed_svg)
+
+            # Step 4: Inject real images (replace __IMAGE_XXX__ placeholders)
+            if all_assets and slide.page_number in all_assets:
+                clean_svg = self._inject_images(clean_svg, all_assets[slide.page_number])
+
+            # Save
+            path = slides_dir / f"slide_{slide.page_number:02d}.svg"
+            path.write_text(clean_svg, encoding="utf-8")
+            svg_paths.append(path)
+
+        return svg_paths
+
+    @staticmethod
+    def _inject_images(svg_content: str, assets: SlideAssets) -> str:
+        """Replace __IMAGE_XXX__ placeholders with base64 data URIs."""
+        import base64
+        import io
+        for role, path in assets.image_paths.items():
+            placeholder = f"__IMAGE_{role.upper()}__"
+            if placeholder not in svg_content:
+                continue
+            try:
+                from PIL import Image
+                with Image.open(path) as img:
+                    # Compress for SVG embedding: max 800px wide, JPEG quality 70
+                    if img.width > 800:
+                        ratio = 800 / img.width
+                        img = img.resize((800, int(img.height * ratio)), Image.LANCZOS)
+                    buf = io.BytesIO()
+                    img.convert("RGB").save(buf, "JPEG", quality=70, optimize=True)
+                    b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+                    data_uri = f"data:image/jpeg;base64,{b64}"
+                    svg_content = svg_content.replace(placeholder, data_uri)
+                    logger.debug("Injected image for {} ({}KB)", role, len(b64) // 1024)
+            except Exception as e:
+                logger.warning("Failed to inject image {}: {}", role, e)
+        return svg_content
+
+    def _phase5_output(self, svg_paths: list[Path], session: Session) -> None:
+        from edupptx.output.pptx_assembler import assemble_pptx
+        assemble_pptx(svg_paths, session.output_path)

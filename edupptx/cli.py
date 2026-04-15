@@ -1,7 +1,8 @@
-"""CLI entry point for edupptx."""
+"""CLI entry point for edupptx V2."""
 
 from __future__ import annotations
 
+import asyncio
 import sys
 from pathlib import Path
 
@@ -10,13 +11,12 @@ from loguru import logger
 
 from edupptx.agent import PPTXAgent
 from edupptx.config import Config
-from edupptx.material_library import MaterialLibrary
 
 
 @click.group()
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
 def main(verbose: bool):
-    """EduPPTX - AI Agent 驱动的教育演示文稿生成器。"""
+    """EduPPTX - AI 驱动的教育演示文稿生成器 (V2 SVG Pipeline)"""
     logger.remove()
     logger.add(
         sys.stderr,
@@ -27,110 +27,114 @@ def main(verbose: bool):
 
 @main.command()
 @click.argument("topic")
-@click.option("--requirements", "-r", default="", help="Additional requirements")
-@click.option("--output", "-o", default="./output", type=click.Path(), help="Output directory")
-@click.option("--palette", "-p", default=None, help="Color palette (emerald/blue/violet/amber/rose/slate)")
-@click.option("--env-file", default=".env", help="Path to .env file")
-def gen(topic: str, requirements: str, output: str, palette: str | None, env_file: str):
-    """Generate an educational presentation from a topic.
+@click.option("--requirements", "-r", default="", help="附加要求")
+@click.option("--file", "file_path", default=None, type=click.Path(exists=True), help="输入文档 (PDF/Word/MD/TXT)")
+@click.option("--research", is_flag=True, help="启用联网搜索充实内容")
+@click.option("--style", "-s", default="edu_emerald", help="风格模板名称")
+@click.option("--review", is_flag=True, help="策划稿生成后暂停，供审核编辑")
+@click.option("--debug", is_flag=True, help="Debug 模式：跳过素材图片生成，保留背景和 LLM 流程")
+@click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
+@click.option("--env-file", default=".env", help=".env 文件路径")
+def gen(topic: str, requirements: str, file_path: str | None, research: bool,
+        style: str, review: bool, debug: bool, output: str, env_file: str):
+    """从主题生成教育演示文稿。
 
-    Examples:
-
+    示例：
         edupptx gen "勾股定理"
-
-        edupptx gen "光合作用" -r "适合高中生" -p blue -o output/
+        edupptx gen "光合作用" -r "适合高中生" --style edu_academic
+        edupptx gen "光合作用" --debug  # 跳过素材，快速预览布局
+        edupptx gen --file report.pdf "基于报告做汇报" --research
+        edupptx gen "年度总结" --review
     """
     try:
         config = Config.from_env(env_file)
         config.output_dir = Path(output)
-        if palette:
-            requirements += f"\npalette: {palette}"
 
         agent = PPTXAgent(config)
-        # Note: session is created inside agent.run(), so file logger is added by agent
-        session_dir = agent.run(topic, requirements)
+        session_dir = agent.run(
+            topic, requirements,
+            file_path=file_path,
+            research=research,
+            style=style,
+            review=review,
+            debug=debug,
+        )
 
-        click.echo(f"✓ Output: {session_dir / 'output.pptx'}")
-        click.echo(f"✓ Thinking log: {session_dir / 'thinking.jsonl'}")
+        if review:
+            click.echo(f"策划稿已生成: {session_dir / 'plan.json'}")
+            click.echo(f"审核编辑后运行: edupptx render {session_dir / 'plan.json'}")
+        else:
+            click.echo(f"输出: {session_dir / 'output.pptx'}")
+            click.echo(f"SVG: {session_dir / 'slides/'}")
+
     except Exception as e:
         logger.error("Generation failed: {}", e)
-        sys.exit(1)
-
-
-@main.group()
-def library():
-    """Manage the material library."""
-    pass
-
-
-@library.command("list")
-@click.option("--type", "mat_type", default=None, help="Filter by type (background/diagram/illustration)")
-@click.option("--env-file", default=".env", help="Path to .env file")
-def library_list(mat_type: str | None, env_file: str):
-    """List all materials in the library."""
-    config = Config.from_env(env_file)
-    lib = MaterialLibrary(config.library_dir)
-    entries = lib.list_all(type=mat_type)
-    if not entries:
-        click.echo("Library is empty.")
-        return
-    for entry in entries:
-        click.echo(f"  [{entry.type}] {entry.id}: {entry.description} (tags: {', '.join(entry.tags)})")
-
-
-@library.command("search")
-@click.option("--tags", required=True, help="Comma-separated tags to search for")
-@click.option("--type", "mat_type", default=None, help="Filter by type")
-@click.option("--palette", default=None, help="Boost results matching this palette")
-@click.option("--env-file", default=".env", help="Path to .env file")
-def library_search(tags: str, mat_type: str | None, palette: str | None, env_file: str):
-    """Search materials by tags."""
-    config = Config.from_env(env_file)
-    lib = MaterialLibrary(config.library_dir)
-    results = lib.search(tags=tags.split(","), type=mat_type, palette=palette)
-    if not results:
-        click.echo("No matches found.")
-        return
-    for entry in results:
-        click.echo(f"  [{entry.type}] {entry.id}: {entry.description}")
-
-
-@library.command("stats")
-@click.option("--env-file", default=".env", help="Path to .env file")
-def library_stats(env_file: str):
-    """Show library statistics."""
-    config = Config.from_env(env_file)
-    lib = MaterialLibrary(config.library_dir)
-    summary = lib.summary()
-    click.echo(f"Total materials: {summary['total']}")
-    for type_name, count in summary["by_type"].items():
-        click.echo(f"  {type_name}: {count}")
+        raise click.ClickException(str(e))
 
 
 @main.command()
-def palettes():
-    """List available style themes."""
-    from edupptx.style_schema import load_style
-    styles_dir = Path(__file__).parent.parent / "styles"
+@click.argument("plan_path", type=click.Path(exists=True))
+@click.option("--style", "-s", default="edu_emerald", help="风格模板名称")
+@click.option("--debug", is_flag=True, help="Debug 模式：跳过素材图片生成")
+@click.option("--env-file", default=".env", help=".env 文件路径")
+def render(plan_path: str, style: str, debug: bool, env_file: str):
+    """从策划稿 JSON 渲染 SVG + PPTX。
+
+    示例：
+        edupptx render output/session_xxx/plan.json
+        edupptx render plan.json --style edu_tech --debug
+    """
+    try:
+        config = Config.from_env(env_file)
+        agent = PPTXAgent(config)
+        session_dir = asyncio.run(agent.run_from_plan(Path(plan_path), style, debug=debug))
+        click.echo(f"输出: {session_dir / 'output.pptx'}")
+    except Exception as e:
+        logger.error("Render failed: {}", e)
+        raise click.ClickException(str(e))
+
+
+@main.command()
+@click.argument("topic")
+@click.option("--requirements", "-r", default="", help="附加要求")
+@click.option("--file", "file_path", default=None, type=click.Path(exists=True), help="输入文档")
+@click.option("--research", is_flag=True, help="启用联网搜索")
+@click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
+@click.option("--env-file", default=".env", help=".env 文件路径")
+def plan(topic: str, requirements: str, file_path: str | None, research: bool,
+         output: str, env_file: str):
+    """只生成策划稿，不渲染。
+
+    示例：
+        edupptx plan "量子计算"
+        edupptx plan "人工智能" --research
+    """
+    try:
+        config = Config.from_env(env_file)
+        config.output_dir = Path(output)
+
+        agent = PPTXAgent(config)
+        session_dir = agent.run(
+            topic, requirements,
+            file_path=file_path,
+            research=research,
+            review=True,  # stops after planning
+        )
+        click.echo(f"策划稿: {session_dir / 'plan.json'}")
+    except Exception as e:
+        logger.error("Planning failed: {}", e)
+        raise click.ClickException(str(e))
+
+
+@main.command()
+def styles():
+    """列出可用的风格模板。"""
+    styles_dir = Path(__file__).parent / "design" / "style_templates"
     if not styles_dir.exists():
-        click.echo("No styles directory found.")
+        click.echo("No style templates found.")
         return
-    for f in sorted(styles_dir.glob("*.json")):
-        schema = load_style(f)
-        accent = schema.global_tokens.palette.get("accent", "?")
-        bg = schema.global_tokens.palette.get("bg", "?")
-        click.echo(f"  {f.stem:10s}  accent={accent}  bg={bg}  — {schema.meta.description}")
-
-
-@main.command()
-def icons():
-    """List available icon names."""
-    from edupptx.icons import list_icons
-    names = list_icons()
-    click.echo(f"Available icons ({len(names)}):")
-    for i in range(0, len(names), 8):
-        row = ", ".join(names[i : i + 8])
-        click.echo(f"  {row}")
+    for f in sorted(styles_dir.glob("*.svg")):
+        click.echo(f"  {f.stem}")
 
 
 if __name__ == "__main__":
