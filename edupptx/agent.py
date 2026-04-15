@@ -113,7 +113,7 @@ class PPTXAgent:
 
         # ── Phase 5: Output ─────────────────────────────────
         session.log_step("output", "Assembling PPTX")
-        self._phase5_output(svg_paths, session)
+        self._phase5_output(svg_paths, session, bg_path=bg_path)
         session.log_step("done", f"Saved {len(svg_paths)} slides to {session.output_path}")
         logger.info("Done! {} slides, output: {}", len(svg_paths), session.output_path)
 
@@ -148,7 +148,7 @@ class PPTXAgent:
 
         slides = await self._phase3_design(draft, all_assets, style, debug=debug)
         svg_paths = self._phase4_postprocess(slides, session, all_assets, draft=draft, do_review=True)
-        self._phase5_output(svg_paths, session)
+        self._phase5_output(svg_paths, session, bg_path=bg_path)
         logger.info("Rendered {} slides from plan", len(svg_paths))
         return session_dir
 
@@ -329,6 +329,9 @@ class PPTXAgent:
                 logger.warning("Failed to inject image {}: {}", role, e)
         return svg_content
 
-    def _phase5_output(self, svg_paths: list[Path], session: Session) -> None:
+    def _phase5_output(
+        self, svg_paths: list[Path], session: Session,
+        bg_path: Path | None = None,
+    ) -> None:
         from edupptx.output.pptx_assembler import assemble_pptx
-        assemble_pptx(svg_paths, session.output_path)
+        assemble_pptx(svg_paths, session.output_path, bg_path=bg_path)

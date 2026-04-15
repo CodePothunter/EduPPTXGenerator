@@ -716,7 +716,14 @@ def convert_rect(elem: ET.Element, ctx: ConvertContext) -> str:
     y = ctx_y(_f(elem.get("y")), ctx)
     w = ctx_w(_f(elem.get("width")), ctx)
     h = ctx_h(_f(elem.get("height")), ctx)
-    if w <= 0 or h <= 0:
+    # Normalize negative dimensions (SVG bar charts use negative height to grow upward)
+    if w < 0:
+        x += w
+        w = -w
+    if h < 0:
+        y += h
+        h = -h
+    if w == 0 or h == 0:
         return ""
 
     fill_op = get_fill_opacity(elem)
@@ -1042,9 +1049,8 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
             )
         paras_xml.append(f'<a:p><a:pPr algn="{algn}">{line_spc_xml}</a:pPr>{"".join(runs_xml)}</a:p>')
 
-    # wrap="square" for multiline text (enables word wrap within box),
-    # wrap="none" for single-line (auto-size to content width)
-    wrap_mode = "square" if is_multiline else "none"
+    # Always wrap="square" — enables word wrap for user editability in PowerPoint
+    wrap_mode = "square"
 
     shape_id = ctx.next_id()
     return (

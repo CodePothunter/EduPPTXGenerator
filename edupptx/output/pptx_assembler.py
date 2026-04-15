@@ -36,7 +36,7 @@ IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relation
 
 
 def assemble_pptx(svg_paths: list[Path], output_path: Path, native: bool = False,
-                   embed: bool = False) -> Path:
+                   embed: bool = False, bg_path: Path | None = None) -> Path:
     """Create a PPTX from SVG files.
 
     Args:
@@ -44,18 +44,20 @@ def assemble_pptx(svg_paths: list[Path], output_path: Path, native: bool = False
         output_path: Where to save the PPTX
         native: If True, use legacy svg2pptx library.
         embed: If True, embed SVG+PNG as images (old default).
+        bg_path: Optional background image to place behind every slide.
     """
     if native:
         return _assemble_legacy_native(svg_paths, output_path)
     if embed:
         return _assemble_svg_embed(svg_paths, output_path)
-    return _assemble_native_shapes(svg_paths, output_path)
+    return _assemble_native_shapes(svg_paths, output_path, bg_path=bg_path)
 
 
 # ── Native Shapes Mode (Default) ──────────────────────
 
 
-def _assemble_native_shapes(svg_paths: list[Path], output_path: Path) -> Path:
+def _assemble_native_shapes(svg_paths: list[Path], output_path: Path,
+                             bg_path: Path | None = None) -> Path:
     """Convert SVG elements to native DrawingML shapes (directly editable)."""
     from edupptx.output.svg_to_shapes import convert_svg_to_slide_shapes
 
@@ -81,11 +83,44 @@ def _assemble_native_shapes(svg_paths: list[Path], output_path: Path) -> Path:
 
         any_images = False
 
+        # Copy background image to media once (shared by all slides)
+        bg_media_name = ""
+        if bg_path and bg_path.exists():
+            bg_ext = bg_path.suffix.lstrip(".").lower() or "png"
+            bg_media_name = f"background.{bg_ext}"
+            shutil.copy2(bg_path, media_dir / bg_media_name)
+            any_images = True
+            logger.debug("Background image: {}", bg_media_name)
+
         for i, svg_path in enumerate(svg_paths, 1):
             try:
                 slide_xml, media_files, rel_entries = convert_svg_to_slide_shapes(
                     svg_path, slide_num=i
                 )
+
+                # Inject background image as bottom-layer picture
+                bg_rel_id = ""
+                if bg_media_name:
+                    bg_rel_id = f"rIdBg{i}"
+                    bg_pic_xml = (
+                        f'<p:pic>\n<p:nvPicPr>\n'
+                        f'<p:cNvPr id="99{i}" name="Background"/>\n'
+                        f'<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>\n'
+                        f'<p:nvPr/>\n</p:nvPicPr>\n<p:blipFill>\n'
+                        f'<a:blip r:embed="{bg_rel_id}"/>\n'
+                        f'<a:stretch><a:fillRect/></a:stretch>\n'
+                        f'</p:blipFill>\n<p:spPr>\n'
+                        f'<a:xfrm><a:off x="0" y="0"/>'
+                        f'<a:ext cx="{SLIDE_W}" cy="{SLIDE_H}"/></a:xfrm>\n'
+                        f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>\n'
+                        f'</p:spPr>\n</p:pic>\n'
+                    )
+                    # Insert after <p:grpSpPr>...</p:grpSpPr> (before SVG shapes)
+                    slide_xml = slide_xml.replace(
+                        '</p:grpSpPr>\n',
+                        f'</p:grpSpPr>\n{bg_pic_xml}',
+                        1,
+                    )
 
                 # Write slide XML
                 (extract_dir / "ppt" / "slides" / f"slide{i}.xml").write_text(
@@ -97,8 +132,13 @@ def _assemble_native_shapes(svg_paths: list[Path], output_path: Path) -> Path:
                     (media_dir / media_name).write_bytes(media_data)
                     any_images = True
 
-                # Build rels XML
+                # Build rels XML (include background rel if present)
                 extra_rels = ""
+                if bg_rel_id:
+                    extra_rels += (
+                        f'\n  <Relationship Id="{bg_rel_id}" '
+                        f'Type="{IMAGE_REL_TYPE}" Target="../media/{bg_media_name}"/>'
+                    )
                 for rel in rel_entries:
                     extra_rels += (
                         f'\n  <Relationship Id="{rel["id"]}" '
