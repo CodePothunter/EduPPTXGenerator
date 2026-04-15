@@ -61,7 +61,8 @@ def _parse_draft(response: str, ctx: InputContext) -> PlanningDraft:
 
     # Coerce unknown page_type/layout_hint to safe defaults
     _VALID_PAGE_TYPES = {"cover", "toc", "section", "content", "data", "case", "closing",
-                         "timeline", "comparison", "exercise", "summary"}
+                         "timeline", "comparison", "exercise", "summary",
+                         "quiz", "formula", "experiment"}
     _VALID_LAYOUT_HINTS = {
         "center_hero", "vertical_list", "bento_2col_equal", "bento_2col_asymmetric",
         "bento_3col", "hero_top_cards_bottom", "cards_top_hero_bottom",
@@ -74,5 +75,16 @@ def _parse_draft(response: str, ctx: InputContext) -> PlanningDraft:
         if page.get("layout_hint") not in _VALID_LAYOUT_HINTS:
             logger.warning("Unknown layout_hint '{}' → 'mixed_grid'", page.get("layout_hint"))
             page["layout_hint"] = "mixed_grid"
+        # LLM sometimes outputs content_points as a dict instead of a list
+        cp = page.get("content_points")
+        if isinstance(cp, dict):
+            # Flatten dict values into a list of strings
+            flat: list = []
+            for k, v in cp.items():
+                if isinstance(v, list):
+                    flat.extend(f"{k}: {item}" if len(cp) > 1 else str(item) for item in v)
+                else:
+                    flat.append(f"{k}: {v}")
+            page["content_points"] = flat
 
     return PlanningDraft.model_validate(data)
