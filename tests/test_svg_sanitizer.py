@@ -53,4 +53,5 @@ class TestUnparseableSvg:
     def test_returns_as_is(self):
         bad_svg = "<not-svg>broken<"
         result = sanitize_for_ppt(bad_svg)
-        assert result == bad_svg
+        # The < at end gets escaped to &lt; by pre-clean, but still unparseable
+        assert result == "<not-svg>broken&lt;"

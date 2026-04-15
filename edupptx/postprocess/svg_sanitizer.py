@@ -12,6 +12,9 @@ def sanitize_for_ppt(svg_content: str) -> str:
     """Apply PPT-specific fixes to SVG content."""
     # Pre-clean unescaped &
     svg_content = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#)", "&amp;", svg_content)
+    # Pre-clean unescaped < in text content (e.g., "k < 0" in math formulas)
+    # Match < that is NOT part of a valid XML tag start (< followed by letter or / or !)
+    svg_content = re.sub(r"<(?![a-zA-Z/!?])", "&lt;", svg_content)
     try:
         root = etree.fromstring(svg_content.encode("utf-8"))
     except etree.XMLSyntaxError:
