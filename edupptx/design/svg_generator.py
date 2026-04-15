@@ -109,7 +109,11 @@ async def generate_slide_svgs(
         logger.warning("未找到风格模板 '{}'，将使用默认风格", style_name)
 
     # 2. 构建共享系统提示词（注入 VisualPlan 配色）
-    system_prompt = build_svg_system_prompt(style_guide, visual_plan=draft.visual)
+    system_prompt = build_svg_system_prompt(
+        style_guide,
+        visual_plan=draft.visual,
+        content_density=draft.visual.content_density,
+    )
 
     # 3. 初始化 LLM 客户端
     client = create_llm_client(config, web_search=False)
