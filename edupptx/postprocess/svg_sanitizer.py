@@ -22,11 +22,31 @@ def sanitize_for_ppt(svg_content: str) -> str:
 
     _remove_scripts(root)
     _remove_event_handlers(root)
+    _replace_emoji(root)
     _ensure_svg_namespace(root)
     _remove_width_height(root)
     _strip_comments(root)
 
     return etree.tostring(root, encoding="unicode", xml_declaration=False)
+
+
+_EMOJI_RE = re.compile(
+    "["
+    "\U0001F300-\U0001F9FF"  # Misc Symbols, Emoticons, etc.
+    "\U00002600-\U000027BF"  # Misc symbols
+    "\U0001F600-\U0001F64F"  # Emoticons
+    "\U0001F680-\U0001F6FF"  # Transport & Map
+    "]+",
+)
+
+
+def _replace_emoji(root: etree._Element) -> None:
+    """Strip emoji from text content — they render inconsistently in PPT."""
+    for el in root.iter():
+        if el.text and _EMOJI_RE.search(el.text):
+            el.text = _EMOJI_RE.sub("", el.text).strip()
+        if el.tail and _EMOJI_RE.search(el.tail):
+            el.tail = _EMOJI_RE.sub("", el.tail).strip()
 
 
 def _remove_scripts(root: etree._Element) -> None:

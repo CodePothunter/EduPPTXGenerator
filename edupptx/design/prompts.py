@@ -255,5 +255,9 @@ def build_svg_user_prompt(
     if page.page_type in type_hints:
         lines.append(f"\n### 页面类型提示\n{type_hints[page.page_type]}")
 
-    lines.append(f"\n请生成第 {page.page_number} 页的完整 SVG 代码。")
+    lines.append(
+        f"\n请生成第 {page.page_number} 页的完整 SVG 代码。"
+        "\n\n**重要提醒**：绝对禁止使用任何 Emoji 表情符号（如 🔍📋💡🎯✨🕐 等），"
+        "改用 SVG 图形（圆形+数字、色块、箭头 polygon）或纯文字符号（●、→、①②③）。"
+    )
     return "\n".join(lines)
