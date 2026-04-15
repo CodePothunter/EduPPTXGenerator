@@ -20,13 +20,15 @@ _SYSTEM_PROMPT = """\
 
 ```json
 {
-  "primary_color": "#hex",
-  "secondary_color": "#hex",
-  "accent_color": "#hex",
-  "background_prompt": "用于 AI 生图的背景描述（英文），抽象纹理/渐变，16:9，淡色调，适合做 PPT 底图",
-  "card_bg_color": "#hex",
-  "text_color": "#hex",
-  "heading_color": "#hex"
+  "primary_color": "#hex — 主色，用于标题栏装饰条、重要元素",
+  "secondary_color": "#hex — 辅色，用于次级标题、图标填充",
+  "accent_color": "#hex — 强调色，仅用于关键数据（全局≤3处）",
+  "background_prompt": "英文，用于 AI 生图的背景描述，抽象纹理/渐变，16:9，淡色调",
+  "card_bg_color": "#hex — 卡片背景色",
+  "secondary_bg_color": "#hex — 次背景色，用于区域分隔、交替行、引用区块",
+  "text_color": "#hex — 正文文字颜色",
+  "heading_color": "#hex — 标题文字颜色",
+  "content_density": "lecture 或 review"
 }
 ```
 
@@ -37,6 +39,17 @@ _SYSTEM_PROMPT = """\
 3. **对比度充足**：text_color 和 card_bg_color 的对比度 ≥ 4.5:1
 4. **背景要淡**：background_prompt 生成的图应是淡色抽象纹理，不抢内容焦点
 5. **强调色慎用**：accent_color 只用于关键数据/按钮，与主色有明显区分
+6. **次背景色**：secondary_bg_color 应比 card_bg_color 略深一点（如 #F8FAFC vs #FFFFFF），用于区域分隔
+7. **色彩比例**：主色 60% / 辅色 30% / 强调色 10%
+
+## 内容密度判断
+
+根据用户需求和主题特点选择：
+- **lecture**（课堂讲授）：大字、宽松留白、适合投影，正文 24px 基准
+- **review**（复习归纳）：信息密集、小字紧凑、适合打印/平板，正文 18px 基准
+- 如果用户提到"课件""课堂""讲课""教学" → lecture
+- 如果用户提到"复习""总结""归纳""打印""知识点" → review
+- 默认 → lecture
 
 ## background_prompt 示例
 
