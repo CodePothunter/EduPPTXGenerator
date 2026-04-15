@@ -113,10 +113,14 @@ class ConvertContext:
 def px_to_emu(px: float) -> int:
     return round(px * EMU_PER_PX)
 
-def _f(val: str | None, default: float = 0.0) -> float:
+def _f(val: str | None, default: float = 0.0, font_size: float = 16.0) -> float:
+    """Parse SVG numeric value, supporting px and em units."""
     if val is None:
         return default
+    val = val.strip()
     try:
+        if val.endswith("em"):
+            return float(val[:-2]) * font_size
         return float(val.replace("px", "").strip())
     except (ValueError, TypeError):
         return default
@@ -939,8 +943,10 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
         # Multi-line via tspan
         current_line: list[dict] = []
         total_dy = 0.0
+        # base_fs is already scaled; use unscaled for em conversion
+        raw_fs = _f(elem.get("font-size"), 16)
         for ts in tspans:
-            dy = _f(ts.get("dy"), 0)
+            dy = _f(ts.get("dy"), 0, font_size=raw_fs)
             total_dy += dy
             ts_text = (ts.text or "").strip()
             if not ts_text:
