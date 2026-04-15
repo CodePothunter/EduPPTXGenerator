@@ -55,12 +55,14 @@ output/session_xxx/
 
 ```
 edupptx/
-  agent.py                    # 7 阶段管线编排器
+  agent.py                    # 5 阶段管线编排器
   models.py                   # 数据模型 (InputContext, PlanningDraft, VisualPlan, ...)
   llm_client.py               # OpenAI 兼容 LLM 客户端
   config.py                   # 环境变量配置
   session.py                  # 会话目录管理
   cli.py                      # CLI 入口 (gen/render/plan/styles)
+  style_schema.py             # 风格 JSON schema + ResolvedStyle 数据类
+  style_resolver.py           # palette ref 解析 + 命名 intent 映射
   planning/
     content_planner.py        # Phase 1a: 内容规划 LLM
     visual_planner.py         # Phase 1b: 视觉规划 LLM
@@ -72,7 +74,10 @@ edupptx/
   materials/
     image_provider.py         # 多源图片获取 (Pixabay/Unsplash/Seedream)
     background_generator.py   # Phase 2: Seedream 统一背景生成
+    backgrounds.py            # Pillow 程序化背景生成 (渐变/几何)
     seedream.py               # Seedream AI 文生图 provider
+    pixabay.py                # Pixabay 图片搜索
+    unsplash.py               # Unsplash 图片搜索
     icons.py                  # 109 个 Lucide SVG 图标
   postprocess/
     svg_validator.py          # SVG 自动修复 (viewBox/字体/边界/重叠)
@@ -80,10 +85,11 @@ edupptx/
     svg_reviewer.py           # Phase 4: LLM 审阅修正 SVG
   output/
     svg_to_shapes.py          # SVG→DrawingML 原生形状转换器
-    pptx_assembler.py         # PPTX ZIP 打包 (3 种模式)
+    pptx_assembler.py         # PPTX 打包 (native shapes / embed 两种模式)
   input/
     document_parser.py        # PDF/Word/MD 文档解析
     web_researcher.py         # Tavily 联网搜索
+styles/                       # 风格主题 JSON (emerald, blue, ...)
 output/                       # 会话输出目录 (gitignored)
 docs/
 tests/
@@ -146,13 +152,13 @@ VISION_GEN_APIKEY=image-api-key
 
 - **框架**: pytest
 - **运行**: `uv run pytest tests/ -v`
-- **注意**: V1 测试待迁移，部分 import 已失效
 
 ## 设计文档
 
 - 设计理念: `docs/design-philosophy.md`
 - 布局系统: `docs/layout-system.md`
-- SVG 管线: `docs/svg-pipeline.md` (V2)
+- SVG 管线: `docs/svg-pipeline.md`
+- V2 设计规格: `docs/superpowers/specs/2026-04-13-v2-svg-pipeline-design.md`
 
 ## Git 约定
 
