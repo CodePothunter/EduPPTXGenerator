@@ -117,6 +117,8 @@ output/session_xxx/
 | Chat Completions | `LLM_PROVIDER=chat` | 默认，兼容所有 OpenAI 兼容 API |
 | Responses API | `LLM_PROVIDER=responses` | 火山方舟专属，支持联网搜索、上下文缓存 |
 
+`LLM_CONCURRENCY` 控制 SVG 生成和 Review 阶段的 LLM 并行请求数（默认 4）。API 有限流时调低。
+
 Responses API 额外支持 `--web-search` CLI 参数，让 LLM 在规划阶段自动联网搜索补充内容。
 
 ## 风格模板

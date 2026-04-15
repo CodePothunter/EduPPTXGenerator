@@ -122,6 +122,10 @@ VISION_GEN_APIKEY=image-api-key
 - **类型标注** — 所有公开函数都加 type hints
 - **不加不必要的 docstring** — 函数名自解释则不写
 
+### 配置变更三件套
+- **新增/修改 config.py 字段时，必须同步更新三个文件**：`.env`、`.env.example`、`README.md`
+- `.env` 加注释掉的默认值，`.env.example` 加占位符说明，`README.md` 更新对应文档段落
+
 ### SVG→PPTX 转换
 - **SVG 是设计中间格式** — LLM 生成 SVG，不直接生成 PPTX
 - **svg_to_shapes.py 逐元素转换** — rect→roundRect, text→txBox, path→custGeom

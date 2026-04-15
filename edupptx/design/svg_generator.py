@@ -117,7 +117,7 @@ async def generate_slide_svgs(
 
     # 4. 并行生成
     results: list[GeneratedSlide] = []
-    max_workers = min(total_pages, 4)  # 最多 4 路并发
+    max_workers = min(total_pages, config.llm_concurrency)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         future_to_page = {}

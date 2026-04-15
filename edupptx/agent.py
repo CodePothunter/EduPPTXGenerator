@@ -242,25 +242,26 @@ class PPTXAgent:
         draft: PlanningDraft | None = None,
         do_review: bool = False,
     ) -> list[Path]:
-        from edupptx.postprocess.svg_validator import validate_and_fix
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
         from edupptx.postprocess.svg_sanitizer import sanitize_for_ppt
+        from edupptx.postprocess.svg_validator import validate_and_fix
 
         slides_dir = session.dir / "slides"
         slides_dir.mkdir(exist_ok=True)
-        svg_paths: list[Path] = []
 
         # Build page lookup for review
         page_lookup: dict[int, "PagePlan"] = {}
         if draft:
             page_lookup = {p.page_number: p for p in draft.pages}
 
-        for slide in sorted(slides, key=lambda s: s.page_number):
+        def _process_one(slide: GeneratedSlide) -> tuple[int, Path]:
             # Step 1: Validate and fix
             fixed_svg, warnings = validate_and_fix(slide.svg_content)
             for w in warnings:
                 logger.warning("Slide {}: {}", slide.page_number, w)
 
-            # Step 2: LLM Review (if enabled and draft available)
+            # Step 2: LLM Review (parallel per slide)
             if do_review and draft and slide.page_number in page_lookup:
                 from edupptx.postprocess.svg_reviewer import review_and_fix_svg
                 fixed_svg = review_and_fix_svg(
@@ -273,16 +274,34 @@ class PPTXAgent:
             # Step 3: Sanitize for PPT
             clean_svg = sanitize_for_ppt(fixed_svg)
 
-            # Step 4: Inject real images (replace __IMAGE_XXX__ placeholders)
+            # Step 4: Inject real images
             if all_assets and slide.page_number in all_assets:
                 clean_svg = self._inject_images(clean_svg, all_assets[slide.page_number])
 
             # Save
             path = slides_dir / f"slide_{slide.page_number:02d}.svg"
             path.write_text(clean_svg, encoding="utf-8")
-            svg_paths.append(path)
+            return slide.page_number, path
 
-        return svg_paths
+        # Parallel review: concurrency follows config
+        max_workers = min(len(slides), self.config.llm_concurrency)
+        results: dict[int, Path] = {}
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {
+                executor.submit(_process_one, slide): slide.page_number
+                for slide in slides
+            }
+            for future in as_completed(futures):
+                page_num = futures[future]
+                try:
+                    pn, path = future.result()
+                    results[pn] = path
+                except Exception:
+                    logger.exception("Slide {} postprocess failed", page_num)
+
+        # Return paths sorted by page number
+        return [results[k] for k in sorted(results)]
 
     @staticmethod
     def _inject_images(svg_content: str, assets: SlideAssets) -> str:
