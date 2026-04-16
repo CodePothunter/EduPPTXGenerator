@@ -189,3 +189,12 @@ Key routing rules:
 - Architecture review → invoke plan-eng-review
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
+
+## Self-Validation
+Create a visual QA validation pipeline for our PPTX generator at `tests/visual_qa.py`. It should:
+1. Take a generated .pptx file path as input
+2. Convert each slide to PNG using `libreoffice --headless --convert-to png` (or python-pptx shape bounds if LibreOffice unavailable)
+3. For each slide, extract all shape bounding boxes from python-pptx and check: (a) no two non-background shapes overlap by more than 10%, (b) no text frame content overflows its container height (compare actual text lines × font size vs shape height), (c) no shape extends beyond slide dimensions, (d) no slide is more than 70% empty space
+4. Output a JSON report: `{slide_number, issues: [{type, severity, description, shapes_involved}]}`
+5. Add a pytest wrapper `test_visual_qa.py` that generates a sample PPTX with our pipeline and asserts zero critical issues
+6. Run the tests and iterate until they pass. Then integrate this as a post-generation validation step in the main generator pipeline so it runs automatically after every generation.
