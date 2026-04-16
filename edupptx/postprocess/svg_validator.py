@@ -36,6 +36,7 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
         except etree.XMLSyntaxError:
             return svg_content, warnings
 
+    _fix_circle_attrs(root, warnings)
     _fix_viewbox(root, warnings)
     _remove_foreign_objects(root, warnings)
     _remove_css_animations(root, warnings)
@@ -49,6 +50,18 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
 
     fixed = etree.tostring(root, encoding="unicode", xml_declaration=False)
     return fixed, warnings
+
+
+def _fix_circle_attrs(root: etree._Element, warnings: list[str]) -> None:
+    """Fix <circle> elements using x/y instead of cx/cy (common LLM mistake)."""
+    for circle in root.iter(f"{{{SVG_NS}}}circle"):
+        # <circle> requires cx/cy, not x/y
+        for wrong, right in [("x", "cx"), ("y", "cy")]:
+            val = circle.get(wrong)
+            if val is not None and circle.get(right) is None:
+                circle.set(right, val)
+                del circle.attrib[wrong]
+                warnings.append(f"Fixed <circle> {wrong}={val} → {right}={val}")
 
 
 def _fix_viewbox(root: etree._Element, warnings: list[str]) -> None:
