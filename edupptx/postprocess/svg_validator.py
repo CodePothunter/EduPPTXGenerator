@@ -38,6 +38,7 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
 
     _fix_circle_attrs(root, warnings)
     _fix_viewbox(root, warnings)
+    _check_ppt_blacklist(root, warnings)
     _remove_foreign_objects(root, warnings)
     _remove_css_animations(root, warnings)
     _fix_fonts(root, warnings)
@@ -50,6 +51,110 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
 
     fixed = etree.tostring(root, encoding="unicode", xml_declaration=False)
     return fixed, warnings
+
+
+def _parse_rgba(value: str) -> tuple[str, str] | None:
+    """Parse rgba(r,g,b,a) → ('#RRGGBB', 'a') or None if not rgba."""
+    m = re.match(r"rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)", value)
+    if not m:
+        return None
+    r, g, b = int(m.group(1)), int(m.group(2)), int(m.group(3))
+    a = m.group(4)
+    hex_color = f"#{r:02X}{g:02X}{b:02X}"
+    return hex_color, a
+
+
+def _check_ppt_blacklist(root: etree._Element, warnings: list[str]) -> None:
+    """Detect and handle PPT-incompatible SVG features."""
+
+    # --- Auto-remove: SMIL animation elements ---
+    smil_tags = ("animate", "animateTransform", "animateMotion", "set")
+    for tag_name in smil_tags:
+        for el in list(root.iter(f"{{{SVG_NS}}}{tag_name}")):
+            parent = el.getparent()
+            if parent is not None:
+                parent.remove(el)
+                warnings.append(f"移除 SMIL 动画元素 <{tag_name}>（PPT 不支持）")
+
+    # --- Auto-remove: <marker> elements + marker-* attributes ---
+    for marker_el in list(root.iter(f"{{{SVG_NS}}}marker")):
+        parent = marker_el.getparent()
+        if parent is not None:
+            parent.remove(marker_el)
+            warnings.append("移除 <marker> 元素（PPT 不支持）")
+
+    marker_attrs = ("marker-start", "marker-mid", "marker-end")
+    for el in root.iter():
+        for attr in marker_attrs:
+            if el.get(attr) is not None:
+                del el.attrib[attr]
+                warnings.append(f"移除 {attr} 属性（PPT 不支持 marker）")
+
+    # --- Auto-fix: rgba() → hex + opacity ---
+    for el in root.iter():
+        for attr in ("fill", "stroke"):
+            val = el.get(attr)
+            if val and "rgba(" in val:
+                parsed = _parse_rgba(val)
+                if parsed:
+                    hex_color, alpha = parsed
+                    el.set(attr, hex_color)
+                    opacity_attr = f"{attr}-opacity"
+                    el.set(opacity_attr, alpha)
+                    warnings.append(
+                        f"转换 {attr}=\"rgba(...)\" → {attr}=\"{hex_color}\" {opacity_attr}=\"{alpha}\""
+                    )
+
+    # --- Warning-only checks ---
+    # clipPath
+    if root.find(f".//{{{SVG_NS}}}clipPath") is not None:
+        warnings.append("PPT 对 SVG clipPath 支持有限，可能导致渲染差异")
+
+    # mask
+    if root.find(f".//{{{SVG_NS}}}mask") is not None:
+        warnings.append("PPT 对 SVG mask 支持有限，可能导致渲染差异")
+
+    # <style> element (not inside <defs> filter — warn about standalone style blocks)
+    for style_el in root.iter(f"{{{SVG_NS}}}style"):
+        warnings.append("检测到 <style> 块，PPT 可能无法正确解析 CSS 选择器")
+        break  # warn once
+
+    # class= attribute on any element
+    has_class = False
+    for el in root.iter():
+        if el.get("class") is not None:
+            has_class = True
+            break
+    if has_class:
+        warnings.append("检测到 class= 属性，PPT 不支持 CSS 类选择器")
+
+    # <g> with opacity
+    for g in root.iter(f"{{{SVG_NS}}}g"):
+        if g.get("opacity") is not None:
+            warnings.append("检测到 <g opacity>，应改为逐子元素设置 opacity")
+            break  # warn once
+
+    # <image> with opacity
+    for img in root.iter(f"{{{SVG_NS}}}image"):
+        if img.get("opacity") is not None:
+            warnings.append("检测到 <image opacity>，PPT 可能无法正确渲染透明度")
+            break  # warn once
+
+    # <textPath>
+    if root.find(f".//{{{SVG_NS}}}textPath") is not None:
+        warnings.append("检测到 <textPath>，PPT 不支持文字沿路径排列")
+
+    # @font-face in <style> text
+    for style_el in root.iter(f"{{{SVG_NS}}}style"):
+        if style_el.text and "@font-face" in style_el.text:
+            warnings.append("检测到 @font-face，PPT 不支持嵌入式字体声明")
+            break
+
+    # <symbol> AND <use> both present
+    has_symbol = root.find(f".//{{{SVG_NS}}}symbol") is not None
+    has_use = root.find(f".//{{{SVG_NS}}}use") is not None
+    if has_symbol and has_use:
+        warnings.append("检测到 <symbol>+<use> 组合，PPT 转换可能无法正确解析复杂引用")
 
 
 def _fix_circle_attrs(root: etree._Element, warnings: list[str]) -> None:

@@ -127,3 +127,33 @@ class TestCSSAnimationRemoval:
         fixed, warnings = validate_and_fix(svg)
         assert any("animation" in w.lower() for w in warnings)
         assert "@keyframes" not in fixed
+
+
+class TestPPTBlacklist:
+    def test_removes_smil_animate(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><rect x="50" y="50" width="100" height="100"/><animate attributeName="x" from="0" to="100" dur="1s"/></svg>'
+        fixed, warnings = validate_and_fix(svg)
+        assert '<animate' not in fixed
+        assert any('animate' in w.lower() or 'SMIL' in w for w in warnings)
+
+    def test_removes_marker(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><defs><marker id="arrow"><path d="M0,0 L10,5 L0,10"/></marker></defs><line x1="50" y1="50" x2="200" y2="200" marker-end="url(#arrow)"/></svg>'
+        fixed, warnings = validate_and_fix(svg)
+        assert '<marker' not in fixed
+        assert 'marker-end' not in fixed
+
+    def test_fixes_rgba_color(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><rect x="50" y="50" width="100" height="100" fill="rgba(30,64,175,0.5)"/></svg>'
+        fixed, warnings = validate_and_fix(svg)
+        assert 'rgba' not in fixed
+        assert any('rgba' in w for w in warnings)
+
+    def test_warns_clippath(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><defs><clipPath id="c"><rect x="0" y="0" width="100" height="100"/></clipPath></defs><rect x="50" y="50" width="100" height="100"/></svg>'
+        _, warnings = validate_and_fix(svg)
+        assert any('clipPath' in w for w in warnings)
+
+    def test_warns_g_opacity(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><g opacity="0.5"><rect x="50" y="50" width="100" height="100"/></g></svg>'
+        _, warnings = validate_and_fix(svg)
+        assert any('opacity' in w for w in warnings)

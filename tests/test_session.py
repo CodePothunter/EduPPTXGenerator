@@ -9,8 +9,14 @@ def test_session_creates_directory_structure(tmp_path):
     assert session.dir.exists()
     assert (session.dir / "materials").is_dir()
     assert (session.dir / "slides").is_dir()
+    assert (session.dir / "slides_raw").is_dir()
     assert session.thinking_file.name == "thinking.jsonl"
     assert session.output_path.name == "output.pptx"
+
+
+def test_session_creates_slides_raw_dir(tmp_path):
+    session = Session(tmp_path)
+    assert (session.dir / "slides_raw").is_dir()
 
 
 def test_session_dir_name_has_timestamp(tmp_path):

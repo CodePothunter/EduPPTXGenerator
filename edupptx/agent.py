@@ -67,6 +67,7 @@ class PPTXAgent:
         session.log_step("visual_planning", "Generating visual plan (colors, background)")
         draft.visual = self._phase1b_visual_planning(draft)
         session.save_plan(draft.model_dump())
+        self._save_design_spec(draft, session)
         logger.info("Visual plan: primary={}, bg_prompt={}...",
                      draft.visual.primary_color, draft.visual.background_prompt[:40])
 
@@ -186,6 +187,47 @@ class PPTXAgent:
         from edupptx.planning.visual_planner import generate_visual_plan
         return generate_visual_plan(draft, self.config)
 
+    def _save_design_spec(self, draft: PlanningDraft, session: Session) -> None:
+        """Save human-readable design specification for audit and debugging."""
+        v = draft.visual
+        m = draft.meta
+        lines = [
+            "# Design Specification",
+            "",
+            f"**主题**: {m.topic}",
+            f"**受众**: {m.audience}",
+            f"**目的**: {m.purpose}",
+            f"**风格方向**: {m.style_direction}",
+            f"**总页数**: {m.total_pages}",
+            "",
+            "## 配色方案",
+            "",
+            "| 角色 | 色值 |",
+            "|------|------|",
+            f"| 主色 (primary) | `{v.primary_color}` |",
+            f"| 辅色 (secondary) | `{v.secondary_color}` |",
+            f"| 强调色 (accent) | `{v.accent_color}` |",
+            f"| 卡片背景 | `{v.card_bg_color}` |",
+            f"| 次背景 | `{v.secondary_bg_color}` |",
+            f"| 正文色 | `{v.text_color}` |",
+            f"| 标题色 | `{v.heading_color}` |",
+            "",
+            "## 内容密度",
+            "",
+            f"模式: **{v.content_density}**",
+            "",
+            "## 页面规划",
+            "",
+            "| # | 类型 | 标题 | 布局 |",
+            "|---|------|------|------|",
+        ]
+        for p in draft.pages:
+            lines.append(f"| {p.page_number} | {p.page_type} | {p.title} | {p.layout_hint} |")
+
+        spec_path = session.dir / "design_spec.md"
+        spec_path.write_text("\n".join(lines), encoding="utf-8")
+        logger.info("Design spec saved: {}", spec_path)
+
     async def _phase2_background(self, visual, session: Session):
         from edupptx.materials.background_generator import generate_background
         return await generate_background(visual, self.config, session)
@@ -249,6 +291,8 @@ class PPTXAgent:
 
         slides_dir = session.dir / "slides"
         slides_dir.mkdir(exist_ok=True)
+        slides_raw_dir = session.dir / "slides_raw"
+        slides_raw_dir.mkdir(exist_ok=True)
 
         # Build page lookup for review
         page_lookup: dict[int, "PagePlan"] = {}
@@ -256,6 +300,10 @@ class PPTXAgent:
             page_lookup = {p.page_number: p for p in draft.pages}
 
         def _process_one(slide: GeneratedSlide) -> tuple[int, Path]:
+            # Save raw LLM output for debugging
+            raw_path = slides_raw_dir / f"slide_{slide.page_number:02d}.svg"
+            raw_path.write_text(slide.svg_content, encoding="utf-8")
+
             # Step 1: Validate and fix
             fixed_svg, warnings = validate_and_fix(slide.svg_content)
             for w in warnings:
@@ -273,6 +321,13 @@ class PPTXAgent:
 
             # Step 3: Sanitize for PPT
             clean_svg = sanitize_for_ppt(fixed_svg)
+
+            # Step 3.5: Embed icon placeholders
+            from edupptx.postprocess.icon_embedder import embed_icon_placeholders
+            _icon_color = draft.visual.primary_color if draft else "#333"
+            clean_svg, icon_count = embed_icon_placeholders(clean_svg, icon_color=_icon_color)
+            if icon_count:
+                logger.info("Slide {}: embedded {} icon(s)", slide.page_number, icon_count)
 
             # Step 4: Inject real images
             if all_assets and slide.page_number in all_assets:

@@ -176,8 +176,15 @@ def build_svg_user_prompt(
     # 可用图标
     if assets.icon_svgs:
         icon_names = ", ".join(assets.icon_svgs.keys())
-        lines.append(f"\n### 可用图标\n{icon_names}")
-        lines.append("将图标 SVG 内容直接嵌入为 <g> 元素，适当缩放。")
+        lines.append(f"\n### 可用图标\n可用图标名: {icon_names}")
+        lines.append(
+            "使用占位符语法嵌入图标（系统自动替换为实际图标 SVG）：\n"
+            "```svg\n"
+            '<use data-icon="图标名" x="100" y="200" width="48" height="48" fill="{primary_color}"/>\n'
+            "```\n"
+            "`data-icon` 的值必须是上面列出的图标名之一。"
+            "设置合理的 x, y, width, height 属性控制位置和大小。"
+        )
     elif page.material_needs.icons:
         # Debug mode: icons not fetched, but hint the LLM to use SVG decorations
         lines.append("\n### 装饰元素提示")

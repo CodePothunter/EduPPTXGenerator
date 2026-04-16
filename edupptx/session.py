@@ -16,6 +16,7 @@ class Session:
         self.dir.mkdir(parents=True, exist_ok=True)
         (self.dir / "materials").mkdir(exist_ok=True)
         (self.dir / "slides").mkdir(exist_ok=True)
+        (self.dir / "slides_raw").mkdir(exist_ok=True)
         self.thinking_file = self.dir / "thinking.jsonl"
         self.output_path = self.dir / "output.pptx"
 
