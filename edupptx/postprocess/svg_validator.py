@@ -43,6 +43,7 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
     _wrap_long_text(root, warnings)
     _clamp_boundaries(root, warnings)
     _fix_text_overlaps(root, warnings)
+    _fix_text_outside_cards(root, warnings)
     _check_image_hrefs(root, warnings)
 
     fixed = etree.tostring(root, encoding="unicode", xml_declaration=False)
@@ -237,6 +238,99 @@ def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
                 el.set("y", str(int(new_y)))
                 col[i] = (el, x, new_y, fs)
                 warnings.append(f"Fixed text overlap: pushed y from {curr_y} to {new_y}")
+
+
+def _get_text_bottom_y(text_el: etree._Element) -> float:
+    """Calculate the actual bottom y of a <text> element including all tspan dy offsets."""
+    y_str = text_el.get("y", "0")
+    try:
+        y = float(y_str)
+    except (ValueError, TypeError):
+        return 0.0
+    fs_str = text_el.get("font-size", "16")
+    try:
+        fs = float(fs_str.replace("px", ""))
+    except (ValueError, TypeError):
+        fs = 16.0
+
+    # Accumulate dy from child tspans
+    curr_y = y
+    for tspan in text_el.iter(f"{{{SVG_NS}}}tspan"):
+        dy_str = tspan.get("dy", "0")
+        try:
+            if "em" in dy_str:
+                dy_val = float(dy_str.replace("em", "")) * fs
+            else:
+                dy_val = float(dy_str)
+            curr_y += dy_val
+        except (ValueError, TypeError):
+            pass
+    return curr_y + fs  # Add font-size for text descent
+
+
+def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
+    """Fix text that overflows its parent card rect boundary."""
+    # Collect all rects (potential card boundaries)
+    rects = []
+    for rect in root.iter(f"{{{SVG_NS}}}rect"):
+        try:
+            rx = float(rect.get("x", "0"))
+            ry = float(rect.get("y", "0"))
+            rw = float(rect.get("width", "0"))
+            rh = float(rect.get("height", "0"))
+            if rw > 100 and rh > 50:  # Only consider actual content cards
+                rects.append((rx, ry, rw, rh))
+        except (ValueError, TypeError):
+            pass
+
+    if not rects:
+        return
+
+    # Check each text element
+    for text_el in root.iter(f"{{{SVG_NS}}}text"):
+        tx_str = text_el.get("x", "0")
+        ty_str = text_el.get("y", "0")
+        try:
+            tx = float(tx_str)
+            ty = float(ty_str)
+        except (ValueError, TypeError):
+            continue
+
+        text_bottom = _get_text_bottom_y(text_el)
+
+        # Find the best-matching parent card
+        best_card = None
+        for rx, ry, rw, rh in rects:
+            card_bottom = ry + rh
+            # Text x within card x range and text y within card y range
+            if rx - 10 <= tx <= rx + rw + 10 and ry <= ty <= card_bottom + 20:
+                if best_card is None or (ry + rh - ty) < (best_card[1] + best_card[3] - ty):
+                    best_card = (rx, ry, rw, rh)
+
+        if best_card is None:
+            continue
+
+        card_bottom = best_card[1] + best_card[3]
+        overflow = text_bottom - card_bottom
+
+        if overflow > 2:  # More than 2px overflow
+            # Strategy: expand the parent card height to fit the text
+            for rect in root.iter(f"{{{SVG_NS}}}rect"):
+                try:
+                    rx = float(rect.get("x", "0"))
+                    ry = float(rect.get("y", "0"))
+                    rw = float(rect.get("width", "0"))
+                    rh = float(rect.get("height", "0"))
+                except (ValueError, TypeError):
+                    continue
+                if (rx, ry, rw, rh) == best_card:
+                    new_h = rh + overflow + 4  # Add 4px padding
+                    rect.set("height", str(int(new_h)))
+                    warnings.append(
+                        f"Expanded card height {int(rh)}→{int(new_h)} "
+                        f"(text bottom {text_bottom:.0f} overflowed card bottom {card_bottom:.0f})"
+                    )
+                    break
 
 
 def _check_image_hrefs(root: etree._Element, warnings: list[str]) -> None:
