@@ -355,6 +355,29 @@ def _warn_layout_issues(root: etree._Element, warnings: list[str]) -> None:
     """
     texts = list(root.iter(f"{{{SVG_NS}}}text"))
 
+    # 0. Nested transform check
+    for g in root.iter(f"{{{SVG_NS}}}g"):
+        transform = g.get("transform", "")
+        if "translate" not in transform:
+            continue
+        # Check if this g contains cards (rect with meaningful size)
+        has_card = False
+        for rect in g.iter(f"{{{SVG_NS}}}rect"):
+            try:
+                w = float(rect.get("width", "0"))
+                h = float(rect.get("height", "0"))
+                if w > 100 and h > 40:
+                    has_card = True
+                    break
+            except (ValueError, TypeError):
+                pass
+        if has_card:
+            warnings.append(
+                f"布局使用了 <g transform=\"{transform}\"> 包裹卡片内容，"
+                f"内部坐标是相对值，会导致边界检查失效和 PPT 转换错乱。"
+                f"应改为所有元素使用绝对坐标（直接设 x/y），去掉 transform"
+            )
+
     # 1. Page title position check
     # First bold large text should be near y=50
     for t in texts:

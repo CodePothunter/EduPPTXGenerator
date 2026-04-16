@@ -9,6 +9,7 @@
 
 | 禁止使用 | 原因 | 替代方案 |
 |---------|------|---------|
+| `<g transform="translate(...)">` 做布局定位 | 内部坐标变成相对值，边界检查失效，PPT 转换坐标错乱 | 所有元素直接使用 **绝对坐标**（x/y/cx/cy），不用 transform 定位。transform 仅允许用于微小装饰元素（如旋转箭头） |
 | `<foreignObject>` | PPT 不支持 | 用 `<text>` + `<tspan>` |
 | CSS `@keyframes` / `animation` / `transition` | PPT 不支持动画 CSS | 静态设计 |
 | `<style>` 中的复杂选择器 | PPT SVG 解析有限 | 内联 style 或属性 |
