@@ -77,7 +77,7 @@ def _snap_circle_labels(root: etree._Element) -> None:
     for t in root.iter(f"{{{SVG_NS}}}text"):
         if t.get("text-anchor") != "middle":
             continue
-        text_content = (t.text or "").strip()
+        text_content = "".join(t.itertext()).strip()
         if not text_content or len(text_content) > 3:
             continue  # Only short labels (1, 2, A, B, etc.)
 

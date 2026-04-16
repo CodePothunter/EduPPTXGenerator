@@ -7,6 +7,8 @@ import io
 from pathlib import Path
 from typing import Literal
 
+from loguru import logger
+
 from edupptx.models import PagePlan, SlideAssets, VisualPlan
 
 _REFS_DIR = Path(__file__).parent / "references"
@@ -16,6 +18,7 @@ def _load_ref(name: str) -> str:
     """Load a reference markdown file."""
     path = _REFS_DIR / name
     if not path.exists():
+        logger.warning("Reference file not found: {} — prompt quality may degrade", path)
         return ""
     return path.read_text(encoding="utf-8")
 

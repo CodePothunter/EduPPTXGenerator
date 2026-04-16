@@ -119,7 +119,7 @@ def _f(val: str | None, default: float = 0.0, font_size: float = 16.0) -> float:
         return default
     val = val.strip()
     try:
-        if val.endswith("em"):
+        if val.endswith("em") and not val.endswith("rem"):
             return float(val[:-2]) * font_size
         return float(val.replace("px", "").strip())
     except (ValueError, TypeError):
@@ -1052,7 +1052,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
         # Use the dy value from tspans as line spacing (in hundredths of pt)
         avg_dy = base_fs * 1.4  # default
         if tspans and len(tspans) > 1:
-            dy_val = _f(tspans[1].get("dy"), 0)
+            dy_val = _f(tspans[1].get("dy"), 0, font_size=raw_fs)
             if dy_val > 0:
                 avg_dy = dy_val * ctx.scale_y
         spc_pts = int(avg_dy * FONT_PX_TO_HUNDREDTHS_PT)
