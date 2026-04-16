@@ -18,3 +18,4 @@ materials_library/
 output/
 *.pptx
 assets/fonts/
+*_resource.md
