@@ -265,6 +265,21 @@ def _xml_escape(text: str) -> str:
                 .replace('"', "&quot;"))
 
 
+def _normalize_text_segment(text: str | None) -> str:
+    """Normalize SVG text nodes while preserving meaningful spacing."""
+    if text is None or not text.strip():
+        return ""
+
+    has_leading_space = text[0].isspace()
+    has_trailing_space = text[-1].isspace()
+    normalized = re.sub(r"\s+", " ", text.strip())
+    if has_leading_space:
+        normalized = " " + normalized
+    if has_trailing_space:
+        normalized = normalized + " "
+    return normalized
+
+
 def build_solid_fill(color: str, opacity: float | None = None) -> str:
     alpha = ""
     if opacity is not None and opacity < 1.0:
@@ -933,7 +948,6 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     fonts = parse_font_family(font_family_str)
     x_base = ctx_x(_f(elem.get("x")), ctx)
     y_base = ctx_y(_f(elem.get("y")), ctx)
-
     tspans = list(elem.iter(f"{{{SVG_NS}}}tspan"))
     if not tspans:
         # Also check non-namespaced tspans
@@ -978,6 +992,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
             "size": base_fs,
             "color": base_color,
         }])
+
 
     if not paragraphs:
         return ""

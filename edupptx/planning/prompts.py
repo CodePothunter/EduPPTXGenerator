@@ -2,11 +2,26 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+
+_REFS_DIR = Path(__file__).resolve().parent.parent / "design" / "references"
+
+
+def _load_ref(name: str) -> str:
+    path = _REFS_DIR / name
+    if not path.exists():
+        return ""
+    return path.read_text(encoding="utf-8").strip()
+
 
 def build_planning_system_prompt() -> str:
     from edupptx.materials.icons import list_icons
     icon_list = ", ".join(list_icons())
     template = _SYSTEM_PROMPT_TEMPLATE.replace("{icon_list}", icon_list)
+    notes_requirements = _load_ref("notes-guidelines.md")
+    if notes_requirements:
+        return f"{template}\n\n{notes_requirements}"
     return template
 
 
