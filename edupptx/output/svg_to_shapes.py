@@ -1034,8 +1034,12 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
 
     # y in SVG is baseline; move up to get top of text box
     dominant_baseline = elem.get("dominant-baseline", "auto")
-    if dominant_baseline == "middle" or dominant_baseline == "central":
-        # dominant-baseline="middle": SVG y is vertical center of text
+    is_centered_label = dominant_baseline in ("middle", "central") and text_anchor == "middle"
+    if is_centered_label:
+        # Centered label (e.g., number inside a circle): y is visual center
+        # Make a tight box centered on that point
+        box_y = y_base - box_h / 2
+    elif dominant_baseline in ("middle", "central"):
         box_y = y_base - base_fs * 0.5
     else:
         # Default: SVG y is alphabetic baseline
@@ -1081,6 +1085,9 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     wrap_mode = "square"
 
     shape_id = ctx.next_id()
+    # For centered labels (number in circle), use vertical center anchor
+    v_anchor = "ctr" if is_centered_label else "t"
+
     return (
         f'<p:sp>\n<p:nvSpPr>\n'
         f'<p:cNvPr id="{shape_id}" name="Text {shape_id}"/>\n'
@@ -1090,7 +1097,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
         f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>\n'
         f'<a:noFill/><a:ln><a:noFill/></a:ln>\n</p:spPr>\n'
         f'<p:txBody>\n'
-        f'<a:bodyPr wrap="{wrap_mode}" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t" anchorCtr="0"/>\n'
+        f'<a:bodyPr wrap="{wrap_mode}" lIns="0" tIns="0" rIns="0" bIns="0" anchor="{v_anchor}" anchorCtr="0"/>\n'
         f'<a:lstStyle/>\n'
         f'{"".join(paras_xml)}\n</p:txBody>\n</p:sp>'
     )
