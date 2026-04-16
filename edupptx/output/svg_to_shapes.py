@@ -920,6 +920,21 @@ def convert_polygon(elem: ET.Element, ctx: ConvertContext) -> str:
 # Text converter — supports <tspan> multi-line → multi-paragraph
 # ---------------------------------------------------------------------------
 
+
+def _collect_tspan_text(ts: ET.Element) -> str:
+    """Collect all text from a tspan, including nested tspan text and tail."""
+    parts: list[str] = []
+    if ts.text:
+        parts.append(ts.text)
+    for child in ts:
+        # Nested tspan: collect its text and tail
+        if child.text:
+            parts.append(child.text)
+        if child.tail:
+            parts.append(child.tail)
+    return "".join(parts)
+
+
 def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     """Convert SVG <text> with optional <tspan> children to DrawingML text shape."""
     # Collect paragraphs: each tspan with dy>0 starts a new line
@@ -948,7 +963,8 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
         for ts in tspans:
             dy = _f(ts.get("dy"), 0, font_size=raw_fs)
             total_dy += dy
-            ts_text = (ts.text or "").strip()
+            # Collect all text including nested tspan text and tail
+            ts_text = _collect_tspan_text(ts).strip()
             if not ts_text:
                 continue
             ts_weight = ts.get("font-weight", base_weight)

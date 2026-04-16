@@ -23,6 +23,7 @@ def sanitize_for_ppt(svg_content: str) -> str:
     _remove_scripts(root)
     _remove_event_handlers(root)
     _replace_emoji(root)
+    _flatten_nested_tspans(root)
     _ensure_svg_namespace(root)
     _remove_width_height(root)
     _strip_comments(root)
@@ -47,6 +48,33 @@ def _replace_emoji(root: etree._Element) -> None:
             el.text = _EMOJI_RE.sub("", el.text).strip()
         if el.tail and _EMOJI_RE.search(el.tail):
             el.tail = _EMOJI_RE.sub("", el.tail).strip()
+
+
+def _flatten_nested_tspans(root: etree._Element) -> None:
+    """Flatten nested <tspan> elements into single-level tspan.
+
+    LLM sometimes generates: <tspan><tspan fill="green">●</tspan> text</tspan>
+    PPT converter can't handle nested tspan, so flatten to: <tspan>● text</tspan>
+    """
+    for tspan in list(root.iter(f"{{{SVG_NS}}}tspan")):
+        children = list(tspan)
+        if not children:
+            continue
+        # Check if children are nested tspans
+        nested = [c for c in children if etree.QName(c.tag).localname == "tspan"]
+        if not nested:
+            continue
+        # Collect all text content in order
+        parts: list[str] = []
+        if tspan.text:
+            parts.append(tspan.text)
+        for child in children:
+            if child.text:
+                parts.append(child.text)
+            if child.tail:
+                parts.append(child.tail)
+            tspan.remove(child)
+        tspan.text = "".join(parts)
 
 
 def _remove_scripts(root: etree._Element) -> None:

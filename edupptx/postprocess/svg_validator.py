@@ -230,11 +230,16 @@ def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
     for col in columns:
         col.sort(key=lambda t: t[2])  # sort by y within column
         for i in range(1, len(col)):
-            _, _, prev_y, prev_fs = col[i - 1]
+            prev_el, _, prev_y, prev_fs = col[i - 1]
             el, x, curr_y, fs = col[i]
-            min_gap = prev_fs + 6
-            if curr_y < prev_y + min_gap:
-                new_y = prev_y + min_gap
+            # Use actual bottom of previous text (including tspan dy offsets)
+            prev_bottom = _get_text_bottom_y(prev_el)
+            min_next_y = prev_bottom + 6  # 6px gap after actual text bottom
+            # Fallback: at least prev_y + prev_fs + 6
+            min_gap_y = prev_y + prev_fs + 6
+            effective_min = max(min_next_y, min_gap_y)
+            if curr_y < effective_min:
+                new_y = effective_min
                 el.set("y", str(int(new_y)))
                 col[i] = (el, x, new_y, fs)
                 warnings.append(f"Fixed text overlap: pushed y from {curr_y} to {new_y}")
