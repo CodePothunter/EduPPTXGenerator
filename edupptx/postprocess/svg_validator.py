@@ -45,6 +45,7 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
     _fix_text_overlaps(root, warnings)
     _fix_text_outside_cards(root, warnings)
     _check_image_hrefs(root, warnings)
+    _warn_layout_issues(root, warnings)
 
     fixed = etree.tostring(root, encoding="unicode", xml_declaration=False)
     return fixed, warnings
@@ -344,3 +345,65 @@ def _check_image_hrefs(root: etree._Element, warnings: list[str]) -> None:
         href = img.get("href") or img.get(xlink_href) or ""
         if not href or not href.strip():
             warnings.append("Found <image> with empty href")
+
+
+def _warn_layout_issues(root: etree._Element, warnings: list[str]) -> None:
+    """Detect layout issues and emit warnings for LLM reviewer to fix.
+
+    Does NOT auto-fix — only reports problems so the review LLM can
+    make intelligent corrections with full context.
+    """
+    texts = list(root.iter(f"{{{SVG_NS}}}text"))
+
+    # 1. Page title position check
+    # First bold large text should be near y=50
+    for t in texts:
+        fs_str = t.get("font-size", "16")
+        try:
+            fs = float(fs_str.replace("px", ""))
+        except (ValueError, TypeError):
+            continue
+        weight = t.get("font-weight", "")
+        if fs >= 28 and weight in ("bold", "700", "800", "900"):
+            y_str = t.get("y", "0")
+            try:
+                y = float(y_str)
+            except (ValueError, TypeError):
+                continue
+            if y > 100:
+                warnings.append(
+                    f"页面标题位置异常：y={y:.0f}（应在 y=50 附近）。"
+                    f"标题可能被卡片遮挡或布局错乱，建议移到 y=50"
+                )
+            break  # Only check first title
+
+    # 2. Circle-label alignment check
+    circles = []
+    for c in root.iter(f"{{{SVG_NS}}}circle"):
+        try:
+            cx = float(c.get("cx", "0"))
+            cy = float(c.get("cy", "0"))
+            r = float(c.get("r", "0"))
+            if 0 < r < 50:
+                circles.append((cx, cy, r))
+        except (ValueError, TypeError):
+            pass
+
+    for t in texts:
+        if t.get("text-anchor") != "middle":
+            continue
+        text_content = (t.text or "").strip()
+        if not text_content or len(text_content) > 3:
+            continue
+        try:
+            tx = float(t.get("x", "0"))
+            ty = float(t.get("y", "0"))
+        except (ValueError, TypeError):
+            continue
+        for cx, cy, r in circles:
+            if abs(cx - tx) < 25 and abs(cy - ty) < r * 3 and abs(cy - ty) > 5:
+                warnings.append(
+                    f"圆内编号 \"{text_content}\" 未对齐：text y={ty:.0f} 但 circle cy={cy:.0f}，"
+                    f"差 {ty-cy:.0f}px。应设 text y = circle cy"
+                )
+                break
