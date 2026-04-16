@@ -133,6 +133,10 @@ material_needs.icons 必须从以下列表中选择（Lucide 图标集）：
 - experiment 适合 bento_2col_asymmetric（左窄右宽 3:7）
 - comparison 适合 comparison 布局
 - summary 适合 vertical_list 或 mixed_grid
+- 对于 `bento_2col_equal`、`bento_2col_asymmetric`、`bento_3col`，当大卡片内容存在清晰的“总—分”关系，且可自然拆解为 2–3 个同级子点时，可在 `design_notes` 中指定使用内部子卡片模式（`stacked_subcards`）
+- 内部子卡片不是默认元素；若内容较短、非并列、或以图片/图表/时间线/表格/公式为主，则不要使用
+- 若使用内部子卡片，必须说明：子卡片仅可上下堆叠、位于大卡片标题之后、从标题下方留白 24px 后开始布局、数量为 2 或 3、用于承载“短标题 + 1–2 行说明”的子点
+- `design_notes` 应明确写出：哪一张大卡片需要内部子卡片，以及子卡片承载的子点类型
 """
 
 
