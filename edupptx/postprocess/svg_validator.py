@@ -274,69 +274,57 @@ def _get_text_bottom_y(text_el: etree._Element) -> float:
     return curr_y + fs  # Add font-size for text descent
 
 
-def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
-    """Fix text that overflows its parent card rect boundary."""
-    # Collect all rects (potential card boundaries)
-    rects = []
+def _find_parent_card(root: etree._Element, tx: float, ty: float) -> etree._Element | None:
+    """Find the best-matching card rect for a text element by reading live DOM."""
+    best_rect = None
+    best_gap = float("inf")
     for rect in root.iter(f"{{{SVG_NS}}}rect"):
         try:
             rx = float(rect.get("x", "0"))
             ry = float(rect.get("y", "0"))
             rw = float(rect.get("width", "0"))
             rh = float(rect.get("height", "0"))
-            if rw > 100 and rh > 50:  # Only consider actual content cards
-                rects.append((rx, ry, rw, rh))
         except (ValueError, TypeError):
-            pass
+            continue
+        if rw < 100 or rh < 50:
+            continue
+        card_bottom = ry + rh
+        if rx - 10 <= tx <= rx + rw + 10 and ry <= ty <= card_bottom + 20:
+            gap = card_bottom - ty
+            if gap < best_gap:
+                best_gap = gap
+                best_rect = rect
+    return best_rect
 
-    if not rects:
-        return
 
-    # Check each text element
+def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
+    """Fix text that overflows its parent card rect boundary."""
     for text_el in root.iter(f"{{{SVG_NS}}}text"):
-        tx_str = text_el.get("x", "0")
-        ty_str = text_el.get("y", "0")
         try:
-            tx = float(tx_str)
-            ty = float(ty_str)
+            tx = float(text_el.get("x", "0"))
+            ty = float(text_el.get("y", "0"))
         except (ValueError, TypeError):
             continue
 
         text_bottom = _get_text_bottom_y(text_el)
 
-        # Find the best-matching parent card
-        best_card = None
-        for rx, ry, rw, rh in rects:
-            card_bottom = ry + rh
-            # Text x within card x range and text y within card y range
-            if rx - 10 <= tx <= rx + rw + 10 and ry <= ty <= card_bottom + 20:
-                if best_card is None or (ry + rh - ty) < (best_card[1] + best_card[3] - ty):
-                    best_card = (rx, ry, rw, rh)
-
-        if best_card is None:
+        # Find parent card from live DOM (not a snapshot — avoids stale height)
+        card_rect = _find_parent_card(root, tx, ty)
+        if card_rect is None:
             continue
 
-        card_bottom = best_card[1] + best_card[3]
+        ry = float(card_rect.get("y", "0"))
+        rh = float(card_rect.get("height", "0"))
+        card_bottom = ry + rh
         overflow = text_bottom - card_bottom
 
-        if overflow > 2:  # More than 2px overflow
-            # Strategy: expand the parent card height to fit the text
-            for rect in root.iter(f"{{{SVG_NS}}}rect"):
-                try:
-                    rx = float(rect.get("x", "0"))
-                    ry = float(rect.get("y", "0"))
-                    rw = float(rect.get("width", "0"))
-                    rh = float(rect.get("height", "0"))
-                except (ValueError, TypeError):
-                    continue
-                if (rx, ry, rw, rh) == best_card:
-                    new_h = rh + overflow + 4  # Add 4px padding
-                    rect.set("height", str(int(new_h)))
-                    warnings.append(
-                        f"Expanded card height {int(rh)}→{int(new_h)} "
-                        f"(text bottom {text_bottom:.0f} overflowed card bottom {card_bottom:.0f})"
-                    )
-                    break
+        if overflow > 2:
+            new_h = text_bottom - ry + 4
+            card_rect.set("height", str(int(new_h)))
+            warnings.append(
+                f"Expanded card height {int(rh)}→{int(new_h)} "
+                f"(text bottom {text_bottom:.0f} overflowed card bottom {card_bottom:.0f})"
+            )
 
 
 def _check_image_hrefs(root: etree._Element, warnings: list[str]) -> None:

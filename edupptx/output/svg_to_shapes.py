@@ -922,17 +922,9 @@ def convert_polygon(elem: ET.Element, ctx: ConvertContext) -> str:
 
 
 def _collect_tspan_text(ts: ET.Element) -> str:
-    """Collect all text from a tspan, including nested tspan text and tail."""
-    parts: list[str] = []
-    if ts.text:
-        parts.append(ts.text)
-    for child in ts:
-        # Nested tspan: collect its text and tail
-        if child.text:
-            parts.append(child.text)
-        if child.tail:
-            parts.append(child.tail)
-    return "".join(parts)
+    """Collect all text from a tspan, including arbitrarily nested descendants."""
+    # itertext() walks all descendants depth-first, yielding text and tail
+    return "".join(ts.itertext())
 
 
 def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:

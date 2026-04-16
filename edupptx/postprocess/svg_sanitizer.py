@@ -111,26 +111,20 @@ def _flatten_nested_tspans(root: etree._Element) -> None:
 
     LLM sometimes generates: <tspan><tspan fill="green">●</tspan> text</tspan>
     PPT converter can't handle nested tspan, so flatten to: <tspan>● text</tspan>
+    Uses itertext() to collect ALL descendant text regardless of nesting depth.
     """
     for tspan in list(root.iter(f"{{{SVG_NS}}}tspan")):
         children = list(tspan)
         if not children:
             continue
-        # Check if children are nested tspans
         nested = [c for c in children if etree.QName(c.tag).localname == "tspan"]
         if not nested:
             continue
-        # Collect all text content in order
-        parts: list[str] = []
-        if tspan.text:
-            parts.append(tspan.text)
-        for child in children:
-            if child.text:
-                parts.append(child.text)
-            if child.tail:
-                parts.append(child.tail)
+        # itertext() walks all descendants depth-first, collecting text + tail
+        full_text = "".join(tspan.itertext())
+        for child in list(children):
             tspan.remove(child)
-        tspan.text = "".join(parts)
+        tspan.text = full_text
 
 
 def _remove_scripts(root: etree._Element) -> None:
