@@ -1032,8 +1032,14 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     else:
         box_x = x_base - padding
 
-    # y in SVG is baseline; move up
-    box_y = y_base - base_fs * 0.85
+    # y in SVG is baseline; move up to get top of text box
+    dominant_baseline = elem.get("dominant-baseline", "auto")
+    if dominant_baseline == "middle" or dominant_baseline == "central":
+        # dominant-baseline="middle": SVG y is vertical center of text
+        box_y = y_base - base_fs * 0.5
+    else:
+        # Default: SVG y is alphabetic baseline
+        box_y = y_base - base_fs * 0.85
 
     # Alignment
     algn_map = {"start": "l", "middle": "ctr", "end": "r"}
