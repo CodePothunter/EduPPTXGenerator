@@ -169,12 +169,15 @@ def build_svg_user_prompt(
         if image_needs:
             lines.append("\n### 图片占位（Debug 模式）")
             lines.append(
-                "以下位置需要插图。请用**虚线矩形 + 居中灰色描述文字**标注图片区域："
+                "以下位置需要插图。请用**虚线矩形 + 居中灰色描述文字**标注图片区域。\n"
+                "**重要**：占位框的宽高比必须使用以下预定比例之一：\n"
+                "1:1, 4:3, 3:4, 16:9, 9:16, 3:2, 2:3, 21:9\n"
             )
             for img in image_needs:
-                lines.append(f"- {img.role}: {img.query}")
+                ratio = img.aspect_ratio
+                lines.append(f"- {img.role} (比例 {ratio}): {img.query}")
             lines.append(
-                "\n占位示例：\n"
+                "\n占位示例（注意宽高比必须匹配预定比例）：\n"
                 "```svg\n"
                 '<rect x="50" y="120" width="300" height="200" rx="8" '
                 'fill="#F1F5F9" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="6,4"/>\n'
@@ -187,15 +190,24 @@ def build_svg_user_prompt(
     else:
         # Normal mode: use __IMAGE__ placeholders for post-processing injection
         image_lines: list[str] = []
+        # Build role→ratio mapping from page's image needs
+        role_ratios: dict[str, str] = {}
+        if page.material_needs.images:
+            for img in page.material_needs.images:
+                role_ratios[img.role.upper()] = img.aspect_ratio
         for role, path in assets.image_paths.items():
-            image_lines.append(f'- **{role}** 图片可用，请用 `<image href="__IMAGE_{role.upper()}__" .../>` 作为占位')
+            ratio = role_ratios.get(role.upper(), "16:9")
+            image_lines.append(
+                f'- **{role}** (比例 {ratio}) 图片可用，'
+                f'请用 `<image href="__IMAGE_{role.upper()}__" .../>` 作为占位'
+            )
         if image_lines:
             lines.append("\n### 可用图片资源")
             lines.extend(image_lines)
             lines.append(
                 "\n**必须** 在合适位置放置 `<image>` 元素。"
                 ' 使用 `href="__IMAGE_HERO__"` 或 `href="__IMAGE_ILLUSTRATION__"` 等占位符。'
-                " 系统会自动替换为真实图片。给 image 设置合理的 x, y, width, height 属性。"
+                " 系统会自动替换为真实图片。`<image>` 的宽高比**必须匹配**上面标注的比例。"
             )
 
     # 可用图标

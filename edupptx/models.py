@@ -45,12 +45,59 @@ LayoutHint = Literal[
 ]
 
 
+# Predefined aspect ratios and their Seedream 2K generation sizes
+IMAGE_RATIO_SIZES: dict[str, str] = {
+    "1:1": "2048x2048",
+    "3:4": "1728x2304",
+    "4:3": "2304x1728",
+    "16:9": "2848x1600",
+    "9:16": "1600x2848",
+    "3:2": "2496x1664",
+    "2:3": "1664x2496",
+    "21:9": "3136x1344",
+}
+
+# Numeric values for ratio matching
+_RATIO_VALUES: dict[str, float] = {
+    "1:1": 1.0,
+    "3:4": 0.75,
+    "4:3": 1.333,
+    "16:9": 1.778,
+    "9:16": 0.5625,
+    "3:2": 1.5,
+    "2:3": 0.667,
+    "21:9": 2.333,
+}
+
+
+def match_aspect_ratio(width: float, height: float) -> str:
+    """Find the closest predefined aspect ratio for given dimensions.
+
+    Returns ratio string like "16:9", "4:3", etc.
+    """
+    if height <= 0:
+        return "16:9"
+    target = width / height
+    best_ratio = "16:9"
+    best_diff = float("inf")
+    for name, value in _RATIO_VALUES.items():
+        diff = abs(target - value)
+        if diff < best_diff:
+            best_diff = diff
+            best_ratio = name
+    return best_ratio
+
+
 class ImageNeed(BaseModel):
     """A single image request within a page's material_needs."""
 
     query: str = Field(description="Search keyword or generation prompt")
     source: Literal["search", "ai_generate"] = "search"
     role: Literal["hero", "illustration", "icon", "background"] = "illustration"
+    aspect_ratio: str = Field(
+        default="16:9",
+        description="Aspect ratio from predefined set: 1:1, 3:4, 4:3, 16:9, 9:16, 3:2, 2:3, 21:9",
+    )
 
 
 class MaterialNeeds(BaseModel):
