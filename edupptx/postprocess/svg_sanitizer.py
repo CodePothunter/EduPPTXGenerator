@@ -77,8 +77,6 @@ def _snap_circle_labels(root: etree._Element) -> None:
     for t in root.iter(f"{{{SVG_NS}}}text"):
         if t.get("text-anchor") != "middle":
             continue
-        if t.get("dominant-baseline") not in ("middle", "central"):
-            continue
         text_content = (t.text or "").strip()
         if not text_content or len(text_content) > 3:
             continue  # Only short labels (1, 2, A, B, etc.)
@@ -93,7 +91,7 @@ def _snap_circle_labels(root: etree._Element) -> None:
         best_circle = None
         best_dist = float("inf")
         for cx, cy, r in circles:
-            if abs(cx - tx) > 5:  # x must match closely
+            if abs(cx - tx) > 25:  # x within 25px (covers slight offsets)
                 continue
             dist = abs(cy - ty)
             if dist < best_dist and dist < r * 3:  # Within reasonable range
@@ -103,6 +101,9 @@ def _snap_circle_labels(root: etree._Element) -> None:
         if best_circle and best_dist > 2:  # Only fix if meaningfully off
             _, cy, _ = best_circle
             t.set("y", str(cy))
+            # Also ensure dominant-baseline is set for PPT converter
+            if not t.get("dominant-baseline"):
+                t.set("dominant-baseline", "middle")
 
 
 def _flatten_nested_tspans(root: etree._Element) -> None:
