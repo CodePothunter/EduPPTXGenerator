@@ -17,7 +17,7 @@ MATH_FONTS = {"Courier New", "Consolas", "monospace"}
 
 # Pattern to detect math-like content in text elements
 _MATH_CONTENT_RE = re.compile(
-    r'[0-9²³√∑∫±×÷≠≤≥≈∞πΔαβγ=+\-*/^(){}|]'
+    r'[0-9²³₂₃₄√∑∫±×÷≠≤≥≈∞πΔαβγ=+\-*/^(){}|↑↓→←·]'
 )
 
 
@@ -270,9 +270,9 @@ def _is_math_content(text_el) -> bool:
     content = "".join(parts).strip()
     if not content:
         return False
-    # If more than 30% of characters are math-like, consider it math
+    # If more than 20% of characters are math/chemistry-like, consider it formula
     math_chars = len(_MATH_CONTENT_RE.findall(content))
-    return math_chars / max(len(content), 1) > 0.3
+    return math_chars / max(len(content), 1) > 0.2
 
 
 def _is_font_safe(font_family: str) -> bool:
@@ -308,6 +308,9 @@ def _wrap_long_text(root: etree._Element, warnings: list[str]) -> None:
     for text_el in list(root.iter(f"{{{SVG_NS}}}text")):
         # Skip if already has tspan children
         if text_el.find(f"{{{SVG_NS}}}tspan") is not None:
+            continue
+        # Skip formula text (has data-latex or is math content)
+        if text_el.get("data-latex") is not None or _is_math_content(text_el):
             continue
 
         content = (text_el.text or "").strip()

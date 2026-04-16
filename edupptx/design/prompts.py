@@ -12,6 +12,31 @@ from loguru import logger
 from edupptx.models import PagePlan, SlideAssets, VisualPlan
 
 _REFS_DIR = Path(__file__).parent / "references"
+_PAGE_TEMPLATES_DIR = Path(__file__).parent / "page_templates"
+
+# Page types that map to a specific template file
+_PAGE_TYPE_TEMPLATE_MAP = {
+    "cover": "cover.svg",
+    "toc": "toc.svg",
+    "section": "section.svg",
+    "content": "content.svg",
+    "closing": "closing.svg",
+    # Other types (quiz, formula, experiment, etc.) fall back to content.svg
+}
+
+_MAX_TEMPLATE_CHARS = 3000  # Token budget per template
+
+
+def _load_page_template(page_type: str) -> str:
+    """Load the SVG reference template for a page type."""
+    filename = _PAGE_TYPE_TEMPLATE_MAP.get(page_type, "content.svg")
+    path = _PAGE_TEMPLATES_DIR / filename
+    if not path.exists():
+        return ""
+    content = path.read_text(encoding="utf-8")
+    if len(content) > _MAX_TEMPLATE_CHARS:
+        content = content[:_MAX_TEMPLATE_CHARS] + "\n<!-- ... 截断 ... -->\n</svg>"
+    return content
 
 
 def _load_ref(name: str) -> str:
@@ -196,6 +221,16 @@ def build_svg_user_prompt(
             "这些符号跨平台渲染不一致。"
         )
 
+    # 页面 SVG 参考模板（LLM 照着画，不是填充模板）
+    template_svg = _load_page_template(page.page_type)
+    if template_svg:
+        lines.append(
+            "\n### 参考模板\n"
+            "以下是此类页面的 SVG 参考模板。请**参照其布局结构和视觉风格**生成新的 SVG，"
+            "**不要复制粘贴模板内容**。用实际内容替换占位文字，根据本页要点调整布局。\n"
+            f"```svg\n{template_svg}\n```"
+        )
+
     # 页面类型特殊说明
     type_hints = {
         "cover": (
@@ -246,9 +281,12 @@ def build_svg_user_prompt(
         "formula": (
             "这是公式推导页。设计要求：\n"
             "1. 步骤卡片纵向排列，用箭头（<polygon>）连接\n"
-            "2. 每步有序号圆 + 公式（等宽字体） + 文字说明\n"
+            "2. 每步有序号圆 + 公式 + 文字说明\n"
             "3. 最后一步（结论）用强调色卡片高亮\n"
-            "4. 参考 page-types.md 中 formula 类型的布局定义"
+            "4. 参考 page-types.md 中 formula 类型的布局定义\n"
+            '5. **公式必须使用 data-latex 属性标记**，例如：\n'
+            '   `<text data-latex="\\frac{a}{b}" fill="#1E293B">a/b</text>`\n'
+            "   系统会自动将 LaTeX 渲染为高质量图片"
         ),
         "experiment": (
             "这是实验步骤页。设计要求：\n"

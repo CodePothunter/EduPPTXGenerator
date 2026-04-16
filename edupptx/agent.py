@@ -342,6 +342,13 @@ class PPTXAgent:
             # Step 3: Sanitize for PPT
             clean_svg = sanitize_for_ppt(fixed_svg)
 
+            # Step 3.3: Render LaTeX formulas
+            from edupptx.postprocess.latex_renderer import render_latex_formulas
+            _text_color = draft.visual.text_color if draft else "#1E293B"
+            clean_svg, formula_count = render_latex_formulas(clean_svg, text_color=_text_color)
+            if formula_count:
+                logger.info("Slide {}: rendered {} formula(s)", slide.page_number, formula_count)
+
             # Step 3.5: Embed icon placeholders
             from edupptx.postprocess.icon_embedder import embed_icon_placeholders
             _icon_color = draft.visual.primary_color if draft else "#333"
