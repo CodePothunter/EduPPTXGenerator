@@ -18,6 +18,24 @@ from edupptx.models import (
 from edupptx.session import Session
 
 
+def _needs_llm_review(warnings: list[str]) -> bool:
+    """Check if warnings are serious enough to warrant LLM review."""
+    # Minor warnings that validator already auto-fixed — skip review
+    minor_patterns = (
+        "Wrapped long text",
+        "Fixed text overlap",
+        "Expanded card height",
+        "Replaced unsafe font",
+        "Clamped",
+        "viewBox fixed",
+        "Fixed <circle>",
+    )
+    for w in warnings:
+        if not any(w.startswith(p) for p in minor_patterns):
+            return True  # Has at least one non-minor warning
+    return False  # All warnings are minor auto-fixes
+
+
 class PPTXAgent:
     """Orchestrates the 5-phase SVG pipeline."""
 
@@ -309,8 +327,8 @@ class PPTXAgent:
             for w in warnings:
                 logger.warning("Slide {}: {}", slide.page_number, w)
 
-            # Step 2: LLM Review (parallel per slide)
-            if do_review and draft and slide.page_number in page_lookup:
+            # Step 2: LLM Review (only if meaningful warnings exist)
+            if do_review and draft and slide.page_number in page_lookup and _needs_llm_review(warnings):
                 from edupptx.postprocess.svg_reviewer import review_and_fix_svg
                 fixed_svg = review_and_fix_svg(
                     fixed_svg, warnings,
@@ -318,6 +336,8 @@ class PPTXAgent:
                     draft.visual,
                     self.config,
                 )
+            elif do_review and warnings:
+                logger.debug("Slide {}: skipping LLM review (only minor auto-fixes)", slide.page_number)
 
             # Step 3: Sanitize for PPT
             clean_svg = sanitize_for_ppt(fixed_svg)

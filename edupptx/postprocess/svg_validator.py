@@ -13,6 +13,13 @@ MAX_Y = 720
 SAFE_FONTS = {"Noto Sans SC", "微软雅黑", "Microsoft YaHei", "Arial", "Helvetica", "sans-serif"}
 FALLBACK_FONT = "Noto Sans SC, Microsoft YaHei, Arial, sans-serif"
 
+MATH_FONTS = {"Courier New", "Consolas", "monospace"}
+
+# Pattern to detect math-like content in text elements
+_MATH_CONTENT_RE = re.compile(
+    r'[0-9²³√∑∫±×÷≠≤≥≈∞πΔαβγ=+\-*/^(){}|]'
+)
+
 
 def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
     """Validate SVG, auto-fix issues. Returns (fixed_svg, list_of_warnings)."""
@@ -37,6 +44,7 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
             return svg_content, warnings
 
     _fix_circle_attrs(root, warnings)
+    _fix_circle_label_attrs(root, warnings)
     _fix_viewbox(root, warnings)
     _check_ppt_blacklist(root, warnings)
     _remove_foreign_objects(root, warnings)
@@ -169,6 +177,57 @@ def _fix_circle_attrs(root: etree._Element, warnings: list[str]) -> None:
                 warnings.append(f"Fixed <circle> {wrong}={val} → {right}={val}")
 
 
+def _fix_circle_label_attrs(root: etree._Element, warnings: list[str]) -> None:
+    """Auto-fix circle labels: add dominant-baseline and snap position."""
+    circles = []
+    for c in root.iter(f"{{{SVG_NS}}}circle"):
+        try:
+            cx = float(c.get("cx", "0"))
+            cy = float(c.get("cy", "0"))
+            r = float(c.get("r", "0"))
+            if 0 < r < 50:
+                circles.append((cx, cy, r))
+        except (ValueError, TypeError):
+            pass
+
+    if not circles:
+        return
+
+    for text_el in root.iter(f"{{{SVG_NS}}}text"):
+        if text_el.get("text-anchor") != "middle":
+            continue
+        content = (text_el.text or "").strip()
+        if not content or len(content) > 3:
+            continue
+        try:
+            tx = float(text_el.get("x", "0"))
+            ty = float(text_el.get("y", "0"))
+        except (ValueError, TypeError):
+            continue
+
+        for cx, cy, r in circles:
+            if abs(cx - tx) < 25 and abs(cy - ty) < r * 3:
+                fixed_something = False
+                # Add dominant-baseline if missing
+                if text_el.get("dominant-baseline") != "middle":
+                    text_el.set("dominant-baseline", "middle")
+                    fixed_something = True
+                # Snap y to circle cy
+                if abs(cy - ty) > 2:
+                    text_el.set("y", str(int(cy)))
+                    fixed_something = True
+                # Snap x to circle cx
+                if abs(cx - tx) > 2:
+                    text_el.set("x", str(int(cx)))
+                    fixed_something = True
+                if fixed_something:
+                    warnings.append(
+                        f"Auto-fixed circle label \"{content}\": "
+                        f"snapped to cx={int(cx)},cy={int(cy)} + dominant-baseline"
+                    )
+                break
+
+
 def _fix_viewbox(root: etree._Element, warnings: list[str]) -> None:
     vb = root.get("viewBox")
     if vb != EXPECTED_VIEWBOX:
@@ -197,6 +256,25 @@ def _remove_css_animations(root: etree._Element, warnings: list[str]) -> None:
             warnings.append("Removed CSS animations/transitions from <style>")
 
 
+def _is_math_content(text_el) -> bool:
+    """Check if a text element contains math-like content."""
+    # Gather all text content including tspan children
+    parts = []
+    if text_el.text:
+        parts.append(text_el.text)
+    for child in text_el:
+        if child.text:
+            parts.append(child.text)
+        if child.tail:
+            parts.append(child.tail)
+    content = "".join(parts).strip()
+    if not content:
+        return False
+    # If more than 30% of characters are math-like, consider it math
+    math_chars = len(_MATH_CONTENT_RE.findall(content))
+    return math_chars / max(len(content), 1) > 0.3
+
+
 def _is_font_safe(font_family: str) -> bool:
     fonts = [f.strip().strip("'\"") for f in font_family.split(",")]
     return all(f in SAFE_FONTS for f in fonts if f)
@@ -208,6 +286,14 @@ def _fix_fonts(root: etree._Element, warnings: list[str]) -> None:
         if not ff:
             continue
         if not _is_font_safe(ff):
+            # Check if this is a math font on math content
+            fonts = [f.strip().strip("'\"") for f in ff.split(",")]
+            has_math_font = any(f in MATH_FONTS for f in fonts)
+            if has_math_font and el.tag.endswith("}text") and _is_math_content(el):
+                # Keep math font but add safe fallback chain
+                el.set("font-family", f"Courier New, Consolas, {FALLBACK_FONT}")
+                # Don't warn — this is intentional math content
+                continue
             el.set("font-family", FALLBACK_FONT)
             warnings.append(f"Replaced unsafe font '{ff}'")
         elif "Noto Sans SC" not in ff:

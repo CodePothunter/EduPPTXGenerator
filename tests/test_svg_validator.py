@@ -157,3 +157,41 @@ class TestPPTBlacklist:
         svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><g opacity="0.5"><rect x="50" y="50" width="100" height="100"/></g></svg>'
         _, warnings = validate_and_fix(svg)
         assert any('opacity' in w for w in warnings)
+
+
+class TestCircleLabelAutoFix:
+    def test_adds_dominant_baseline_and_snaps(self):
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">'
+            '<circle cx="100" cy="200" r="18" fill="#2563EB"/>'
+            '<text x="100" y="210" text-anchor="middle" font-size="16" fill="white">1</text>'
+            '</svg>'
+        )
+        fixed, warnings = validate_and_fix(svg)
+        assert 'dominant-baseline="middle"' in fixed
+        assert 'y="200"' in fixed  # snapped to cy
+        assert any('Auto-fixed circle label' in w for w in warnings)
+
+    def test_skips_non_label_text(self):
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">'
+            '<circle cx="100" cy="200" r="18" fill="#2563EB"/>'
+            '<text x="300" y="400" font-size="16">This is a long paragraph text</text>'
+            '</svg>'
+        )
+        fixed, warnings = validate_and_fix(svg)
+        assert not any('Auto-fixed circle label' in w for w in warnings)
+
+
+class TestMathFontHandling:
+    def test_math_font_preserved_for_equations(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><text x="50" y="200" font-family="Courier New, Consolas, monospace">x² + 2x + 1 = 0</text></svg>'
+        fixed, warnings = validate_and_fix(svg)
+        assert 'Courier New' in fixed
+        assert not any('Replaced unsafe font' in w for w in warnings)
+
+    def test_math_font_replaced_for_chinese_text(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><text x="50" y="200" font-family="Courier New">这是普通中文文本</text></svg>'
+        fixed, warnings = validate_and_fix(svg)
+        assert 'Courier New' not in fixed
+        assert any('Replaced unsafe font' in w for w in warnings)
