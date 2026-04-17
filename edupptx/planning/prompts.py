@@ -17,12 +17,18 @@ def _load_ref(name: str) -> str:
 
 def build_planning_system_prompt() -> str:
     from edupptx.materials.icons import list_icons
+
     icon_list = ", ".join(list_icons())
     template = _SYSTEM_PROMPT_TEMPLATE.replace("{icon_list}", icon_list)
     notes_requirements = _load_ref("notes-guidelines.md")
+    image_rules = _load_ref("planning-image-rules.md")
+
+    parts = [template]
     if notes_requirements:
-        return f"{template}\n\n{notes_requirements}"
-    return template
+        parts.append(notes_requirements)
+    if image_rules:
+        parts.append(image_rules)
+    return "\n\n".join(parts)
 
 
 _SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，擅长运用金字塔原理构建清晰的教学逻辑。
@@ -75,6 +81,9 @@ _SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，
 - `images`: 需要搜索或 AI 生成的图片 [{"query": "关键词", "source": "search|ai_generate", "role": "hero|illustration|background", "aspect_ratio": "16:9"}]
   - `aspect_ratio` 必须从以下预定比例中选择：`1:1`, `4:3`, `3:4`, `16:9`, `9:16`, `3:2`, `2:3`, `21:9`
   - 根据页面布局选择合适比例：全宽图用 16:9 或 21:9，左右分栏图用 4:3 或 3:4，正方形图用 1:1
+  - `images` 是有序数组，不是去重集合；允许多个条目重复使用同一个 `role`（例如两张 `illustration`）
+  - 一个独立图片区对应一条 `images` 记录：左右双图就写 2 条，三列三图就写 3 条
+  - 除非页面明确只需要一张合成主视觉，否则不要用一条 query 同时描述多个主体或“左边 A 右边 B”的拼图式要求
 - `icons`: 需要的 Lucide 图标名称列表
 - `chart`: 图表规格（可选）{"type": "line|bar|pie", "data_description": "描述"}
 
@@ -135,6 +144,9 @@ material_needs.icons 必须从以下列表中选择（Lucide 图标集）：
 - experiment 适合 bento_2col_asymmetric（左窄右宽 3:7）
 - comparison 适合 comparison 布局
 - summary 适合 vertical_list 或 mixed_grid
+- 如果 `design_notes` 或 `layout_hint` 明确出现左右分栏、上下双图、三列并排、多步骤配图等多个独立图片区，`material_needs.images` 的数量必须与图片区数量一致
+- 多张配图可以连续使用相同 `role`（如两个 `illustration`）；数组顺序要与版面顺序一致，默认按从左到右、从上到下排列
+- 当需要风格统一的多张图时，应分别写多条 query，并在每条 query 中重复“同风格/同色调/卡通科普插画”等风格要求，而不是写成一条“对比合成图”
 - 对于 `bento_2col_equal`、`bento_2col_asymmetric`、`bento_3col`，当大卡片内容存在清晰的“总—分”关系，且可自然拆解为 2–3 个同级子点时，可在 `design_notes` 中指定使用内部子卡片模式（`stacked_subcards`）
 - 内部子卡片不是默认元素；若内容较短、非并列、或以图片/图表/时间线/表格/公式为主，则不要使用
 - 若使用内部子卡片，必须说明：子卡片仅可上下堆叠、位于大卡片标题之后、从标题下方留白 24px 后开始布局、数量为 2 或 3、用于承载“短标题 + 1–2 行说明”的子点
