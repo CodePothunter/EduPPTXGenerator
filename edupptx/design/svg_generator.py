@@ -54,12 +54,19 @@ def _generate_one(
     page_plan: "PagePlan",
     assets: SlideAssets,
     total_pages: int,
+    reference_svg: str | None = None,
     debug: bool = False,
 ) -> GeneratedSlide:
     """为单页生成 SVG（同步，运行在线程中）。"""
     from edupptx.models import PagePlan  # noqa: F811 — delayed for type hint
 
-    user_prompt = build_svg_user_prompt(page_plan, assets, total_pages, debug=debug)
+    user_prompt = build_svg_user_prompt(
+        page_plan,
+        assets,
+        total_pages,
+        reference_svg=reference_svg,
+        debug=debug,
+    )
     logger.info("正在生成第 {}/{} 页 SVG ...", page_plan.page_number, total_pages)
 
     # Try up to 2 times (retry once on timeout)
@@ -119,37 +126,88 @@ async def generate_slide_svgs(
     client = create_llm_client(config, web_search=False)
     total_pages = len(draft.pages)
 
-    # 4. 并行生成
+    # 4. 生成页面；有答案揭晓页时切换为顺序生成，以便复用前一页 SVG
     results: list[GeneratedSlide] = []
-    max_workers = min(total_pages, config.llm_concurrency)
+    has_reveal_pages = any(getattr(page, "reveal_from_page", None) for page in draft.pages)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_page = {}
-        for page in draft.pages:
+    if has_reveal_pages:
+        logger.info("检测到答案揭晓页，切换为顺序生成以复用前一页版式")
+        generated_svgs: dict[int, str] = {}
+        ordered_pages = sorted(draft.pages, key=lambda page: page.page_number)
+        for page in ordered_pages:
             page_assets = all_assets.get(
                 page.page_number,
                 SlideAssets(page_number=page.page_number),
             )
-            future = executor.submit(
-                _generate_one, client, system_prompt, page, page_assets, total_pages,
-                debug=debug,
-            )
-            future_to_page[future] = page.page_number
-
-        for future in as_completed(future_to_page):
-            page_num = future_to_page[future]
+            reference_svg = None
+            if page.reveal_from_page is not None:
+                reference_svg = generated_svgs.get(page.reveal_from_page)
+                if reference_svg is None:
+                    logger.warning(
+                        "第 {} 页配置 reveal_from_page={}，但源页 SVG 不可用，将退回普通生成提示",
+                        page.page_number,
+                        page.reveal_from_page,
+                    )
             try:
-                slide = future.result()
+                slide = _generate_one(
+                    client,
+                    system_prompt,
+                    page,
+                    page_assets,
+                    total_pages,
+                    reference_svg=reference_svg,
+                    debug=debug,
+                )
                 results.append(slide)
+                generated_svgs[page.page_number] = slide.svg_content
             except Exception:
-                logger.exception("第 {} 页 SVG 生成失败", page_num)
-                # 生成失败时插入空白占位
-                results.append(GeneratedSlide(
-                    page_number=page_num,
-                    svg_content=f'<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">'
+                logger.exception("第 {} 页 SVG 生成失败", page.page_number)
+                fallback_svg = (
+                    '<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">'
                     f'<text x="640" y="360" text-anchor="middle" font-size="24" '
-                    f'fill="#999">第 {page_num} 页生成失败</text></svg>',
+                    f'fill="#999">第 {page.page_number} 页生成失败</text></svg>'
+                )
+                results.append(GeneratedSlide(
+                    page_number=page.page_number,
+                    svg_content=fallback_svg,
                 ))
+                generated_svgs[page.page_number] = fallback_svg
+    else:
+        max_workers = min(total_pages, config.llm_concurrency)
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_page = {}
+            for page in draft.pages:
+                page_assets = all_assets.get(
+                    page.page_number,
+                    SlideAssets(page_number=page.page_number),
+                )
+                future = executor.submit(
+                    _generate_one,
+                    client,
+                    system_prompt,
+                    page,
+                    page_assets,
+                    total_pages,
+                    reference_svg=None,
+                    debug=debug,
+                )
+                future_to_page[future] = page.page_number
+
+            for future in as_completed(future_to_page):
+                page_num = future_to_page[future]
+                try:
+                    slide = future.result()
+                    results.append(slide)
+                except Exception:
+                    logger.exception("第 {} 页 SVG 生成失败", page_num)
+                    # 生成失败时插入空白占位
+                    results.append(GeneratedSlide(
+                        page_number=page_num,
+                        svg_content=f'<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">'
+                        f'<text x="640" y="360" text-anchor="middle" font-size="24" '
+                        f'fill="#999">第 {page_num} 页生成失败</text></svg>',
+                    ))
 
     # 5. 按页码排序
     results.sort(key=lambda s: s.page_number)

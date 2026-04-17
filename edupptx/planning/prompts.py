@@ -116,6 +116,8 @@ _SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，
         "chart": null
       },
       "design_notes": "设计意图的简短说明",
+      "reveal_from_page": null,
+      "reveal_mode": null,
       "notes": "演讲者备注 / 教学话术"
     }
   ]
@@ -144,6 +146,10 @@ material_needs.icons 必须从以下列表中选择（Lucide 图标集）：
 - experiment 适合 bento_2col_asymmetric（左窄右宽 3:7）
 - comparison 适合 comparison 布局
 - summary 适合 vertical_list 或 mixed_grid
+- 当 `quiz` / `exercise` 需要“先出题、后揭晓答案”的伪动画时，必须规划为 2 张连续页面：第一页只出题，第二页只揭晓答案
+- 揭晓页必须与源题页保持相同 `page_type`、`layout_hint`、`title`、`content_points`、`material_needs`，不要重新设计版式
+- 揭晓页必须设置 `reveal_from_page` 指向源题页页码；选择题/判断题使用 `reveal_mode="highlight_correct_option"`，填空题/简答题使用 `reveal_mode="show_answer"`
+- 揭晓页的 `design_notes` 只能描述新增答案层或正确项高亮方式，不要描述新的卡片布局、不要新增图片区、不要改动原有元素位置
 - 如果 `design_notes` 或 `layout_hint` 明确出现左右分栏、上下双图、三列并排、多步骤配图等多个独立图片区，`material_needs.images` 的数量必须与图片区数量一致
 - 多张配图可以连续使用相同 `role`（如两个 `illustration`）；数组顺序要与版面顺序一致，默认按从左到右、从上到下排列
 - 当需要风格统一的多张图时，应分别写多条 query，并在每条 query 中重复“同风格/同色调/卡通科普插画”等风格要求，而不是写成一条“对比合成图”

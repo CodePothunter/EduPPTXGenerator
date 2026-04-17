@@ -44,6 +44,11 @@ LayoutHint = Literal[
     "comparison",
 ]
 
+RevealMode = Literal[
+    "highlight_correct_option",
+    "show_answer",
+]
+
 
 # Predefined aspect ratios and their Seedream 2K generation sizes
 IMAGE_RATIO_SIZES: dict[str, str] = {
@@ -136,6 +141,14 @@ class PagePlan(BaseModel):
     layout_hint: LayoutHint = "mixed_grid"
     material_needs: MaterialNeeds = Field(default_factory=MaterialNeeds)
     design_notes: str = ""
+    reveal_from_page: int | None = Field(
+        default=None,
+        description="If set, this page should reuse the referenced source page layout and only reveal the answer layer.",
+    )
+    reveal_mode: RevealMode | None = Field(
+        default=None,
+        description="Pseudo-animation answer reveal mode for quiz/exercise pages.",
+    )
     notes: str = Field(default="", description="Speaker notes")
 
 

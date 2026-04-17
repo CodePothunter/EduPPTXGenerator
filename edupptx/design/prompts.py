@@ -147,6 +147,7 @@ def build_svg_user_prompt(
     page: PagePlan,
     assets: SlideAssets,
     total_pages: int,
+    reference_svg: str | None = None,
     debug: bool = False,
 ) -> str:
     """构建单页 SVG 生成的用户提示词。
@@ -178,6 +179,25 @@ def build_svg_user_prompt(
     # 设计备注
     if page.design_notes:
         lines.append(f"\n### 设计备注\n{page.design_notes}")
+
+    if page.reveal_from_page:
+        reveal_mode_text = {
+            "highlight_correct_option": "仅高亮正确选项或正确判断，不改动原选项卡位置与文字换行。",
+            "show_answer": "仅在原留白位置或答案区补充答案，不改动原题干与留白布局。",
+        }.get(page.reveal_mode, "仅新增答案揭晓层，不改动原布局。")
+        lines.append(
+            "\n### 伪动画答案揭晓页\n"
+            f"本页是第 {page.reveal_from_page} 页的答案揭晓页，必须复用上一页版式，不能重新布局。\n"
+            "- 保持原有题目卡、选项卡、文本块、图片、图标的 x/y/width/height、font-size、换行与对齐方式不变\n"
+            "- 只允许新增答案、高亮、勾选、角标、描边等叠加层，不允许移动、缩放、删除或重排原有元素\n"
+            f"- 揭晓方式：{reveal_mode_text}"
+        )
+        if reference_svg:
+            lines.append(
+                "\n### 上一页参考 SVG\n"
+                "以下是必须复用的上一页完整 SVG。请以它为基底保留全部现有元素，只添加答案揭晓层，并返回完整 SVG。\n"
+                f"```svg\n{reference_svg}\n```"
+            )
 
     # 图片处理：debug 模式用描述占位，正常模式用 __IMAGE__ token
     if debug:
@@ -300,6 +320,12 @@ def build_svg_user_prompt(
             "4. 每个数据卡片要有标签+数值+简短说明"
         ),
         "case": "这是案例分析页。突出案例标题，清晰展示分析要点，可配图说明。",
+        "exercise": (
+            "这是练习题页面。设计要求：\n"
+            "1. 题目页优先保持清晰的题干区和答题留白区\n"
+            "2. 如果本页是答案揭晓页，只在原留白区或答案标注区补充答案，不重新布局\n"
+            "3. 答题区、下划线、留白框与题干文本的位置必须稳定，避免前后页切换错位"
+        ),
         "quiz": (
             "这是练习检测页。设计要求：\n"
             "1. 题目大卡片在上方，选项卡片 2x2 在下方\n"
