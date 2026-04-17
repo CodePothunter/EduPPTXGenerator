@@ -26,6 +26,22 @@ _PAGE_TYPE_TEMPLATE_MAP = {
 
 _MAX_TEMPLATE_CHARS = 3000  # Token budget per template
 
+_IMAGE_BOUNDARY_RULES = """
+## 图片边界硬性规则
+
+当你把 `<image>` 放进卡片或任何有边界的面板时，图片框本身必须完全落在该容器内部。
+
+- 不要依赖 `clipPath`、`mask` 或 overflow hidden 去掩盖错误的图片框。
+- 必须满足以下不等式：
+  `image_x >= card_x`
+  `image_y >= card_y`
+  `image_x + image_width <= card_x + card_width`
+  `image_y + image_height <= card_y + card_height`
+- 如果卡片需要内边距，除非模板明确展示为贴边媒体，否则四周至少保留 12px 内边距。
+- 如果不确定安全尺寸，宁可把图片做小，也不要做大。
+- `<image>` 的 width/height 必须先根据卡片边界来确定，实际位图会在后续步骤再注入。
+"""
+
 
 def _load_page_template(page_type: str) -> str:
     """Load the SVG reference template for a page type."""
@@ -114,6 +130,7 @@ def build_svg_system_prompt(
 
     # 4. 教育页面类型
     parts.append(_load_ref("page-types.md"))
+    parts.append(_IMAGE_BOUNDARY_RULES)
 
     # 5. 配色方案
     if visual_plan:
@@ -330,4 +347,16 @@ def build_svg_user_prompt(
         "\n\n**重要提醒**：绝对禁止使用任何 Emoji 表情符号（如 🔍📋💡🎯✨🕐 等），"
         "改用 SVG 图形（圆形+数字、色块、箭头 polygon）或纯文字符号（●、→、①②③）。"
     )
+    if page.material_needs.images:
+        lines.append(
+            "\n### 图片边界硬性规则\n"
+            "如果 `<image>` 放在卡片 `<rect>` 内部，图片框必须完全落在该卡片内部。"
+            "必须严格满足以下不等式："
+            "`image_x >= card_x`, "
+            "`image_y >= card_y`, "
+            "`image_x + image_width <= card_x + card_width`, "
+            "`image_y + image_height <= card_y + card_height`。"
+            "不要假设 `clipPath` 或遮罩能隐藏溢出。"
+            "如果安全尺寸不明确，就缩小图片，并至少保留 12px 内边距。"
+        )
     return "\n".join(lines)

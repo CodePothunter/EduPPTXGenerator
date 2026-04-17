@@ -37,6 +37,21 @@ _REVIEW_SYSTEM_PROMPT = """\
 """
 
 
+_REVIEW_SYSTEM_PROMPT += """
+
+## 图片边界硬性规则
+
+- 如果某个 `<image>` 属于卡片或其他有边界的面板，图片框本身必须完全落在该容器内部。
+- 必须满足以下不等式：
+  `image_x >= card_x`
+  `image_y >= card_y`
+  `image_x + image_width <= card_x + card_width`
+  `image_y + image_height <= card_y + card_height`
+- 不要假设 `clipPath`、`mask` 或 overflow hidden 能挽救错误的图片框。
+- 如果图片对卡片来说过大，就缩小图片，或把它向内移动。
+- 与其溢出，不如使用更小但安全的图片框。
+"""
+
 def review_and_fix_svg(
     svg_content: str,
     warnings: list[str],
