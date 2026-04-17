@@ -54,6 +54,18 @@ DASH_PRESETS = {
     "8,4": "lgDash", "8 4": "lgDash",
 }
 
+INHERITED_PRESENTATION_ATTRS = (
+    "fill",
+    "stroke",
+    "opacity",
+    "fill-opacity",
+    "stroke-opacity",
+    "stroke-width",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-dasharray",
+)
+
 
 # ---------------------------------------------------------------------------
 # Context
@@ -1185,17 +1197,19 @@ def convert_g(elem: ET.Element, ctx: ConvertContext) -> str:
     transform = elem.get("transform", "")
     dx, dy, sx, sy = parse_transform(transform)
     filter_id = resolve_url_id(elem.get("filter", ""))
-    group_fill = elem.get("fill")
-    group_opacity = elem.get("opacity")
+    group_attrs = {
+        attr: elem.get(attr)
+        for attr in INHERITED_PRESENTATION_ATTRS
+        if elem.get(attr) is not None
+    }
 
     child_ctx = ctx.child(dx, dy, sx, sy, filter_id)
     shapes = []
     for child in elem:
         # Propagate group attributes to children
-        if group_fill and not child.get("fill"):
-            child.set("fill", group_fill)
-        if group_opacity and not child.get("opacity"):
-            child.set("opacity", group_opacity)
+        for attr, value in group_attrs.items():
+            if not child.get(attr):
+                child.set(attr, value)
         shape_xml = convert_element(child, child_ctx)
         if shape_xml:
             shapes.append(shape_xml)

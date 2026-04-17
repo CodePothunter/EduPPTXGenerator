@@ -9,7 +9,7 @@ from typing import Literal
 
 from loguru import logger
 
-from edupptx.models import PagePlan, SlideAssets, VisualPlan
+from edupptx.models import PagePlan, SlideAssets, VisualPlan, iter_image_slot_keys
 
 _REFS_DIR = Path(__file__).parent / "references"
 _PAGE_TEMPLATES_DIR = Path(__file__).parent / "page_templates"
@@ -191,12 +191,12 @@ def build_svg_user_prompt(
         # Normal mode: use __IMAGE__ placeholders for post-processing injection
         image_lines: list[str] = []
         # Build role→ratio mapping from page's image needs
-        role_ratios: dict[str, str] = {}
-        if page.material_needs.images:
-            for img in page.material_needs.images:
-                role_ratios[img.role.upper()] = img.aspect_ratio
-        for role, path in assets.image_paths.items():
-            ratio = role_ratios.get(role.upper(), "16:9")
+        for slot_key, img in iter_image_slot_keys(page.material_needs.images or []):
+            if slot_key not in assets.image_paths:
+                continue
+            slot_label = slot_key.upper()
+            role = slot_key
+            ratio = img.aspect_ratio
             image_lines.append(
                 f'- **{role}** (比例 {ratio}) 图片可用，'
                 f'请用 `<image href="__IMAGE_{role.upper()}__" .../>` 作为占位'

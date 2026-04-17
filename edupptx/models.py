@@ -100,6 +100,22 @@ class ImageNeed(BaseModel):
     )
 
 
+def build_image_slot_key(role: str, occurrence: int) -> str:
+    """Return a stable per-slide image slot key like ``illustration_2``."""
+    return f"{role}_{occurrence}"
+
+
+def iter_image_slot_keys(needs: list[ImageNeed]) -> list[tuple[str, ImageNeed]]:
+    """Assign stable slot keys to image needs while preserving list order."""
+    counts: dict[str, int] = {}
+    slots: list[tuple[str, ImageNeed]] = []
+    for need in needs:
+        occurrence = counts.get(need.role, 0) + 1
+        counts[need.role] = occurrence
+        slots.append((build_image_slot_key(need.role, occurrence), need))
+    return slots
+
+
 class MaterialNeeds(BaseModel):
     """Material requirements for a single page."""
 
@@ -195,7 +211,7 @@ class SlideAssets:
 
     page_number: int
     background_path: Path | None = None
-    image_paths: dict[str, Path] = field(default_factory=dict)  # role -> path
+    image_paths: dict[str, Path] = field(default_factory=dict)  # slot_key -> path
     icon_svgs: dict[str, str] = field(default_factory=dict)     # name -> svg string
 
 

@@ -14,6 +14,7 @@ from edupptx.models import (
     InputContext,
     PlanningDraft,
     SlideAssets,
+    iter_image_slot_keys,
 )
 from edupptx.session import Session
 
@@ -275,11 +276,12 @@ class PPTXAgent:
             # Fetch images if needed
             if page.material_needs.images:
                 fetched = await fetch_images(page.material_needs.images, self.config)
-                for role, result in fetched.items():
+                for (slot_key, _need), result in zip(iter_image_slot_keys(page.material_needs.images), fetched):
                     if result and result.local_path and result.local_path.exists():
-                        dest = materials_dir / result.local_path.name
+                        suffix = result.local_path.suffix.lower() or ".img"
+                        dest = materials_dir / f"page_{page.page_number:02d}_{slot_key}{suffix}"
                         shutil.copy2(result.local_path, dest)
-                        assets.image_paths[role] = dest
+                        assets.image_paths[slot_key] = dest
 
             # Collect icon SVGs
             if page.material_needs.icons:
@@ -397,11 +399,11 @@ class PPTXAgent:
 
     @staticmethod
     def _inject_images(svg_content: str, assets: SlideAssets) -> str:
-        """Replace __IMAGE_XXX__ placeholders with base64 data URIs."""
+        """Replace per-slot __IMAGE_XXX__ placeholders with base64 data URIs."""
         import base64
         import io
-        for role, path in assets.image_paths.items():
-            placeholder = f"__IMAGE_{role.upper()}__"
+        for slot_key, path in assets.image_paths.items():
+            placeholder = f"__IMAGE_{slot_key.upper()}__"
             if placeholder not in svg_content:
                 continue
             try:
@@ -416,9 +418,9 @@ class PPTXAgent:
                     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
                     data_uri = f"data:image/jpeg;base64,{b64}"
                     svg_content = svg_content.replace(placeholder, data_uri)
-                    logger.debug("Injected image for {} ({}KB)", role, len(b64) // 1024)
+                    logger.debug("Injected image for {} ({}KB)", slot_key, len(b64) // 1024)
             except Exception as e:
-                logger.warning("Failed to inject image {}: {}", role, e)
+                logger.warning("Failed to inject image {}: {}", slot_key, e)
         return svg_content
 
     def _phase5_output(

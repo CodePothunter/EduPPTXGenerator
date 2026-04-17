@@ -2,13 +2,31 @@
 
 from __future__ import annotations
 
-import re
 from lxml import etree
 from loguru import logger
 
 from edupptx.materials.icons import get_icon_svg
 
 SVG_NS = "http://www.w3.org/2000/svg"
+_PRESENTATION_ATTRS = (
+    "fill",
+    "stroke",
+    "opacity",
+    "fill-opacity",
+    "stroke-opacity",
+    "stroke-width",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-dasharray",
+)
+
+
+def _copy_presentation_attrs(source: etree._Element, target: etree._Element) -> None:
+    """Copy SVG presentation attributes so icon styling survives <svg> -> <g> embedding."""
+    for attr in _PRESENTATION_ATTRS:
+        value = source.get(attr)
+        if value is not None:
+            target.set(attr, value)
 
 
 def embed_icon_placeholders(svg_content: str, icon_color: str = "#333") -> tuple[str, int]:
@@ -61,6 +79,7 @@ def embed_icon_placeholders(svg_content: str, icon_color: str = "#333") -> tuple
         # Create a <g> wrapper with transform
         g = etree.Element(f"{{{SVG_NS}}}g")
         g.set("transform", f"translate({x},{y}) scale({sx},{sy})")
+        _copy_presentation_attrs(icon_root, g)
 
         # Copy all child elements from icon SVG into the group
         for child in icon_root:
