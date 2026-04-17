@@ -9,6 +9,7 @@
 
 | 禁止使用 | 原因 | 替代方案 |
 |---------|------|---------|
+| `<g transform="translate(...)">` 做布局定位 | 内部坐标变成相对值，边界检查失效，PPT 转换坐标错乱 | 所有元素直接使用 **绝对坐标**（x/y/cx/cy），不用 transform 定位。transform 仅允许用于微小装饰元素（如旋转箭头） |
 | `<foreignObject>` | PPT 不支持 | 用 `<text>` + `<tspan>` |
 | CSS `@keyframes` / `animation` / `transition` | PPT 不支持动画 CSS | 静态设计 |
 | `<style>` 中的复杂选择器 | PPT SVG 解析有限 | 内联 style 或属性 |
@@ -55,6 +56,28 @@
   <tspan x="74" dy="1.4em">第二行，继续内容</tspan>
 </text>
 ```
+
+### 公式标记（数学公式和化学方程式）
+
+数学公式和化学方程式使用 `data-latex` 属性标记，系统自动渲染为高质量图片：
+
+```svg
+<!-- 数学公式 -->
+<text x="100" y="200" font-size="24" data-latex="x^2 + 2x + 1 = 0" fill="#1E293B">x²+2x+1=0</text>
+
+<!-- 分数/根号 -->
+<text x="100" y="300" font-size="24" data-latex="\frac{-b \pm \sqrt{b^2-4ac}}{2a}" fill="#1E293B">(-b±√(b²-4ac))/2a</text>
+
+<!-- 化学方程式 -->
+<text x="100" y="400" font-size="24" data-latex="\mathrm{CaCO_3 \rightarrow CaO + CO_2}" fill="#1E293B">CaCO₃→CaO+CO₂</text>
+```
+
+**规则**：
+- `data-latex` 值为 LaTeX 数学语法（不含 `$` 符号）
+- `<text>` 内容为 Unicode 回退文本（渲染失败时显示）
+- 化学元素用 `\mathrm{}` 包裹使其正体
+- 化学箭头用 `\rightarrow`，上下标用 `_` 和 `^`
+- 分数用 `\frac{分子}{分母}`，根号用 `\sqrt{}`
 
 ---
 

@@ -119,7 +119,7 @@ def _f(val: str | None, default: float = 0.0, font_size: float = 16.0) -> float:
         return default
     val = val.strip()
     try:
-        if val.endswith("em"):
+        if val.endswith("em") and not val.endswith("rem"):
             return float(val[:-2]) * font_size
         return float(val.replace("px", "").strip())
     except (ValueError, TypeError):
@@ -935,6 +935,13 @@ def convert_polygon(elem: ET.Element, ctx: ConvertContext) -> str:
 # Text converter — supports <tspan> multi-line → multi-paragraph
 # ---------------------------------------------------------------------------
 
+
+def _collect_tspan_text(ts: ET.Element) -> str:
+    """Collect all text from a tspan, including arbitrarily nested descendants."""
+    # itertext() walks all descendants depth-first, yielding text and tail
+    return "".join(ts.itertext())
+
+
 def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     """Convert SVG <text> with optional <tspan> children to DrawingML text shape."""
     # Collect paragraphs: each tspan with dy>0 starts a new line
@@ -962,7 +969,8 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
         for ts in tspans:
             dy = _f(ts.get("dy"), 0, font_size=raw_fs)
             total_dy += dy
-            ts_text = (ts.text or "").strip()
+            # Collect all text including nested tspan text and tail
+            ts_text = _collect_tspan_text(ts).strip()
             if not ts_text:
                 continue
             ts_weight = ts.get("font-weight", base_weight)
@@ -1031,8 +1039,18 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     else:
         box_x = x_base - padding
 
-    # y in SVG is baseline; move up
-    box_y = y_base - base_fs * 0.85
+    # y in SVG is baseline; move up to get top of text box
+    dominant_baseline = elem.get("dominant-baseline", "auto")
+    is_centered_label = dominant_baseline in ("middle", "central") and text_anchor == "middle"
+    if is_centered_label:
+        # Centered label (e.g., number inside a circle): y is visual center
+        # Make a tight box centered on that point
+        box_y = y_base - box_h / 2
+    elif dominant_baseline in ("middle", "central"):
+        box_y = y_base - base_fs * 0.5
+    else:
+        # Default: SVG y is alphabetic baseline
+        box_y = y_base - base_fs * 0.85
 
     # Alignment
     algn_map = {"start": "l", "middle": "ctr", "end": "r"}
@@ -1049,7 +1067,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
         # Use the dy value from tspans as line spacing (in hundredths of pt)
         avg_dy = base_fs * 1.4  # default
         if tspans and len(tspans) > 1:
-            dy_val = _f(tspans[1].get("dy"), 0)
+            dy_val = _f(tspans[1].get("dy"), 0, font_size=raw_fs)
             if dy_val > 0:
                 avg_dy = dy_val * ctx.scale_y
         spc_pts = int(avg_dy * FONT_PX_TO_HUNDREDTHS_PT)
@@ -1074,6 +1092,9 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     wrap_mode = "square"
 
     shape_id = ctx.next_id()
+    # For centered labels (number in circle), use vertical center anchor
+    v_anchor = "ctr" if is_centered_label else "t"
+
     return (
         f'<p:sp>\n<p:nvSpPr>\n'
         f'<p:cNvPr id="{shape_id}" name="Text {shape_id}"/>\n'
@@ -1083,7 +1104,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
         f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>\n'
         f'<a:noFill/><a:ln><a:noFill/></a:ln>\n</p:spPr>\n'
         f'<p:txBody>\n'
-        f'<a:bodyPr wrap="{wrap_mode}" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t" anchorCtr="0"/>\n'
+        f'<a:bodyPr wrap="{wrap_mode}" lIns="0" tIns="0" rIns="0" bIns="0" anchor="{v_anchor}" anchorCtr="0"/>\n'
         f'<a:lstStyle/>\n'
         f'{"".join(paras_xml)}\n</p:txBody>\n</p:sp>'
     )

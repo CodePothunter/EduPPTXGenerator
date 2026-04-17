@@ -39,7 +39,7 @@ def _simplify_query(query: str) -> str:
         return " ".join(english_parts[:3])  # max 3 keywords
     # Fallback: keep original
     return query
-from edupptx.models import ImageNeed, ImageResult
+from edupptx.models import IMAGE_RATIO_SIZES, ImageNeed, ImageResult
 
 
 @runtime_checkable
@@ -69,7 +69,9 @@ async def fetch_images(needs: list[ImageNeed], config: Config) -> dict[str, Imag
             if gen_provider is None:
                 logger.warning("No AI image provider configured, skipping: {}", need.query)
                 return need.role, None
-            imgs = await gen_provider.generate(need.query)
+            size = IMAGE_RATIO_SIZES.get(need.aspect_ratio, "2848x1600")
+            logger.info("Generating image [{}] ratio={} size={}", need.role, need.aspect_ratio, size)
+            imgs = await gen_provider.generate(need.query, size=size)
             return need.role, imgs[0] if imgs else None
 
         # search — try original query first, then simplified English keywords

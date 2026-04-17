@@ -72,7 +72,9 @@ _SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，
 
 为每页指定需要的素材：
 - `background`: 背景风格名（如 "diagonal_gradient", "subtle_pattern", null）
-- `images`: 需要搜索或 AI 生成的图片 [{"query": "关键词", "source": "search|ai_generate", "role": "hero|illustration|background"}]
+- `images`: 需要搜索或 AI 生成的图片 [{"query": "关键词", "source": "search|ai_generate", "role": "hero|illustration|background", "aspect_ratio": "16:9"}]
+  - `aspect_ratio` 必须从以下预定比例中选择：`1:1`, `4:3`, `3:4`, `16:9`, `9:16`, `3:2`, `2:3`, `21:9`
+  - 根据页面布局选择合适比例：全宽图用 16:9 或 21:9，左右分栏图用 4:3 或 3:4，正方形图用 1:1
 - `icons`: 需要的 Lucide 图标名称列表
 - `chart`: 图表规格（可选）{"type": "line|bar|pie", "data_description": "描述"}
 

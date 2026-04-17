@@ -350,6 +350,24 @@ small_h = (available_h - (n - 1) * 16) / n
 <text x="74" y="320">这行文字在卡片外面！</text>
 ```
 
+### 圆形编号标准写法（高频组件，必须严格遵守）
+
+序号圆（步骤编号、选项 ABCD 等）是最常用的装饰组件。**`<text>` 的 y 必须等于 `<circle>` 的 cy**，不要偏移：
+
+```svg
+<!-- ✅ 正确：text y = circle cy = 200 -->
+<circle cx="100" cy="200" r="18" fill="{primary_color}"/>
+<text x="100" y="200" text-anchor="middle" dominant-baseline="middle"
+      font-size="16" font-weight="bold" fill="white"
+      font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">1</text>
+
+<!-- ❌ 错误：text y=228 偏离 circle cy=200，数字会跑到圆外面 -->
+<circle cx="100" cy="200" r="18" fill="{primary_color}"/>
+<text x="100" y="228" text-anchor="middle" dominant-baseline="middle" ...>1</text>
+```
+
+**规则**：`text x = circle cx`，`text y = circle cy`，加 `text-anchor="middle"` + `dominant-baseline="middle"` 实现水平垂直双居中。
+
 ---
 
 ## 自检清单

@@ -1,0 +1,39 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <!-- 章节分隔页参考模板 -->
+  <defs>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}"/>
+
+  <!-- 装饰元素 -->
+  <circle cx="160" cy="360" r="200" fill="{primary_color}" fill-opacity="0.04"/>
+  <circle cx="1120" cy="360" r="160" fill="{secondary_color}" fill-opacity="0.04"/>
+
+  <!-- 主卡片 -->
+  <rect x="200" y="180" width="880" height="360" rx="16" fill="{card_bg_color}" filter="url(#shadow)"/>
+
+  <!-- 章节标题 -->
+  <text x="640" y="330" text-anchor="middle" font-size="42" font-weight="bold"
+        fill="{heading_color}"
+        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    {title}
+  </text>
+
+  <!-- 副标题 -->
+  <text x="640" y="380" text-anchor="middle" font-size="20"
+        fill="{text_color}" fill-opacity="0.7"
+        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    {subtitle}
+  </text>
+
+  <!-- 装饰线 -->
+  <rect x="560" y="410" width="160" height="3" rx="2" fill="{accent_color}"/>
+
+  <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}"
+        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    {page_number} / {total_pages}
+  </text>
+</svg>

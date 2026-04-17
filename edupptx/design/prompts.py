@@ -7,15 +7,43 @@ import io
 from pathlib import Path
 from typing import Literal
 
+from loguru import logger
+
 from edupptx.models import PagePlan, SlideAssets, VisualPlan
 
 _REFS_DIR = Path(__file__).parent / "references"
+_PAGE_TEMPLATES_DIR = Path(__file__).parent / "page_templates"
+
+# Page types that map to a specific template file
+_PAGE_TYPE_TEMPLATE_MAP = {
+    "cover": "cover.svg",
+    "toc": "toc.svg",
+    "section": "section.svg",
+    "content": "content.svg",
+    "closing": "closing.svg",
+    # Other types (quiz, formula, experiment, etc.) fall back to content.svg
+}
+
+_MAX_TEMPLATE_CHARS = 3000  # Token budget per template
+
+
+def _load_page_template(page_type: str) -> str:
+    """Load the SVG reference template for a page type."""
+    filename = _PAGE_TYPE_TEMPLATE_MAP.get(page_type, "content.svg")
+    path = _PAGE_TEMPLATES_DIR / filename
+    if not path.exists():
+        return ""
+    content = path.read_text(encoding="utf-8")
+    if len(content) > _MAX_TEMPLATE_CHARS:
+        content = content[:_MAX_TEMPLATE_CHARS] + "\n<!-- ... 截断 ... -->\n</svg>"
+    return content
 
 
 def _load_ref(name: str) -> str:
     """Load a reference markdown file."""
     path = _REFS_DIR / name
     if not path.exists():
+        logger.warning("Reference file not found: {} — prompt quality may degrade", path)
         return ""
     return path.read_text(encoding="utf-8")
 
@@ -141,12 +169,15 @@ def build_svg_user_prompt(
         if image_needs:
             lines.append("\n### 图片占位（Debug 模式）")
             lines.append(
-                "以下位置需要插图。请用**虚线矩形 + 居中灰色描述文字**标注图片区域："
+                "以下位置需要插图。请用**虚线矩形 + 居中灰色描述文字**标注图片区域。\n"
+                "**重要**：占位框的宽高比必须使用以下预定比例之一：\n"
+                "1:1, 4:3, 3:4, 16:9, 9:16, 3:2, 2:3, 21:9\n"
             )
             for img in image_needs:
-                lines.append(f"- {img.role}: {img.query}")
+                ratio = img.aspect_ratio
+                lines.append(f"- {img.role} (比例 {ratio}): {img.query}")
             lines.append(
-                "\n占位示例：\n"
+                "\n占位示例（注意宽高比必须匹配预定比例）：\n"
                 "```svg\n"
                 '<rect x="50" y="120" width="300" height="200" rx="8" '
                 'fill="#F1F5F9" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="6,4"/>\n'
@@ -159,30 +190,57 @@ def build_svg_user_prompt(
     else:
         # Normal mode: use __IMAGE__ placeholders for post-processing injection
         image_lines: list[str] = []
+        # Build role→ratio mapping from page's image needs
+        role_ratios: dict[str, str] = {}
+        if page.material_needs.images:
+            for img in page.material_needs.images:
+                role_ratios[img.role.upper()] = img.aspect_ratio
         for role, path in assets.image_paths.items():
-            image_lines.append(f'- **{role}** 图片可用，请用 `<image href="__IMAGE_{role.upper()}__" .../>` 作为占位')
+            ratio = role_ratios.get(role.upper(), "16:9")
+            image_lines.append(
+                f'- **{role}** (比例 {ratio}) 图片可用，'
+                f'请用 `<image href="__IMAGE_{role.upper()}__" .../>` 作为占位'
+            )
         if image_lines:
             lines.append("\n### 可用图片资源")
             lines.extend(image_lines)
             lines.append(
                 "\n**必须** 在合适位置放置 `<image>` 元素。"
                 ' 使用 `href="__IMAGE_HERO__"` 或 `href="__IMAGE_ILLUSTRATION__"` 等占位符。'
-                " 系统会自动替换为真实图片。给 image 设置合理的 x, y, width, height 属性。"
+                " 系统会自动替换为真实图片。`<image>` 的宽高比**必须匹配**上面标注的比例。"
             )
 
     # 可用图标
     if assets.icon_svgs:
         icon_names = ", ".join(assets.icon_svgs.keys())
-        lines.append(f"\n### 可用图标\n{icon_names}")
-        lines.append("将图标 SVG 内容直接嵌入为 <g> 元素，适当缩放。")
+        lines.append(f"\n### 可用图标\n可用图标名: {icon_names}")
+        lines.append(
+            "使用占位符语法嵌入图标（系统自动替换为实际图标 SVG）：\n"
+            "```svg\n"
+            '<use data-icon="图标名" x="100" y="200" width="48" height="48" fill="{primary_color}"/>\n'
+            "```\n"
+            "`data-icon` 的值必须是上面列出的图标名之一。"
+            "设置合理的 x, y, width, height 属性控制位置和大小。"
+        )
     elif page.material_needs.icons:
         # Debug mode: icons not fetched, but hint the LLM to use SVG decorations
         lines.append("\n### 装饰元素提示")
         lines.append(
             "本页建议使用以下视觉元素（请用 SVG 图形替代，不要用 emoji）：\n"
             f"图标关键词: {', '.join(page.material_needs.icons)}\n"
-            "实现方式：用简单 SVG 图形（圆形+符号、色块+文字）作为装饰，"
-            "例如用主色圆形 `<circle>` 内放白色序号文字，或用辅色矩形做标签。"
+            "实现方式：用主色圆形 `<circle>` 内放白色数字序号（1, 2, 3...），"
+            "或用辅色矩形做标签。不要使用 Unicode 特殊符号（如 ▭、◆、▶ 等），"
+            "这些符号跨平台渲染不一致。"
+        )
+
+    # 页面 SVG 参考模板（LLM 照着画，不是填充模板）
+    template_svg = _load_page_template(page.page_type)
+    if template_svg:
+        lines.append(
+            "\n### 参考模板\n"
+            "以下是此类页面的 SVG 参考模板。请**参照其布局结构和视觉风格**生成新的 SVG，"
+            "**不要复制粘贴模板内容**。用实际内容替换占位文字，根据本页要点调整布局。\n"
+            f"```svg\n{template_svg}\n```"
         )
 
     # 页面类型特殊说明
@@ -235,9 +293,12 @@ def build_svg_user_prompt(
         "formula": (
             "这是公式推导页。设计要求：\n"
             "1. 步骤卡片纵向排列，用箭头（<polygon>）连接\n"
-            "2. 每步有序号圆 + 公式（等宽字体） + 文字说明\n"
+            "2. 每步有序号圆 + 公式 + 文字说明\n"
             "3. 最后一步（结论）用强调色卡片高亮\n"
-            "4. 参考 page-types.md 中 formula 类型的布局定义"
+            "4. 参考 page-types.md 中 formula 类型的布局定义\n"
+            '5. **公式必须使用 data-latex 属性标记**，例如：\n'
+            '   `<text data-latex="\\frac{a}{b}" fill="#1E293B">a/b</text>`\n'
+            "   系统会自动将 LaTeX 渲染为高质量图片"
         ),
         "experiment": (
             "这是实验步骤页。设计要求：\n"

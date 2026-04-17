@@ -23,6 +23,8 @@ def sanitize_for_ppt(svg_content: str) -> str:
     _remove_scripts(root)
     _remove_event_handlers(root)
     _replace_emoji(root)
+    _flatten_nested_tspans(root)
+    _snap_circle_labels(root)
     _ensure_svg_namespace(root)
     _remove_width_height(root)
     _strip_comments(root)
@@ -47,6 +49,82 @@ def _replace_emoji(root: etree._Element) -> None:
             el.text = _EMOJI_RE.sub("", el.text).strip()
         if el.tail and _EMOJI_RE.search(el.tail):
             el.tail = _EMOJI_RE.sub("", el.tail).strip()
+
+
+def _snap_circle_labels(root: etree._Element) -> None:
+    """Snap centered label text y to its parent circle cy.
+
+    LLM often places text y ~30px below circle cy, relying on
+    dominant-baseline="middle" for visual alignment. This breaks in PPT.
+    Fix: find circle+text pairs and set text y = circle cy.
+    """
+    # Collect circles: (cx, cy, r)
+    circles = []
+    for c in root.iter(f"{{{SVG_NS}}}circle"):
+        try:
+            cx = float(c.get("cx", "0"))
+            cy = float(c.get("cy", "0"))
+            r = float(c.get("r", "0"))
+            if 0 < r < 50:  # Small decorative circles only
+                circles.append((cx, cy, r))
+        except (ValueError, TypeError):
+            pass
+
+    if not circles:
+        return
+
+    # Find centered label texts and snap to nearest circle
+    for t in root.iter(f"{{{SVG_NS}}}text"):
+        if t.get("text-anchor") != "middle":
+            continue
+        text_content = "".join(t.itertext()).strip()
+        if not text_content or len(text_content) > 3:
+            continue  # Only short labels (1, 2, A, B, etc.)
+
+        try:
+            tx = float(t.get("x", "0"))
+            ty = float(t.get("y", "0"))
+        except (ValueError, TypeError):
+            continue
+
+        # Find matching circle: same x (within tolerance), closest y
+        best_circle = None
+        best_dist = float("inf")
+        for cx, cy, r in circles:
+            if abs(cx - tx) > 25:  # x within 25px (covers slight offsets)
+                continue
+            dist = abs(cy - ty)
+            if dist < best_dist and dist < r * 3:  # Within reasonable range
+                best_dist = dist
+                best_circle = (cx, cy, r)
+
+        if best_circle and best_dist > 2:  # Only fix if meaningfully off
+            _, cy, _ = best_circle
+            t.set("y", str(cy))
+            # Also ensure dominant-baseline is set for PPT converter
+            if not t.get("dominant-baseline"):
+                t.set("dominant-baseline", "middle")
+
+
+def _flatten_nested_tspans(root: etree._Element) -> None:
+    """Flatten nested <tspan> elements into single-level tspan.
+
+    LLM sometimes generates: <tspan><tspan fill="green">●</tspan> text</tspan>
+    PPT converter can't handle nested tspan, so flatten to: <tspan>● text</tspan>
+    Uses itertext() to collect ALL descendant text regardless of nesting depth.
+    """
+    for tspan in list(root.iter(f"{{{SVG_NS}}}tspan")):
+        children = list(tspan)
+        if not children:
+            continue
+        nested = [c for c in children if etree.QName(c.tag).localname == "tspan"]
+        if not nested:
+            continue
+        # itertext() walks all descendants depth-first, collecting text + tail
+        full_text = "".join(tspan.itertext())
+        for child in list(children):
+            tspan.remove(child)
+        tspan.text = full_text
 
 
 def _remove_scripts(root: etree._Element) -> None:
