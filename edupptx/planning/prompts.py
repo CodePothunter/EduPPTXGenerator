@@ -63,6 +63,9 @@ _SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，
 
 为每页选择最合适的卡片布局：
 - `center_hero`: 居中大焦点 — 封面、定义、核心公式
+  - 默认 `material_needs.images = []`
+  - 背景图不计入 `material_needs.images`
+  - 除非用户明确要求该页放前景插图 / 人物图 / 主视觉前景图 / 角色形象，否则不要为 `center_hero` 规划任何 `hero` 或 `illustration`
 - `vertical_list`: 纵向列表 — 目录、步骤序列
 - `bento_2col_equal`: 两等分 — 概念对比、优缺点
 - `bento_2col_asymmetric`: 非对称两栏 (2:1) — 主内容 + 补充
@@ -158,17 +161,17 @@ material_needs.icons 必须从以下列表中选择（Lucide 图标集）：
 - 如果 `design_notes` 或 `layout_hint` 明确出现左右分栏、上下双图、三列并排、多步骤配图等多个独立图片区，`material_needs.images` 的数量必须与图片区数量一致
 - 多张配图可以连续使用相同 `role`（如两个 `illustration`）；数组顺序要与版面顺序一致，默认按从左到右、从上到下排列
 - 当需要风格统一的多张图时，应分别写多条 query，并在每条 query 中重复“同风格/同色调/卡通科普插画”等风格要求，而不是写成一条“对比合成图”
-- 对于 `bento_2col_equal`、`bento_2col_asymmetric`、`bento_3col`，当大卡片内容存在清晰的“总—分”关系，且可自然拆解为 2–3 个同级子点时，可在 `design_notes` 中指定使用内部子卡片模式（`stacked_subcards`）
-- 内部子卡片不是默认元素；若内容较短、非并列、或以图片/图表/时间线/表格/公式为主，则不要使用
+- 对于 `bento_2col_equal`、`bento_2col_asymmetric`、`bento_3col`，当大卡片内容存在清晰的“总—分”或者“并列”关系，且可自然拆解为 2–4 个同级子点时，可在 `design_notes` 中指定使用内部子卡片模式（`stacked_subcards`）
 - 如果大卡片计划放图片/插画/照片，则该大卡片禁止再使用 `stacked_subcards`；图片区与内部子卡片二选一，不能同时出现在同一个大卡片中
-- 若使用内部子卡片，必须说明：子卡片仅可上下堆叠、位于大卡片标题之后、从标题文本框底部向下留白 24px 后开始布局、数量为 2 或 3、用于承载“短标题 + 1–2 行说明”的子点
+- 若使用内部子卡片，必须说明：子卡片仅可上下堆叠、位于大卡片标题之后、从标题文本框底部向下留白 24px 后开始布局、数量为 2 或 3 或 4、用于承载“短标题 + 1–2 行说明”的子点
 - 若使用内部子卡片，同一大卡片内所有子卡片必须等宽等高；左右沿用大卡片的 24px 内边距，子卡片之间垂直间距固定为 16px，高度由标题文本框下缘到大卡片底部内边距之间的剩余空间均分
 - `design_notes` 应明确写出：哪一张大卡片需要内部子卡片，以及子卡片承载的子点类型
-- 对于 `cover` 页面：
+- 对于 `center_hero` 布局页面：
   - 默认 `material_needs.images = []`
-  - 封面背景图不计入 `material_needs.images`
-  - 除非用户明确要求“封面插图 / 人物图 / 主视觉前景图 / 角色形象”，否则不要为 cover 规划任何 `hero` 或 `illustration`
-  - 如果用户要求“封面不要除了背景图之外的图片”，则 `material_needs.images` 必须为空数组，`design_notes` 只能描述“背景图 + 标题/主卡/装饰图形”，不得描述前景插图
+  - 背景图不计入 `material_needs.images`
+  - 除非用户明确要求该页放前景插图 / 人物图 / 主视觉前景图 / 角色形象，否则不要为该页规划任何 `hero` 或 `illustration`
+  - 如果用户要求“不要除了背景图之外的图片”，则 `material_needs.images` 必须为空数组，`design_notes` 只能描述“背景图 + 标题/主卡/装饰图形”，不得描述前景插图
+- 对于 `cover` 页面：
   - cover页的中心card的透明度可以适度降低
 """
 

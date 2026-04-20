@@ -292,7 +292,7 @@ def build_svg_user_prompt(
             #"4. 如有图片占位，放在标题上方或侧面，尺寸不小于 300x200\n"
             "4. 用装饰圆形、渐变色块填充空白区域，体现主题氛围\n"
             "5. 页面不能有大面积空白——标题区上下都要有视觉元素"
-             "6. 默认 `material_needs.images = []"
+            "6. 默认 `layout_hint = center_hero` 时 `material_needs.images = []`；若该字段为空，不要自行新增任何前景 `<image>`"
         ),
         "toc": (
             "这是目录页。设计要求：\n"

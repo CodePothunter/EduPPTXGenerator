@@ -2,6 +2,12 @@
 
 `material_needs.images` 是数组，不是字典，也不是去重集合。允许出现多条 `role: "illustration"`。
 
+## 0. center_hero 默认无前景图
+
+- 对于 `layout_hint = "center_hero"` 的页面，默认 `material_needs.images = []`。
+- `center_hero` 页面如果有背景图，背景图不计入 `material_needs.images`。
+- 只有当用户明确要求该页放前景插图 / 人物图 / 主视觉前景图 / 角色形象时，才允许为 `center_hero` 页面规划 `hero` 或 `illustration`。
+
 ## 1. 按图片区数量列图
 
 - 如果版面中有 2 个独立图片区，就必须输出 2 条 `images`。
