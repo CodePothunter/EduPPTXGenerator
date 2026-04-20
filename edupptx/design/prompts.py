@@ -244,9 +244,11 @@ def build_svg_user_prompt(
             lines.append(
                 "\n**必须** 在合适位置放置 `<image>` 元素。"
                 ' 使用 `href="__IMAGE_HERO__"` 或 `href="__IMAGE_ILLUSTRATION__"` 等占位符。'
-                " 系统会自动替换为真实图片。`<image>` 的宽高比**必须匹配**上面标注的比例。"
+                " 系统会自动替换为真实图片。`<image>` 的宽高比**必须严格匹配**上面标注的比例。"
+                " 先按规划比例确定图片框，再填写 `x/y/width/height`；不要先随意画框，再拿图片去凑。"
+                " 如果规划比例是 `1:1`，图片框就必须满足 `width = height`；如果是 `4:3`，就必须满足 `width / height ≈ 1.333`；如果是 `16:9`，就必须满足 `width / height ≈ 1.778`。"
+                ' 每个真实图片元素默认写成 `<image ... preserveAspectRatio="xMidYMid slice"/>`，不要省略。'
             )
-
     # 可用图标
     if assets.icon_svgs:
         icon_names = ", ".join(assets.icon_svgs.keys())
@@ -287,9 +289,10 @@ def build_svg_user_prompt(
             "1. 使用 center_hero 布局：一张大卡片（w≥900, h≥350）居中\n"
             "2. 主标题 font-size=56-72，加粗，居中\n"
             "3. 副标题在主标题下方 40px，font-size=20-24\n"
-            "4. 如有图片占位，放在标题上方或侧面，尺寸不小于 300x200\n"
-            "5. 用装饰圆形、渐变色块填充空白区域，体现主题氛围\n"
-            "6. 页面不能有大面积空白——标题区上下都要有视觉元素"
+            #"4. 如有图片占位，放在标题上方或侧面，尺寸不小于 300x200\n"
+            "4. 用装饰圆形、渐变色块填充空白区域，体现主题氛围\n"
+            "5. 页面不能有大面积空白——标题区上下都要有视觉元素"
+             "6. 默认 `material_needs.images = []"
         ),
         "toc": (
             "这是目录页。设计要求：\n"

@@ -481,20 +481,269 @@ def _get_text_bottom_y(text_el: etree._Element) -> float:
     return curr_y + fs  # Add font-size for text descent
 
 
+def _rect_box(rect: etree._Element) -> tuple[float, float, float, float] | None:
+    try:
+        x = float(rect.get("x", "0"))
+        y = float(rect.get("y", "0"))
+        width = float(rect.get("width", "0"))
+        height = float(rect.get("height", "0"))
+    except (ValueError, TypeError):
+        return None
+    return x, y, width, height
+
+
+def _is_meaningful_card_rect(rect: etree._Element) -> bool:
+    box = _rect_box(rect)
+    if box is None:
+        return False
+    _, y, width, height = box
+    if width < 100 or height < 50:
+        return False
+    if height <= 8 and y <= 2:
+        return False
+    return True
+
+
+def _is_real_element(el: etree._Element) -> bool:
+    return isinstance(getattr(el, "tag", None), str)
+
+
+def _element_in_defs(el: etree._Element) -> bool:
+    if not _is_real_element(el):
+        return False
+    defs_tag = f"{{{SVG_NS}}}defs"
+    return any(_is_real_element(ancestor) and ancestor.tag == defs_tag for ancestor in el.iterancestors())
+
+
+def _collect_card_rects(root: etree._Element) -> list[etree._Element]:
+    rects = [
+        rect
+        for rect in root.iter(f"{{{SVG_NS}}}rect")
+        if not _element_in_defs(rect) and _is_meaningful_card_rect(rect)
+    ]
+    if len(rects) < 2:
+        return rects
+
+    boxes = {id(rect): _rect_box(rect) for rect in rects}
+    cards: list[etree._Element] = []
+    for rect in rects:
+        box = boxes[id(rect)]
+        if box is None:
+            continue
+        x, y, width, height = box
+        right = x + width
+        bottom = y + height
+        nested = False
+        for other in rects:
+            if other is rect:
+                continue
+            other_box = boxes[id(other)]
+            if other_box is None:
+                continue
+            ox, oy, ow, oh = other_box
+            other_right = ox + ow
+            other_bottom = oy + oh
+            if ow * oh <= width * height:
+                continue
+            inset = 12
+            if (
+                x >= ox + inset
+                and y >= oy + inset
+                and right <= other_right - inset
+                and bottom <= other_bottom - inset
+            ):
+                nested = True
+                break
+        if not nested:
+            cards.append(rect)
+    return cards
+
+
+def _horizontal_overlap(box_a: tuple[float, float, float, float], box_b: tuple[float, float, float, float]) -> float:
+    ax, _, aw, _ = box_a
+    bx, _, bw, _ = box_b
+    return min(ax + aw, bx + bw) - max(ax, bx)
+
+
+def _element_anchor(el: etree._Element) -> tuple[float, float] | None:
+    if not _is_real_element(el):
+        return None
+    tag_name = etree.QName(el.tag).localname
+
+    if tag_name in {"text", "rect", "image", "use"}:
+        try:
+            return float(el.get("x", "0")), float(el.get("y", "0"))
+        except (ValueError, TypeError):
+            return None
+
+    if tag_name in {"circle", "ellipse"}:
+        try:
+            return float(el.get("cx", "0")), float(el.get("cy", "0"))
+        except (ValueError, TypeError):
+            return None
+
+    if tag_name == "line":
+        try:
+            return float(el.get("x1", "0")), float(el.get("y1", "0"))
+        except (ValueError, TypeError):
+            return None
+
+    if tag_name == "g":
+        transform = el.get("transform", "")
+        m = re.search(r"translate\(\s*([-\d.]+)(?:[\s,]+([-\d.]+))?\s*\)", transform)
+        if m:
+            try:
+                tx = float(m.group(1))
+                ty = float(m.group(2) or "0")
+                return tx, ty
+            except (ValueError, TypeError):
+                return None
+        for child in el:
+            anchor = _element_anchor(child)
+            if anchor is not None:
+                return anchor
+    return None
+
+
+def _shift_numeric_attr(el: etree._Element, attr: str, dy: float) -> bool:
+    val = el.get(attr)
+    if val is None:
+        return False
+    try:
+        new_val = float(val) + dy
+    except (ValueError, TypeError):
+        return False
+    el.set(attr, str(int(new_val) if new_val.is_integer() else new_val))
+    return True
+
+
+def _shift_transform_translate(el: etree._Element, dy: float) -> bool:
+    transform = el.get("transform")
+    if not transform or "translate" not in transform:
+        return False
+
+    def _replace(match: re.Match[str]) -> str:
+        tx = float(match.group(1))
+        ty = float(match.group(2) or "0") + dy
+        tx_str = str(int(tx) if tx.is_integer() else tx)
+        ty_str = str(int(ty) if ty.is_integer() else ty)
+        return f"translate({tx_str},{ty_str})"
+
+    new_transform, count = re.subn(
+        r"translate\(\s*([-\d.]+)(?:[\s,]+([-\d.]+))?\s*\)",
+        _replace,
+        transform,
+        count=1,
+    )
+    if count:
+        el.set("transform", new_transform)
+        return True
+    return False
+
+
+def _shift_element_vertically(
+    root: etree._Element,
+    el: etree._Element,
+    dy: float,
+    shifted_ids: set[int] | None = None,
+) -> None:
+    if not _is_real_element(el):
+        return
+    if shifted_ids is not None and id(el) in shifted_ids:
+        return
+
+    tag_name = etree.QName(el.tag).localname
+    shifted = False
+
+    if tag_name in {"text", "rect", "image", "use"}:
+        shifted = _shift_numeric_attr(el, "y", dy)
+    elif tag_name in {"circle", "ellipse"}:
+        shifted = _shift_numeric_attr(el, "cy", dy)
+    elif tag_name == "line":
+        shifted = _shift_numeric_attr(el, "y1", dy) | _shift_numeric_attr(el, "y2", dy)
+    elif tag_name == "g":
+        shifted = _shift_transform_translate(el, dy)
+        if not shifted:
+            for child in el:
+                _shift_element_vertically(root, child, dy, shifted_ids)
+
+    if tag_name == "image":
+        clip_path = el.get("clip-path", "")
+        m = re.fullmatch(r"url\(#([^)]+)\)", clip_path.strip())
+        if m:
+            clip_id = m.group(1)
+            clip_path_el = root.find(f".//{{{SVG_NS}}}clipPath[@id='{clip_id}']")
+            if clip_path_el is not None:
+                for child in clip_path_el:
+                    _shift_element_vertically(root, child, dy, shifted_ids)
+
+    if shifted_ids is not None:
+        shifted_ids.add(id(el))
+
+
+def _element_belongs_to_card(
+    el: etree._Element,
+    card_box: tuple[float, float, float, float],
+) -> bool:
+    anchor = _element_anchor(el)
+    if anchor is None:
+        return False
+    x, y = anchor
+    card_x, card_y, card_w, card_h = card_box
+    return (
+        card_x - 16 <= x <= card_x + card_w + 16
+        and card_y - 16 <= y <= card_y + card_h + 24
+    )
+
+
+def _shift_following_cards(
+    root: etree._Element,
+    source_rect: etree._Element,
+    source_box: tuple[float, float, float, float],
+    original_bottom: float,
+    dy: float,
+) -> int:
+    shifted_ids: set[int] = {id(source_rect)}
+    shifted_cards = 0
+
+    candidates: list[tuple[float, etree._Element, tuple[float, float, float, float]]] = []
+    for rect in _collect_card_rects(root):
+        if rect is source_rect:
+            continue
+        rect_box = _rect_box(rect)
+        if rect_box is None:
+            continue
+        _, rect_y, _, _ = rect_box
+        if rect_y + 1 < original_bottom:
+            continue
+        if _horizontal_overlap(source_box, rect_box) < 24:
+            continue
+        candidates.append((rect_y, rect, rect_box))
+
+    candidates.sort(key=lambda item: item[0])
+
+    for _, rect, rect_box in candidates:
+        _shift_element_vertically(root, rect, dy, shifted_ids)
+        shifted_cards += 1
+
+        for el in root.iter():
+            if not _is_real_element(el) or el is root or _element_in_defs(el) or id(el) in shifted_ids:
+                continue
+            if _element_belongs_to_card(el, rect_box):
+                _shift_element_vertically(root, el, dy, shifted_ids)
+
+    return shifted_cards
+
+
 def _find_parent_card(root: etree._Element, tx: float, ty: float) -> etree._Element | None:
-    """Find the best-matching card rect for a text element by reading live DOM."""
+    """Find the best-matching outer card rect for a text element by reading live DOM."""
     best_rect = None
     best_gap = float("inf")
-    for rect in root.iter(f"{{{SVG_NS}}}rect"):
-        try:
-            rx = float(rect.get("x", "0"))
-            ry = float(rect.get("y", "0"))
-            rw = float(rect.get("width", "0"))
-            rh = float(rect.get("height", "0"))
-        except (ValueError, TypeError):
+    for rect in _collect_card_rects(root):
+        box = _rect_box(rect)
+        if box is None:
             continue
-        if rw < 100 or rh < 50:
-            continue
+        rx, ry, rw, rh = box
         card_bottom = ry + rh
         if rx - 10 <= tx <= rx + rw + 10 and ry <= ty <= card_bottom + 20:
             gap = card_bottom - ty
@@ -532,6 +781,51 @@ def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
                 f"Expanded card height {int(rh)}→{int(new_h)} "
                 f"(text bottom {text_bottom:.0f} overflowed card bottom {card_bottom:.0f})"
             )
+
+
+
+def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
+    """Fix text that overflows its parent card rect boundary."""
+    for text_el in root.iter(f"{{{SVG_NS}}}text"):
+        try:
+            tx = float(text_el.get("x", "0"))
+            ty = float(text_el.get("y", "0"))
+        except (ValueError, TypeError):
+            continue
+
+        text_bottom = _get_text_bottom_y(text_el)
+
+        # Read the parent card from the live DOM so reflowed positions are visible.
+        card_rect = _find_parent_card(root, tx, ty)
+        if card_rect is None:
+            continue
+
+        box = _rect_box(card_rect)
+        if box is None:
+            continue
+
+        _, ry, _, rh = box
+        card_bottom = ry + rh
+        overflow = text_bottom - card_bottom
+
+        if overflow > 2:
+            new_h = text_bottom - ry + 4
+            delta = new_h - rh
+            card_rect.set("height", str(int(new_h)))
+
+            shifted_cards = 0
+            if delta > 0:
+                card_box = _rect_box(card_rect)
+                if card_box is not None:
+                    shifted_cards = _shift_following_cards(root, card_rect, card_box, card_bottom, delta)
+
+            warning = (
+                f"Expanded card height {int(rh)}->{int(new_h)} "
+                f"(text bottom {text_bottom:.0f} overflowed card bottom {card_bottom:.0f})"
+            )
+            if shifted_cards:
+                warning += f"; shifted {shifted_cards} following cards by {int(delta)}"
+            warnings.append(warning)
 
 
 def _check_image_hrefs(root: etree._Element, warnings: list[str]) -> None:

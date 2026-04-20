@@ -954,6 +954,36 @@ def _collect_tspan_text(ts: ET.Element) -> str:
     return "".join(ts.itertext())
 
 
+def _append_text_run(
+    line: list[dict],
+    text: str | None,
+    *,
+    bold: bool,
+    size: float,
+    color: str,
+) -> None:
+    """Append a non-empty text run while preserving mixed inline content order."""
+    if text is None:
+        return
+    if not text.strip():
+        return
+    run = {
+        "text": text,
+        "bold": bold,
+        "size": size,
+        "color": color,
+    }
+    if (
+        line
+        and line[-1]["bold"] == run["bold"]
+        and line[-1]["size"] == run["size"]
+        and line[-1]["color"] == run["color"]
+    ):
+        line[-1]["text"] += text
+    else:
+        line.append(run)
+
+
 def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     """Convert SVG <text> with optional <tspan> children to DrawingML text shape."""
     # Collect paragraphs: each tspan with dy>0 starts a new line
@@ -967,38 +997,48 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     fonts = parse_font_family(font_family_str)
     x_base = ctx_x(_f(elem.get("x")), ctx)
     y_base = ctx_y(_f(elem.get("y")), ctx)
-    tspans = list(elem.iter(f"{{{SVG_NS}}}tspan"))
-    if not tspans:
-        # Also check non-namespaced tspans
-        tspans = list(elem.iter("tspan"))
+    tspans = [
+        child for child in list(elem)
+        if child.tag in (f"{{{SVG_NS}}}tspan", "tspan")
+    ]
 
     if tspans:
-        # Multi-line via tspan
+        # Mixed inline text via tspan. Preserve parent text + child tail so
+        # runs like `前文<tspan fill="...">关键词</tspan>后文` don't lose text.
         current_line: list[dict] = []
         total_dy = 0.0
         # base_fs is already scaled; use unscaled for em conversion
         raw_fs = _f(elem.get("font-size"), 16)
+        _append_text_run(
+            current_line,
+            elem.text,
+            bold=base_weight in ("bold", "600", "700", "800", "900"),
+            size=base_fs,
+            color=base_color,
+        )
         for ts in tspans:
             dy = _f(ts.get("dy"), 0, font_size=raw_fs)
             total_dy += dy
-            # Collect all text including nested tspan text and tail
-            ts_text = _collect_tspan_text(ts).strip()
-            if not ts_text:
-                continue
             ts_weight = ts.get("font-weight", base_weight)
             ts_size = _f(ts.get("font-size"), base_fs / ctx.scale_y) * ctx.scale_y
             ts_color = parse_hex_color(ts.get("fill") or elem.get("fill", "#000000")) or base_color
-            run = {
-                "text": ts_text,
-                "bold": ts_weight in ("bold", "600", "700", "800", "900"),
-                "size": ts_size,
-                "color": ts_color,
-            }
             if dy > 0 and current_line:
                 paragraphs.append(current_line)
-                current_line = [run]
-            else:
-                current_line.append(run)
+                current_line = []
+            _append_text_run(
+                current_line,
+                _collect_tspan_text(ts),
+                bold=ts_weight in ("bold", "600", "700", "800", "900"),
+                size=ts_size,
+                color=ts_color,
+            )
+            _append_text_run(
+                current_line,
+                ts.tail,
+                bold=base_weight in ("bold", "600", "700", "800", "900"),
+                size=base_fs,
+                color=base_color,
+            )
         if current_line:
             paragraphs.append(current_line)
     else:
