@@ -17,6 +17,8 @@ EXPECTED_VIEWBOX = "0 0 1280 720"
 MAX_X = 1280
 MAX_Y = 720
 CARD_OVERFLOW_TOLERANCE = 6
+SHALLOW_CARD_OVERFLOW_TOLERANCE = 12
+CONTENT_BOTTOM_LIMIT = 680
 TEXT_COLUMN_TOLERANCE = 60
 
 SAFE_FONTS = {"Noto Sans SC", "微软雅黑", "Microsoft YaHei", "Arial", "Helvetica", "sans-serif"}
@@ -79,7 +81,7 @@ def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[st
     if _uses_timeline_layout(page):
         _normalize_timeline_layout(root, page, warnings)
     _check_image_hrefs(root, warnings)
-    _warn_layout_issues(root, warnings)
+    _warn_layout_issues(root, warnings, page)
 
     fixed = etree.tostring(root, encoding="unicode", xml_declaration=False)
     return fixed, warnings
@@ -506,7 +508,7 @@ def _get_text_bottom_y(text_el: etree._Element) -> float:
             curr_y += dy_val
         except (ValueError, TypeError):
             pass
-    return curr_y + fs  # Add font-size for text descent
+    return curr_y + fs * 0.82  # Approximate baseline-to-bottom for PPT-like text metrics
 
 
 def _rect_box(rect: etree._Element) -> tuple[float, float, float, float] | None:
@@ -591,6 +593,40 @@ def _horizontal_overlap(box_a: tuple[float, float, float, float], box_b: tuple[f
     ax, _, aw, _ = box_a
     bx, _, bw, _ = box_b
     return min(ax + aw, bx + bw) - max(ax, bx)
+
+
+def _is_shallow_footer_like_card(box: tuple[float, float, float, float]) -> bool:
+    x, y, width, height = box
+    if height > 110:
+        return False
+    if width < 500:
+        return False
+    if height <= 0 or width / height < 4.0:
+        return False
+    return y + height >= 560
+
+
+def _shift_text_up_within_card(
+    root: etree._Element,
+    text_el: etree._Element,
+    box: tuple[float, float, float, float],
+    overflow: float,
+) -> float:
+    try:
+        ty = float(text_el.get("y", "0"))
+    except (ValueError, TypeError):
+        return 0.0
+
+    _, ry, _, _ = box
+    target_top = ry + 18
+    available_shift = max(0.0, ty - target_top)
+    desired_shift = max(0.0, overflow + 4.0)
+    applied_shift = min(available_shift, desired_shift)
+    if applied_shift <= 0:
+        return 0.0
+
+    _shift_element_vertically(root, text_el, -applied_shift)
+    return applied_shift
 
 
 def _element_anchor(el: etree._Element) -> tuple[float, float] | None:
@@ -1217,11 +1253,38 @@ def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
         _, ry, _, rh = box
         card_bottom = ry + rh
         overflow = text_bottom - card_bottom
+        overflow_tolerance = (
+            SHALLOW_CARD_OVERFLOW_TOLERANCE
+            if _is_shallow_footer_like_card(box)
+            else CARD_OVERFLOW_TOLERANCE
+        )
 
-        if overflow > CARD_OVERFLOW_TOLERANCE:
-            new_h = text_bottom - ry + 4
-            delta = new_h - rh
-            card_rect.set("height", str(int(new_h)))
+        if overflow > overflow_tolerance:
+            if _is_shallow_footer_like_card(box):
+                shifted_up = _shift_text_up_within_card(root, text_el, box, overflow)
+                if shifted_up > 0:
+                    text_bottom = _get_text_bottom_y(text_el)
+                    overflow = text_bottom - card_bottom
+                    warnings.append(
+                        f"Shifted footer-card text upward by {int(round(shifted_up))} "
+                        f"to avoid expanding shallow card at y={ry:.0f}"
+                    )
+                    if overflow <= overflow_tolerance:
+                        continue
+
+            target_h = text_bottom - ry + 4
+            max_h = CONTENT_BOTTOM_LIMIT - ry
+            new_h = min(target_h, max_h) if _is_shallow_footer_like_card(box) else target_h
+            rounded_new_h = float(int(new_h))
+            delta = max(0.0, rounded_new_h - rh)
+            if delta <= 0:
+                warnings.append(
+                    f"Detected footer-card text overflow {overflow:.0f}px near page bottom, "
+                    f"but skipped card expansion to keep bottom within y={CONTENT_BOTTOM_LIMIT}"
+                )
+                continue
+
+            card_rect.set("height", str(int(rounded_new_h)))
 
             shifted_cards = 0
             if delta > 0:
@@ -1230,7 +1293,7 @@ def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
                     shifted_cards = _shift_following_cards(root, card_rect, card_box, card_bottom, delta)
 
             warning = (
-                f"Expanded card height {int(rh)}->{int(new_h)} "
+                f"Expanded card height {int(rh)}->{int(rounded_new_h)} "
                 f"(text bottom {text_bottom:.0f} overflowed card bottom {card_bottom:.0f})"
             )
             if shifted_cards:
@@ -1246,7 +1309,11 @@ def _check_image_hrefs(root: etree._Element, warnings: list[str]) -> None:
             warnings.append("Found <image> with empty href")
 
 
-def _warn_layout_issues(root: etree._Element, warnings: list[str]) -> None:
+def _warn_layout_issues(
+    root: etree._Element,
+    warnings: list[str],
+    page: PagePlan | None = None,
+) -> None:
     """Detect layout issues and emit warnings for LLM reviewer to fix.
 
     Does NOT auto-fix — only reports problems so the review LLM can
@@ -1278,26 +1345,27 @@ def _warn_layout_issues(root: etree._Element, warnings: list[str]) -> None:
             )
 
     # 1. Page title position check
-    # First bold large text should be near y=50
-    for t in texts:
-        fs_str = t.get("font-size", "16")
-        try:
-            fs = float(fs_str.replace("px", ""))
-        except (ValueError, TypeError):
-            continue
-        weight = t.get("font-weight", "")
-        if fs >= 28 and weight in ("bold", "700", "800", "900"):
-            y_str = t.get("y", "0")
+    # First bold large text should be near y=50, except divider-like section pages.
+    if page is None or page.page_type != "section":
+        for t in texts:
+            fs_str = t.get("font-size", "16")
             try:
-                y = float(y_str)
+                fs = float(fs_str.replace("px", ""))
             except (ValueError, TypeError):
                 continue
-            if y > 100:
-                warnings.append(
-                    f"页面标题位置异常：y={y:.0f}（应在 y=50 附近）。"
-                    f"标题可能被卡片遮挡或布局错乱，建议移到 y=50"
-                )
-            break  # Only check first title
+            weight = t.get("font-weight", "")
+            if fs >= 28 and weight in ("bold", "700", "800", "900"):
+                y_str = t.get("y", "0")
+                try:
+                    y = float(y_str)
+                except (ValueError, TypeError):
+                    continue
+                if y > 100:
+                    warnings.append(
+                        f"页面标题位置异常：y={y:.0f}（应在 y=50 附近）。"
+                        f"标题可能被卡片遮挡或布局错乱，建议移到 y=50"
+                    )
+                break  # Only check first title
 
     # 2. Circle-label alignment check
     circles = []

@@ -15,13 +15,15 @@ _REFS_DIR = Path(__file__).parent / "references"
 _PAGE_TEMPLATES_DIR = Path(__file__).parent / "page_templates"
 _CHART_TEMPLATES_DIR = Path(__file__).parent / "chart_templates"
 
-# Page types that map to a specific template file
-_PAGE_TYPE_TEMPLATE_MAP = {
-    "cover": "cover.svg",
-    "toc": "toc.svg",
-    "section": "section.svg",
-    "content": "content.svg",
-    "closing": "closing.svg",
+# Page types that map to one or more template stems.
+# `section` keeps `session` as an alias so subject-specific template folders
+# can provide divider pages without having to rename existing assets.
+_PAGE_TYPE_TEMPLATE_STEMS = {
+    "cover": ("cover",),
+    "toc": ("toc",),
+    "section": ("section",),
+    "content": ("content",),
+    "closing": ("closing",),
     # Other types (quiz, formula, experiment, etc.) fall back to content.svg
 }
 
@@ -63,9 +65,8 @@ def _truncate_template_content(content: str) -> str:
     return content
 
 
-def _template_stem_for_page_type(page_type: str) -> str:
-    filename = _PAGE_TYPE_TEMPLATE_MAP.get(page_type, "content.svg")
-    return Path(filename).stem
+def _template_stems_for_page_type(page_type: str) -> tuple[str, ...]:
+    return _PAGE_TYPE_TEMPLATE_STEMS.get(page_type, ("content",))
 
 
 def _load_page_templates(
@@ -73,7 +74,7 @@ def _load_page_templates(
     template_family: str = _DEFAULT_TEMPLATE_FAMILY,
 ) -> list[tuple[str, str]]:
     """Load all matching SVG reference templates for a page type and family."""
-    target_stem = _template_stem_for_page_type(page_type)
+    target_stems = _template_stems_for_page_type(page_type)
     families_to_try: list[str] = []
     if template_family:
         families_to_try.append(template_family)
@@ -84,9 +85,16 @@ def _load_page_templates(
         family_dir = _PAGE_TEMPLATES_DIR / family
         if not family_dir.exists():
             continue
-        exact_matches = sorted(family_dir.glob(f"{target_stem}.svg"))
-        prefixed_matches = sorted(family_dir.glob(f"{target_stem}_*.svg"))
-        matches = exact_matches + prefixed_matches
+        matches: list[Path] = []
+        seen_paths: set[Path] = set()
+        for stem in target_stems:
+            exact_matches = sorted(family_dir.glob(f"{stem}.svg"))
+            prefixed_matches = sorted(family_dir.glob(f"{stem}_*.svg"))
+            for path in exact_matches + prefixed_matches:
+                if path in seen_paths:
+                    continue
+                seen_paths.add(path)
+                matches.append(path)
         if not matches:
             continue
         loaded: list[tuple[str, str]] = []
