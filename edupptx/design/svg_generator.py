@@ -10,6 +10,7 @@ from loguru import logger
 
 from edupptx.config import Config
 from edupptx.design.prompts import build_svg_system_prompt, build_svg_user_prompt
+from edupptx.design.template_router import resolve_template_family
 from edupptx.llm_client import create_llm_client
 from edupptx.models import GeneratedSlide, PlanningDraft, SlideAssets
 
@@ -55,6 +56,7 @@ def _generate_one(
     assets: SlideAssets,
     total_pages: int,
     reference_svg: str | None = None,
+    template_family: str = "basic",
     debug: bool = False,
 ) -> GeneratedSlide:
     """为单页生成 SVG（同步，运行在线程中）。"""
@@ -65,6 +67,7 @@ def _generate_one(
         assets,
         total_pages,
         reference_svg=reference_svg,
+        template_family=template_family,
         debug=debug,
     )
     logger.info("正在生成第 {}/{} 页 SVG ...", page_plan.page_number, total_pages)
@@ -124,6 +127,8 @@ async def generate_slide_svgs(
 
     # 3. 初始化 LLM 客户端
     client = create_llm_client(config, web_search=False)
+    template_family = resolve_template_family(draft, client)
+    logger.info("Template family: {}", template_family)
     total_pages = len(draft.pages)
 
     # 4. 生成页面；有答案揭晓页时切换为顺序生成，以便复用前一页 SVG
@@ -156,6 +161,7 @@ async def generate_slide_svgs(
                     page_assets,
                     total_pages,
                     reference_svg=reference_svg,
+                    template_family=template_family,
                     debug=debug,
                 )
                 results.append(slide)
@@ -190,6 +196,7 @@ async def generate_slide_svgs(
                     page_assets,
                     total_pages,
                     reference_svg=None,
+                    template_family=template_family,
                     debug=debug,
                 )
                 future_to_page[future] = page.page_number

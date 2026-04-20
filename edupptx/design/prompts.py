@@ -25,6 +25,7 @@ _PAGE_TYPE_TEMPLATE_MAP = {
 }
 
 _MAX_TEMPLATE_CHARS = 3000  # Token budget per template
+_DEFAULT_TEMPLATE_FAMILY = "basic"
 
 _IMAGE_BOUNDARY_RULES = """
 ## 图片边界硬性规则
@@ -47,16 +48,47 @@ _IMAGE_BOUNDARY_RULES = """
 """
 
 
-def _load_page_template(page_type: str) -> str:
-    """Load the SVG reference template for a page type."""
-    filename = _PAGE_TYPE_TEMPLATE_MAP.get(page_type, "content.svg")
-    path = _PAGE_TEMPLATES_DIR / filename
-    if not path.exists():
-        return ""
-    content = path.read_text(encoding="utf-8")
+def _truncate_template_content(content: str) -> str:
     if len(content) > _MAX_TEMPLATE_CHARS:
-        content = content[:_MAX_TEMPLATE_CHARS] + "\n<!-- ... 截断 ... -->\n</svg>"
+        return content[:_MAX_TEMPLATE_CHARS] + "\n<!-- ... 截断 ... -->\n</svg>"
     return content
+
+
+def _template_stem_for_page_type(page_type: str) -> str:
+    filename = _PAGE_TYPE_TEMPLATE_MAP.get(page_type, "content.svg")
+    return Path(filename).stem
+
+
+def _load_page_templates(
+    page_type: str,
+    template_family: str = _DEFAULT_TEMPLATE_FAMILY,
+) -> list[tuple[str, str]]:
+    """Load all matching SVG reference templates for a page type and family."""
+    target_stem = _template_stem_for_page_type(page_type)
+    families_to_try: list[str] = []
+    if template_family:
+        families_to_try.append(template_family)
+    if _DEFAULT_TEMPLATE_FAMILY not in families_to_try:
+        families_to_try.append(_DEFAULT_TEMPLATE_FAMILY)
+
+    for family in families_to_try:
+        family_dir = _PAGE_TEMPLATES_DIR / family
+        if not family_dir.exists():
+            continue
+        exact_matches = sorted(family_dir.glob(f"{target_stem}.svg"))
+        prefixed_matches = sorted(family_dir.glob(f"{target_stem}_*.svg"))
+        matches = exact_matches + prefixed_matches
+        if not matches:
+            continue
+        loaded: list[tuple[str, str]] = []
+        for path in matches:
+            if path.suffix.lower() != ".svg":
+                continue
+            content = _truncate_template_content(path.read_text(encoding="utf-8"))
+            loaded.append((f"{family}/{path.name}", content))
+        if loaded:
+            return loaded
+    return []
 
 
 def _load_ref(name: str) -> str:
@@ -152,6 +184,7 @@ def build_svg_user_prompt(
     assets: SlideAssets,
     total_pages: int,
     reference_svg: str | None = None,
+    template_family: str = _DEFAULT_TEMPLATE_FAMILY,
     debug: bool = False,
 ) -> str:
     """构建单页 SVG 生成的用户提示词。
@@ -310,14 +343,17 @@ def build_svg_user_prompt(
         )
 
     # 页面 SVG 参考模板（LLM 照着画，不是填充模板）
-    template_svg = _load_page_template(page.page_type)
-    if template_svg:
+    template_svgs = _load_page_templates(page.page_type, template_family=template_family)
+    if template_svgs:
+        loaded_families = ", ".join(sorted({name.split("/", 1)[0] for name, _ in template_svgs}))
         lines.append(
-            "\n### 参考模板\n"
-            "以下是此类页面的 SVG 参考模板。请**参照其布局结构和视觉风格**生成新的 SVG，"
-            "**不要复制粘贴模板内容**。用实际内容替换占位文字，根据本页要点调整布局。\n"
-            f"```svg\n{template_svg}\n```"
+            "\n### 参考模板家族\n"
+            f"当前页面优先参考 `{template_family}` 模板目录。实际导入模板来源：{loaded_families}。"
+            "请综合下面所有同页型参考模板的布局结构和视觉风格生成新的 SVG，"
+            "但不要复制模板中的具体文字内容。"
         )
+        for template_name, template_svg in template_svgs:
+            lines.append(f"\n#### 参考模板：{template_name}\n```svg\n{template_svg}\n```")
 
     # 页面类型特殊说明
     type_hints = {
@@ -414,7 +450,7 @@ def build_svg_user_prompt(
             "4. 参考 page-types.md 中 summary 类型的布局定义"
         ),
     }
-        type_hints["cover"] = (
+    type_hints["cover"] = (
         "This is a cover page.\n"
         "1. If the deck already has a system background image, prefer a background-led full-image composition instead of a large centered card.\n"
         "2. Do not draw any full-page background rect, gradient rect, or overlay rect that covers most of the canvas.\n"
@@ -431,7 +467,7 @@ def build_svg_user_prompt(
         "4. If a backdrop is needed for legibility, it must stay small, local, and soft. Avoid filled rects wider than 700 or taller than 240, and keep fill-opacity <= 0.12.\n"
         "5. Let the background image remain visible across most of the canvas.\n"
     )
-     type_hints["toc"] = (
+    type_hints["toc"] = (
         "This is a TOC page using a vertical list of horizontal cards.\n"
         "1. Treat TOC cards as fixed-height navigation cards, not flexible content containers.\n"
         "2. If there are 4 TOC cards, each card height must be at least 104px. If there are 5 TOC cards, each card height must be at least 96px.\n"

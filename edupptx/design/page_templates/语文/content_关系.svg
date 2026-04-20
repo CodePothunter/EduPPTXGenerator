@@ -1,0 +1,104 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <!-- 标题区 -->
+  <text x="50" y="50" font-size="30" font-weight="700" fill="#5C3B22" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">
+    文言知识
+  </text>
+  <text x="50" y="78" font-size="20" font-weight="500" fill="#3E342B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">
+    一词多义
+  </text>
+
+  <!-- 主内容卡 -->
+  <g>
+    <rect x="50" y="110" width="1180" height="540" rx="16" fill="#FBF7F1" stroke="#8F5E3B" stroke-width="3"></rect>
+
+    <!-- 顶部小标签 -->
+    <rect x="90" y="135" width="180" height="38" rx="12" fill="#F3E8D8" stroke="#C89B6D" stroke-width="2"></rect>
+    <text x="180" y="160" text-anchor="middle" font-size="18" font-weight="700" fill="#5C3B22" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">
+      例句 + 释义对应
+    </text>
+
+    <!-- 第一组背景 -->
+    <rect x="90" y="190" width="1100" height="170" rx="14" fill="#FFFDF9"></rect>
+
+    <!-- 第一组：知 -->
+    <g>
+      <!-- 左侧字卡 -->
+      <rect x="110" y="218" width="90" height="110" rx="14" fill="#F3E8D8" stroke="#C89B6D" stroke-width="2"></rect>
+      <text x="155" y="285" text-anchor="middle" font-size="44" font-weight="700" fill="#5C3B22" font-family="KaiTi, STKaiti, SimKai, serif">知</text>
+
+      <!-- 大括号 -->
+      <path d="M250 228
+               q-12 0 -12 12
+               v28
+               q0 12 -12 12
+               q12 0 12 12
+               v28
+               q0 12 12 12" fill="none" stroke="#8F5E3B" stroke-width="4" stroke-linecap="round"></path>
+
+      <!-- 例句 -->
+      <text x="300" y="268" font-size="34" font-weight="600" fill="#3E342B" font-family="KaiTi, STKaiti, SimKai, serif">
+        人不<tspan fill="#A63D40">知</tspan>而不愠
+      </text>
+      <text x="300" y="328" font-size="34" font-weight="600" fill="#3E342B" font-family="KaiTi, STKaiti, SimKai, serif">
+        温故而<tspan fill="#A63D40">知</tspan>新
+      </text>
+
+      <!-- 右侧释义小卡 -->
+      <rect x="820" y="224" width="280" height="42" rx="12" fill="#F3E8D8" stroke="#C89B6D" stroke-width="1.5"></rect>
+      <rect x="820" y="284" width="280" height="42" rx="12" fill="#F3E8D8" stroke="#C89B6D" stroke-width="1.5"></rect>
+
+      <text x="960" y="251" text-anchor="middle" font-size="24" font-weight="700" fill="#A63D40" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">
+        动词，了解
+      </text>
+      <text x="960" y="311" text-anchor="middle" font-size="24" font-weight="700" fill="#A63D40" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">
+        动词，得到
+      </text>
+    </g>
+
+    <!-- 中间分隔 -->
+    <line x1="90" y1="400" x2="1190" y2="400" stroke="#C89B6D" stroke-width="2" stroke-linecap="round"></line>
+
+    <!-- 第二组背景 -->
+    <rect x="90" y="430" width="1100" height="170" rx="14" fill="#FFFDF9"></rect>
+
+    <!-- 第二组：为 -->
+    <g>
+      <!-- 左侧字卡 -->
+      <rect x="110" y="458" width="90" height="110" rx="14" fill="#F3E8D8" stroke="#C89B6D" stroke-width="2"></rect>
+      <text x="155" y="525" text-anchor="middle" font-size="44" font-weight="700" fill="#5C3B22" font-family="KaiTi, STKaiti, SimKai, serif">为</text>
+
+      <!-- 大括号 -->
+      <path d="M250 468
+               q-12 0 -12 12
+               v28
+               q0 12 -12 12
+               q12 0 12 12
+               v28
+               q0 12 12 12" fill="none" stroke="#8F5E3B" stroke-width="4" stroke-linecap="round"></path>
+
+      <!-- 例句 -->
+      <text x="300" y="508" font-size="34" font-weight="600" fill="#3E342B" font-family="KaiTi, STKaiti, SimKai, serif">
+        <tspan fill="#A63D40">为</tspan>人谋而不忠乎
+      </text>
+      <text x="300" y="568" font-size="34" font-weight="600" fill="#3E342B" font-family="KaiTi, STKaiti, SimKai, serif">
+        可以<tspan fill="#A63D40">为</tspan>师矣
+      </text>
+
+      <!-- 右侧释义小卡 -->
+      <rect x="820" y="464" width="280" height="42" rx="12" fill="#F3E8D8" stroke="#C89B6D" stroke-width="1.5"></rect>
+      <rect x="820" y="524" width="280" height="42" rx="12" fill="#F3E8D8" stroke="#C89B6D" stroke-width="1.5"></rect>
+
+      <text x="960" y="491" text-anchor="middle" font-size="24" font-weight="700" fill="#A63D40" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">
+        介词，替
+      </text>
+      <text x="960" y="551" text-anchor="middle" font-size="24" font-weight="700" fill="#A63D40" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">
+        动词，做、当
+      </text>
+    </g>
+  </g>
+
+  <!-- 页码 -->
+  <text x="1220" y="700" text-anchor="end" font-size="18" font-weight="600" fill="#3E342B" font-family="Arial, sans-serif">
+    5
+  </text>
+</svg>
