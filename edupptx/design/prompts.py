@@ -50,6 +50,10 @@ _IMAGE_BOUNDARY_RULES = """
 - 严禁把 `1:1` 的图片框画成 `4:3`、`16:9` 或其他比例；也严禁把 `4:3`/`3:4`/`16:9`/`9:16` 的图片框偷改成近似比例。
 - 先决定图片框的 `width/height`，再检查 `width / height` 是否匹配规划比例；比例不匹配时，必须改框尺寸，不要硬塞图片。
 - 对所有真实图片元素，默认添加 `preserveAspectRatio="xMidYMid slice"`，避免拉伸变形。
+- Do not place images inside shallow banner cards or thin horizontal strips. Avoid using a card as an image host if it would be shorter than 180px or if its width is more than 3 times its height.
+- Treat TOC cards, vertical-list cards, small summary cards, quiz option cards, exercise option cards, table cells, timeline description cards, and note/alert/footer strips as text-only containers.
+- If a page contains images, place them only in a dedicated large media region such as a hero area, illustration panel, experiment photo zone, full-image region, or a clearly large main card.
+- If no dedicated large media region exists, do not invent a shallow image slot. Keep the page text-only instead.
 """
 
 
@@ -542,4 +546,35 @@ def build_svg_user_prompt(
             "不要假设 `clipPath` 或遮罩能隐藏溢出。"
             "如果安全尺寸不明确，就缩小图片，并至少保留 12px 内边距。"
         )
+        if page.layout_hint == "vertical_list":
+            lines.append(
+                "\n### Layout-specific image host rule\n"
+                "This page uses `vertical_list`. Treat every list card as text-only. "
+                "Do not place `<image>` inside any horizontal list card. "
+                "If an image is required, place it in a separate large illustration panel outside the list stack."
+            )
+        elif page.layout_hint == "hero_top_cards_bottom":
+            lines.append(
+                "\n### Layout-specific image host rule\n"
+                "This page uses `hero_top_cards_bottom`. Only the top hero area may host images. "
+                "The bottom small cards are text-only and must not contain `<image>`."
+            )
+        elif page.layout_hint == "cards_top_hero_bottom":
+            lines.append(
+                "\n### Layout-specific image host rule\n"
+                "This page uses `cards_top_hero_bottom`. Only the bottom hero area may host images. "
+                "The top cards are text-only and must not contain `<image>`."
+            )
+        elif page.layout_hint == "bento_2col_asymmetric":
+            lines.append(
+                "\n### Layout-specific image host rule\n"
+                "This page uses `bento_2col_asymmetric`. Only the wide/main column should host images unless the narrow column is a single tall media card. "
+                "Do not place images into narrow stacked cards or shallow side cards."
+            )
+        elif page.layout_hint == "mixed_grid":
+            lines.append(
+                "\n### Layout-specific image host rule\n"
+                "This page uses `mixed_grid`. Images must live in a dedicated large media card. "
+                "Do not place images into tips, note strips, alert cards, footer cards, or other shallow horizontal cards."
+            )
     return "\n".join(lines)

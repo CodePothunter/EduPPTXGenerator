@@ -191,6 +191,18 @@ material_needs.icons 必须从以下列表中选择（Lucide 图标集）：
 - If the planned TOC text would require more than 2 lines inside a card, shorten the wording or choose another layout instead of keeping `vertical_list`.
 - In `design_notes`, explicitly describe TOC cards as "fixed-height navigation cards" and avoid asking for dense copy inside each card.
 
+## Image host safety override
+
+- Do not plan page-level images into shallow banner cards, thin horizontal strips, TOC cards, summary cards, quiz option cards, table cells, or timeline description cards.
+- Treat any card that is visually shallow or banner-like as text-only. As a rule of thumb, if the intended host card would be shorter than about 180px or wider than about 3 times its height, do not plan an image inside it.
+- If a page needs images, prefer layouts that naturally provide a dedicated large media area, such as `full_image`, `hero_top_cards_bottom`, `cards_top_hero_bottom`, `bento_2col_asymmetric`, or `mixed_grid` with an explicit media card.
+- For `vertical_list`, default to text-only cards. If the page still needs an image, place it in a separate large illustration panel instead of inside list cards.
+- For `hero_top_cards_bottom`, only the top hero area may host images; the bottom cards are text-only.
+- For `cards_top_hero_bottom`, only the bottom hero area may host images; the top cards are text-only.
+- For `bento_2col_asymmetric`, only the wide/main column should host images unless the narrow column is a single tall media card.
+- For `mixed_grid`, images must live in a dedicated large media card. Do not request images if the page only has tips, note strips, alert cards, or other shallow cards.
+- In `design_notes`, explicitly name the intended image host region, such as "left large illustration panel", "top hero media card", or "bottom wide experiment photo zone". Do not simply say "insert an image" without a host region.
+
 ## Relation graph override
 
 - You may use `page_type = "relation"` for concept relations, causal chains, classification branches, structure diagrams, or “A 与 B 的关系” pages.

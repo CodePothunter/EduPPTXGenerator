@@ -16,6 +16,7 @@ wheels/
 backgrounds_cache/
 materials_library/
 output/
+edupptx/design/page_templates
 *.pptx
 assets/fonts/
 *_resource.md
