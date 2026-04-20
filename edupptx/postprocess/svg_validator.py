@@ -36,6 +36,12 @@ def _uses_structured_table(page: PagePlan | None) -> bool:
     return page.page_type == "comparison" or page.layout_hint == "comparison"
 
 
+def _uses_timeline_layout(page: PagePlan | None) -> bool:
+    if page is None:
+        return False
+    return page.page_type == "timeline" or page.layout_hint == "timeline"
+
+
 def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[str, list[str]]:
     """Validate SVG, auto-fix issues. Returns (fixed_svg, list_of_warnings)."""
     warnings: list[str] = []
@@ -70,6 +76,8 @@ def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[st
     if not _uses_structured_table(page):
         _fix_text_overlaps(root, warnings)
         _fix_text_outside_cards(root, warnings)
+    if _uses_timeline_layout(page):
+        _normalize_timeline_layout(root, page, warnings)
     _check_image_hrefs(root, warnings)
     _warn_layout_issues(root, warnings)
 
@@ -637,16 +645,20 @@ def _shift_numeric_attr(el: etree._Element, attr: str, dy: float) -> bool:
     return True
 
 
-def _shift_transform_translate(el: etree._Element, dy: float) -> bool:
+def _format_numeric(val: float) -> str:
+    return str(int(val)) if float(val).is_integer() else str(val)
+
+
+def _shift_transform_translate(el: etree._Element, dx: float = 0, dy: float = 0) -> bool:
     transform = el.get("transform")
     if not transform or "translate" not in transform:
         return False
 
     def _replace(match: re.Match[str]) -> str:
-        tx = float(match.group(1))
+        tx = float(match.group(1)) + dx
         ty = float(match.group(2) or "0") + dy
-        tx_str = str(int(tx) if tx.is_integer() else tx)
-        ty_str = str(int(ty) if ty.is_integer() else ty)
+        tx_str = _format_numeric(tx)
+        ty_str = _format_numeric(ty)
         return f"translate({tx_str},{ty_str})"
 
     new_transform, count = re.subn(
@@ -682,7 +694,7 @@ def _shift_element_vertically(
     elif tag_name == "line":
         shifted = _shift_numeric_attr(el, "y1", dy) | _shift_numeric_attr(el, "y2", dy)
     elif tag_name == "g":
-        shifted = _shift_transform_translate(el, dy)
+        shifted = _shift_transform_translate(el, dy=dy)
         if not shifted:
             for child in el:
                 _shift_element_vertically(root, child, dy, shifted_ids)
@@ -696,6 +708,46 @@ def _shift_element_vertically(
             if clip_path_el is not None:
                 for child in clip_path_el:
                     _shift_element_vertically(root, child, dy, shifted_ids)
+
+    if shifted_ids is not None:
+        shifted_ids.add(id(el))
+
+
+def _shift_element_horizontally(
+    root: etree._Element,
+    el: etree._Element,
+    dx: float,
+    shifted_ids: set[int] | None = None,
+) -> None:
+    if not _is_real_element(el):
+        return
+    if shifted_ids is not None and id(el) in shifted_ids:
+        return
+
+    tag_name = etree.QName(el.tag).localname
+    shifted = False
+
+    if tag_name in {"text", "rect", "image", "use"}:
+        shifted = _shift_numeric_attr(el, "x", dx)
+    elif tag_name in {"circle", "ellipse"}:
+        shifted = _shift_numeric_attr(el, "cx", dx)
+    elif tag_name == "line":
+        shifted = _shift_numeric_attr(el, "x1", dx) | _shift_numeric_attr(el, "x2", dx)
+    elif tag_name == "g":
+        shifted = _shift_transform_translate(el, dx=dx)
+        if not shifted:
+            for child in el:
+                _shift_element_horizontally(root, child, dx, shifted_ids)
+
+    if tag_name == "image":
+        clip_path = el.get("clip-path", "")
+        m = re.fullmatch(r"url\(#([^)]+)\)", clip_path.strip())
+        if m:
+            clip_id = m.group(1)
+            clip_path_el = root.find(f".//{{{SVG_NS}}}clipPath[@id='{clip_id}']")
+            if clip_path_el is not None:
+                for child in clip_path_el:
+                    _shift_element_horizontally(root, child, dx, shifted_ids)
 
     if shifted_ids is not None:
         shifted_ids.add(id(el))
@@ -816,6 +868,221 @@ def _find_card_group(rect: etree._Element) -> etree._Element | None:
         if len(group_cards) == 1 and group_cards[0] is rect:
             return group
     return None
+
+
+def _timeline_stage_circle(group: etree._Element) -> tuple[etree._Element, float, float, float] | None:
+    best: tuple[etree._Element, float, float, float] | None = None
+    for circle in group.iter(f"{{{SVG_NS}}}circle"):
+        try:
+            cx = float(circle.get("cx", "0"))
+            cy = float(circle.get("cy", "0"))
+            r = float(circle.get("r", "0"))
+        except (ValueError, TypeError):
+            continue
+        if not (10 <= r <= 40):
+            continue
+        if best is None or r > best[3]:
+            best = (circle, cx, cy, r)
+    return best
+
+
+def _timeline_stage_groups(root: etree._Element) -> list[dict[str, object]]:
+    stage_groups: list[dict[str, object]] = []
+    seen_groups: set[int] = set()
+
+    for group in root.iter(f"{{{SVG_NS}}}g"):
+        if id(group) in seen_groups or _element_in_defs(group):
+            continue
+
+        circle_info = _timeline_stage_circle(group)
+        if circle_info is None:
+            continue
+
+        circle, cx, cy, _ = circle_info
+        circle_count = sum(1 for _ in group.iter(f"{{{SVG_NS}}}circle"))
+        if circle_count > 3:
+            continue
+
+        top_rects: list[tuple[etree._Element, tuple[float, float, float, float]]] = []
+        bottom_rects: list[tuple[etree._Element, tuple[float, float, float, float]]] = []
+        for rect in group.iter(f"{{{SVG_NS}}}rect"):
+            box = _rect_box(rect)
+            if box is None:
+                continue
+            rx, ry, rw, rh = box
+            center_y = ry + rh / 2.0
+            if rw >= 80 and rh >= 80 and center_y < cy - 20:
+                top_rects.append((rect, box))
+            elif rw >= 120 and rh >= 80 and center_y > cy + 20:
+                bottom_rects.append((rect, box))
+
+        if not top_rects or not bottom_rects:
+            continue
+
+        image_el = None
+        for img in group.iter(f"{{{SVG_NS}}}image"):
+            image_el = img
+            break
+
+        top_rect = min(top_rects, key=lambda item: abs((item[1][0] + item[1][2] / 2.0) - cx))[0]
+        bottom_rect = min(bottom_rects, key=lambda item: abs((item[1][0] + item[1][2] / 2.0) - cx))[0]
+
+        stage_groups.append(
+            {
+                "group": group,
+                "circle": circle,
+                "cx": cx,
+                "cy": cy,
+                "top_rect": top_rect,
+                "bottom_rect": bottom_rect,
+                "image": image_el,
+            }
+        )
+        seen_groups.add(id(group))
+
+    stage_groups.sort(key=lambda item: float(item["cx"]))
+    return stage_groups
+
+
+def _normalize_timeline_line(
+    root: etree._Element,
+    target_centers: list[float],
+    line_y: float,
+) -> None:
+    best_line: etree._Element | None = None
+    best_span = 0.0
+    for line in root.iter(f"{{{SVG_NS}}}line"):
+        try:
+            x1 = float(line.get("x1", "0"))
+            x2 = float(line.get("x2", "0"))
+            y1 = float(line.get("y1", "0"))
+            y2 = float(line.get("y2", "0"))
+        except (ValueError, TypeError):
+            continue
+        if abs(y1 - y2) > 2 or abs(y1 - line_y) > 30:
+            continue
+        span = abs(x2 - x1)
+        if span > best_span:
+            best_line = line
+            best_span = span
+
+    if best_line is None:
+        return
+
+    best_line.set("x1", _format_numeric(target_centers[0]))
+    best_line.set("x2", _format_numeric(target_centers[-1]))
+    best_line.set("y1", _format_numeric(line_y))
+    best_line.set("y2", _format_numeric(line_y))
+
+
+def _normalize_timeline_arrows(
+    root: etree._Element,
+    target_centers: list[float],
+    line_y: float,
+) -> None:
+    arrows = [
+        use
+        for use in root.iter(f"{{{SVG_NS}}}use")
+        if use.get("data-icon") == "arrow-right"
+    ]
+    if len(arrows) != max(len(target_centers) - 1, 0):
+        return
+
+    arrows.sort(key=lambda el: float(el.get("x", "0")))
+    for idx, arrow in enumerate(arrows):
+        try:
+            width = float(arrow.get("width", "32"))
+            height = float(arrow.get("height", "32"))
+        except (ValueError, TypeError):
+            width = 32.0
+            height = 32.0
+        mid_x = (target_centers[idx] + target_centers[idx + 1]) / 2.0
+        arrow.set("x", _format_numeric(mid_x - width / 2.0))
+        arrow.set("y", _format_numeric(line_y - height / 2.0))
+
+
+def _normalize_timeline_image_slots(
+    stage_groups: list[dict[str, object]],
+    page: PagePlan | None,
+    warnings: list[str],
+) -> None:
+    material_needs = getattr(page, "material_needs", None)
+    image_needs = getattr(material_needs, "images", None)
+    if not image_needs:
+        return
+
+    counts: dict[str, int] = {}
+    expected_slots: list[str] = []
+    for need in image_needs:
+        role = getattr(need, "role", None)
+        if not role:
+            return
+        occurrence = counts.get(role, 0) + 1
+        counts[role] = occurrence
+        expected_slots.append(f"__IMAGE_{str(role).upper()}_{occurrence}__")
+    if len(expected_slots) != len(stage_groups):
+        return
+
+    stage_images: list[etree._Element] = []
+    for stage in stage_groups:
+        image_el = stage.get("image")
+        if image_el is None or not _is_real_element(image_el):
+            return
+        stage_images.append(image_el)
+
+    href_attr = "{http://www.w3.org/1999/xlink}href"
+    changed = False
+    for image_el, expected_href in zip(stage_images, expected_slots):
+        current_href = image_el.get("href") or image_el.get(href_attr) or ""
+        if current_href == expected_href or not current_href.startswith("__IMAGE_"):
+            continue
+        if image_el.get("href") is not None:
+            image_el.set("href", expected_href)
+        else:
+            image_el.set(href_attr, expected_href)
+        changed = True
+
+    if changed:
+        warnings.append("Normalized timeline image slots to match left-to-right stage order")
+
+
+def _normalize_timeline_layout(
+    root: etree._Element,
+    page: PagePlan | None,
+    warnings: list[str],
+) -> None:
+    stage_groups = _timeline_stage_groups(root)
+    if len(stage_groups) < 2:
+        return
+
+    safe_left = 140.0
+    safe_right = 1140.0
+    if len(stage_groups) == 1:
+        target_centers = [(safe_left + safe_right) / 2.0]
+    else:
+        step = (safe_right - safe_left) / (len(stage_groups) - 1)
+        target_centers = [safe_left + step * idx for idx in range(len(stage_groups))]
+
+    moved = False
+    for idx, (stage, target_cx) in enumerate(zip(stage_groups, target_centers), start=1):
+        current_cx = float(stage["cx"])
+        dx = target_cx - current_cx
+        if abs(dx) < 1:
+            continue
+        group = stage["group"]
+        if isinstance(group, etree._Element):
+            _shift_element_horizontally(root, group, dx, shifted_ids=set())
+            warnings.append(
+                f"Normalized timeline stage {idx} x from {current_cx:.0f} to {target_cx:.0f}"
+            )
+            moved = True
+
+    if moved:
+        line_y = float(stage_groups[0]["cy"])
+        _normalize_timeline_line(root, target_centers, line_y)
+        _normalize_timeline_arrows(root, target_centers, line_y)
+
+    _normalize_timeline_image_slots(stage_groups, page, warnings)
 
 
 def _shift_following_cards(
