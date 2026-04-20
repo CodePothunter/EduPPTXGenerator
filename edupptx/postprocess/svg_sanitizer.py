@@ -1,11 +1,15 @@
 """PPT-specific SVG sanitization."""
 
+from __future__ import annotations
+
 import re
 from lxml import etree
 
 SVG_NS = "http://www.w3.org/2000/svg"
+TSPAN_TAG = f"{{{SVG_NS}}}tspan"
 
 EVENT_ATTRS = re.compile(r"^on[a-z]+$", re.IGNORECASE)
+_POSITION_ATTRS = {"x", "y", "dx", "dy", "rotate", "textLength", "lengthAdjust"}
 
 
 def sanitize_for_ppt(svg_content: str) -> str:
@@ -107,24 +111,95 @@ def _snap_circle_labels(root: etree._Element) -> None:
 
 
 def _flatten_nested_tspans(root: etree._Element) -> None:
-    """Flatten nested <tspan> elements into single-level tspan.
+    """Flatten nested <tspan> into sibling runs while preserving inline styling.
 
-    LLM sometimes generates: <tspan><tspan fill="green">●</tspan> text</tspan>
-    PPT converter can't handle nested tspan, so flatten to: <tspan>● text</tspan>
-    Uses itertext() to collect ALL descendant text regardless of nesting depth.
+    Example:
+      <tspan x="100" dy="0">前文<tspan fill="red">重点</tspan>后文</tspan>
+    becomes:
+      <tspan x="100" dy="0">前文</tspan>
+      <tspan fill="red">重点</tspan>
+      <tspan>后文</tspan>
+
+    This keeps highlighted inline runs intact instead of collapsing everything
+    into a single plain-text tspan.
     """
-    for tspan in list(root.iter(f"{{{SVG_NS}}}tspan")):
-        children = list(tspan)
-        if not children:
+    while True:
+        target = None
+        for tspan in root.iter(TSPAN_TAG):
+            if any(child.tag == TSPAN_TAG for child in tspan):
+                target = tspan
+                break
+        if target is None:
+            break
+
+        parent = target.getparent()
+        if parent is None:
+            break
+
+        runs = _build_flat_tspan_runs(target)
+        insert_at = parent.index(target)
+        parent.remove(target)
+        for offset, run in enumerate(runs):
+            parent.insert(insert_at + offset, run)
+
+
+def _split_tspan_attrs(attrs: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    style_attrs = {k: v for k, v in attrs.items() if k not in _POSITION_ATTRS}
+    position_attrs = {k: v for k, v in attrs.items() if k in _POSITION_ATTRS}
+    return style_attrs, position_attrs
+
+
+def _build_flat_tspan_runs(
+    tspan: etree._Element,
+    inherited_style: dict[str, str] | None = None,
+    inherited_position: dict[str, str] | None = None,
+) -> list[etree._Element]:
+    inherited_style = dict(inherited_style or {})
+    inherited_position = dict(inherited_position or {})
+
+    own_style, own_position = _split_tspan_attrs(dict(tspan.attrib))
+    merged_style = dict(inherited_style)
+    merged_style.update(own_style)
+    merged_position = dict(inherited_position)
+    merged_position.update(own_position)
+
+    runs: list[etree._Element] = []
+    has_emitted_content = False
+
+    if tspan.text:
+        runs.append(_make_tspan_run(tspan.text, merged_style, merged_position))
+        has_emitted_content = True
+
+    for child in tspan:
+        if child.tag != TSPAN_TAG:
             continue
-        nested = [c for c in children if etree.QName(c.tag).localname == "tspan"]
-        if not nested:
-            continue
-        # itertext() walks all descendants depth-first, collecting text + tail
-        full_text = "".join(tspan.itertext())
-        for child in list(children):
-            tspan.remove(child)
-        tspan.text = full_text
+
+        child_position = merged_position if not has_emitted_content else {}
+        child_runs = _build_flat_tspan_runs(child, merged_style, child_position)
+        if child_runs:
+            runs.extend(child_runs)
+            has_emitted_content = True
+
+        if child.tail:
+            tail_position = merged_position if not has_emitted_content else {}
+            runs.append(_make_tspan_run(child.tail, merged_style, tail_position))
+            has_emitted_content = True
+
+    return [run for run in runs if run.text]
+
+
+def _make_tspan_run(
+    text: str,
+    style_attrs: dict[str, str],
+    position_attrs: dict[str, str] | None = None,
+) -> etree._Element:
+    run = etree.Element(TSPAN_TAG)
+    for key, value in style_attrs.items():
+        run.set(key, value)
+    for key, value in (position_attrs or {}).items():
+        run.set(key, value)
+    run.text = text
+    return run
 
 
 def _remove_scripts(root: etree._Element) -> None:

@@ -40,6 +40,10 @@ _IMAGE_BOUNDARY_RULES = """
 - 如果卡片需要内边距，除非模板明确展示为贴边媒体，否则四周至少保留 12px 内边距。
 - 如果不确定安全尺寸，宁可把图片做小，也不要做大。
 - `<image>` 的 width/height 必须先根据卡片边界来确定，实际位图会在后续步骤再注入。
+- 如果 `material_needs.images` 为某张图片指定了 `aspect_ratio`，则该图片对应的 SVG 图片框宽高比必须与该比例严格一致。
+- 严禁把 `1:1` 的图片框画成 `4:3`、`16:9` 或其他比例；也严禁把 `4:3`/`3:4`/`16:9`/`9:16` 的图片框偷改成近似比例。
+- 先决定图片框的 `width/height`，再检查 `width / height` 是否匹配规划比例；比例不匹配时，必须改框尺寸，不要硬塞图片。
+- 对所有真实图片元素，默认添加 `preserveAspectRatio="xMidYMid slice"`，避免拉伸变形。
 """
 
 
@@ -180,6 +184,25 @@ def build_svg_user_prompt(
     if page.design_notes:
         lines.append(f"\n### 设计备注\n{page.design_notes}")
 
+    lines.append(
+        "\n### 行内高亮文本规则\n"
+        "如果一句正文里需要局部高亮，必须把整句话写在同一个 `<text>` 元素内，"
+        "只允许使用同层、连续的 `<tspan>` 来切分前文 / 高亮词 / 后文。\n"
+        "- 禁止把同一句话拆成多个独立 `<text>` 元素\n"
+        "- 禁止生成嵌套 `<tspan>`；只允许一层 sibling `<tspan>`\n"
+        "- 高亮词前后的正文必须完整保留，按阅读顺序连续输出，不能只剩高亮词\n"
+        "- 同一行内连续 `<tspan>` 默认不要重复设置 `x` 或 `dy`；只有真正换行时才设置新的 `x` 与 `dy`\n"
+        "推荐写法示例：\n"
+        "```svg\n"
+        '<text x="128" y="632" font-size="20" fill="{text_color}">\n'
+        '  <tspan x="128" dy="0">“脑袋”的“袋”读</tspan>\n'
+        '  <tspan fill="{accent_color}" font-weight="bold">轻声</tspan>\n'
+        '  <tspan>，“眼睛”的“睛”是</tspan>\n'
+        '  <tspan fill="{accent_color}" font-weight="bold">目字旁</tspan>\n'
+        "</text>\n"
+        "```"
+    )
+
     if page.layout_hint in {"bento_2col_equal", "bento_2col_asymmetric", "bento_3col"}:
         point_count = len(page.content_points or [])
         if "stacked_subcards" in (page.design_notes or "") or 3 <= point_count <= 5:
@@ -262,6 +285,7 @@ def build_svg_user_prompt(
                 " 如果规划比例是 `1:1`，图片框就必须满足 `width = height`；如果是 `4:3`，就必须满足 `width / height ≈ 1.333`；如果是 `16:9`，就必须满足 `width / height ≈ 1.778`。"
                 ' 每个真实图片元素默认写成 `<image ... preserveAspectRatio="xMidYMid slice"/>`，不要省略。'
             )
+
     # 可用图标
     if assets.icon_svgs:
         icon_names = ", ".join(assets.icon_svgs.keys())
@@ -304,7 +328,7 @@ def build_svg_user_prompt(
             "3. 副标题在主标题下方 40px，font-size=20-24\n"
             #"4. 如有图片占位，放在标题上方或侧面，尺寸不小于 300x200\n"
             "4. 用装饰圆形、渐变色块填充空白区域，体现主题氛围\n"
-            "5. 页面不能有大面积空白——标题区上下都要有视觉元素"
+            "5. 页面不能有大面积空白——标题区上下都要有视觉元素\n"
             "6. 默认 `layout_hint = center_hero` 时 `material_needs.images = []`；若该字段为空，不要自行新增任何前景 `<image>`"
         ),
         "toc": (
@@ -398,6 +422,10 @@ def build_svg_user_prompt(
             "`image_y >= card_y`, "
             "`image_x + image_width <= card_x + card_width`, "
             "`image_y + image_height <= card_y + card_height`。"
+            "同时，图片框的宽高比必须与该图片在 `material_needs.images` 中声明的 `aspect_ratio` 严格一致。"
+            "不要把规划为横图的图片画成方图，也不要把规划为方图的图片画成长图。"
+            "如果图片框比例与规划比例冲突，优先修改图片框尺寸，绝不要通过拉伸图片来适配。"
+            '所有真实图片默认添加 `preserveAspectRatio="xMidYMid slice"`。'
             "不要假设 `clipPath` 或遮罩能隐藏溢出。"
             "如果安全尺寸不明确，就缩小图片，并至少保留 12px 内边距。"
         )

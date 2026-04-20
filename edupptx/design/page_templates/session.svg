@@ -1,0 +1,56 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <!-- 顶部装饰线 -->
+  <rect x="0" y="0" width="1280" height="6" fill="#8FBD74"></rect>
+
+  <!-- 页面标题区 -->
+  <text x="50" y="50" font-size="30" font-weight="700" fill="#2F5D3A" font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+    章节导学
+  </text>
+  <text x="50" y="78" font-size="20" font-weight="500" fill="#5E6E59" font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+    跟随学习任务，逐步走进文本世界
+  </text>
+
+  <!-- 主卡 -->
+  <g>
+    <rect x="260" y="180" width="760" height="360" rx="20" fill="#FFFDF7" fill-opacity="0.3"></rect>
+
+    <!-- icon 图标 -->
+    <g>
+      <circle cx="640" cy="242" r="24" fill="#E8F5DB"></circle>
+      <path d="M629 240 h10 a4 4 0 0 1 4 4 v6 a4 4 0 0 1 -4 4 h-5 l-5 4 v-4 h0 a4 4 0 0 1 -4 -4 v-6 a4 4 0 0 1 4 -4z" fill="none" stroke="#2F5D3A" stroke-width="2"></path>
+      <line x1="633" y1="245" x2="639" y2="245" stroke="#2F5D3A" stroke-width="2"></line>
+      <line x1="633" y1="249" x2="643" y2="249" stroke="#2F5D3A" stroke-width="2"></line>
+    </g>
+
+    <!-- 主标题 -->
+    <text x="640" y="335" text-anchor="middle" font-size="46" font-weight="800" fill="#2F5D3A" font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      字词积累，整体感知
+    </text>
+
+    <!-- 分隔线 -->
+    <line x1="470" y1="370" x2="810" y2="370" stroke="#F2B36D" stroke-width="5" stroke-linecap="round"></line>
+
+    <!-- 副标题 -->
+    <text x="640" y="420" text-anchor="middle" font-size="20" font-weight="500" fill="#5E6E59" font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      从重点字词入手，初步把握文章内容与结构脉络
+    </text>
+
+    <!-- 底部提示框 -->
+    <rect x="390" y="455" width="500" height="54" rx="14" fill="#EEF6E7" stroke="#CFE7B8" stroke-width="2"></rect>
+    <text x="640" y="489" text-anchor="middle" font-size="18" font-weight="700" fill="#3E5F45" font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      学习提示：边读边圈画，关注关键词句和段落层次
+    </text>
+  </g>
+
+  <!-- 右下轻装饰 -->
+  <g>
+    <circle cx="1110" cy="600" r="12" fill="#E8F5DB"></circle>
+    <circle cx="1140" cy="625" r="9" fill="#F6D79C"></circle>
+    <circle cx="1170" cy="606" r="10" fill="#E8F5DB"></circle>
+  </g>
+
+  <!-- 页码 -->
+  <text x="1220" y="700" text-anchor="end" font-size="18" font-weight="600" fill="#5E6E59" font-family="Arial, sans-serif">
+    2
+  </text>
+</svg>
