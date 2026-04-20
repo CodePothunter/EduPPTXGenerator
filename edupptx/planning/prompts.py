@@ -159,6 +159,13 @@ material_needs.icons 必须从以下列表中选择（Lucide 图标集）：
 - 揭晓页必须与源题页保持相同 `page_type`、`layout_hint`、`title`、`content_points`、`material_needs`，不要重新设计版式
 - 揭晓页必须设置 `reveal_from_page` 指向源题页页码；选择题/判断题使用 `reveal_mode="highlight_correct_option"`，填空题/简答题使用 `reveal_mode="show_answer"`
 - 揭晓页的 `design_notes` 只能描述新增答案层或正确项高亮方式，不要描述新的卡片布局、不要新增图片区、不要改动原有元素位置
+- 对于 `exercise` 页，只要出现以下任一信号，就必须规划成“题目页 + 答案揭晓页”两张连续页面，而不是只生成单页：
+  - `title` 或 `subtitle` 中出现“填空”“填一填”“补全”“根据课文内容填”“写出答案”
+  - `content_points` 中出现 `（ ）`、`( )`、`____`、`______`、连续下划线、连续空格括号等填空占位
+  - `design_notes` 中出现“答案揭晓区”“答案区”“预留答案揭晓区”“预留答案区”“写完对答案”
+  - `notes` 中出现“对答案”“揭晓答案”“写完我们就对答案”“稍后揭晓”
+- 对于命中上述条件的 `exercise` 填空题，第二张揭晓页必须继续使用 `reveal_mode="show_answer"`，并在 `design_notes` 中明确写出“保留原布局，只在原空位或答案区补答案，不新增新卡片”。
+- 如果某道 `quiz` / `exercise` 的下一页已经是它的揭晓页，则不要再额外生成新的揭晓页；否则必须补齐这张揭晓页。
 - 如果 `design_notes` 或 `layout_hint` 明确出现左右分栏、上下双图、三列并排、多步骤配图等多个独立图片区，`material_needs.images` 的数量必须与图片区数量一致
 - 多张配图可以连续使用相同 `role`（如两个 `illustration`）；数组顺序要与版面顺序一致，默认按从左到右、从上到下排列
 - 当需要风格统一的多张图时，应分别写多条 query，并在每条 query 中重复“同风格/同色调/卡通科普插画”等风格要求，而不是写成一条“对比合成图”
