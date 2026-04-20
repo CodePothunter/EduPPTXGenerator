@@ -1,62 +1,81 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
-  <!-- 正文内容页参考模板 — Bento Grid 双列布局示例 -->
-  <defs>
-    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
-      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-opacity="0.08"/>
-    </filter>
-  </defs>
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="1280" height="6" fill="#8FBD74"/>
+  <text x="50" y="50" font-size="30" font-weight="700" fill="#2F5D3A"
+        font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">字词积累（一）</text>
+  <text x="50" y="78" font-size="20" font-weight="500" fill="#5E6E59"
+        font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">结合读音、释义和例句，积累重点词语</text>
 
-  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}"/>
+  <g>
+    <rect x="50" y="110" width="570" height="540" rx="16" fill="#FFFDF7" stroke="#B7DCA4" stroke-width="3"/>
+    <rect x="80" y="140" width="120" height="38" rx="12" fill="#E8F5DB"/>
+    <text x="140" y="165" text-anchor="middle" font-size="18" font-weight="700" fill="#2F5D3A"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">重点词语</text>
 
-  <!-- 页面标题 -->
-  <text x="50" y="50" font-size="32" font-weight="bold" fill="{heading_color}"
-        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
-    {title}
-  </text>
-  <text x="50" y="80" font-size="16" fill="{text_color}" fill-opacity="0.6"
-        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
-    {subtitle}
-  </text>
+    <g>
+      <rect x="80" y="205" width="510" height="78" rx="14" fill="#F6FBF0"/>
+      <text x="104" y="235" font-size="22" font-weight="700" fill="#2F5D3A"
+            font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">污涩</text>
+      <text x="182" y="235" font-size="18" font-weight="600" fill="#6D874F" font-family="Arial, sans-serif">(wū sè)</text>
+      <text x="104" y="265" font-size="18" font-weight="500" fill="#4E5F4A"
+            font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">释义：肮脏且不光滑。</text>
+    </g>
 
-  <!-- 左侧卡片 -->
-  <rect x="50" y="110" width="570" height="540" rx="14" fill="{card_bg_color}" filter="url(#shadow)"/>
-  <rect x="50" y="110" width="570" height="50" rx="14" fill="{primary_color}"/>
-  <rect x="50" y="146" width="570" height="14" fill="{primary_color}"/>
-  <text x="74" y="142" font-size="18" font-weight="bold" fill="white"
-        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
-    卡片标题一
-  </text>
+    <g>
+      <rect x="80" y="295" width="510" height="78" rx="14" fill="#FFF7E6"/>
+      <text x="104" y="325" font-size="22" font-weight="700" fill="#6D5322"
+            font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">怂恿</text>
+      <text x="182" y="325" font-size="18" font-weight="600" fill="#A77A32" font-family="Arial, sans-serif">(sǒng yǒng)</text>
+      <text x="104" y="355" font-size="18" font-weight="500" fill="#6A6253"
+            font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">释义：鼓动别人去做某事。</text>
+    </g>
 
-  <!-- 卡片内容区示意 -->
-  <circle cx="90" cy="200" r="14" fill="{secondary_color}"/>
-  <text x="90" y="200" text-anchor="middle" dominant-baseline="middle"
-        font-size="12" font-weight="bold" fill="white"
-        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">1</text>
-  <text x="120" y="205" font-size="16" fill="{text_color}"
-        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
-    要点内容第一条
-  </text>
+    <g>
+      <rect x="80" y="385" width="510" height="78" rx="14" fill="#F6FBF0"/>
+      <text x="104" y="415" font-size="22" font-weight="700" fill="#2F5D3A"
+            font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">蜷伏</text>
+      <text x="182" y="415" font-size="18" font-weight="600" fill="#6D874F" font-family="Arial, sans-serif">(quán fú)</text>
+      <text x="104" y="445" font-size="18" font-weight="500" fill="#4E5F4A"
+            font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">释义：弯着身体卧着。</text>
+    </g>
 
-  <circle cx="90" cy="240" r="14" fill="{secondary_color}"/>
-  <text x="90" y="240" text-anchor="middle" dominant-baseline="middle"
-        font-size="12" font-weight="bold" fill="white"
-        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">2</text>
-  <text x="120" y="245" font-size="16" fill="{text_color}"
-        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
-    要点内容第二条
-  </text>
+    <g>
+      <rect x="80" y="475" width="510" height="78" rx="14" fill="#FFF7E6"/>
+      <text x="104" y="505" font-size="22" font-weight="700" fill="#6D5322"
+            font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">惩戒</text>
+      <text x="182" y="505" font-size="18" font-weight="600" fill="#A77A32" font-family="Arial, sans-serif">(chéng jiè)</text>
+      <text x="104" y="535" font-size="18" font-weight="500" fill="#6A6253"
+            font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">释义：通过处罚来警戒。</text>
+    </g>
+  </g>
 
-  <!-- 右侧卡片 -->
-  <rect x="640" y="110" width="590" height="540" rx="14" fill="{card_bg_color}" filter="url(#shadow)"/>
-  <rect x="640" y="110" width="590" height="50" rx="14" fill="{secondary_color}"/>
-  <rect x="640" y="146" width="590" height="14" fill="{secondary_color}"/>
-  <text x="664" y="142" font-size="18" font-weight="bold" fill="white"
-        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
-    卡片标题二
-  </text>
+  <g>
+    <rect x="640" y="110" width="590" height="540" rx="16" fill="#FFFDF7" stroke="#B7DCA4" stroke-width="3"/>
+    <text x="670" y="155" font-size="24" font-weight="800" fill="#2F5D3A"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">例句与运用</text>
 
-  <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}"
-        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
-    {page_number} / {total_pages}
-  </text>
+    <rect x="670" y="190" width="530" height="90" rx="14" fill="#EEF6E7" stroke="#CFE7B8" stroke-width="2"/>
+    <text x="692" y="224" font-size="18" font-weight="600" fill="#2F5D3A"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">污涩</text>
+    <text x="692" y="256" font-size="18" font-weight="500" fill="#4E5F4A"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">例句：“光泽的毛也污涩了。”</text>
+
+    <rect x="670" y="298" width="530" height="90" rx="14" fill="#FFF7E6" stroke="#F1D195" stroke-width="2"/>
+    <text x="692" y="332" font-size="18" font-weight="600" fill="#6D5322"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">怅然</text>
+    <text x="692" y="364" font-size="18" font-weight="500" fill="#6A6253"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">例句：“我也怅然的，愤恨的……”</text>
+
+    <rect x="670" y="406" width="530" height="90" rx="14" fill="#EEF6E7" stroke="#CFE7B8" stroke-width="2"/>
+    <text x="692" y="440" font-size="18" font-weight="600" fill="#2F5D3A"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">妄下断语</text>
+    <text x="692" y="472" font-size="18" font-weight="500" fill="#4E5F4A"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">例句：没有弄清真相前，不能轻易妄下断语。</text>
+
+    <rect x="670" y="525" width="530" height="72" rx="14" fill="#F6FBF0" stroke="#CFE7B8" stroke-width="2"/>
+    <text x="695" y="555" font-size="18" font-weight="700" fill="#3E5F45"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">学习提示：读准字音，理解词义，再联系语境积累运用。</text>
+  </g>
+
+  <text x="1220" y="700" text-anchor="end" font-size="18" font-weight="600" fill="#5E6E59"
+        font-family="Arial, sans-serif">4</text>
 </svg>

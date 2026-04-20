@@ -1,7 +1,14 @@
 """Validate and auto-fix LLM-generated SVG for PPT compatibility."""
 
+from __future__ import annotations
+
 import re
+from typing import TYPE_CHECKING
+
 from lxml import etree
+
+if TYPE_CHECKING:
+    from edupptx.models import PagePlan
 
 SVG_NS = "http://www.w3.org/2000/svg"
 NSMAP = {"svg": SVG_NS}
@@ -21,7 +28,13 @@ _MATH_CONTENT_RE = re.compile(
 )
 
 
-def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
+def _uses_structured_table(page: PagePlan | None) -> bool:
+    if page is None:
+        return False
+    return page.page_type == "comparison" or page.layout_hint == "comparison"
+
+
+def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[str, list[str]]:
     """Validate SVG, auto-fix issues. Returns (fixed_svg, list_of_warnings)."""
     warnings: list[str] = []
 
@@ -52,8 +65,9 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
     _fix_fonts(root, warnings)
     _wrap_long_text(root, warnings)
     _clamp_boundaries(root, warnings)
-    _fix_text_overlaps(root, warnings)
-    _fix_text_outside_cards(root, warnings)
+    if not _uses_structured_table(page):
+        _fix_text_overlaps(root, warnings)
+        _fix_text_outside_cards(root, warnings)
     _check_image_hrefs(root, warnings)
     _warn_layout_issues(root, warnings)
 
@@ -753,7 +767,7 @@ def _find_parent_card(root: etree._Element, tx: float, ty: float) -> etree._Elem
     return best_rect
 
 
-def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
+def _fix_text_outside_cards_legacy_unused(root: etree._Element, warnings: list[str]) -> None:
     """Fix text that overflows its parent card rect boundary."""
     for text_el in root.iter(f"{{{SVG_NS}}}text"):
         try:

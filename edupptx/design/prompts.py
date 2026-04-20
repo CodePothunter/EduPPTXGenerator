@@ -180,6 +180,19 @@ def build_svg_user_prompt(
     if page.design_notes:
         lines.append(f"\n### 设计备注\n{page.design_notes}")
 
+    if page.layout_hint in {"bento_2col_equal", "bento_2col_asymmetric", "bento_3col"}:
+        point_count = len(page.content_points or [])
+        if "stacked_subcards" in (page.design_notes or "") or 3 <= point_count <= 5:
+            lines.append(
+                "\n### 内部子卡片优先规则\n"
+                "如果某一张大卡片承载的是 3–5 个同级短要点，请优先使用内部子卡片模式（`stacked_subcards`），"
+                "不要直接输出成长编号列表或大段正文。\n"
+                "- 子卡片只允许上下纵向堆叠\n"
+                "- 每张子卡片承载“短标题 + 1–2 行说明”\n"
+                "- 子卡片数量优先与该卡片内的同级短要点数量一致（允许 2–5 个）\n"
+                "- 只有在均分后高度明显不足，或该大卡片本身是大面积图片区时，才回退为普通列表"
+            )
+
     if page.reveal_from_page:
         reveal_mode_text = {
             "highlight_correct_option": "仅高亮正确选项或正确判断，不改动原选项卡位置与文字换行。",

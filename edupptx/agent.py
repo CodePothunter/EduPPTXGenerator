@@ -12,6 +12,7 @@ from edupptx.config import Config
 from edupptx.models import (
     GeneratedSlide,
     InputContext,
+    PagePlan,
     PlanningDraft,
     SlideAssets,
     iter_image_slot_keys,
@@ -19,8 +20,27 @@ from edupptx.models import (
 from edupptx.session import Session
 
 
-def _needs_llm_review(warnings: list[str]) -> bool:
+def _uses_structured_table(page: PagePlan | None) -> bool:
+    if page is None:
+        return False
+    return page.page_type == "comparison" or page.layout_hint == "comparison"
+
+
+def _needs_llm_review(page: PagePlan | None, warnings: list[str]) -> bool:
     """Check if warnings are serious enough to warrant LLM review."""
+    if not warnings:
+        return False
+
+    if _uses_structured_table(page):
+        severe_patterns = (
+            "SVG parse error",
+            "Recovered by wrapping",
+        )
+        return any(
+            w.startswith(pattern)
+            for w in warnings
+            for pattern in severe_patterns
+        )
     # Minor warnings that validator already auto-fixed — skip review
     minor_patterns = (
         "Wrapped long text",
@@ -335,16 +355,17 @@ class PPTXAgent:
             raw_path.write_text(slide.svg_content, encoding="utf-8")
 
             # Step 1: Validate and fix
-            fixed_svg, warnings = validate_and_fix(slide.svg_content)
+            page = page_lookup.get(slide.page_number)
+            fixed_svg, warnings = validate_and_fix(slide.svg_content, page=page)
             for w in warnings:
                 logger.warning("Slide {}: {}", slide.page_number, w)
 
             # Step 2: LLM Review (only if meaningful warnings exist)
-            if do_review and draft and slide.page_number in page_lookup and _needs_llm_review(warnings):
+            if do_review and draft and page is not None and _needs_llm_review(page, warnings):
                 from edupptx.postprocess.svg_reviewer import review_and_fix_svg
                 fixed_svg = review_and_fix_svg(
                     fixed_svg, warnings,
-                    page_lookup[slide.page_number],
+                    page,
                     draft.visual,
                     self.config,
                 )
