@@ -414,6 +414,32 @@ def build_svg_user_prompt(
             "4. 参考 page-types.md 中 summary 类型的布局定义"
         ),
     }
+        type_hints["cover"] = (
+        "This is a cover page.\n"
+        "1. If the deck already has a system background image, prefer a background-led full-image composition instead of a large centered card.\n"
+        "2. Do not draw any full-page background rect, gradient rect, or overlay rect that covers most of the canvas.\n"
+        "3. Do not create any large opaque card. Avoid filled rects wider than 700 or taller than 260 unless they are tiny accent labels.\n"
+        "4. Keep the title and subtitle directly on the background, using only light accents such as a short underline, a small tag, or thin outline decoration.\n"
+        "5. If `layout_hint = center_hero` and `material_needs.images = []`, do not add any foreground `<image>` and do not simulate a hero area with a large solid mask.\n"
+        "6. If a small text backdrop is absolutely necessary, keep it local and soft with fill-opacity <= 0.12.\n"
+    )
+    type_hints["section"] = (
+        "This is a section divider page.\n"
+        "1. If the deck already has a system background image, treat this page as background-led and place the title directly over the background.\n"
+        "2. Do not draw any full-page fill rect and do not place a large centered opaque card behind the title.\n"
+        "3. Use only lightweight accents: a short underline, a slim label, a small outline badge, or subtle corner decoration.\n"
+        "4. If a backdrop is needed for legibility, it must stay small, local, and soft. Avoid filled rects wider than 700 or taller than 240, and keep fill-opacity <= 0.12.\n"
+        "5. Let the background image remain visible across most of the canvas.\n"
+    )
+     type_hints["toc"] = (
+        "This is a TOC page using a vertical list of horizontal cards.\n"
+        "1. Treat TOC cards as fixed-height navigation cards, not flexible content containers.\n"
+        "2. If there are 4 TOC cards, each card height must be at least 104px. If there are 5 TOC cards, each card height must be at least 96px.\n"
+        "3. Keep the entire TOC card stack within y=110..650. Do not rely on step6 to expand card heights.\n"
+        "4. Each TOC card may contain at most one short title line plus one short description line, or at most two short text lines total.\n"
+        "5. If the text does not fit within these limits, shorten the wording instead of making the cards shorter than the minimum height.\n"
+        "6. Use stable card spacing: 14-16px for 4 cards, 10-12px for 5 cards.\n"
+    )
     if page.page_type in type_hints:
         lines.append(f"\n### 页面类型提示\n{type_hints[page.page_type]}")
 

@@ -1,0 +1,81 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <!-- 顶部装饰线 -->
+  <rect x="0" y="0" width="1280" height="6" fill="#9DCC7C"/>
+
+  <!-- 页面标题区 -->
+  <text x="50" y="50" font-size="30" font-weight="700" fill="#3B6A43"
+        font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+    课堂结束
+  </text>
+  <text x="50" y="78" font-size="20" font-weight="500" fill="#72826B"
+        font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+    今天的学习到这里啦，把收获装进小书包里吧
+  </text>
+
+  <!-- 左上轻装饰 -->
+  <g>
+    <circle cx="116" cy="132" r="18" fill="#FCE7A8"/>
+    <circle cx="148" cy="118" r="10" fill="#F8C9A8"/>
+    <circle cx="92" cy="112" r="8" fill="#DDF1C8"/>
+  </g>
+
+  <!-- 主卡 -->
+  <g>
+    <rect x="240" y="140" width="800" height="440" rx="26"
+          fill="#FFFDF7" stroke="#CFE7B8" stroke-width="3"/>
+
+    <!-- 主结束语 -->
+    <text x="640" y="268" text-anchor="middle" font-size="58" font-weight="800" fill="#2D3A2F"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      下课啦，再见
+    </text>
+
+    <!-- 分隔线 -->
+    <line x1="490" y1="302" x2="790" y2="302"
+          stroke="#F2B36D" stroke-width="5" stroke-linecap="round"/>
+
+    <!-- 回顾框：高度扩大 -->
+    <g>
+      <rect x="340" y="360" width="600" height="190" rx="22"
+            fill="#F3FBEA" stroke="#D6E9BF" stroke-width="2"/>
+      <text x="640" y="402" text-anchor="middle" font-size="22" font-weight="700" fill="#3B6A43"
+            font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+        今天我们收获了什么
+      </text>
+      <text x="390" y="446" font-size="18" font-weight="500" fill="#55654F"
+            font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+        • 认识了课文里的重点内容，也学会了新的字词。
+      </text>
+      <text x="390" y="482" font-size="18" font-weight="500" fill="#55654F"
+            font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+        • 读懂了文章里的有趣地方，感受到了作者的心情。
+      </text>
+      <text x="390" y="518" font-size="18" font-weight="500" fill="#55654F"
+            font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+        • 期待下节课再一起读书、思考和分享。
+      </text>
+    </g>
+
+    <!-- 主卡内部童趣装饰 -->
+    <g>
+      <circle cx="322" cy="224" r="10" fill="#FCE7A8"/>
+      <circle cx="346" cy="248" r="7" fill="#F8C9A8"/>
+      <circle cx="942" cy="226" r="10" fill="#DFF2CC"/>
+      <circle cx="918" cy="248" r="7" fill="#FCE7A8"/>
+    </g>
+  </g>
+
+  <!-- 右下轻装饰 -->
+  <g>
+    <circle cx="1068" cy="600" r="12" fill="#DFF2CC"/>
+    <circle cx="1102" cy="624" r="9" fill="#FCE7A8"/>
+    <circle cx="1134" cy="604" r="10" fill="#F8C9A8"/>
+    <circle cx="1162" cy="628" r="7" fill="#DFF2CC"/>
+  </g>
+
+  <!-- 页码 -->
+  <text x="1220" y="700" text-anchor="end" font-size="18" font-weight="600" fill="#72826B"
+        font-family="Arial, sans-serif">
+    1
+  </text>
+</svg>

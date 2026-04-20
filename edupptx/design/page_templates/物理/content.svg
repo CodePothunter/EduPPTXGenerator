@@ -1,0 +1,86 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <!-- 顶部装饰线 -->
+  <rect x="0" y="0" width="1280" height="6" fill="#3E7FA6"></rect>
+
+  <!-- 标题区 -->
+  <text x="50" y="50" font-size="30" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">实验探究：测量物体运动的速度</text>
+  <text x="50" y="78" font-size="20" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">从实验原理、数据处理到结论归纳，理解平均速度的意义</text>
+
+  <!-- 左侧主卡 -->
+  <g>
+    <rect x="50" y="110" width="570" height="540" rx="16" fill="#F8FBFD" stroke="#2D6E92" stroke-width="3"></rect>
+
+    <!-- 小标签 -->
+    <rect x="80" y="142" width="140" height="38" rx="12" fill="#EAF5FB"></rect>
+    <text x="150" y="167" text-anchor="middle" font-size="18" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">知识点 / 实验</text>
+
+    <!-- 主标题 -->
+    <text x="80" y="224" font-size="28" font-weight="800" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">实验原理与探究过程</text>
+
+    <!-- 原理框 -->
+    <rect x="80" y="255" width="510" height="86" rx="14" fill="#EEF7FB" stroke="#6FB1CF" stroke-width="2"></rect>
+    <text x="110" y="292" font-size="20" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">实验原理：</text>
+    <text x="345" y="295" text-anchor="middle" font-size="28" font-weight="800" fill="#1E4E6B" font-family="Arial, sans-serif">v = s / t</text>
+    <text x="110" y="325" font-size="18" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">用路程与时间的比值表示平均速度</text>
+
+    <!-- 器材 -->
+    <text x="80" y="390" font-size="20" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">实验器材：</text>
+    <text x="80" y="425" font-size="18" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">刻度尺、停表、斜面、小车、金属片</text>
+
+    <!-- 步骤 -->
+    <text x="80" y="475" font-size="20" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">实验步骤：</text>
+    <text x="80" y="510" font-size="18" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">① 测量小车通过不同路段的路程 s</text>
+    <text x="80" y="542" font-size="18" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">② 用停表记录通过对应路段所用时间 t</text>
+    <text x="80" y="574" font-size="18" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">③ 利用公式 v = s / t 计算平均速度</text>
+    <text x="80" y="606" font-size="18" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">④ 比较不同路段速度，分析运动变化规律</text>
+  </g>
+
+  <!-- 右上：数据表 -->
+  <g>
+    <rect x="640" y="110" width="590" height="250" rx="16" fill="#F8FBFD" stroke="#2D6E92" stroke-width="3"></rect>
+
+    <text x="670" y="150" font-size="24" font-weight="800" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">实验数据记录</text>
+
+    <!-- 表格 -->
+    <rect x="670" y="180" width="530" height="140" rx="10" fill="#FFFFFF" stroke="#6FB1CF" stroke-width="1.5"></rect>
+    <line x1="670" y1="220" x2="1200" y2="220" stroke="#6FB1CF" stroke-width="1.5"></line>
+    <line x1="820" y1="180" x2="820" y2="320" stroke="#6FB1CF" stroke-width="1.5"></line>
+    <line x1="980" y1="180" x2="980" y2="320" stroke="#6FB1CF" stroke-width="1.5"></line>
+    <line x1="670" y1="255" x2="1200" y2="255" stroke="#D7EAF4" stroke-width="1"></line>
+    <line x1="670" y1="290" x2="1200" y2="290" stroke="#D7EAF4" stroke-width="1"></line>
+
+    <text x="745" y="206" text-anchor="middle" font-size="18" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">路段</text>
+    <text x="900" y="206" text-anchor="middle" font-size="18" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">路程 / m</text>
+    <text x="1090" y="206" text-anchor="middle" font-size="18" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">时间 / s</text>
+
+    <text x="745" y="243" text-anchor="middle" font-size="18" font-weight="500" fill="#4E6573" font-family="Arial, sans-serif">s₁</text>
+    <text x="900" y="243" text-anchor="middle" font-size="18" font-weight="500" fill="#4E6573" font-family="Arial, sans-serif">1.0</text>
+    <text x="1090" y="243" text-anchor="middle" font-size="18" font-weight="500" fill="#4E6573" font-family="Arial, sans-serif">3.0</text>
+
+    <text x="745" y="278" text-anchor="middle" font-size="18" font-weight="500" fill="#4E6573" font-family="Arial, sans-serif">s₂</text>
+    <text x="900" y="278" text-anchor="middle" font-size="18" font-weight="500" fill="#4E6573" font-family="Arial, sans-serif">0.5</text>
+    <text x="1090" y="278" text-anchor="middle" font-size="18" font-weight="500" fill="#4E6573" font-family="Arial, sans-serif">1.8</text>
+
+    <text x="745" y="313" text-anchor="middle" font-size="18" font-weight="500" fill="#4E6573" font-family="Arial, sans-serif">s₃</text>
+    <text x="900" y="313" text-anchor="middle" font-size="18" font-weight="500" fill="#4E6573" font-family="Arial, sans-serif">0.5</text>
+    <text x="1090" y="313" text-anchor="middle" font-size="18" font-weight="500" fill="#4E6573" font-family="Arial, sans-serif">1.2</text>
+  </g>
+
+  <!-- 右下：结论与提醒 -->
+  <g>
+    <rect x="640" y="390" width="590" height="260" rx="16" fill="#F8FBFD" stroke="#2D6E92" stroke-width="3"></rect>
+
+    <text x="670" y="432" font-size="24" font-weight="800" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">实验结论与特别提醒</text>
+
+    <rect x="670" y="458" width="530" height="76" rx="12" fill="#EEF7FB" stroke="#6FB1CF" stroke-width="2"></rect>
+    <text x="695" y="492" font-size="18" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">实验结论：</text>
+    <text x="695" y="522" font-size="18" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">小车沿斜面下滑时速度越来越大，做变速直线运动。</text>
+
+    <rect x="670" y="552" width="530" height="70" rx="12" fill="#FFF7EA" stroke="#F2B84B" stroke-width="2"></rect>
+    <text x="695" y="585" font-size="18" font-weight="700" fill="#9C6B17" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">特别提醒：</text>
+    <text x="695" y="612" font-size="18" font-weight="500" fill="#6C5A39" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">平均速度不是速度的平均值，计算时要注意 s 与 t 的对应关系。</text>
+  </g>
+
+  <!-- 页码 -->
+  <text x="1220" y="700" text-anchor="end" font-size="18" font-weight="600" fill="#4E6573" font-family="Arial, sans-serif">4</text>
+</svg>

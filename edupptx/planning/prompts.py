@@ -173,6 +173,24 @@ material_needs.icons 必须从以下列表中选择（Lucide 图标集）：
   - 背景图不计入 `material_needs.images`
   - 除非用户明确要求该页放前景插图 / 人物图 / 主视觉前景图 / 角色形象，否则不要为该页规划任何 `hero` 或 `illustration`
   - 如果用户要求“不要除了背景图之外的图片”，则 `material_needs.images` 必须为空数组，`design_notes` 只能描述“背景图 + 标题/主卡/装饰图形”，不得描述前景插图
+## Background-led cover/section rule override
+
+- If the deck uses a system-generated background image, default `cover` and `section` pages to `layout_hint = "full_image"` instead of `center_hero`.
+- Reserve `center_hero` for pages that truly need a centered concept card and do not depend on the background image as the main visual.
+- For `cover` or `section` pages with a background-led composition, keep `material_needs.images = []` unless the user explicitly asks for an extra foreground illustration.
+- Background images do not count as `material_needs.images`.
+- In `design_notes`, describe these pages as "background-led", "full-image", "title over background", or "small accent label", and avoid describing any large centered opaque card.
+
+
+## TOC vertical-list safety override
+
+- For `toc` pages that use `vertical_list`, each `content_point` must stay short and navigation-like rather than explanatory.
+- Prefer each TOC item to stay within roughly 12-18 Chinese characters or one short clause.
+- Do not write paragraph-like descriptions inside TOC cards.
+- If there are 4 TOC cards, design them as 4 medium-height cards; if there are 5 TOC cards, keep each item even shorter instead of shrinking card height too much.
+- If the planned TOC text would require more than 2 lines inside a card, shorten the wording or choose another layout instead of keeping `vertical_list`.
+- In `design_notes`, explicitly describe TOC cards as "fixed-height navigation cards" and avoid asking for dense copy inside each card.
+
 """
 
 

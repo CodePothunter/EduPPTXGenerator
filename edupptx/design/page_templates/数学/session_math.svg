@@ -1,0 +1,22 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <text x="50" y="50" font-size="30" font-weight="700" fill="#1F4E66" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">章节导学</text>
+  <text x="50" y="78" font-size="20" font-weight="500" fill="#4F6470" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">进入本节核心知识探究</text>
+
+  <g>
+    <rect x="200" y="180" width="880" height="360" rx="16" fill="#F8FBFD" stroke="#2F6F8F" stroke-width="3"></rect>
+
+    <circle cx="640" cy="240" r="24" fill="#EAF5FB" stroke="#5AA6C8" stroke-width="2"></circle>
+    <text x="640" y="248" text-anchor="middle" font-size="22" font-weight="700" fill="#1F4E66" font-family="Arial, sans-serif">i</text>
+
+    <text x="640" y="330" text-anchor="middle" font-size="44" font-weight="800" fill="#1F4E66" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">探究点一</text>
+
+    <line x1="470" y1="365" x2="810" y2="365" stroke="#F2B84B" stroke-width="5" stroke-linecap="round"></line>
+
+    <text x="640" y="425" text-anchor="middle" font-size="28" font-weight="600" fill="#4F6470" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">负整数指数幂</text>
+
+    <rect x="370" y="460" width="540" height="48" rx="14" fill="#EAF5FB" stroke="#5AA6C8" stroke-width="2"></rect>
+    <text x="640" y="491" text-anchor="middle" font-size="18" font-weight="700" fill="#1F4E66" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">任务：从特殊算式出发，发现并归纳新的定义</text>
+  </g>
+
+  <text x="1220" y="700" text-anchor="end" font-size="18" font-weight="600" fill="#4F6470" font-family="Arial, sans-serif">2</text>
+</svg>

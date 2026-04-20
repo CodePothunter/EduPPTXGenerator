@@ -1,0 +1,22 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <text x="50" y="50" font-size="30" font-weight="700" fill="#1F4E66" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">八年级数学 · 上册</text>
+  <text x="50" y="78" font-size="20" font-weight="500" fill="#4F6470" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">第18章 · 整式与幂</text>
+
+  <g>
+    <rect x="140" y="120" width="1000" height="440" rx="16" fill="#F8FBFD" stroke="#2F6F8F" stroke-width="3"></rect>
+
+    <rect x="180" y="160" width="180" height="42" rx="14" fill="#EAF5FB"></rect>
+    <text x="270" y="188" text-anchor="middle" font-size="20" font-weight="700" fill="#1F4E66" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">18.4 新课学习</text>
+
+    <text x="640" y="285" text-anchor="middle" font-size="64" font-weight="800" fill="#1F4E66" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">整数指数幂</text>
+
+    <line x1="430" y1="325" x2="850" y2="325" stroke="#F2B84B" stroke-width="5" stroke-linecap="round"></line>
+
+    <text x="640" y="385" text-anchor="middle" font-size="26" font-weight="600" fill="#4F6470" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">第 1 课时 · 负整数指数幂</text>
+
+    <rect x="300" y="435" width="680" height="70" rx="16" fill="#EAF5FB" stroke="#5AA6C8" stroke-width="2"></rect>
+    <text x="640" y="478" text-anchor="middle" font-size="20" font-weight="700" fill="#1F4E66" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">关键词：定义 · 性质 · 推导 · 运算</text>
+  </g>
+
+  <text x="1220" y="700" text-anchor="end" font-size="18" font-weight="600" fill="#4F6470" font-family="Arial, sans-serif">1</text>
+</svg>

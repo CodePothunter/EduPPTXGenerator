@@ -85,6 +85,8 @@ class ConvertContext:
     media_files: dict[str, bytes] = field(default_factory=dict)
     rel_entries: list[dict[str, str]] = field(default_factory=list)
     rel_id_counter: int = 2      # rId1 reserved for slideLayout
+    root: ET.Element | None = None
+    parent_map: dict[int, ET.Element] = field(default_factory=dict)
 
     def next_id(self) -> int:
         cid = self.id_counter
@@ -111,6 +113,8 @@ class ConvertContext:
             media_files=self.media_files,
             rel_entries=self.rel_entries,
             rel_id_counter=self.rel_id_counter,
+            root=self.root,
+            parent_map=self.parent_map,
         )
 
     def sync_from_child(self, child_ctx: ConvertContext):
@@ -248,11 +252,16 @@ def is_cjk_char(ch: str) -> bool:
             0x20000 <= cp <= 0x2A6DF)
 
 
+FULLWIDTH_PUNCTUATION = set("“”‘’，。！？；：、（）《》【】「」『』〈〉〔〕")
+
+
 def estimate_text_width(text: str, font_size: float, bold: bool = False) -> float:
     width = 0.0
     for ch in text:
         if is_cjk_char(ch):
             width += font_size
+        elif ch in FULLWIDTH_PUNCTUATION:
+            width += font_size * 0.9
         elif ch == " ":
             width += font_size * 0.3
         elif ch in "mMwWOQ":
@@ -984,6 +993,70 @@ def _append_text_run(
         line.append(run)
 
 
+def _iter_ancestors(elem: ET.Element, ctx: ConvertContext):
+    current = ctx.parent_map.get(id(elem))
+    while current is not None:
+        yield current
+        current = ctx.parent_map.get(id(current))
+
+
+def _meaningful_container_rects(ancestor: ET.Element) -> list[ET.Element]:
+    rects: list[ET.Element] = []
+    for child in list(ancestor):
+        tag = child.tag.replace(f"{{{SVG_NS}}}", "")
+        if tag != "rect":
+            continue
+        width = _f(child.get("width"), 0)
+        height = _f(child.get("height"), 0)
+        if width >= 100 and height >= 40:
+            rects.append(child)
+    return rects
+
+
+def _find_text_container_rect(
+    elem: ET.Element,
+    ctx: ConvertContext,
+    text_x: float,
+    text_y: float,
+) -> ET.Element | None:
+    best_rect: ET.Element | None = None
+    best_area: float | None = None
+    for ancestor in _iter_ancestors(elem, ctx):
+        for rect in _meaningful_container_rects(ancestor):
+            rx = ctx_x(_f(rect.get("x")), ctx)
+            ry = ctx_y(_f(rect.get("y")), ctx)
+            rw = ctx_w(_f(rect.get("width")), ctx)
+            rh = ctx_h(_f(rect.get("height")), ctx)
+            if not (rx - 4 <= text_x <= rx + rw + 4 and ry - 8 <= text_y <= ry + rh + 8):
+                continue
+            area = rw * rh
+            if best_area is None or area < best_area:
+                best_rect = rect
+                best_area = area
+    return best_rect
+
+
+def _infer_single_line_rich_text_width(
+    elem: ET.Element,
+    ctx: ConvertContext,
+    text_x: float,
+    text_y: float,
+    estimated_width: float,
+    padding: float,
+) -> float:
+    rect = _find_text_container_rect(elem, ctx, text_x, text_y)
+    if rect is None:
+        return estimated_width * 1.08
+
+    rect_x = ctx_x(_f(rect.get("x")), ctx)
+    rect_w = ctx_w(_f(rect.get("width")), ctx)
+    right_padding = max(padding, 12.0 * ctx.scale_x)
+    available_width = rect_x + rect_w - text_x - right_padding
+    if available_width <= 0:
+        return estimated_width * 1.08
+    return max(estimated_width * 1.02, available_width + padding)
+
+
 def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     """Convert SVG <text> with optional <tspan> children to DrawingML text shape."""
     # Collect paragraphs: each tspan with dy>0 starts a new line
@@ -1059,6 +1132,11 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
 
     is_multiline = len(paragraphs) > 1
     is_bold = base_weight in ("bold", "600", "700", "800", "900")
+    has_positive_tspan_dy = any(
+        _f(ts.get("dy"), 0, font_size=_f(elem.get("font-size"), 16)) > 0
+        for ts in tspans
+    )
+    is_single_line_rich_text = bool(tspans) and not has_positive_tspan_dy and len(paragraphs) == 1
 
     # Calculate text box dimensions
     max_width = 0.0
@@ -1073,6 +1151,9 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     padding = base_fs * 0.2
     box_w = max_width + padding * 2
     box_h = total_height + padding * 2
+
+    if is_single_line_rich_text:
+        box_w = _infer_single_line_rich_text_width(elem, ctx, x_base, y_base, box_w, padding)
 
     # For multiline text inside cards, try to use tspan's x to infer a reasonable
     # fixed width so wrapping works correctly in PowerPoint
@@ -1141,7 +1222,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
         paras_xml.append(f'<a:p><a:pPr algn="{algn}">{line_spc_xml}</a:pPr>{"".join(runs_xml)}</a:p>')
 
     # Always wrap="square" — enables word wrap for user editability in PowerPoint
-    wrap_mode = "square"
+    wrap_mode = "none" if is_single_line_rich_text else "square"
 
     shape_id = ctx.next_id()
     # For centered labels (number in circle), use vertical center anchor
@@ -1309,6 +1390,14 @@ def collect_defs(root: ET.Element) -> dict[str, ET.Element]:
     return defs
 
 
+def build_parent_map(root: ET.Element) -> dict[int, ET.Element]:
+    parent_map: dict[int, ET.Element] = {}
+    for parent in root.iter():
+        for child in list(parent):
+            parent_map[id(child)] = parent
+    return parent_map
+
+
 def convert_element(elem: ET.Element, ctx: ConvertContext) -> str:
     tag = elem.tag.replace(f"{{{SVG_NS}}}", "")
     converters = {
@@ -1351,7 +1440,7 @@ def convert_svg_to_slide_shapes(
 
     root = ET.fromstring(content)
     defs = collect_defs(root)
-    ctx = ConvertContext(defs=defs, slide_num=slide_num)
+    ctx = ConvertContext(defs=defs, slide_num=slide_num, root=root, parent_map=build_parent_map(root))
 
     shapes = []
     converted = skipped = 0

@@ -1,0 +1,86 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <!-- 顶部装饰线 -->
+  <rect x="0" y="0" width="1280" height="6" fill="#3E7FA6"></rect>
+
+  <!-- 标题区 -->
+  <text x="50" y="50" font-size="30" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">对比与关系梳理</text>
+  <text x="50" y="78" font-size="20" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">适用于“表格比较”或“概念关系图”类物理内容页</text>
+
+  <!-- 左侧：三线表比较 -->
+  <g>
+    <rect x="50" y="110" width="700" height="520" rx="16" fill="#F8FBFD" stroke="#2D6E92" stroke-width="3"></rect>
+
+    <text x="80" y="152" font-size="24" font-weight="800" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">声与光传播的比较</text>
+
+    <!-- 三线表 -->
+    <line x1="80" y1="190" x2="720" y2="190" stroke="#2D6E92" stroke-width="3"></line>
+    <line x1="80" y1="238" x2="720" y2="238" stroke="#6FB1CF" stroke-width="1.6"></line>
+    <line x1="80" y1="430" x2="720" y2="430" stroke="#2D6E92" stroke-width="3"></line>
+
+    <!-- 行底色 -->
+    <rect x="80" y="238" width="640" height="48" fill="#FFFFFF"></rect>
+    <rect x="80" y="286" width="640" height="48" fill="#F3F8FC"></rect>
+    <rect x="80" y="334" width="640" height="48" fill="#FFFFFF"></rect>
+    <rect x="80" y="382" width="640" height="48" fill="#F3F8FC"></rect>
+
+    <!-- 表头 -->
+    <text x="180" y="222" text-anchor="middle" font-size="18" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">项目</text>
+    <text x="390" y="222" text-anchor="middle" font-size="18" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">声</text>
+    <text x="610" y="222" text-anchor="middle" font-size="18" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">光</text>
+
+    <!-- 内容 -->
+    <text x="180" y="270" text-anchor="middle" font-size="17" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">真空中传播</text>
+    <text x="390" y="270" text-anchor="middle" font-size="17" font-weight="500" fill="#D95C5C" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">不能</text>
+    <text x="610" y="270" text-anchor="middle" font-size="17" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">能</text>
+
+    <text x="180" y="318" text-anchor="middle" font-size="17" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">空气中速度</text>
+    <text x="390" y="318" text-anchor="middle" font-size="17" font-weight="500" fill="#4E6573" font-family="Arial, sans-serif">340 m/s</text>
+    <text x="610" y="318" text-anchor="middle" font-size="17" font-weight="500" fill="#4E6573" font-family="Arial, sans-serif">3×10⁸ m/s</text>
+
+    <text x="180" y="366" text-anchor="middle" font-size="17" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">是否传递信息</text>
+    <text x="390" y="366" text-anchor="middle" font-size="17" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">能</text>
+    <text x="610" y="366" text-anchor="middle" font-size="17" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">能</text>
+
+    <text x="180" y="414" text-anchor="middle" font-size="17" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">是否传递能量</text>
+    <text x="390" y="414" text-anchor="middle" font-size="17" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">能</text>
+    <text x="610" y="414" text-anchor="middle" font-size="17" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">能</text>
+
+    <text x="80" y="470" font-size="18" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">使用建议：</text>
+    <text x="80" y="505" font-size="18" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">可替换为“质量单位换算表”“音调/响度/音色对比表”</text>
+  </g>
+
+  <!-- 右侧：关系图 -->
+  <g>
+    <rect x="780" y="110" width="450" height="520" rx="16" fill="#F8FBFD" stroke="#2D6E92" stroke-width="3"></rect>
+
+    <text x="1005" y="152" text-anchor="middle" font-size="24" font-weight="800" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">乐音的三个特征</text>
+
+    <!-- 中间主节点 -->
+    <rect x="910" y="220" width="190" height="64" rx="18" fill="#EEF7FB" stroke="#6FB1CF" stroke-width="2"></rect>
+    <text x="1005" y="260" text-anchor="middle" font-size="24" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">乐音特征</text>
+
+    <!-- 左下节点 -->
+    <rect x="805" y="340" width="120" height="56" rx="16" fill="#F8FBFD" stroke="#2D6E92" stroke-width="2"></rect>
+    <text x="865" y="374" text-anchor="middle" font-size="22" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">音调</text>
+
+    <!-- 中下节点 -->
+    <rect x="945" y="340" width="120" height="56" rx="16" fill="#F8FBFD" stroke="#2D6E92" stroke-width="2"></rect>
+    <text x="1005" y="374" text-anchor="middle" font-size="22" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">响度</text>
+
+    <!-- 右下节点 -->
+    <rect x="1085" y="340" width="120" height="56" rx="16" fill="#F8FBFD" stroke="#2D6E92" stroke-width="2"></rect>
+    <text x="1145" y="374" text-anchor="middle" font-size="22" font-weight="700" fill="#1E4E6B" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">音色</text>
+
+    <!-- 连接线 -->
+    <line x1="960" y1="284" x2="885" y2="340" stroke="#F2B84B" stroke-width="3"></line>
+    <line x1="1005" y1="284" x2="1005" y2="340" stroke="#F2B84B" stroke-width="3"></line>
+    <line x1="1050" y1="284" x2="1125" y2="340" stroke="#F2B84B" stroke-width="3"></line>
+
+    <!-- 底部说明 -->
+    <text x="1005" y="450" text-anchor="middle" font-size="18" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">音调——与频率有关</text>
+    <text x="1005" y="484" text-anchor="middle" font-size="18" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">响度——与振幅、距离有关</text>
+    <text x="1005" y="518" text-anchor="middle" font-size="18" font-weight="500" fill="#4E6573" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">音色——与材料、结构、发声方式有关</text>
+  </g>
+
+  <text x="1220" y="700" text-anchor="end" font-size="18" font-weight="600" fill="#4E6573" font-family="Arial, sans-serif">5</text>
+</svg>

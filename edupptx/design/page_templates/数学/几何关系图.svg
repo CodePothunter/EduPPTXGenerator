@@ -1,0 +1,54 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <text x="50" y="50" font-size="30" font-weight="700" fill="#1F4E66" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">几何关系图</text>
+  <text x="50" y="78" font-size="20" font-weight="500" fill="#4F6470" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">梳理“直角三角形”的性质与判定关系</text>
+
+  <!-- 左主题 -->
+  <g>
+    <rect x="90" y="255" width="320" height="150" rx="24" fill="#F8FBFD" stroke="#2F6F8F" stroke-width="3"></rect>
+    <text x="250" y="325" text-anchor="middle" font-size="40" font-weight="800" fill="#1F4E66" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">直角三角形的</text>
+    <text x="250" y="375" text-anchor="middle" font-size="40" font-weight="800" fill="#1F4E66" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">性质与判定</text>
+  </g>
+
+  <!-- 括号 -->
+  <path d="M470 210
+           q-10 0 -10 10
+           v82
+           q0 10 -10 10
+           q10 0 10 10
+           v82
+           q0 10 10 10" fill="none" stroke="#5AA6C8" stroke-width="4" stroke-linecap="round"></path>
+
+  <!-- 中间分类 -->
+  <g>
+    <rect x="500" y="172" width="150" height="72" rx="18" fill="#EAF5FB" stroke="#5AA6C8" stroke-width="2"></rect>
+    <text x="575" y="218" text-anchor="middle" font-size="32" font-weight="800" fill="#1F4E66" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">性质</text>
+  </g>
+
+  <g>
+    <rect x="500" y="432" width="150" height="72" rx="18" fill="#EAF5FB" stroke="#5AA6C8" stroke-width="2"></rect>
+    <text x="575" y="478" text-anchor="middle" font-size="32" font-weight="800" fill="#1F4E66" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">判定</text>
+  </g>
+
+  <!-- 箭头 -->
+  <line x1="650" y1="208" x2="708" y2="208" stroke="#F2B84B" stroke-width="3" stroke-linecap="round"></line>
+  <polygon points="708,208 696,202 696,214" fill="#F2B84B"></polygon>
+
+  <line x1="650" y1="468" x2="708" y2="468" stroke="#F2B84B" stroke-width="3" stroke-linecap="round"></line>
+  <polygon points="708,468 696,462 696,474" fill="#F2B84B"></polygon>
+
+  <!-- 右上结论 -->
+  <g>
+    <rect x="724" y="148" width="450" height="118" rx="22" fill="#F8FBFD" stroke="#2F6F8F" stroke-width="3"></rect>
+    <text x="949" y="214" text-anchor="middle" font-size="26" font-weight="700" fill="#C96B2C" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">直角三角形的两个锐角互余</text>
+  </g>
+
+  <!-- 右下结论 -->
+  <g>
+    <rect x="724" y="408" width="520" height="128" rx="22" fill="#F8FBFD" stroke="#2F6F8F" stroke-width="3"></rect>
+    <text x="984" y="468" text-anchor="middle" font-size="26" font-weight="700" fill="#C96B2C" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">有两个角互余的三角形</text>
+    <text x="984" y="506" text-anchor="middle" font-size="26" font-weight="700" fill="#C96B2C" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">是直角三角形</text>
+  </g>
+
+  <text x="50" y="660" font-size="18" font-weight="500" fill="#4F6470" font-family="Microsoft YaHei, SimHei, Arial, sans-serif">适用场景：性质与判定、定理与逆定理、概念对应关系。</text>
+  <text x="1220" y="700" text-anchor="end" font-size="18" font-weight="600" fill="#4F6470" font-family="Arial, sans-serif">6</text>
+</svg>

@@ -1,0 +1,142 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <!-- 顶部细装饰线 -->
+  <rect x="0" y="0" width="1280" height="6" fill="#88B46A"/>
+
+  <!-- 页面标题区 -->
+  <text x="50" y="50" font-size="30" font-weight="700" fill="#2F5D3A"
+        font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+    本课学习目标
+  </text>
+  <text x="50" y="78" font-size="20" font-weight="500" fill="#5E6E59"
+        font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+    围绕课文内容，梳理脉络，品味语言，体会主旨
+  </text>
+
+  <!-- 调整后参数：
+       card_x = 190
+       card_w = 900
+       card_h = 82
+       整体下移 24px
+       图标中心 x = 1046
+  -->
+
+  <!-- 01 -->
+  <g>
+    <rect x="190" y="134" width="900" height="82" rx="14" fill="#F8FBF3" stroke="#A9CF8D" stroke-width="2"/>
+    <rect x="206" y="155" width="6" height="40" rx="3" fill="#88B46A"/>
+    <rect x="226" y="153" width="88" height="44" rx="12" fill="#DDEFD0"/>
+    <text x="270" y="182" text-anchor="middle" font-size="24" font-weight="700" fill="#2F5D3A"
+          font-family="Arial, sans-serif">01</text>
+    <text x="348" y="170" font-size="23" font-weight="700" fill="#2F5D3A"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      了解背景
+    </text>
+    <text x="348" y="193" font-size="17" font-weight="500" fill="#4E5F4A"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      了解课文相关背景资料，积累本课重点字词与文学常识。
+    </text>
+    <circle cx="1046" cy="175" r="21" fill="#EEF6E7" stroke="#A9CF8D" stroke-width="2"/>
+    <rect x="1033" y="165" width="10" height="16" rx="2" fill="none" stroke="#5E8A49" stroke-width="2"/>
+    <rect x="1049" y="165" width="10" height="16" rx="2" fill="none" stroke="#5E8A49" stroke-width="2"/>
+    <line x1="1046" y1="165" x2="1046" y2="183" stroke="#5E8A49" stroke-width="2"/>
+  </g>
+
+  <!-- 02 -->
+  <g>
+    <rect x="190" y="230" width="900" height="82" rx="14" fill="#FFFDF7" stroke="#E5C980" stroke-width="2"/>
+    <rect x="206" y="251" width="6" height="40" rx="3" fill="#D9B35F"/>
+    <rect x="226" y="249" width="88" height="44" rx="12" fill="#F8E8BF"/>
+    <text x="270" y="278" text-anchor="middle" font-size="24" font-weight="700" fill="#7A5A1F"
+          font-family="Arial, sans-serif">02</text>
+    <text x="348" y="266" font-size="23" font-weight="700" fill="#6D5322"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      梳理脉络
+    </text>
+    <text x="348" y="289" font-size="17" font-weight="500" fill="#6A6253"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      梳理文章情节发展线索，把握故事结构与叙事顺序。
+    </text>
+    <circle cx="1046" cy="271" r="21" fill="#FFF7E6" stroke="#E5C980" stroke-width="2"/>
+    <circle cx="1036" cy="262" r="3" fill="#B98A2A"/>
+    <circle cx="1056" cy="280" r="3" fill="#B98A2A"/>
+    <circle cx="1042" cy="284" r="3" fill="#B98A2A"/>
+    <path d="M1036 262 C1045 263,1048 273,1056 280" fill="none" stroke="#B98A2A" stroke-width="2"/>
+    <path d="M1042 284 C1046 278,1048 273,1056 280" fill="none" stroke="#B98A2A" stroke-width="2"/>
+  </g>
+
+  <!-- 03 -->
+  <g>
+    <rect x="190" y="326" width="900" height="82" rx="14" fill="#F8FBF3" stroke="#A9CF8D" stroke-width="2"/>
+    <rect x="206" y="347" width="6" height="40" rx="3" fill="#88B46A"/>
+    <rect x="226" y="345" width="88" height="44" rx="12" fill="#DDEFD0"/>
+    <text x="270" y="374" text-anchor="middle" font-size="24" font-weight="700" fill="#2F5D3A"
+          font-family="Arial, sans-serif">03</text>
+    <text x="348" y="362" font-size="23" font-weight="700" fill="#2F5D3A"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      品味语言
+    </text>
+    <text x="348" y="385" font-size="17" font-weight="500" fill="#4E5F4A"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      朗读并品析重点语句，体会文章语言表达的准确与生动。
+    </text>
+    <circle cx="1046" cy="367" r="21" fill="#EEF6E7" stroke="#A9CF8D" stroke-width="2"/>
+    <path d="M1034 361 h10 a4 4 0 0 1 4 4 v6 a4 4 0 0 1 -4 4 h-5 l-5 4 v-4 h0 a4 4 0 0 1 -4 -4 v-6 a4 4 0 0 1 4 -4z"
+          fill="none" stroke="#5E8A49" stroke-width="2"/>
+    <line x1="1038" y1="366" x2="1044" y2="366" stroke="#5E8A49" stroke-width="2"/>
+    <line x1="1038" y1="370" x2="1048" y2="370" stroke="#5E8A49" stroke-width="2"/>
+  </g>
+
+  <!-- 04 -->
+  <g>
+    <rect x="190" y="422" width="900" height="82" rx="14" fill="#FFFDF7" stroke="#E5C980" stroke-width="2"/>
+    <rect x="206" y="443" width="6" height="40" rx="3" fill="#D9B35F"/>
+    <rect x="226" y="441" width="88" height="44" rx="12" fill="#F8E8BF"/>
+    <text x="270" y="470" text-anchor="middle" font-size="24" font-weight="700" fill="#7A5A1F"
+          font-family="Arial, sans-serif">04</text>
+    <text x="348" y="458" font-size="23" font-weight="700" fill="#6D5322"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      分析形象
+    </text>
+    <text x="348" y="481" font-size="17" font-weight="500" fill="#6A6253"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      结合细节描写分析人物形象，理解人物行为背后的情感变化。
+    </text>
+    <circle cx="1046" cy="463" r="21" fill="#FFF7E6" stroke="#E5C980" stroke-width="2"/>
+    <circle cx="1046" cy="456" r="5" fill="none" stroke="#B98A2A" stroke-width="2"/>
+    <path d="M1036 473 C1038 465,1054 465,1056 473" fill="none" stroke="#B98A2A" stroke-width="2"/>
+  </g>
+
+  <!-- 05 -->
+  <g>
+    <rect x="190" y="518" width="900" height="82" rx="14" fill="#F8FBF3" stroke="#A9CF8D" stroke-width="2"/>
+    <rect x="206" y="539" width="6" height="40" rx="3" fill="#88B46A"/>
+    <rect x="226" y="537" width="88" height="44" rx="12" fill="#DDEFD0"/>
+    <text x="270" y="566" text-anchor="middle" font-size="24" font-weight="700" fill="#2F5D3A"
+          font-family="Arial, sans-serif">05</text>
+    <text x="348" y="554" font-size="23" font-weight="700" fill="#2F5D3A"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      体会主旨
+    </text>
+    <text x="348" y="577" font-size="17" font-weight="500" fill="#4E5F4A"
+          font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+      把握文章所表达的思想感情，联系生活获得阅读启示。
+    </text>
+    <circle cx="1046" cy="559" r="21" fill="#EEF6E7" stroke="#A9CF8D" stroke-width="2"/>
+    <path d="M1046 547 C1052 547,1057 552,1057 558 C1057 562,1055 565,1052 567 C1050 568,1050 570,1050 572 h-8
+             c0-2,0-4,-2-5 c-3-2,-5-5,-5-9 C1035 552,1040 547,1046 547z"
+          fill="none" stroke="#5E8A49" stroke-width="2"/>
+    <line x1="1042" y1="575" x2="1050" y2="575" stroke="#5E8A49" stroke-width="2"/>
+  </g>
+
+  <!-- 底部提示信息 -->
+  <text x="190" y="640" font-size="18" font-weight="500" fill="#5E6E59"
+        font-family="Noto Sans SC, Source Han Sans SC, Microsoft YaHei, SimHei, Arial, sans-serif">
+    学习提示：先整体感知，再细读品味，最后联系主题表达自己的理解。
+  </text>
+
+  <!-- 页码 -->
+  <text x="1220" y="700" text-anchor="end" font-size="18" font-weight="600" fill="#5E6E59"
+        font-family="Arial, sans-serif">
+    2
+  </text>
+</svg>
