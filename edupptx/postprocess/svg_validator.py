@@ -16,6 +16,8 @@ NSMAP = {"svg": SVG_NS}
 EXPECTED_VIEWBOX = "0 0 1280 720"
 MAX_X = 1280
 MAX_Y = 720
+CARD_OVERFLOW_TOLERANCE = 6
+TEXT_COLUMN_TOLERANCE = 60
 
 SAFE_FONTS = {"Noto Sans SC", "微软雅黑", "Microsoft YaHei", "Arial", "Helvetica", "sans-serif"}
 FALLBACK_FONT = "Noto Sans SC, Microsoft YaHei, Arial, sans-serif"
@@ -413,7 +415,7 @@ def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
     if len(texts) < 2:
         return
 
-    # Collect (element, x, y, font_size) for text elements
+    # Collect (element, x, y, font_size, parent_card_id) for text elements
     text_info = []
     for t in texts:
         y_str = t.get("y")
@@ -430,18 +432,22 @@ def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
             fs = float(fs_str.replace("px", ""))
         except (ValueError, TypeError):
             fs = 16.0
-        text_info.append((t, x, y, fs))
+        text_bottom = _get_text_bottom_y(t)
+        parent_rect = _find_parent_card(root, t, x, y, text_bottom)
+        parent_key = id(parent_rect) if parent_rect is not None else None
+        text_info.append((t, x, y, fs, parent_key))
 
     if len(text_info) < 2:
         return
 
     # Group by horizontal column (texts within 100px x-range are in the same column)
-    text_info.sort(key=lambda t: (t[1], t[2]))  # sort by x, then y
+    text_info.sort(key=lambda t: (t[4] is None, t[4] or -1, t[1], t[2]))  # sort by card, then x/y
     columns: list[list] = []
     for item in text_info:
         placed = False
         for col in columns:
-            if abs(col[0][1] - item[1]) < 100:  # same x-column (100px tolerance)
+            same_parent = col[0][4] == item[4]
+            if same_parent and abs(col[0][1] - item[1]) < TEXT_COLUMN_TOLERANCE:
                 col.append(item)
                 placed = True
                 break
@@ -452,8 +458,8 @@ def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
     for col in columns:
         col.sort(key=lambda t: t[2])  # sort by y within column
         for i in range(1, len(col)):
-            prev_el, _, prev_y, prev_fs = col[i - 1]
-            el, x, curr_y, fs = col[i]
+            prev_el, _, prev_y, prev_fs, _ = col[i - 1]
+            el, x, curr_y, fs, parent_key = col[i]
             # Use actual bottom of previous text (including tspan dy offsets)
             prev_bottom = _get_text_bottom_y(prev_el)
             min_next_y = prev_bottom + 6  # 6px gap after actual text bottom
@@ -463,7 +469,7 @@ def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
             if curr_y < effective_min:
                 new_y = effective_min
                 el.set("y", str(int(new_y)))
-                col[i] = (el, x, new_y, fs)
+                col[i] = (el, x, new_y, fs, parent_key)
                 warnings.append(f"Fixed text overlap: pushed y from {curr_y} to {new_y}")
 
 
@@ -710,6 +716,108 @@ def _element_belongs_to_card(
     )
 
 
+def _iter_group_ancestors(el: etree._Element):
+    group_tag = f"{{{SVG_NS}}}g"
+    for ancestor in el.iterancestors(group_tag):
+        if _is_real_element(ancestor):
+            yield ancestor
+
+
+def _text_matches_card_box(
+    tx: float,
+    ty: float,
+    text_bottom: float,
+    card_box: tuple[float, float, float, float],
+    *,
+    edge_slack: float = 8,
+    overflow_slack: float = 28,
+) -> bool:
+    rx, ry, rw, rh = card_box
+    card_bottom = ry + rh
+    return (
+        rx - edge_slack <= tx <= rx + rw + edge_slack
+        and ry - 4 <= ty <= card_bottom + overflow_slack
+        and text_bottom >= ry - 4
+        and text_bottom <= card_bottom + overflow_slack
+    )
+
+
+def _text_starts_in_card(
+    tx: float,
+    ty: float,
+    card_box: tuple[float, float, float, float],
+    *,
+    edge_slack: float = 8,
+    vertical_slack: float = 64,
+) -> bool:
+    rx, ry, rw, rh = card_box
+    return (
+        rx - edge_slack <= tx <= rx + rw + edge_slack
+        and ry - 4 <= ty <= ry + rh + vertical_slack
+    )
+
+
+def _pick_best_card(
+    candidates: list[tuple[etree._Element, tuple[float, float, float, float]]],
+    tx: float,
+    ty: float,
+    text_bottom: float,
+) -> etree._Element | None:
+    if not candidates:
+        return None
+
+    def _score(item: tuple[etree._Element, tuple[float, float, float, float]]):
+        _, (rx, ry, rw, rh) = item
+        card_bottom = ry + rh
+        overflow = max(0.0, text_bottom - card_bottom)
+        center_y = (ty + text_bottom) / 2.0
+        return (
+            overflow,
+            rw * rh,
+            abs((ry + rh / 2.0) - center_y),
+            abs((rx + rw / 2.0) - tx),
+        )
+
+    return min(candidates, key=_score)[0]
+
+
+def _find_parent_card_in_groups(
+    text_el: etree._Element,
+    tx: float,
+    ty: float,
+    text_bottom: float,
+) -> etree._Element | None:
+    for group in _iter_group_ancestors(text_el):
+        group_cards: list[tuple[etree._Element, tuple[float, float, float, float]]] = []
+        for rect in _collect_card_rects(group):
+            box = _rect_box(rect)
+            if box is not None:
+                group_cards.append((rect, box))
+
+        if not group_cards:
+            continue
+
+        if len(group_cards) == 1:
+            return group_cards[0][0]
+
+        matched = [
+            item for item in group_cards
+            if _text_matches_card_box(tx, ty, text_bottom, item[1])
+        ]
+        best = _pick_best_card(matched, tx, ty, text_bottom)
+        if best is not None:
+            return best
+    return None
+
+
+def _find_card_group(rect: etree._Element) -> etree._Element | None:
+    for group in _iter_group_ancestors(rect):
+        group_cards = _collect_card_rects(group)
+        if len(group_cards) == 1 and group_cards[0] is rect:
+            return group
+    return None
+
+
 def _shift_following_cards(
     root: etree._Element,
     source_rect: etree._Element,
@@ -737,6 +845,12 @@ def _shift_following_cards(
     candidates.sort(key=lambda item: item[0])
 
     for _, rect, rect_box in candidates:
+        card_group = _find_card_group(rect)
+        if card_group is not None:
+            _shift_element_vertically(root, card_group, dy, shifted_ids)
+            shifted_cards += 1
+            continue
+
         _shift_element_vertically(root, rect, dy, shifted_ids)
         shifted_cards += 1
 
@@ -749,22 +863,37 @@ def _shift_following_cards(
     return shifted_cards
 
 
-def _find_parent_card(root: etree._Element, tx: float, ty: float) -> etree._Element | None:
+def _find_parent_card(
+    root: etree._Element,
+    text_el: etree._Element,
+    tx: float,
+    ty: float,
+    text_bottom: float,
+) -> etree._Element | None:
     """Find the best-matching outer card rect for a text element by reading live DOM."""
-    best_rect = None
-    best_gap = float("inf")
+    group_rect = _find_parent_card_in_groups(text_el, tx, ty, text_bottom)
+    if group_rect is not None:
+        return group_rect
+
+    candidates: list[tuple[etree._Element, tuple[float, float, float, float]]] = []
     for rect in _collect_card_rects(root):
         box = _rect_box(rect)
         if box is None:
             continue
-        rx, ry, rw, rh = box
-        card_bottom = ry + rh
-        if rx - 10 <= tx <= rx + rw + 10 and ry <= ty <= card_bottom + 20:
-            gap = card_bottom - ty
-            if gap < best_gap:
-                best_gap = gap
-                best_rect = rect
-    return best_rect
+        if _text_matches_card_box(tx, ty, text_bottom, box):
+            candidates.append((rect, box))
+    best = _pick_best_card(candidates, tx, ty, text_bottom)
+    if best is not None:
+        return best
+
+    relaxed_candidates: list[tuple[etree._Element, tuple[float, float, float, float]]] = []
+    for rect in _collect_card_rects(root):
+        box = _rect_box(rect)
+        if box is None:
+            continue
+        if _text_starts_in_card(tx, ty, box):
+            relaxed_candidates.append((rect, box))
+    return _pick_best_card(relaxed_candidates, tx, ty, text_bottom)
 
 
 def _fix_text_outside_cards_legacy_unused(root: etree._Element, warnings: list[str]) -> None:
@@ -779,7 +908,7 @@ def _fix_text_outside_cards_legacy_unused(root: etree._Element, warnings: list[s
         text_bottom = _get_text_bottom_y(text_el)
 
         # Find parent card from live DOM (not a snapshot — avoids stale height)
-        card_rect = _find_parent_card(root, tx, ty)
+        card_rect = _find_parent_card(root, text_el, tx, ty, text_bottom)
         if card_rect is None:
             continue
 
@@ -788,7 +917,7 @@ def _fix_text_outside_cards_legacy_unused(root: etree._Element, warnings: list[s
         card_bottom = ry + rh
         overflow = text_bottom - card_bottom
 
-        if overflow > 2:
+        if overflow > CARD_OVERFLOW_TOLERANCE:
             new_h = text_bottom - ry + 4
             card_rect.set("height", str(int(new_h)))
             warnings.append(
@@ -810,7 +939,7 @@ def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
         text_bottom = _get_text_bottom_y(text_el)
 
         # Read the parent card from the live DOM so reflowed positions are visible.
-        card_rect = _find_parent_card(root, tx, ty)
+        card_rect = _find_parent_card(root, text_el, tx, ty, text_bottom)
         if card_rect is None:
             continue
 
@@ -822,7 +951,7 @@ def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
         card_bottom = ry + rh
         overflow = text_bottom - card_bottom
 
-        if overflow > 2:
+        if overflow > CARD_OVERFLOW_TOLERANCE:
             new_h = text_bottom - ry + 4
             delta = new_h - rh
             card_rect.set("height", str(int(new_h)))
