@@ -61,12 +61,12 @@ def _parse_draft(response: str, ctx: InputContext) -> PlanningDraft:
 
     # Coerce unknown page_type/layout_hint to safe defaults
     _VALID_PAGE_TYPES = {"cover", "toc", "section", "content", "data", "case", "closing",
-                         "timeline", "comparison", "exercise", "summary",
+                         "timeline", "comparison", "exercise", "summary", "relation",
                          "quiz", "formula", "experiment"}
     _VALID_LAYOUT_HINTS = {
         "center_hero", "vertical_list", "bento_2col_equal", "bento_2col_asymmetric",
         "bento_3col", "hero_top_cards_bottom", "cards_top_hero_bottom",
-        "mixed_grid", "full_image", "timeline", "comparison",
+        "mixed_grid", "full_image", "timeline", "comparison", "relation",
     }
     for page in data.get("pages", []):
         if page.get("page_type") not in _VALID_PAGE_TYPES:

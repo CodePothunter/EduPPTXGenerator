@@ -13,6 +13,7 @@ from edupptx.models import PagePlan, SlideAssets, VisualPlan, iter_image_slot_ke
 
 _REFS_DIR = Path(__file__).parent / "references"
 _PAGE_TEMPLATES_DIR = Path(__file__).parent / "page_templates"
+_CHART_TEMPLATES_DIR = Path(__file__).parent / "chart_templates"
 
 # Page types that map to a specific template file
 _PAGE_TYPE_TEMPLATE_MAP = {
@@ -26,6 +27,10 @@ _PAGE_TYPE_TEMPLATE_MAP = {
 
 _MAX_TEMPLATE_CHARS = 3000  # Token budget per template
 _DEFAULT_TEMPLATE_FAMILY = "basic"
+_CHART_TEMPLATE_MAP = {
+    "timeline": ("timeline.svg",),
+    "relation": ("关系图.svg",),
+}
 
 _IMAGE_BOUNDARY_RULES = """
 ## 图片边界硬性规则
@@ -89,6 +94,24 @@ def _load_page_templates(
         if loaded:
             return loaded
     return []
+
+
+def _load_chart_templates(page_type: str, layout_hint: str | None = None) -> list[tuple[str, str]]:
+    keys_to_try: list[str] = []
+    if page_type:
+        keys_to_try.append(page_type)
+    if layout_hint and layout_hint not in keys_to_try:
+        keys_to_try.append(layout_hint)
+
+    loaded: list[tuple[str, str]] = []
+    for key in keys_to_try:
+        for filename in _CHART_TEMPLATE_MAP.get(key, ()):
+            path = _CHART_TEMPLATES_DIR / filename
+            if not path.exists():
+                continue
+            content = _truncate_template_content(path.read_text(encoding="utf-8"))
+            loaded.append((filename, content))
+    return loaded
 
 
 def _load_ref(name: str) -> str:
@@ -355,6 +378,16 @@ def build_svg_user_prompt(
         for template_name, template_svg in template_svgs:
             lines.append(f"\n#### 参考模板：{template_name}\n```svg\n{template_svg}\n```")
 
+    chart_templates = _load_chart_templates(page.page_type, page.layout_hint)
+    if chart_templates:
+        lines.append(
+            "\n### 图示结构参考模板\n"
+            "以下模板用于约束图示结构本身。请优先复用其节点组织方式、连接关系和整体构图，"
+            "但必须替换成当前页面的真实内容。"
+        )
+        for template_name, template_svg in chart_templates:
+            lines.append(f"\n#### 图示参考：chart_templates/{template_name}\n```svg\n{template_svg}\n```")
+
     # 页面类型特殊说明
     type_hints = {
         "cover": (
@@ -434,6 +467,15 @@ def build_svg_user_prompt(
             "4. 所有节点圆心、图片框、下方文字卡都必须完整落在安全区 x=50..1230 内，最后一个节点不能越过右边界\n"
             "5. 默认将节点圆心均匀分布在 x=140..1140 之间；箭头位于相邻节点中点；不要把 5 个以上节点继续按固定大间距硬排\n"
             "6. 每个节点使用一个独立 <g> 包裹图片、圆点、说明卡和文字，便于后处理整体微调"
+        ),
+        "relation": (
+            "这是关系图页。设计要求：\n"
+            "1. 使用中心节点 + 分支节点 + 连接线/箭头的关系图结构，而不是普通列表或表格。\n"
+            "2. 将 content_points 解释为关系节点、分支节点或关系陈述，优先组织成 3-6 个短节点。\n"
+            "3. 若存在核心概念，放在中心或左侧主节点；其余节点按层级或因果关系分布在周围。\n"
+            "4. 每个节点使用独立 `<g>` 包裹节点框和文字，连接线必须指向明确，不要压到文本上。\n"
+            "5. 所有节点、箭头和连接线必须完整落在安全区内，不要越出 x=50..1230、y=100..650。\n"
+            "6. 优先参考图示结构模板，保持关系图的构图感，不要退化为普通竖排卡片。"
         ),
         "comparison": (
             "这是对比表格页。设计要求：\n"

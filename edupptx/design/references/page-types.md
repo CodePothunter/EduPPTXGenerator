@@ -504,3 +504,62 @@ LLM 生成对应类型幻灯片时，应参照此文件的坐标和结构。
 | `{secondary_bg_color}`| 次背景色（表格交替行、图标底色）    |
 | `{text_color}`       | 正文字色                        |
 | `{heading_color}`    | 标题字色（比正文更深/更突出）       |
+
+---
+
+## toc
+
+- Use this layout for TOC / learning navigation pages rendered as a single vertical list of horizontal cards.
+- Treat TOC cards as fixed-height navigation cards rather than flexible content blocks.
+- Card stack safe region: `x=430..1230`, `y=110..650`.
+- For 4 cards:
+  - card height `>= 104`
+  - vertical gap `14-16`
+- For 5 cards:
+  - card height `>= 96`
+  - vertical gap `10-12`
+- Do not make TOC cards shorter than the minimum height just to fit longer text.
+- Each TOC card may contain at most:
+  - one short title line plus one short description line, or
+  - two short text lines total.
+- If copy does not fit, shorten the wording instead of shrinking card height.
+- Bottom edge of the final TOC card must stay within `y <= 650`.
+
+### Recommended geometry
+
+#### 4-card toc
+
+| Item | x   | y   | w   | h   |
+|------|-----|-----|-----|-----|
+| Card 1 | 430 | 110 | 800 | 112 |
+| Card 2 | 430 | 238 | 800 | 112 |
+| Card 3 | 430 | 366 | 800 | 112 |
+| Card 4 | 430 | 494 | 800 | 112 |
+
+#### 5-card toc
+
+| Item | x   | y   | w   | h   |
+|------|-----|-----|-----|-----|
+| Card 1 | 430 | 110 | 800 | 96 |
+| Card 2 | 430 | 218 | 800 | 96 |
+| Card 3 | 430 | 326 | 800 | 96 |
+| Card 4 | 430 | 434 | 800 | 96 |
+| Card 5 | 430 | 542 | 800 | 96 |
+
+## relation
+
+- Use this layout for concept relation, causal relation, structure relation, or classification relation pages.
+- Preferred composition:
+  - one center or anchor node
+  - 3-6 branch nodes
+  - explicit connectors using `<line>` / `<path>` / arrows
+- Keep the whole relation graph inside:
+  - `x=50..1230`
+  - `y=100..650`
+- Recommended geometry:
+  - center node: `x=450..830`, `y=250..430`, `w=220..360`, `h=90..150`
+  - branch nodes: `w=140..260`, `h=64..120`
+  - minimum node gap: `24`
+  - keep connector lines outside text whenever possible
+- Prefer one `<g>` per node so postprocess can keep node text and node box together.
+- Do not degrade a relation page into a plain bullet list if the content is mainly node-to-node relations.

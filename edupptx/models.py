@@ -26,7 +26,7 @@ class InputContext:
 
 PageType = Literal[
     "cover", "toc", "section", "content", "data", "case", "closing",
-    "timeline", "comparison", "exercise", "summary",
+    "timeline", "comparison", "exercise", "summary", "relation",
     "quiz", "formula", "experiment",
 ]
 
@@ -42,6 +42,7 @@ LayoutHint = Literal[
     "full_image",
     "timeline",
     "comparison",
+    "relation",
 ]
 
 RevealMode = Literal[
