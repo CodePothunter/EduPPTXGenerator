@@ -428,6 +428,8 @@ def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
     # Collect (element, x, y, font_size, parent_card_id) for text elements
     text_info = []
     for t in texts:
+        if _is_footer_page_number_text(t):
+            continue
         y_str = t.get("y")
         x_str = t.get("x", "0")
         if not y_str:
@@ -536,6 +538,34 @@ def _is_meaningful_card_rect(rect: etree._Element) -> bool:
 
 def _is_real_element(el: etree._Element) -> bool:
     return isinstance(getattr(el, "tag", None), str)
+
+
+def _text_content(text_el: etree._Element) -> str:
+    return "".join(text_el.itertext()).strip()
+
+
+def _is_footer_page_number_text(text_el: etree._Element) -> bool:
+    try:
+        x = float(text_el.get("x", "0"))
+        y = float(text_el.get("y", "0"))
+    except (ValueError, TypeError):
+        return False
+
+    fs_str = text_el.get("font-size", "16")
+    try:
+        fs = float(fs_str.replace("px", ""))
+    except (ValueError, TypeError):
+        fs = 16.0
+
+    if y < 680 or x < 1180:
+        return False
+    if fs > 18:
+        return False
+    if text_el.get("text-anchor") != "end":
+        return False
+
+    compact = re.sub(r"\s+", "", _text_content(text_el))
+    return bool(re.fullmatch(r"\d+(?:/\d+)?", compact))
 
 
 def _element_in_defs(el: etree._Element) -> bool:
@@ -1233,6 +1263,8 @@ def _fix_text_outside_cards_legacy_unused(root: etree._Element, warnings: list[s
 def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
     """Fix text that overflows its parent card rect boundary."""
     for text_el in root.iter(f"{{{SVG_NS}}}text"):
+        if _is_footer_page_number_text(text_el):
+            continue
         try:
             tx = float(text_el.get("x", "0"))
             ty = float(text_el.get("y", "0"))

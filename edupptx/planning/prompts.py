@@ -63,9 +63,6 @@ _SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，
 
 为每页选择最合适的卡片布局：
 - `center_hero`: 居中大焦点 — 封面、定义、核心公式
-  - 默认 `material_needs.images = []`
-  - 背景图不计入 `material_needs.images`
-  - 除非用户明确要求该页放前景插图 / 人物图 / 主视觉前景图 / 角色形象，否则不要为 `center_hero` 规划任何 `hero` 或 `illustration`
 - `vertical_list`: 纵向列表 — 目录、步骤序列
 - `bento_2col_equal`: 两等分 — 概念对比、优缺点
 - `bento_2col_asymmetric`: 非对称两栏 (2:1) — 主内容 + 补充
@@ -176,48 +173,31 @@ material_needs.icons 必须从以下列表中选择（Lucide 图标集）：
 - 若使用内部子卡片，必须说明：子卡片仅可上下堆叠、位于大卡片标题之后、从标题文本框底部向下留白 24px 后开始布局、数量为 2–5、用于承载“短标题 + 1–2 行说明”的子点
 - 若使用内部子卡片，同一大卡片内所有子卡片必须等宽等高；左右沿用大卡片的 24px 内边距，子卡片之间垂直间距固定为 16px，高度由标题文本框下缘到大卡片底部内边距之间的剩余空间均分
 - `design_notes` 应明确写出：哪一张大卡片需要内部子卡片，以及子卡片承载的子点类型
-- 对于 `center_hero` 布局页面：
-  - 默认 `material_needs.images = []`
-  - 背景图不计入 `material_needs.images`
-  - 除非用户明确要求该页放前景插图 / 人物图 / 主视觉前景图 / 角色形象，否则不要为该页规划任何 `hero` 或 `illustration`
-  - 如果用户要求“不要除了背景图之外的图片”，则 `material_needs.images` 必须为空数组，`design_notes` 只能描述“背景图 + 标题/主卡/装饰图形”，不得描述前景插图
-## Background-led cover/section rule override
 
-- If the deck uses a system-generated background image, default `cover` and `section` pages to `layout_hint = "full_image"` instead of `center_hero`.
-- Reserve `center_hero` for pages that truly need a centered concept card and do not depend on the background image as the main visual.
-- For `cover` or `section` pages with a background-led composition, keep `material_needs.images = []` unless the user explicitly asks for an extra foreground illustration.
-- Background images do not count as `material_needs.images`.
-- In `design_notes`, describe these pages as "background-led", "full-image", "title over background", or "small accent label", and avoid describing any large centered opaque card.
+## 背景主导的 cover/section 规则覆盖
+- 对于采用背景主导构图的 `cover` 或 `section` 页面，保持 `material_needs.images = []`，除非用户明确要求额外的前景插图。
+- 背景图不计入 `material_needs.images`。
+- 在 `design_notes` 中，将这些页面描述为“背景主导”、“全图构图”、“标题叠加在背景上”或“小型强调标签”，并避免描述任何大型居中的不透明卡片。
+- 就算cover/section 页面使用full_image布局，仍然不生成image，保持 `material_needs.images = []
 
-## TOC vertical-list safety override
+## TOC 纵向列表安全规则覆盖
 
-- For `toc` pages that use `vertical_list`, each `content_point` must stay short and navigation-like rather than explanatory.
-- Prefer each TOC item to stay within roughly 12-18 Chinese characters or one short clause.
-- Do not write paragraph-like descriptions inside TOC cards.
-- If there are 4 TOC cards, design them as 4 medium-height cards; if there are 5 TOC cards, keep each item even shorter instead of shrinking card height too much.
-- If the planned TOC text would require more than 2 lines inside a card, shorten the wording or choose another layout instead of keeping `vertical_list`.
-- In `design_notes`, explicitly describe TOC cards as "fixed-height navigation cards" and avoid asking for dense copy inside each card.
+- 对于使用 `vertical_list` 的 `toc` 页面，每个 `content_point` 都必须保持简短、偏导航性质，而不是解释性描述。
+- 建议每个 TOC 项控制在大约 12–18 个中文字符以内，或一个简短短语。
+- 不要在 TOC 卡片中写成段落式描述。
+- 如果有 4 个 TOC 卡片，就设计成 4 个中等高度的卡片；如果有 5 个 TOC 卡片，应进一步缩短每项文字，而不是把卡片高度压得过小。
+- 如果规划中的 TOC 文本会让单个卡片内容超过 2 行，应缩短措辞，或改用其他布局，而不是继续保留 `vertical_list`。
+- 在 `design_notes` 中，要明确将 TOC 卡片描述为“固定高度的导航卡片”，并避免要求在每张卡片里放入高密度文案。
 
-## Image host safety override
+## 关系图规则覆盖
 
-- Do not plan page-level images into shallow banner cards, thin horizontal strips, TOC cards, summary cards, quiz option cards, table cells, or timeline description cards.
-- Treat any card that is visually shallow or banner-like as text-only. As a rule of thumb, if the intended host card would be shorter than about 180px or wider than about 3 times its height, do not plan an image inside it.
-- If a page needs images, prefer layouts that naturally provide a dedicated large media area, such as `full_image`, `hero_top_cards_bottom`, `cards_top_hero_bottom`, `bento_2col_asymmetric`, or `mixed_grid` with an explicit media card.
-- For `vertical_list`, default to text-only cards. If the page still needs an image, place it in a separate large illustration panel instead of inside list cards.
-- For `hero_top_cards_bottom`, only the top hero area may host images; the bottom cards are text-only.
-- For `cards_top_hero_bottom`, only the bottom hero area may host images; the top cards are text-only.
-- For `bento_2col_asymmetric`, only the wide/main column should host images unless the narrow column is a single tall media card.
-- For `mixed_grid`, images must live in a dedicated large media card. Do not request images if the page only has tips, note strips, alert cards, or other shallow cards.
-- In `design_notes`, explicitly name the intended image host region, such as "left large illustration panel", "top hero media card", or "bottom wide experiment photo zone". Do not simply say "insert an image" without a host region.
+- 对于概念关系、因果链、分类分支、结构图，或“A 与 B 的关系”这类页面，可以使用 `page_type = "relation"`。
+- 对于关系图页面，优先使用 `layout_hint = "relation"`，而不是 `mixed_grid` 或 `comparison`。
+- 在 `relation` 页面中，应将 `content_points` 解释为节点、分支或关系陈述，而不是段落式要点列表。
+- 建议使用 3–6 个简短的关系点。每个节点标签应保持精炼，而不是写成长句。
+- 在 `design_notes` 中，要明确将页面描述为“关系图”、“概念关系”、“因果关系”、“分类关系”或“中心节点 + 分支”。
+- 如果内容主要是节点与节点之间的关系，就不要把它规划成普通列表页。
 
-## Relation graph override
-
-- You may use `page_type = "relation"` for concept relations, causal chains, classification branches, structure diagrams, or “A 与 B 的关系” pages.
-- For relation-graph pages, prefer `layout_hint = "relation"` rather than `mixed_grid` or `comparison`.
-- In a `relation` page, interpret `content_points` as nodes, branches, or relation statements instead of paragraph bullets.
-- Prefer 3-6 short relation points. Keep each node label concise instead of writing long prose.
-- In `design_notes`, explicitly describe the page as "relation graph", "concept relation", "causal relation", "classification relation", or "center node with branches".
-- If the content is mainly node-to-node relations, do not plan it as a normal list page.
 
 """
 

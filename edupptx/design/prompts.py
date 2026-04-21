@@ -52,10 +52,6 @@ _IMAGE_BOUNDARY_RULES = """
 - 严禁把 `1:1` 的图片框画成 `4:3`、`16:9` 或其他比例；也严禁把 `4:3`/`3:4`/`16:9`/`9:16` 的图片框偷改成近似比例。
 - 先决定图片框的 `width/height`，再检查 `width / height` 是否匹配规划比例；比例不匹配时，必须改框尺寸，不要硬塞图片。
 - 对所有真实图片元素，默认添加 `preserveAspectRatio="xMidYMid slice"`，避免拉伸变形。
-- Do not place images inside shallow banner cards or thin horizontal strips. Avoid using a card as an image host if it would be shorter than 180px or if its width is more than 3 times its height.
-- Treat TOC cards, vertical-list cards, small summary cards, quiz option cards, exercise option cards, table cells, timeline description cards, and note/alert/footer strips as text-only containers.
-- If a page contains images, place them only in a dedicated large media region such as a hero area, illustration panel, experiment photo zone, full-image region, or a clearly large main card.
-- If no dedicated large media region exists, do not invent a shallow image slot. Keep the page text-only instead.
 """
 
 
@@ -404,13 +400,12 @@ def build_svg_user_prompt(
     type_hints = {
         "cover": (
             "这是封面页。设计要求：\n"
-            "1. 使用 center_hero 布局：一张大卡片（w≥900, h≥350）居中\n"
+            "1. 必须使用 center_hero 布局：一张大卡片（w≥900, h≥350）居中\n"
             "2. 主标题 font-size=56-72，加粗，居中\n"
             "3. 副标题在主标题下方 40px，font-size=20-24\n"
-            #"4. 如有图片占位，放在标题上方或侧面，尺寸不小于 300x200\n"
             "4. 用装饰圆形、渐变色块填充空白区域，体现主题氛围\n"
             "5. 页面不能有大面积空白——标题区上下都要有视觉元素\n"
-            "6. 默认 `layout_hint = center_hero` 时 `material_needs.images = []`；若该字段为空，不要自行新增任何前景 `<image>`"
+            "6. 默认 `material_needs.images = []`；若该字段为空，不要自行新增任何前景 `<image>`"
         ),
         "toc": (
             "这是目录页。设计要求：\n"
@@ -421,10 +416,11 @@ def build_svg_user_prompt(
         ),
         "section": (
             "这是章节分隔页。设计要求：\n"
-            "1. 章节标题要大（font-size=40-48），居中偏上\n"
+            "1. 章节标题要大（font-size=40-48），居中\n"
             "2. 下方配一句引导语或本章概述（font-size=18-20）\n"
             "3. 可用装饰图形（圆形、线条、色块）填充，体现视觉节奏\n"
             "4. 如有图片占位，居中大尺寸展示"
+            "5. 必须使用 center_hero 布局"
         ),
         "closing": (
             "这是结束页。设计要求：\n"
@@ -504,31 +500,33 @@ def build_svg_user_prompt(
             "4. 参考 page-types.md 中 summary 类型的布局定义"
         ),
     }
+    '''
     type_hints["cover"] = (
-        "This is a cover page.\n"
-        "1. If the deck already has a system background image, prefer a background-led full-image composition instead of a large centered card.\n"
-        "2. Do not draw any full-page background rect, gradient rect, or overlay rect that covers most of the canvas.\n"
-        "3. Do not create any large opaque card. Avoid filled rects wider than 700 or taller than 260 unless they are tiny accent labels.\n"
-        "4. Keep the title and subtitle directly on the background, using only light accents such as a short underline, a small tag, or thin outline decoration.\n"
-        "5. If `layout_hint = center_hero` and `material_needs.images = []`, do not add any foreground `<image>` and do not simulate a hero area with a large solid mask.\n"
-        "6. If a small text backdrop is absolutely necessary, keep it local and soft with fill-opacity <= 0.12.\n"
+        "这是封面页。\n"
+        "1. 必须使用 center_hero 布局。\n"
+        "2. 不要绘制任何铺满整页的背景矩形、渐变矩形，或覆盖大部分画布的遮罩矩形。\n"
+        "3. 不要创建任何大型不透明卡片。避免使用宽度超过 700 或高度超过 260 的填充矩形，除非它们只是很小的强调标签。\n"
+        "4. 标题和副标题应直接放在背景上，只使用轻量装饰，例如短下划线、小标签或细描边装饰。\n"
+        "5. 如果 `layout_hint = center_hero` 且 `material_needs.images = []`，不要添加任何前景 `<image>`，也不要用大块纯色遮罩去模拟 hero 区域。\n"
+        "6. 如果确实需要小范围文字衬底，必须保持局部且柔和，并满足 fill-opacity <= 0.12。\n"
     )
     type_hints["section"] = (
-        "This is a section divider page.\n"
-        "1. If the deck already has a system background image, treat this page as background-led and place the title directly over the background.\n"
-        "2. Do not draw any full-page fill rect and do not place a large centered opaque card behind the title.\n"
-        "3. Use only lightweight accents: a short underline, a slim label, a small outline badge, or subtle corner decoration.\n"
-        "4. If a backdrop is needed for legibility, it must stay small, local, and soft. Avoid filled rects wider than 700 or taller than 240, and keep fill-opacity <= 0.12.\n"
-        "5. Let the background image remain visible across most of the canvas.\n"
+        "这是章节过渡页。\n"
+        "1. 必须使用 center_hero 布局。\n"
+        "2. 不要绘制任何整页填充矩形，也不要在标题后放置大型居中的不透明卡片。\n"
+        "3. 只使用轻量装饰：短下划线、细长标签、小描边徽标，或细微的角落装饰。\n"
+        "4. 如果为了可读性确实需要衬底，它必须保持小范围、局部且柔和。避免使用宽度超过 700 或高度超过 240 的填充矩形，并保持 fill-opacity <= 0.12。\n"
+        "5. 让背景图在画布的大部分区域保持可见。\n"
     )
+    '''
     type_hints["toc"] = (
-        "This is a TOC page using a vertical list of horizontal cards.\n"
-        "1. Treat TOC cards as fixed-height navigation cards, not flexible content containers.\n"
-        "2. If there are 4 TOC cards, each card height must be at least 104px. If there are 5 TOC cards, each card height must be at least 96px.\n"
-        "3. Keep the entire TOC card stack within y=110..650. Do not rely on step6 to expand card heights.\n"
-        "4. Each TOC card may contain at most one short title line plus one short description line, or at most two short text lines total.\n"
-        "5. If the text does not fit within these limits, shorten the wording instead of making the cards shorter than the minimum height.\n"
-        "6. Use stable card spacing: 14-16px for 4 cards, 10-12px for 5 cards.\n"
+        "这是一个使用纵向列表横向卡片的 TOC 页面。\n"
+        "1. 将 TOC 卡片视为固定高度的导航卡片，而不是可伸缩的内容容器。\n"
+        "2. 如果有 4 个 TOC 卡片，每张卡片高度必须至少为 104px；如果有 5 个 TOC 卡片，每张卡片高度必须至少为 96px。\n"
+        "3. 整个 TOC 卡片堆叠区域必须保持在 y=110..650 范围内。不要依赖 step6 去扩展卡片高度。\n"
+        "4. 每张 TOC 卡片最多只能包含一行简短标题加一行简短描述，或者总共最多两行简短文本。\n"
+        "5. 如果文本放不下，应缩短措辞，而不是把卡片压缩到低于最小高度。\n"
+        "6. 使用稳定的卡片间距：4 张卡片时为 14-16px，5 张卡片时为 10-12px。\n"
     )
     if page.page_type in type_hints:
         lines.append(f"\n### 页面类型提示\n{type_hints[page.page_type]}")
@@ -554,35 +552,4 @@ def build_svg_user_prompt(
             "不要假设 `clipPath` 或遮罩能隐藏溢出。"
             "如果安全尺寸不明确，就缩小图片，并至少保留 12px 内边距。"
         )
-        if page.layout_hint == "vertical_list":
-            lines.append(
-                "\n### Layout-specific image host rule\n"
-                "This page uses `vertical_list`. Treat every list card as text-only. "
-                "Do not place `<image>` inside any horizontal list card. "
-                "If an image is required, place it in a separate large illustration panel outside the list stack."
-            )
-        elif page.layout_hint == "hero_top_cards_bottom":
-            lines.append(
-                "\n### Layout-specific image host rule\n"
-                "This page uses `hero_top_cards_bottom`. Only the top hero area may host images. "
-                "The bottom small cards are text-only and must not contain `<image>`."
-            )
-        elif page.layout_hint == "cards_top_hero_bottom":
-            lines.append(
-                "\n### Layout-specific image host rule\n"
-                "This page uses `cards_top_hero_bottom`. Only the bottom hero area may host images. "
-                "The top cards are text-only and must not contain `<image>`."
-            )
-        elif page.layout_hint == "bento_2col_asymmetric":
-            lines.append(
-                "\n### Layout-specific image host rule\n"
-                "This page uses `bento_2col_asymmetric`. Only the wide/main column should host images unless the narrow column is a single tall media card. "
-                "Do not place images into narrow stacked cards or shallow side cards."
-            )
-        elif page.layout_hint == "mixed_grid":
-            lines.append(
-                "\n### Layout-specific image host rule\n"
-                "This page uses `mixed_grid`. Images must live in a dedicated large media card. "
-                "Do not place images into tips, note strips, alert cards, footer cards, or other shallow horizontal cards."
-            )
     return "\n".join(lines)

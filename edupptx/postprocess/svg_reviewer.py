@@ -15,7 +15,7 @@ _REVIEW_SYSTEM_PROMPT = """\
 
 ## 审查重点
 
-1. **页面标题位置**：对除 `center_hero` 布局之外的页面，页面标题必须在 x=50, y=50 附近（font-size=28-36），副标题在 y=78-90。如果标题 y > 100 或被其他元素遮挡，必须修正到标准位置
+1. **页面标题位置**：对除 `center_hero` 和 'full_image' 布局之外的页面，页面标题必须在 x=50, y=50 附近（font-size=28-36），副标题在 y=78-90。如果标题 y > 100 或被其他元素遮挡，必须修正到标准位置。'cover' 和 `section`页允许保留居中标题、居中副标题和居中分隔装饰，不要强制挪到顶部标题区",
 2. **文字溢出/重叠**：检查 <text> 的 y 坐标是否在其所属 <rect> 的 y~y+height 范围内。特别注意 <tspan dy="..."> 会让实际渲染位置下移，最后一个 tspan 的累加 y 不能超出卡片底部
 3. **圆形编号对齐**：<circle> + <text> 组成的序号组件，text 的 y 必须等于 circle 的 cy，text 的 x 必须等于 circle 的 cx。如果发现 text y 比 circle cy 大 20px 以上，修正 text y = circle cy
 4. **卡片边界**：所有卡片和内容元素 x ≥ 50，x+width ≤ 1230，不超出画布。唯一例外是顶部装饰条（height≤8 的全宽 rect）允许 x=0
@@ -37,11 +37,6 @@ _REVIEW_SYSTEM_PROMPT = """\
 如果没有需要修改的地方，也要输出原始 SVG 代码（保持不变）。
 不要输出任何解释文字，只要 SVG 代码。
 """
-
-_REVIEW_SYSTEM_PROMPT = _REVIEW_SYSTEM_PROMPT.replace(
-    "对除 `center_hero` 布局之外的页面，页面标题必须在 x=50, y=50 附近（font-size=28-36），副标题在 y=78-90。如果标题 y > 100 或被其他元素遮挡，必须修正到标准位置",
-    "对除 `center_hero` 布局和 `section/session` 分节页之外的页面，页面标题必须在 x=50, y=50 附近（font-size=28-36），副标题在 y=78-90。如果标题 y > 100 或被其他元素遮挡，必须修正到标准位置。`section/session` 分节页允许保留居中标题、居中副标题和居中分隔装饰，不要强制挪到顶部标题区",
-)
 
 
 _REVIEW_SYSTEM_PROMPT += """
@@ -96,13 +91,6 @@ def review_and_fix_svg(
             "- 保留原始表格结构：表头、列分隔线、各数据行、单元格顺序都不能改\n"
             "- 不要新增或删除行列，不要改成普通卡片布局\n"
             "- 只允许在单元格内部微调文本位置和换行"
-        )
-    if page.page_type == "section":
-        user_prompt += (
-            "\n\n## section/session 页面额外要求\n"
-            "- 这是分节页。允许主标题、副标题和分隔装饰保持居中构图。\n"
-            "- 不要把分节页改写成普通内容页，也不要把主标题强行移动到顶部标题区 x=50, y=50。\n"
-            "- 如果原 SVG 已经是居中主标题 + 居中副标题/分隔线，请优先保留这种结构。"
         )
     if "<tspan" in svg_content:
         user_prompt += (

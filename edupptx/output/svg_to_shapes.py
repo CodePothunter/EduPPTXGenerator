@@ -16,6 +16,7 @@ from __future__ import annotations
 import base64
 import math
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -963,6 +964,20 @@ def _collect_tspan_text(ts: ET.Element) -> str:
     return "".join(ts.itertext())
 
 
+def _normalize_single_line_inline_whitespace(text: str | None) -> str | None:
+    """Remove XML formatting whitespace from inline rich text without forcing reflow.
+
+    This is only safe for single-line rich text where line breaks in the source
+    are indentation artifacts rather than intentional visual line breaks.
+    """
+    if text is None:
+        return None
+    text = re.sub(r"\s*[\r\n]+\s*", "", text)
+    text = text.replace("\t", " ")
+    text = re.sub(r" {2,}", " ", text)
+    return text
+
+
 def _append_text_run(
     line: list[dict],
     text: str | None,
@@ -970,10 +985,13 @@ def _append_text_run(
     bold: bool,
     size: float,
     color: str,
+    normalize_inline_whitespace: bool = False,
 ) -> None:
     """Append a non-empty text run while preserving mixed inline content order."""
     if text is None:
         return
+    if normalize_inline_whitespace:
+        text = _normalize_single_line_inline_whitespace(text)
     if not text.strip():
         return
     run = {
@@ -1013,6 +1031,21 @@ def _meaningful_container_rects(ancestor: ET.Element) -> list[ET.Element]:
     return rects
 
 
+def _rect_contains_point(rect: ET.Element, ctx: ConvertContext, text_x: float, text_y: float) -> bool:
+    rx = ctx_x(_f(rect.get("x")), ctx)
+    ry = ctx_y(_f(rect.get("y")), ctx)
+    rw = ctx_w(_f(rect.get("width")), ctx)
+    rh = ctx_h(_f(rect.get("height")), ctx)
+    return rx - 4 <= text_x <= rx + rw + 4 and ry - 8 <= text_y <= ry + rh + 8
+
+
+def _sibling_container_rects(elem: ET.Element, ctx: ConvertContext) -> list[ET.Element]:
+    parent = ctx.parent_map.get(id(elem))
+    if parent is None:
+        return []
+    return [rect for rect in _meaningful_container_rects(parent) if rect is not elem]
+
+
 def _find_text_container_rect(
     elem: ET.Element,
     ctx: ConvertContext,
@@ -1021,14 +1054,21 @@ def _find_text_container_rect(
 ) -> ET.Element | None:
     best_rect: ET.Element | None = None
     best_area: float | None = None
+    for rect in _sibling_container_rects(elem, ctx):
+        if not _rect_contains_point(rect, ctx, text_x, text_y):
+            continue
+        rw = ctx_w(_f(rect.get("width")), ctx)
+        rh = ctx_h(_f(rect.get("height")), ctx)
+        area = rw * rh
+        if best_area is None or area < best_area:
+            best_rect = rect
+            best_area = area
     for ancestor in _iter_ancestors(elem, ctx):
         for rect in _meaningful_container_rects(ancestor):
-            rx = ctx_x(_f(rect.get("x")), ctx)
-            ry = ctx_y(_f(rect.get("y")), ctx)
+            if not _rect_contains_point(rect, ctx, text_x, text_y):
+                continue
             rw = ctx_w(_f(rect.get("width")), ctx)
             rh = ctx_h(_f(rect.get("height")), ctx)
-            if not (rx - 4 <= text_x <= rx + rw + 4 and ry - 8 <= text_y <= ry + rh + 8):
-                continue
             area = rw * rh
             if best_area is None or area < best_area:
                 best_rect = rect
@@ -1057,6 +1097,47 @@ def _infer_single_line_rich_text_width(
     return max(estimated_width * 1.02, available_width + padding)
 
 
+def _top_level_tspan_columns(elem: ET.Element) -> list[ET.Element]:
+    raw_fs = _f(elem.get("font-size"), 16)
+    tspans = [
+        child for child in list(elem)
+        if child.tag in (f"{{{SVG_NS}}}tspan", "tspan")
+    ]
+    if len(tspans) < 2:
+        return []
+
+    columns: list[ET.Element] = []
+    last_x: float | None = None
+    for ts in tspans:
+        x_attr = ts.get("x")
+        if x_attr is None:
+            return []
+        dy = _f(ts.get("dy"), 0, font_size=raw_fs)
+        if dy > 0:
+            return []
+        try:
+            x_val = float(str(x_attr).strip().replace("px", ""))
+        except (ValueError, TypeError):
+            return []
+        if last_x is not None and abs(x_val - last_x) < 40:
+            return []
+        last_x = x_val
+        columns.append(ts)
+    return columns
+
+
+def _clone_text_from_tspan(elem: ET.Element, ts: ET.Element) -> ET.Element:
+    clone = ET.Element(elem.tag, attrib=elem.attrib.copy())
+    if ts.get("x") is not None:
+        clone.set("x", ts.get("x"))
+    if ts.get("y") is not None:
+        clone.set("y", ts.get("y"))
+    clone.text = ts.text
+    for child in list(ts):
+        clone.append(deepcopy(child))
+    return clone
+
+
 def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     """Convert SVG <text> with optional <tspan> children to DrawingML text shape."""
     # Collect paragraphs: each tspan with dy>0 starts a new line
@@ -1074,6 +1155,15 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
         child for child in list(elem)
         if child.tag in (f"{{{SVG_NS}}}tspan", "tspan")
     ]
+    has_positive_tspan_dy = any(
+        _f(ts.get("dy"), 0, font_size=_f(elem.get("font-size"), 16)) > 0
+        for ts in tspans
+    )
+    normalize_inline_whitespace = bool(tspans) and not has_positive_tspan_dy
+
+    column_tspans = _top_level_tspan_columns(elem)
+    if column_tspans:
+        return "".join(convert_text(_clone_text_from_tspan(elem, ts), ctx) for ts in column_tspans)
 
     if tspans:
         # Mixed inline text via tspan. Preserve parent text + child tail so
@@ -1088,6 +1178,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
             bold=base_weight in ("bold", "600", "700", "800", "900"),
             size=base_fs,
             color=base_color,
+            normalize_inline_whitespace=normalize_inline_whitespace,
         )
         for ts in tspans:
             dy = _f(ts.get("dy"), 0, font_size=raw_fs)
@@ -1104,6 +1195,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
                 bold=ts_weight in ("bold", "600", "700", "800", "900"),
                 size=ts_size,
                 color=ts_color,
+                normalize_inline_whitespace=normalize_inline_whitespace,
             )
             _append_text_run(
                 current_line,
@@ -1111,6 +1203,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
                 bold=base_weight in ("bold", "600", "700", "800", "900"),
                 size=base_fs,
                 color=base_color,
+                normalize_inline_whitespace=normalize_inline_whitespace,
             )
         if current_line:
             paragraphs.append(current_line)
@@ -1132,10 +1225,6 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
 
     is_multiline = len(paragraphs) > 1
     is_bold = base_weight in ("bold", "600", "700", "800", "900")
-    has_positive_tspan_dy = any(
-        _f(ts.get("dy"), 0, font_size=_f(elem.get("font-size"), 16)) > 0
-        for ts in tspans
-    )
     is_single_line_rich_text = bool(tspans) and not has_positive_tspan_dy and len(paragraphs) == 1
 
     # Calculate text box dimensions
