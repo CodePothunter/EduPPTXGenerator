@@ -33,7 +33,7 @@ _PAGE_TYPE_TEMPLATE_STEMS = {
 }
 
 _MAX_TEMPLATE_CHARS = 3000  # Token budget per template
-_DEFAULT_TEMPLATE_FAMILY = "basic"
+_DEFAULT_TEMPLATE_FAMILY = "clean_academic"
 _CHART_TEMPLATE_MAP = {
     "timeline": ("timeline.svg",),
     "relation": ("关系图.svg",),
@@ -73,9 +73,12 @@ def _template_stems_for_page_type(page_type: str) -> tuple[str, ...]:
 def _load_page_templates(
     page_type: str,
     template_family: str = _DEFAULT_TEMPLATE_FAMILY,
+    template_variant: str | None = None,
 ) -> list[tuple[str, str]]:
     """Load all matching SVG reference templates for a page type and family."""
-    target_stems = _template_stems_for_page_type(page_type)
+    target_stems = list(_template_stems_for_page_type(page_type))
+    if template_variant:
+        target_stems = [template_variant] + [stem for stem in target_stems if stem != template_variant]
     families_to_try: list[str] = []
     if template_family:
         families_to_try.append(template_family)
@@ -380,9 +383,15 @@ def build_svg_user_prompt(
         )
 
     # 页面 SVG 参考模板（LLM 照着画，不是填充模板）
-    template_svgs = _load_page_templates(page.page_type, template_family=template_family)
+    template_svgs = _load_page_templates(
+        page.page_type,
+        template_family=template_family,
+        template_variant=page.template_variant,
+    )
     if template_svgs:
         loaded_families = ", ".join(sorted({name.split("/", 1)[0] for name, _ in template_svgs}))
+        if page.template_variant:
+            lines.append(f"\n### Preferred Template Variant\n{page.template_variant}")
         lines.append(
             "\n### 参考模板家族\n"
             f"当前页面优先参考 `{template_family}` 模板目录。实际导入模板来源：{loaded_families}。"

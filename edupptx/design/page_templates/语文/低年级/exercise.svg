@@ -67,14 +67,12 @@
       提示卡
     </text>
 
-    <rect
-      x="870" y="332" width="320" height="150" rx="22"
-      fill="{secondary_bg_color}" stroke="{secondary_color}" stroke-width="2"
-      stroke-dasharray="8 6"
+    <!-- 右侧真实图片区：当前留空 -->
+    <image
+      x="870" y="332" width="320" height="150"
+      href=""
+      preserveAspectRatio="xMidYMid slice"
     />
-    <text x="1030" y="412" text-anchor="middle" font-size="24" font-weight="800" fill="{heading_color}">
-      图片插入区
-    </text>
 
     <rect
       x="870" y="512" width="320" height="94" rx="22"

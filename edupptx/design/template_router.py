@@ -1,63 +1,136 @@
-"""Template-family routing for subject-specific SVG references."""
+"""Template routing, planner briefs, and template alignment helpers."""
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import Any
+from xml.etree import ElementTree as ET
 
 from loguru import logger
+from pydantic import BaseModel, Field
 
-if TYPE_CHECKING:
-    from edupptx.models import PlanningDraft
+from edupptx.models import (
+    ImageNeed,
+    InputContext,
+    PagePlan,
+    PlanningDraft,
+    StyleRouting,
+    VisualPlan,
+)
 
 
 _PAGE_TEMPLATES_DIR = Path(__file__).parent / "page_templates"
-_DEFAULT_FAMILY = "basic"
-_FAMILY_ORDER = ("语文", "数学", "物理", _DEFAULT_FAMILY)
-
-_TEMPLATE_FAMILY_KEYWORDS: dict[str, dict[str, tuple[str, ...]]] = {
-    "语文": {
-        "strong": (
-            "语文", "拼音", "生字", "识字", "写字", "课文", "朗读", "古诗",
-            "作文", "阅读理解", "汉字", "多音字", "轻声", "声调",
-        ),
-        "weak": (
-            "词语", "句子", "段落", "部首", "偏旁", "近义词", "反义词",
-            "修辞", "文言文", "背诵", "字词", "注音",
-        ),
-    },
-    "数学": {
-        "strong": (
-            "数学", "口算", "应用题", "方程", "分数", "小数", "几何",
-            "函数", "统计", "概率",
-        ),
-        "weak": (
-            "加法", "减法", "乘法", "除法", "加减乘除", "比例", "百分数",
-            "面积", "周长", "体积", "图形", "角", "线段", "坐标", "数轴",
-        ),
-    },
-    "物理": {
-        "strong": (
-            "物理", "力学", "电学", "光学", "热学", "声学", "电路", "实验",
-            "电流", "电压", "电阻",
-        ),
-        "weak": (
-            "运动", "速度", "加速度", "受力", "摩擦力", "压强", "浮力",
-            "串联", "并联", "功率", "能量", "做功", "热量", "密度", "质量",
-            "探究", "机械", "透镜",
-        ),
-    },
-}
+_METADATA_NAME = "metadata.xml"
+_STYLE_GUIDE_NAME = "style_guide.md"
+_DEFAULT_STYLE_NAME = "clean_academic"
+_DEFAULT_TEMPLATE_FAMILY = "clean_academic"
+_IGNORED_FAMILIES = {"old", "__pycache__"}
+_PAGE_TYPES = (
+    "cover",
+    "toc",
+    "section",
+    "content",
+    "data",
+    "case",
+    "closing",
+    "timeline",
+    "comparison",
+    "exercise",
+    "summary",
+    "relation",
+    "quiz",
+    "formula",
+    "experiment",
+)
+_STOP_VARIANT_TOKENS = set(_PAGE_TYPES)
+_TRUE_VALUES = {"1", "true", "yes", "y", "required"}
 
 
-def _available_families() -> list[str]:
-    families: list[str] = []
-    for family in _FAMILY_ORDER:
-        if (_PAGE_TEMPLATES_DIR / family).is_dir():
-            families.append(family)
-    if _DEFAULT_FAMILY not in families:
-        families.append(_DEFAULT_FAMILY)
-    return families
+class ManifestKeywords(BaseModel):
+    """Keyword buckets used for style routing."""
+
+    strong: list[str] = Field(default_factory=list)
+    weak: list[str] = Field(default_factory=list)
+    negative: list[str] = Field(default_factory=list)
+
+
+class PalettePreset(BaseModel):
+    """A reusable color preset attached to one template family."""
+
+    id: str = "default"
+    label: str = "Default"
+    keywords: list[str] = Field(default_factory=list)
+    primary_color: str = "#1E40AF"
+    secondary_color: str = "#3B82F6"
+    accent_color: str = "#F59E0B"
+    background_prompt: str = ""
+    card_bg_color: str = "#FFFFFF"
+    secondary_bg_color: str = "#F8FAFC"
+    text_color: str = "#1E293B"
+    heading_color: str = "#0F172A"
+
+
+class ImageSlotSpec(BaseModel):
+    """Structured image-slot contract used during template alignment."""
+
+    slot_id: str = ""
+    required: bool = False
+    role: str = "illustration"
+    aspect_ratio: str = "16:9"
+    query_from: str = "topic"
+    query_suffix: str = ""
+    source: str = "search"
+    x: float | None = None
+    y: float | None = None
+    width: float | None = None
+    height: float | None = None
+    notes: str = ""
+
+
+class PlannerPageSpec(BaseModel):
+    """Planner-facing constraints for one page type."""
+
+    page_type: str = "content"
+    variant: str | None = None
+    title_max_chars: int | None = None
+    subtitle_max_chars: int | None = None
+    body_max_chars: int | None = None
+    toc_items_max: int | None = None
+    preferred_layout_hints: list[str] = Field(default_factory=list)
+    design_notes_hint: str = ""
+    image_slots: list[ImageSlotSpec] = Field(default_factory=list)
+
+
+class TemplateManifest(BaseModel):
+    """Normalized metadata for one template family."""
+
+    style_name: str
+    label: str = ""
+    description: str = ""
+    template_family: str = ""
+    keywords: ManifestKeywords = Field(default_factory=ManifestKeywords)
+    preferred_layout_hints: list[str] = Field(default_factory=list)
+    palette_presets: list[PalettePreset] = Field(default_factory=list)
+    page_variants: dict[str, list[str]] = Field(default_factory=dict)
+    planner_summary: str = ""
+    planner_page_specs: dict[str, PlannerPageSpec] = Field(default_factory=dict)
+
+
+def _default_palette_preset(palette_id: str = "default", label: str = "Default") -> PalettePreset:
+    visual = VisualPlan()
+    return PalettePreset(
+        id=palette_id,
+        label=label,
+        primary_color=visual.primary_color,
+        secondary_color=visual.secondary_color,
+        accent_color=visual.accent_color,
+        background_prompt=visual.background_prompt,
+        card_bg_color=visual.card_bg_color,
+        secondary_bg_color=visual.secondary_bg_color,
+        text_color=visual.text_color,
+        heading_color=visual.heading_color,
+    )
 
 
 def _append_if_text(parts: list[str], value: Any) -> None:
@@ -82,8 +155,288 @@ def _flatten_content_points(value: Any) -> list[str]:
     return flattened
 
 
-def collect_template_routing_text(draft: "PlanningDraft") -> str:
-    """Collect deck-level text used for keyword routing."""
+def _dedupe_keep_order(values: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for value in values:
+        if value in seen:
+            continue
+        seen.add(value)
+        ordered.append(value)
+    return ordered
+
+
+def _split_tokens(value: str) -> list[str]:
+    tokens = [
+        token.strip()
+        for token in re.split(r"[,\n;/|，、]+", value or "")
+        if token.strip()
+    ]
+    return _dedupe_keep_order(tokens)
+
+
+def _relative_family_name(family_dir: Path) -> str:
+    return family_dir.relative_to(_PAGE_TEMPLATES_DIR).as_posix()
+
+
+def _discover_page_variants(family_dir: Path) -> dict[str, list[str]]:
+    variants: dict[str, list[str]] = {}
+    for path in sorted(family_dir.glob("*.svg")):
+        stem = path.stem
+        for page_type in _PAGE_TYPES:
+            if stem == page_type or stem.startswith(f"{page_type}_"):
+                variants.setdefault(page_type, []).append(stem)
+                break
+    for page_type, stems in list(variants.items()):
+        exact = [stem for stem in stems if stem == page_type]
+        variants[page_type] = _dedupe_keep_order(exact + stems)
+    return variants
+
+
+def _iter_template_family_dirs() -> list[Path]:
+    families: list[Path] = []
+    for family_dir in sorted(_PAGE_TEMPLATES_DIR.rglob("*")):
+        if not family_dir.is_dir():
+            continue
+        rel_parts = family_dir.relative_to(_PAGE_TEMPLATES_DIR).parts
+        if not rel_parts:
+            continue
+        if any(part in _IGNORED_FAMILIES for part in rel_parts):
+            continue
+        has_metadata = (family_dir / _METADATA_NAME).exists()
+        has_svgs = any(family_dir.glob("*.svg"))
+        has_child_dirs = any(
+            child.is_dir() and child.name not in _IGNORED_FAMILIES
+            for child in family_dir.iterdir()
+        )
+        if has_metadata or (has_svgs and not has_child_dirs):
+            families.append(family_dir)
+    return families
+
+
+def _build_implicit_manifest(family_dir: Path) -> TemplateManifest:
+    family_name = _relative_family_name(family_dir)
+    return TemplateManifest(
+        style_name=family_name.replace("/", "_"),
+        label=family_dir.name.replace("_", " ").title(),
+        description="Implicit manifest generated from template files.",
+        template_family=family_name,
+        palette_presets=[_default_palette_preset()],
+        page_variants=_discover_page_variants(family_dir),
+    )
+
+
+def _node_text(node: ET.Element | None) -> str:
+    if node is None:
+        return ""
+    return "".join(node.itertext()).strip()
+
+
+def _child_text(parent: ET.Element | None, tag: str) -> str:
+    if parent is None:
+        return ""
+    return _node_text(parent.find(tag))
+
+
+def _text_list(parent: ET.Element | None, tag: str) -> list[str]:
+    if parent is None:
+        return []
+    node = parent.find(tag)
+    if node is None:
+        return []
+    children_text = [_node_text(child) for child in list(node) if _node_text(child)]
+    if children_text:
+        return _dedupe_keep_order(children_text)
+    return _split_tokens(_node_text(node))
+
+
+def _as_bool(value: str | None, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return value.strip().casefold() in _TRUE_VALUES
+
+
+def _as_int(value: str | None) -> int | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        return None
+
+
+def _as_float(value: str | None) -> float | None:
+    if value is None:
+        return None
+    value = value.strip()
+    if not value:
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        return None
+
+
+def _parse_palette_node(node: ET.Element | None) -> PalettePreset | None:
+    if node is None:
+        return None
+    palette_id = node.get("id") or _child_text(node, "id") or "default"
+    return PalettePreset(
+        id=palette_id,
+        label=_child_text(node, "label") or palette_id.replace("_", " ").title(),
+        keywords=_text_list(node, "keywords"),
+        primary_color=_child_text(node, "primary") or "#1E40AF",
+        secondary_color=_child_text(node, "secondary") or "#3B82F6",
+        accent_color=_child_text(node, "accent") or "#F59E0B",
+        background_prompt=_child_text(node, "background_prompt"),
+        card_bg_color=_child_text(node, "card_bg") or "#FFFFFF",
+        secondary_bg_color=_child_text(node, "secondary_bg") or "#F8FAFC",
+        text_color=_child_text(node, "text") or "#1E293B",
+        heading_color=_child_text(node, "heading") or "#0F172A",
+    )
+
+
+def _parse_page_spec_node(node: ET.Element) -> PlannerPageSpec | None:
+    page_type = node.get("type") or _child_text(node, "type")
+    if not page_type:
+        return None
+
+    image_slots: list[ImageSlotSpec] = []
+    slots_parent = node.find("image_slots")
+    if slots_parent is not None:
+        for slot_node in slots_parent.findall("slot"):
+            image_slots.append(ImageSlotSpec(
+                slot_id=slot_node.get("id") or _child_text(slot_node, "id"),
+                required=_as_bool(slot_node.get("required") or _child_text(slot_node, "required")),
+                role=slot_node.get("role") or _child_text(slot_node, "role") or "illustration",
+                aspect_ratio=slot_node.get("aspect_ratio") or _child_text(slot_node, "aspect_ratio") or "16:9",
+                query_from=slot_node.get("query_from") or _child_text(slot_node, "query_from") or "topic",
+                query_suffix=slot_node.get("query_suffix") or _child_text(slot_node, "query_suffix"),
+                source=slot_node.get("source") or _child_text(slot_node, "source") or "search",
+                x=_as_float(slot_node.get("x") or _child_text(slot_node, "x")),
+                y=_as_float(slot_node.get("y") or _child_text(slot_node, "y")),
+                width=_as_float(slot_node.get("width") or _child_text(slot_node, "width")),
+                height=_as_float(slot_node.get("height") or _child_text(slot_node, "height")),
+                notes=_child_text(slot_node, "notes"),
+            ))
+
+    return PlannerPageSpec(
+        page_type=page_type,
+        variant=node.get("variant") or _child_text(node, "variant") or None,
+        title_max_chars=_as_int(_child_text(node, "title_max_chars")),
+        subtitle_max_chars=_as_int(_child_text(node, "subtitle_max_chars")),
+        body_max_chars=_as_int(_child_text(node, "body_max_chars")),
+        toc_items_max=_as_int(_child_text(node, "toc_items_max")),
+        preferred_layout_hints=_text_list(node, "preferred_layout_hints"),
+        design_notes_hint=_child_text(node, "design_notes_hint"),
+        image_slots=image_slots,
+    )
+
+
+def _load_metadata_file(metadata_path: Path) -> TemplateManifest:
+    root = ET.fromstring(metadata_path.read_text(encoding="utf-8"))
+    family_name = _relative_family_name(metadata_path.parent)
+    identity = root.find("identity")
+    routing = root.find("routing")
+    visual = root.find("visual")
+    planner = root.find("planner")
+
+    palettes = [
+        preset
+        for preset in (_parse_palette_node(node) for node in (visual.findall("palette") if visual is not None else []))
+        if preset is not None
+    ]
+    if not palettes:
+        palettes = [_default_palette_preset()]
+
+    page_specs: dict[str, PlannerPageSpec] = {}
+    if planner is not None:
+        for page_node in planner.findall("page"):
+            spec = _parse_page_spec_node(page_node)
+            if spec is not None:
+                page_specs[spec.page_type] = spec
+
+    preferred_layout_hints = _dedupe_keep_order([
+        *(_text_list(root, "preferred_layout_hints")),
+        *(
+            hint
+            for spec in page_specs.values()
+            for hint in spec.preferred_layout_hints
+        ),
+    ])
+
+    strong_keywords = _dedupe_keep_order([
+        *(_text_list(routing, "priority_keywords")),
+        *(_text_list(identity, "tags")),
+    ])
+    weak_keywords = _dedupe_keep_order([
+        *(_text_list(routing, "subjects")),
+        *(_text_list(routing, "scenes")),
+    ])
+    negative_keywords = _text_list(routing, "negative_keywords")
+
+    manifest = TemplateManifest(
+        style_name=_child_text(identity, "name") or family_name.replace("/", "_"),
+        label=_child_text(identity, "label") or metadata_path.parent.name,
+        description=_child_text(identity, "intro"),
+        template_family=family_name,
+        keywords=ManifestKeywords(
+            strong=strong_keywords,
+            weak=weak_keywords,
+            negative=negative_keywords,
+        ),
+        preferred_layout_hints=preferred_layout_hints,
+        palette_presets=palettes,
+        page_variants=_discover_page_variants(metadata_path.parent),
+        planner_summary=_child_text(planner, "summary"),
+        planner_page_specs=page_specs,
+    )
+    return manifest
+
+
+def load_style_manifests() -> list[TemplateManifest]:
+    """Load explicit metadata.xml files and synthesize defaults for bare folders."""
+
+    manifests_by_family: dict[str, TemplateManifest] = {}
+    for family_dir in _iter_template_family_dirs():
+        metadata_path = family_dir / _METADATA_NAME
+        try:
+            if metadata_path.exists():
+                manifest = _load_metadata_file(metadata_path)
+            else:
+                manifest = _build_implicit_manifest(family_dir)
+        except Exception as exc:
+            logger.warning("Failed to parse template metadata in {}: {}", family_dir, str(exc)[:120])
+            manifest = _build_implicit_manifest(family_dir)
+        manifests_by_family[manifest.template_family] = manifest
+    return list(manifests_by_family.values())
+
+
+def load_style_manifest(template_family: str) -> TemplateManifest | None:
+    """Load one manifest by template-family path."""
+
+    normalized = template_family.replace("\\", "/").strip("/")
+    for manifest in load_style_manifests():
+        if manifest.template_family == normalized:
+            return manifest
+    return None
+
+
+def load_style_guide(template_family: str) -> str:
+    """Load `style_guide.md` from the selected template family."""
+
+    guide_path = _PAGE_TEMPLATES_DIR / template_family / _STYLE_GUIDE_NAME
+    if not guide_path.exists():
+        return ""
+    return guide_path.read_text(encoding="utf-8").strip()
+
+
+def collect_template_routing_text(draft: PlanningDraft) -> str:
+    """Collect deck-level text used for keyword and LLM routing."""
+
     parts: list[str] = []
     meta = getattr(draft, "meta", None)
     if meta is not None:
@@ -105,95 +458,524 @@ def collect_template_routing_text(draft: "PlanningDraft") -> str:
     return "\n".join(parts)
 
 
-def score_template_families(text: str) -> dict[str, int]:
-    """Return keyword-match scores per template family."""
-    normalized = text.lower()
-    scores: dict[str, int] = {}
-    for family, groups in _TEMPLATE_FAMILY_KEYWORDS.items():
-        score = 0
-        for keyword in groups["strong"]:
-            if keyword.lower() in normalized:
-                score += 3
-        for keyword in groups["weak"]:
-            if keyword.lower() in normalized:
-                score += 1
-        if family.lower() in normalized:
-            score += 5
-        scores[family] = score
-    return scores
+def collect_input_routing_text(ctx: InputContext) -> str:
+    """Collect routing text before planning is generated."""
+
+    parts: list[str] = [ctx.topic]
+    _append_if_text(parts, ctx.requirements)
+    if ctx.source_text:
+        _append_if_text(parts, ctx.source_text[:2000])
+    if ctx.research_summary:
+        _append_if_text(parts, ctx.research_summary)
+    return "\n".join(parts)
 
 
-def choose_template_family_by_keywords(text: str) -> str | None:
-    """Choose a family when keyword evidence is clear enough."""
-    scores = score_template_families(text)
-    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
-    if not ranked or ranked[0][1] <= 0:
-        return None
-    top_family, top_score = ranked[0]
-    second_score = ranked[1][1] if len(ranked) > 1 else 0
-    if top_score >= 3 and top_score - second_score >= 2:
-        return top_family
-    return None
+def _score_manifest(
+    manifest: TemplateManifest,
+    routing_text: str,
+    layout_hints: list[str] | tuple[str, ...] = (),
+) -> int:
+    normalized = routing_text.casefold()
+    score = 0
+    for keyword in manifest.keywords.strong:
+        if keyword and keyword.casefold() in normalized:
+            score += 4
+    for keyword in manifest.keywords.weak:
+        if keyword and keyword.casefold() in normalized:
+            score += 2
+    for keyword in manifest.keywords.negative:
+        if keyword and keyword.casefold() in normalized:
+            score -= 3
+    if manifest.style_name.casefold() in normalized:
+        score += 5
+    if manifest.template_family.casefold() in normalized:
+        score += 3
+    if manifest.label and manifest.label.casefold() in normalized:
+        score += 3
+    for layout_hint in layout_hints:
+        if layout_hint in manifest.preferred_layout_hints:
+            score += 1
+    return score
 
 
-def _summarize_family_templates(family: str) -> str:
-    family_dir = _PAGE_TEMPLATES_DIR / family
-    if not family_dir.is_dir():
-        return f"- {family}: <missing>"
-    names = sorted(path.name for path in family_dir.glob("*.svg"))
-    if len(names) > 8:
-        names = names[:8] + ["..."]
-    return f"- {family}: {', '.join(names)}"
+def score_style_manifests(
+    draft: PlanningDraft,
+    manifests: list[TemplateManifest] | None = None,
+) -> dict[str, int]:
+    """Return keyword-match scores per style manifest for one planning draft."""
 
-
-def choose_template_family_with_llm(client: Any, draft: "PlanningDraft") -> str:
-    """Use a small LLM decision only when keyword routing is ambiguous."""
-    if client is None:
-        return _DEFAULT_FAMILY
-
-    families = _available_families()
-    family_summary = "\n".join(_summarize_family_templates(family) for family in families)
+    manifests = manifests or load_style_manifests()
     routing_text = collect_template_routing_text(draft)
+    layout_hints = [page.layout_hint for page in draft.pages]
+    return {
+        manifest.style_name: _score_manifest(manifest, routing_text, layout_hints)
+        for manifest in manifests
+    }
+
+
+def _choose_manifest_by_keywords(
+    routing_text: str,
+    manifests: list[TemplateManifest],
+    layout_hints: list[str] | tuple[str, ...] = (),
+) -> tuple[TemplateManifest | None, str]:
+    if not manifests:
+        return None, "fallback"
+
+    scored = [
+        (manifest, _score_manifest(manifest, routing_text, layout_hints))
+        for manifest in manifests
+    ]
+    ranked = sorted(scored, key=lambda item: item[1], reverse=True)
+    top_manifest, top_score = ranked[0]
+    second_score = ranked[1][1] if len(ranked) > 1 else 0
+    if top_score > 0 and top_score - second_score >= 2:
+        return top_manifest, "keyword"
+    return None, "fallback"
+
+
+def _summarize_manifest(manifest: TemplateManifest) -> str:
+    layout_hints = ", ".join(manifest.preferred_layout_hints[:4]) or "none"
+    palette_ids = ", ".join(preset.id for preset in manifest.palette_presets[:4]) or "default"
+    return (
+        f"- {manifest.style_name}: template_family={manifest.template_family}; "
+        f"layouts={layout_hints}; palettes={palette_ids}; description={manifest.description or manifest.label}"
+    )
+
+
+def _choose_manifest_with_llm(
+    client: Any,
+    routing_text: str,
+    manifests: list[TemplateManifest],
+    layout_hints: list[str] | tuple[str, ...] = (),
+) -> TemplateManifest | None:
+    if client is None or not manifests:
+        return None
+
+    scores = {
+        manifest.style_name: _score_manifest(manifest, routing_text, layout_hints)
+        for manifest in manifests
+    }
+    ranked = sorted(
+        manifests,
+        key=lambda manifest: scores.get(manifest.style_name, 0),
+        reverse=True,
+    )
+    candidates = ranked[: min(3, len(ranked))]
     messages = [
         {
             "role": "system",
             "content": (
-                "You choose one template family for an educational PPT deck.\n"
-                "Return exactly one family name from the allowed list.\n"
+                "You choose one PPT style manifest for an educational deck.\n"
+                "Return exactly one style_name from the allowed list.\n"
                 "Do not explain."
             ),
         },
         {
             "role": "user",
             "content": (
-                "Available template families:\n"
-                f"{family_summary}\n\n"
-                f"Allowed outputs: {', '.join(families)}\n\n"
-                "Deck content:\n"
-                f"{routing_text}\n"
+                "Candidates:\n"
+                + "\n".join(_summarize_manifest(manifest) for manifest in candidates)
+                + "\n\nAllowed outputs: "
+                + ", ".join(manifest.style_name for manifest in candidates)
+                + "\n\nDeck content:\n"
+                + routing_text
             ),
         },
     ]
     try:
-        response = client.chat(messages=messages, temperature=0.0, max_tokens=32)
+        response = str(client.chat(messages=messages, temperature=0.0, max_tokens=32)).strip()
     except Exception as exc:
-        logger.warning("Template family LLM routing failed: {}", str(exc)[:120])
-        return _DEFAULT_FAMILY
-
-    response_text = str(response).strip()
-    for family in families:
-        if family in response_text:
-            return family
-    return _DEFAULT_FAMILY
+        logger.warning("Style manifest LLM routing failed: {}", str(exc)[:120])
+        return None
+    for manifest in candidates:
+        if manifest.style_name in response:
+            return manifest
+    return None
 
 
-def resolve_template_family(draft: "PlanningDraft", client: Any = None) -> str:
-    """Resolve a single template family for the whole deck."""
-    routing_text = collect_template_routing_text(draft)
-    chosen = choose_template_family_by_keywords(routing_text)
-    if chosen:
-        logger.info("Template family resolved by keywords: {}", chosen)
-        return chosen
-    chosen = choose_template_family_with_llm(client, draft)
-    logger.info("Template family resolved by LLM fallback: {}", chosen)
-    return chosen or _DEFAULT_FAMILY
+def _default_manifest_from_list(manifests: list[TemplateManifest]) -> TemplateManifest:
+    if not manifests:
+        family_dir = _PAGE_TEMPLATES_DIR / _DEFAULT_TEMPLATE_FAMILY
+        if family_dir.exists():
+            return _build_implicit_manifest(family_dir)
+        raise FileNotFoundError(f"No template families available in {_PAGE_TEMPLATES_DIR}")
+    for manifest in manifests:
+        if manifest.style_name == _DEFAULT_STYLE_NAME or manifest.template_family == _DEFAULT_TEMPLATE_FAMILY:
+            return manifest
+    return manifests[0]
+
+
+def _choose_palette_preset(manifest: TemplateManifest, routing_text: str) -> PalettePreset:
+    if not manifest.palette_presets:
+        return _default_palette_preset()
+    if len(manifest.palette_presets) == 1:
+        return manifest.palette_presets[0]
+
+    normalized = routing_text.casefold()
+    scored: list[tuple[PalettePreset, int]] = []
+    for preset in manifest.palette_presets:
+        score = 0
+        if preset.id.casefold() in normalized:
+            score += 3
+        if preset.label and preset.label.casefold() in normalized:
+            score += 2
+        for keyword in preset.keywords:
+            if keyword and keyword.casefold() in normalized:
+                score += 1
+        scored.append((preset, score))
+    scored.sort(key=lambda item: item[1], reverse=True)
+    return scored[0][0]
+
+
+def apply_palette_preset(visual: VisualPlan, preset: PalettePreset) -> None:
+    """Apply one selected palette preset onto a `VisualPlan`."""
+
+    visual.primary_color = preset.primary_color
+    visual.secondary_color = preset.secondary_color
+    visual.accent_color = preset.accent_color
+    visual.card_bg_color = preset.card_bg_color
+    visual.secondary_bg_color = preset.secondary_bg_color
+    visual.text_color = preset.text_color
+    visual.heading_color = preset.heading_color
+    if preset.background_prompt:
+        if visual.background_prompt and preset.background_prompt not in visual.background_prompt:
+            visual.background_prompt = f"{preset.background_prompt}; {visual.background_prompt}"
+        else:
+            visual.background_prompt = preset.background_prompt
+
+
+def _page_routing_text(page: PagePlan) -> str:
+    parts: list[str] = []
+    _append_if_text(parts, page.page_type)
+    _append_if_text(parts, page.layout_hint)
+    _append_if_text(parts, page.title)
+    _append_if_text(parts, page.subtitle)
+    _append_if_text(parts, page.design_notes)
+    for point in _flatten_content_points(page.content_points):
+        _append_if_text(parts, point)
+    return "\n".join(parts)
+
+
+def _variant_tokens(stem: str) -> list[str]:
+    return [
+        token
+        for token in re.split(r"[_\-\s]+", stem.casefold())
+        if token and token not in _STOP_VARIANT_TOKENS
+    ]
+
+
+def _choose_page_variant_with_llm(client: Any, page: PagePlan, candidates: list[str]) -> str | None:
+    if client is None or len(candidates) <= 1:
+        return None
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You choose one SVG template variant stem for a PPT page.\n"
+                "Return exactly one candidate stem.\n"
+                "Do not explain."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Page type: {page.page_type}\n"
+                f"Layout hint: {page.layout_hint}\n"
+                f"Title: {page.title}\n"
+                f"Subtitle: {page.subtitle or ''}\n"
+                f"Design notes: {page.design_notes or ''}\n"
+                f"Candidates: {', '.join(candidates)}\n"
+            ),
+        },
+    ]
+    try:
+        response = str(client.chat(messages=messages, temperature=0.0, max_tokens=32)).strip()
+    except Exception as exc:
+        logger.warning("Template variant LLM routing failed: {}", str(exc)[:120])
+        return None
+    for candidate in candidates:
+        if candidate in response:
+            return candidate
+    return None
+
+
+def resolve_page_template_variant(
+    page: PagePlan,
+    manifest: TemplateManifest,
+    client: Any = None,
+) -> str | None:
+    """Resolve the preferred template stem for one page."""
+
+    candidates = list(
+        manifest.page_variants.get(page.page_type)
+        or manifest.page_variants.get("content", [])
+    )
+    spec = manifest.planner_page_specs.get(page.page_type)
+    if spec and spec.variant:
+        candidates = _dedupe_keep_order([spec.variant] + candidates)
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    normalized = _page_routing_text(page).casefold()
+    scored: list[tuple[str, int]] = []
+    for index, candidate in enumerate(candidates):
+        score = 0
+        if candidate == page.page_type:
+            score += 2
+        if candidate.startswith(f"{page.page_type}_"):
+            score += 1
+        for token in _variant_tokens(candidate):
+            if token in normalized:
+                score += 2
+        score -= index
+        scored.append((candidate, score))
+    scored.sort(key=lambda item: item[1], reverse=True)
+    top_candidate, top_score = scored[0]
+    second_score = scored[1][1] if len(scored) > 1 else -999
+    if top_score > second_score:
+        return top_candidate
+    llm_choice = _choose_page_variant_with_llm(client, page, [candidate for candidate, _ in scored[:3]])
+    return llm_choice or top_candidate
+
+
+def resolve_style_routing_from_text(
+    routing_text: str,
+    client: Any = None,
+    layout_hints: list[str] | tuple[str, ...] = (),
+) -> tuple[StyleRouting, TemplateManifest, PalettePreset]:
+    """Resolve style routing from free text plus optional layout hints."""
+
+    manifests = load_style_manifests()
+    manifest, resolved_by = _choose_manifest_by_keywords(routing_text, manifests, layout_hints)
+    if manifest is None:
+        manifest = _choose_manifest_with_llm(client, routing_text, manifests, layout_hints)
+        if manifest is not None:
+            resolved_by = "llm"
+    if manifest is None:
+        manifest = _default_manifest_from_list(manifests)
+        resolved_by = "fallback"
+
+    palette = _choose_palette_preset(manifest, routing_text)
+    routing = StyleRouting(
+        style_name=manifest.style_name,
+        template_family=manifest.template_family,
+        palette_id=palette.id,
+        resolved_by=resolved_by,
+    )
+    return routing, manifest, palette
+
+
+def resolve_style_routing_from_input(
+    ctx: InputContext,
+    client: Any = None,
+) -> tuple[StyleRouting, TemplateManifest, PalettePreset]:
+    """Resolve template routing before the planning phase."""
+
+    return resolve_style_routing_from_text(collect_input_routing_text(ctx), client=client)
+
+
+def resolve_style_routing(
+    draft: PlanningDraft,
+    client: Any = None,
+) -> tuple[StyleRouting, TemplateManifest, PalettePreset]:
+    """Resolve deck-level style routing and palette preset."""
+
+    return resolve_style_routing_from_text(
+        collect_template_routing_text(draft),
+        client=client,
+        layout_hints=[page.layout_hint for page in draft.pages],
+    )
+
+
+def assign_page_template_variants(
+    draft: PlanningDraft,
+    manifest: TemplateManifest,
+    client: Any = None,
+) -> PlanningDraft:
+    """Assign page-level template variants for the selected template family."""
+
+    page_lookup = {page.page_number: page for page in draft.pages}
+    for page in sorted(draft.pages, key=lambda item: item.page_number):
+        if page.reveal_from_page is not None:
+            source = page_lookup.get(page.reveal_from_page)
+            if source is not None and source.template_variant:
+                page.template_variant = source.template_variant
+                continue
+        page.template_variant = resolve_page_template_variant(page, manifest, client)
+    return draft
+
+
+def build_planning_brief(
+    manifest: TemplateManifest,
+    palette: PalettePreset | None = None,
+) -> str:
+    """Build a compact planner-facing brief from selected template metadata."""
+
+    lines = [
+        f"Selected Template: {manifest.label or manifest.style_name}",
+        f"- style_name: {manifest.style_name}",
+        f"- template_family: {manifest.template_family}",
+    ]
+    if manifest.description:
+        lines.append(f"- intro: {manifest.description}")
+    if manifest.preferred_layout_hints:
+        lines.append(f"- preferred_layouts: {', '.join(manifest.preferred_layout_hints)}")
+    if palette is None and manifest.palette_presets:
+        palette = manifest.palette_presets[0]
+    if palette is not None:
+        lines.append(
+            "- palette_hint: "
+            f"primary={palette.primary_color}, secondary={palette.secondary_color}, accent={palette.accent_color}"
+        )
+    if manifest.planner_summary:
+        lines.append(f"- planner_summary: {manifest.planner_summary}")
+
+    if manifest.planner_page_specs:
+        lines.append("")
+        lines.append("Page Contracts:")
+        for page_type in _PAGE_TYPES:
+            spec = manifest.planner_page_specs.get(page_type)
+            if spec is None:
+                continue
+            parts = [f"* {page_type}"]
+            if spec.variant:
+                parts.append(f"variant={spec.variant}")
+            if spec.title_max_chars is not None:
+                parts.append(f"title<={spec.title_max_chars}")
+            if spec.subtitle_max_chars is not None:
+                parts.append(f"subtitle<={spec.subtitle_max_chars}")
+            if spec.toc_items_max is not None:
+                parts.append(f"toc_items<={spec.toc_items_max}")
+            if spec.preferred_layout_hints:
+                parts.append(f"layouts={', '.join(spec.preferred_layout_hints)}")
+            if spec.image_slots:
+                slots = ", ".join(
+                    (
+                        f"{slot.slot_id or slot.role}:"
+                        f"{slot.aspect_ratio}:"
+                        f"{'required' if slot.required else 'optional'}"
+                        + (
+                            f"@({int(slot.x)},{int(slot.y)},{int(slot.width)}x{int(slot.height)})"
+                            if None not in (slot.x, slot.y, slot.width, slot.height)
+                            else ""
+                        )
+                    )
+                    for slot in spec.image_slots
+                )
+                parts.append(f"image_slots=[{slots}]")
+            if spec.design_notes_hint:
+                parts.append(f"hint={spec.design_notes_hint}")
+            lines.append("  " + "; ".join(parts))
+
+    return "\n".join(lines)
+
+
+def _trim_text(value: str | None, max_chars: int | None) -> str | None:
+    if value is None or max_chars is None or max_chars <= 0:
+        return value
+    if len(value) <= max_chars:
+        return value
+    if max_chars <= 1:
+        return value[:max_chars]
+    return value[: max_chars - 1].rstrip() + "…"
+
+
+def _flatten_page_text_to_snippet(content_points: list[Any], max_chars: int = 24) -> str:
+    snippet = " ".join(_flatten_content_points(content_points)).strip()
+    if len(snippet) <= max_chars:
+        return snippet
+    return snippet[:max_chars].rstrip()
+
+
+def _build_image_query(draft: PlanningDraft, page: PagePlan, slot: ImageSlotSpec) -> str:
+    tokens = [token.strip().casefold() for token in slot.query_from.split("+") if token.strip()]
+    parts: list[str] = []
+    for token in tokens:
+        if token == "topic":
+            _append_if_text(parts, draft.meta.topic)
+        elif token in {"title", "page_title"}:
+            _append_if_text(parts, page.title)
+        elif token in {"content", "page_content"}:
+            _append_if_text(parts, _flatten_page_text_to_snippet(page.content_points, max_chars=28))
+    if not parts:
+        _append_if_text(parts, page.title)
+    if not parts:
+        _append_if_text(parts, draft.meta.topic)
+    if slot.query_suffix:
+        parts.append(slot.query_suffix)
+    return " ".join(part for part in parts if part)
+
+
+def align_draft_to_template(
+    draft: PlanningDraft,
+    manifest: TemplateManifest,
+) -> PlanningDraft:
+    """Mutate a draft so it respects template contracts before materials/svg generation."""
+
+    page_lookup = {page.page_number: page for page in draft.pages}
+    for page in sorted(draft.pages, key=lambda item: item.page_number):
+        if page.reveal_from_page is not None:
+            source = page_lookup.get(page.reveal_from_page)
+            if source is not None:
+                page.layout_hint = source.layout_hint
+                page.material_needs = source.material_needs.model_copy(deep=True)
+                if source.template_variant:
+                    page.template_variant = source.template_variant
+            continue
+
+        spec = manifest.planner_page_specs.get(page.page_type) or manifest.planner_page_specs.get("content")
+        if spec is None:
+            continue
+
+        if spec.preferred_layout_hints and page.layout_hint not in spec.preferred_layout_hints:
+            page.layout_hint = spec.preferred_layout_hints[0]
+
+        page.title = _trim_text(page.title, spec.title_max_chars) or page.title
+        page.subtitle = _trim_text(page.subtitle, spec.subtitle_max_chars)
+
+        if page.page_type == "toc" and spec.toc_items_max is not None and len(page.content_points) > spec.toc_items_max:
+            page.content_points = page.content_points[:spec.toc_items_max]
+
+        if spec.design_notes_hint and not page.design_notes.strip():
+            page.design_notes = spec.design_notes_hint
+
+        current_images = list(page.material_needs.images or [])
+        for index, slot in enumerate(spec.image_slots):
+            if index < len(current_images):
+                current_images[index].aspect_ratio = slot.aspect_ratio
+                current_images[index].role = slot.role  # type: ignore[assignment]
+                if not current_images[index].query.strip():
+                    current_images[index].query = _build_image_query(draft, page, slot)
+                continue
+            if not slot.required:
+                continue
+            current_images.append(ImageNeed(
+                query=_build_image_query(draft, page, slot),
+                source=slot.source,  # type: ignore[arg-type]
+                role=slot.role,      # type: ignore[arg-type]
+                aspect_ratio=slot.aspect_ratio,
+            ))
+        page.material_needs.images = current_images
+
+    return draft
+
+
+def apply_style_routing(draft: PlanningDraft, client: Any = None) -> PlanningDraft:
+    """Backwards-compatible wrapper: route deck, apply palette, assign variants."""
+
+    routing, manifest, palette = resolve_style_routing(draft, client)
+    draft.style_routing = routing
+    apply_palette_preset(draft.visual, palette)
+    assign_page_template_variants(draft, manifest, client)
+    return draft
+
+
+def resolve_template_family(draft: PlanningDraft, client: Any = None) -> str:
+    """Backwards-compatible helper returning only the resolved family."""
+
+    if getattr(draft, "style_routing", None) and draft.style_routing.template_family:
+        return draft.style_routing.template_family
+    routing, _manifest, _palette = resolve_style_routing(draft, client)
+    return routing.template_family

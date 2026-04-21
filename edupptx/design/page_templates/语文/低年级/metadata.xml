@@ -1,0 +1,165 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+  <identity>
+    <name>yuwen_lower_grade_playful</name>
+    <label>
+      语文低年级 · 童趣启蒙风
+    </label>
+    <category>primary_lower_grade</category>
+    <tags>
+      语文, 低年级, 一年级, 二年级, 识字, 拼音, 看图, 启蒙, 童趣
+    </tags>
+    <intro>
+      适用于一二年级语文启蒙教学的基础模板组。当前目录包含 cover、toc、section、content、exercise、quiz、summary、closing 八类页面，整体采用圆角卡片、大留白和柔和高亮配色。
+    </intro>
+  </identity>
+
+  <routing>
+    <subjects>
+      语文, 一年级, 二年级, 低年级, 启蒙
+    </subjects>
+    <scenes>
+      识字, 拼音, 看图说话, 课堂导入, 练习, 闯关, 总结
+    </scenes>
+    <priority_keywords>
+      一年级, 二年级, 识字, 拼音, 口算, 图形认识, 生活情境, 故事, 看图, 观察, 小游戏, 闯关, 练一练
+    </priority_keywords>
+    <negative_keywords>
+      data, formula, comparison, 高理性, 数据分析, 公式推导
+    </negative_keywords>
+  </routing>
+
+  <visual>
+    <palette id="lower_grade_playful">
+      <label>Lower Grade Playful</label>
+      <keywords>playful, lower-grade, bright, rounded, spacious</keywords>
+      <primary>#4B8BFF</primary>
+      <secondary>#66CDAA</secondary>
+      <accent>#FFC857</accent>
+      <card_bg>#FFFFFF</card_bg>
+      <secondary_bg>#EEF7FF</secondary_bg>
+      <text>#394150</text>
+      <heading>#24507A</heading>
+      <background_prompt>soft classroom paper texture, playful pastel shapes, bright white canvas, gentle highlight dots</background_prompt>
+    </palette>
+  </visual>
+
+  <planner>
+    <summary>
+      基础版童趣启蒙模板。优先使用圆角卡片、清晰分区和大留白；图像数量与几何位置以当前 SVG 模板中的真实 image 槽位为准，不额外增减。
+    </summary>
+
+    <page type="cover" variant="cover">
+      <preferred_layout_hints>center_hero</preferred_layout_hints>
+      <design_notes_hint>
+        主标题居中，标题下方保留两张并列封面配图，底部两个胶囊标签保持短词组。
+      </design_notes_hint>
+      <image_slots>
+        <slot id="cover_left" required="true" role="illustration" aspect_ratio="11:8" query_from="topic" query_suffix="lower-grade chinese cover illustration" source="search" x="226" y="370" width="220" height="160">
+          <notes>
+            左侧封面配图，位于中部大卡片内，和右侧图片左右对称。
+          </notes>
+        </slot>
+        <slot id="cover_right" required="true" role="illustration" aspect_ratio="11:8" query_from="topic" query_suffix="lower-grade chinese cover illustration" source="search" x="834" y="370" width="220" height="160">
+          <notes>
+            右侧封面配图，位于中部大卡片内，和左侧图片左右对称。
+          </notes>
+        </slot>
+      </image_slots>
+    </page>
+
+    <page type="toc" variant="toc">
+      <preferred_layout_hints>vertical_list</preferred_layout_hints>
+      <design_notes_hint>
+        左侧是整列目录配图，右侧是纵向目录项卡片列表。
+      </design_notes_hint>
+      <image_slots>
+        <slot id="toc_cover" required="true" role="illustration" aspect_ratio="3:4" query_from="topic" query_suffix="lower-grade chinese toc illustration" source="search" x="82" y="180" width="276" height="368">
+          <notes>
+            目录页左侧主配图，放在竖向大卡片内部，不要新增第二张图。
+          </notes>
+        </slot>
+      </image_slots>
+    </page>
+
+    <page type="section" variant="section">
+      <preferred_layout_hints>center_hero</preferred_layout_hints>
+      <design_notes_hint>
+        章节标题卡片居中，底部保留一张横向章节配图作为过渡。
+      </design_notes_hint>
+      <image_slots>
+        <slot id="section_banner" required="true" role="illustration" aspect_ratio="35:16" query_from="topic" query_suffix="lower-grade chinese section banner illustration" source="search" x="465" y="470" width="350" height="160">
+          <notes>
+            底部横向章节配图，宽图比例明显，不要改成竖图。
+          </notes>
+        </slot>
+      </image_slots>
+    </page>
+
+    <page type="content" variant="content">
+      <preferred_layout_hints>mixed_grid</preferred_layout_hints>
+      <design_notes_hint>
+        左侧为大图卡片，右上为知识点卡片，右下为表达或互动卡片。
+      </design_notes_hint>
+      <image_slots>
+        <slot id="content_left_visual" required="true" role="illustration" aspect_ratio="67:42" query_from="topic" query_suffix="lower-grade chinese teaching illustration" source="search" x="84" y="160" width="402" height="252">
+          <notes>
+            左侧主图位于大卡片上半区，下方还有两个小信息卡，图片高度不要侵占下方卡片区域。
+          </notes>
+        </slot>
+      </image_slots>
+    </page>
+
+    <page type="exercise" variant="exercise">
+      <preferred_layout_hints>mixed_grid</preferred_layout_hints>
+      <design_notes_hint>
+        左侧是练习区，右侧是提示卡；图片只放在右侧提示卡上半区。
+      </design_notes_hint>
+      <image_slots>
+        <slot id="exercise_right_tip" required="true" role="illustration" aspect_ratio="32:15" query_from="topic" query_suffix="lower-grade chinese exercise tip illustration" source="search" x="870" y="332" width="320" height="150">
+          <notes>
+            右侧提示卡顶部横图，下方还需要保留方法提示文字卡片。
+          </notes>
+        </slot>
+      </image_slots>
+    </page>
+
+    <page type="quiz" variant="quiz">
+      <preferred_layout_hints>mixed_grid</preferred_layout_hints>
+      <design_notes_hint>
+        三张题型卡横向排列，底部提示条横向展开；当前模板没有图片槽位。
+      </design_notes_hint>
+    </page>
+
+    <page type="summary" variant="summary">
+      <preferred_layout_hints>mixed_grid</preferred_layout_hints>
+      <design_notes_hint>
+        三栏总结卡等宽排列，每栏顶部各放一张正方形配图。
+      </design_notes_hint>
+      <image_slots>
+        <slot id="summary_left" required="true" role="illustration" aspect_ratio="1:1" query_from="content_points" query_suffix="lower-grade chinese summary icon illustration" source="search" x="180" y="160" width="120" height="120">
+          <notes>
+            第一栏顶部正方形配图。
+          </notes>
+        </slot>
+        <slot id="summary_middle" required="true" role="illustration" aspect_ratio="1:1" query_from="content_points" query_suffix="lower-grade chinese summary icon illustration" source="search" x="580" y="160" width="120" height="120">
+          <notes>
+            第二栏顶部正方形配图。
+          </notes>
+        </slot>
+        <slot id="summary_right" required="true" role="illustration" aspect_ratio="1:1" query_from="content_points" query_suffix="lower-grade chinese summary icon illustration" source="search" x="980" y="160" width="120" height="120">
+          <notes>
+            第三栏顶部正方形配图。
+          </notes>
+        </slot>
+      </image_slots>
+    </page>
+
+    <page type="closing" variant="closing">
+      <preferred_layout_hints>center_hero</preferred_layout_hints>
+      <design_notes_hint>
+        收尾页以居中标题和三张要点卡为主，当前模板没有图片槽位。
+      </design_notes_hint>
+    </page>
+  </planner>
+</template>

@@ -100,13 +100,33 @@ class PPTXAgent:
                      ctx.topic, ctx.source_text is not None, ctx.research_summary is not None)
 
         # ── Phase 1a: Content Planning ──────────────────────
-        session.log_step("planning", "Generating content plan")
-        draft = self._phase1_planning(ctx)
+        session.log_step("template_routing", "Selecting template family and palette")
+        routing, manifest, palette = self._phase0b_template_routing(ctx)
+        template_brief = self._build_template_brief(manifest, palette=palette)
+        logger.info(
+            "Template routing: style_name={}, template_family={}, palette_id={}, resolved_by={}",
+            routing.style_name,
+            routing.template_family,
+            routing.palette_id,
+            routing.resolved_by,
+        )
+
+        session.log_step("planning", "Generating content plan with selected template brief")
+        draft = self._phase1_planning(ctx, template_brief=template_brief)
+        draft.style_routing = routing
         logger.info("Content plan: {} pages", len(draft.pages))
 
         # ── Phase 1b: Visual Planning ───────────────────────
-        session.log_step("visual_planning", "Generating visual plan (colors, background)")
-        draft.visual = self._phase1b_visual_planning(draft)
+        session.log_step("visual_planning", "Generating visual plan with selected palette preset")
+        draft.visual = self._phase1b_visual_planning(
+            draft,
+            palette_hint=palette,
+            template_label=manifest.label,
+        )
+        session.log_step("page_variant_assignment", "Assigning page-level template variants")
+        draft = self._phase1c_page_variant_assignment(draft, manifest)
+        session.log_step("template_alignment", "Aligning plan to selected template contracts")
+        draft = self._phase1d_template_alignment(draft, manifest)
         session.save_plan(draft.model_dump())
         self._save_design_spec(draft, session)
         logger.info("Visual plan: primary={}, bg_prompt={}...",
@@ -142,7 +162,12 @@ class PPTXAgent:
 
         # ── Phase 3: SVG Design ─────────────────────────────
         session.log_step("design", f"Generating SVG for {len(draft.pages)} pages")
-        slides = await self._phase3_design(draft, all_assets, style, debug=debug)
+        slides = await self._phase3_design(
+            draft,
+            all_assets,
+            draft.style_routing.style_name or style,
+            debug=debug,
+        )
         logger.info("Generated {} SVG slides", len(slides))
 
         # ── Phase 4: Validation + LLM Review ────────────────
@@ -174,6 +199,7 @@ class PPTXAgent:
         with open(plan_path, encoding="utf-8") as f:
             data = json.load(f)
         draft = PlanningDraft.model_validate(data)
+        draft = self._ensure_template_state(draft)
 
         session_dir = plan_path.parent
         session = Session.__new__(Session)
@@ -192,7 +218,12 @@ class PPTXAgent:
                 for p in draft.pages
             }
 
-        slides = await self._phase3_design(draft, all_assets, style, debug=debug)
+        slides = await self._phase3_design(
+            draft,
+            all_assets,
+            draft.style_routing.style_name or style,
+            debug=debug,
+        )
         svg_paths = self._phase4_postprocess(slides, session, all_assets, draft=draft, do_review=True)
         speaker_notes = [
             page.notes for page in sorted(draft.pages, key=lambda p: p.page_number)
@@ -229,18 +260,90 @@ class PPTXAgent:
             requirements=requirements,
         )
 
-    def _phase1_planning(self, ctx: InputContext) -> PlanningDraft:
-        from edupptx.planning.content_planner import generate_planning_draft
-        return generate_planning_draft(ctx, self.config)
+    def _build_llm_client(self):
+        from edupptx.llm_client import create_llm_client
 
-    def _phase1b_visual_planning(self, draft: PlanningDraft):
+        if not self.config.llm_api_key or not self.config.llm_model:
+            return None
+        try:
+            return create_llm_client(self.config, web_search=False)
+        except Exception as exc:
+            logger.warning("LLM client unavailable: {}", str(exc)[:120])
+            return None
+
+    def _phase0b_template_routing(self, ctx: InputContext):
+        from edupptx.design.template_router import resolve_style_routing_from_input
+
+        client = self._build_llm_client()
+        return resolve_style_routing_from_input(ctx, client=client)
+
+    def _build_template_brief(self, manifest, palette=None) -> str:
+        from edupptx.design.template_router import build_planning_brief
+
+        return build_planning_brief(manifest, palette=palette)
+
+    def _phase1_planning(self, ctx: InputContext, template_brief: str = "") -> PlanningDraft:
+        from edupptx.planning.content_planner import generate_planning_draft
+        return generate_planning_draft(ctx, self.config, template_brief=template_brief)
+
+    def _phase1b_visual_planning(self, draft: PlanningDraft, palette_hint=None, template_label: str = ""):
         from edupptx.planning.visual_planner import generate_visual_plan
-        return generate_visual_plan(draft, self.config)
+        return generate_visual_plan(
+            draft,
+            self.config,
+            palette_hint=palette_hint,
+            template_label=template_label,
+        )
+
+    def _phase1c_page_variant_assignment(self, draft: PlanningDraft, manifest) -> PlanningDraft:
+        from edupptx.design.template_router import assign_page_template_variants
+
+        client = self._build_llm_client()
+        return assign_page_template_variants(draft, manifest, client=client)
+
+    def _phase1d_template_alignment(self, draft: PlanningDraft, manifest) -> PlanningDraft:
+        from edupptx.design.template_router import align_draft_to_template
+
+        return align_draft_to_template(draft, manifest)
+
+    def _ensure_template_state(self, draft: PlanningDraft) -> PlanningDraft:
+        from edupptx.design.template_router import (
+            apply_palette_preset,
+            assign_page_template_variants,
+            load_style_manifest,
+            resolve_style_routing,
+            align_draft_to_template,
+        )
+
+        client = self._build_llm_client()
+        manifest = None
+        palette = None
+        if draft.style_routing.template_family:
+            manifest = load_style_manifest(draft.style_routing.template_family)
+            if manifest is not None:
+                for preset in manifest.palette_presets:
+                    if preset.id == draft.style_routing.palette_id:
+                        palette = preset
+                        break
+                if palette is None and manifest.palette_presets:
+                    palette = manifest.palette_presets[0]
+
+        if manifest is None:
+            routing, manifest, palette = resolve_style_routing(draft, client=client)
+            draft.style_routing = routing
+
+        if palette is not None:
+            apply_palette_preset(draft.visual, palette)
+
+        assign_page_template_variants(draft, manifest, client=client)
+        align_draft_to_template(draft, manifest)
+        return draft
 
     def _save_design_spec(self, draft: PlanningDraft, session: Session) -> None:
         """Save human-readable design specification for audit and debugging."""
         v = draft.visual
         m = draft.meta
+        r = draft.style_routing
         lines = [
             "# Design Specification",
             "",

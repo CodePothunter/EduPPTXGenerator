@@ -11,22 +11,18 @@
       {subtitle}
     </text>
 
-    <!-- 左侧图片区 -->
+    <!-- 左侧图片区外框 -->
     <rect
       x="50" y="110" width="470" height="520" rx="30"
       fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"
     />
-    <rect
-      x="84" y="160" width="402" height="252" rx="26"
-      fill="{secondary_bg_color}" stroke="{secondary_color}" stroke-width="2"
-      stroke-dasharray="8 6"
+
+    <!-- 左侧真实图片区域：当前留空 -->
+    <image
+      x="84" y="160" width="402" height="252"
+      href=""
+      preserveAspectRatio="xMidYMid slice"
     />
-    <text x="285" y="270" text-anchor="middle" font-size="24" font-weight="800" fill="{heading_color}">
-      图片插入区
-    </text>
-    <text x="285" y="304" text-anchor="middle" font-size="18" fill="{text_color}">
-      主插图
-    </text>
 
     <!-- 左下两个小卡 -->
     <rect x="84" y="468" width="184" height="88" rx="22" fill="{secondary_bg_color}"/>

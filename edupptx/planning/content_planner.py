@@ -17,7 +17,11 @@ from edupptx.planning.prompts import (
 )
 
 
-def generate_planning_draft(ctx: InputContext, config: Config) -> PlanningDraft:
+def generate_planning_draft(
+    ctx: InputContext,
+    config: Config,
+    template_brief: str = "",
+) -> PlanningDraft:
     """Generate a planning draft from input context via a single LLM call."""
     client = create_llm_client(config)
 
@@ -27,6 +31,7 @@ def generate_planning_draft(ctx: InputContext, config: Config) -> PlanningDraft:
         requirements=ctx.requirements,
         source_text=ctx.source_text,
         research_summary=ctx.research_summary,
+        template_brief=template_brief,
     )
 
     logger.info("Generating planning draft for topic={}", ctx.topic)

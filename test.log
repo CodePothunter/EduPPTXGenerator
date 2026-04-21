@@ -1,0 +1,26 @@
+nohup: ignoring input
+warning: `VIRTUAL_ENV=/home/zsq/EduPPTXGenerator-feature-V3-design-upgrade/.venv` does not match the project environment path `.venv` and will be ignored; use `--active` to target the active environment instead
+19:01:51 | INFO     | edupptx.agent - Session: output/session_20260421_190151 (debug=False)
+19:01:51 | INFO     | edupptx.agent - Input ready: topic=生成语文《小蝌蚪找妈妈》这篇课文的教学ppt的cover这1页, has_doc=True, has_research=False
+19:01:52 | INFO     | edupptx.agent - Template routing: style_name=yuwen_lower_grade_playful, template_family=语文/低年级, palette_id=lower_grade_playful, resolved_by=keyword
+19:01:52 | INFO     | edupptx.planning.content_planner - Generating planning draft for topic=生成语文《小蝌蚪找妈妈》这篇课文的教学ppt的cover这1页
+19:02:06 | INFO     | edupptx.planning.content_planner - Planning draft: 1 pages
+19:02:06 | INFO     | edupptx.agent - Content plan: 1 pages
+19:02:13 | INFO     | edupptx.agent - Design spec saved: output/session_20260421_190151/design_spec.md
+19:02:13 | INFO     | edupptx.agent - Visual plan: primary=#4B8BFF, bg_prompt=soft classroom paper texture, playful pa...
+19:02:13 | INFO     | edupptx.materials.background_generator - Generating background image: soft classroom paper texture, playful pastel shapes, bright ...
+19:02:55 | INFO     | edupptx.materials.background_generator - Background saved: output/session_20260421_190151/materials/background.png (5931 KB)
+19:02:55 | INFO     | edupptx.materials.image_provider - Generating image [illustration] ratio=11:8 size=2848x1600
+19:02:55 | INFO     | edupptx.materials.image_provider - Generating image [illustration] ratio=11:8 size=2848x1600
+19:03:30 | INFO     | edupptx.agent - Materials ready for 1 pages
+19:03:30 | INFO     | edupptx.design.svg_generator - Style routing: style_name=yuwen_lower_grade_playful, template_family=语文/低年级, palette_id=lower_grade_playful
+19:03:30 | INFO     | edupptx.design.svg_generator - Generating slide 1/1 SVG
+19:03:48 | INFO     | edupptx.design.svg_generator - Slide 1 SVG generated, 1919 chars
+19:03:48 | INFO     | edupptx.design.svg_generator - SVG generation completed: 1 slides
+19:03:48 | INFO     | edupptx.agent - Generated 1 SVG slides
+19:03:48 | WARNING  | edupptx.agent - Slide 1: 页面标题位置异常：y=320（应在 y=50 附近）。标题可能被卡片遮挡或布局错乱，建议移到 y=50
+19:04:04 | INFO     | edupptx.postprocess.svg_reviewer - Slide 1 reviewed by LLM (1870 chars)
+19:04:05 | INFO     | edupptx.agent - Post-processed 1 SVGs
+19:04:06 | INFO     | edupptx.agent - Done! 1 slides, output: output/session_20260421_190151/output.pptx
+输出: output/session_20260421_190151/output.pptx
+SVG: output/session_20260421_190151/slides

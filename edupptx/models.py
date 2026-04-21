@@ -142,6 +142,10 @@ class PagePlan(BaseModel):
     layout_hint: LayoutHint = "mixed_grid"
     material_needs: MaterialNeeds = Field(default_factory=MaterialNeeds)
     design_notes: str = ""
+    template_variant: str | None = Field(
+        default=None,
+        description="Preferred SVG template stem selected during style routing.",
+    )
     reveal_from_page: int | None = Field(
         default=None,
         description="If set, this page should reuse the referenced source page layout and only reveal the answer layer.",
@@ -179,11 +183,24 @@ class VisualPlan(BaseModel):
     )
 
 
+class StyleRouting(BaseModel):
+    """Deck-level style routing resolved before SVG generation."""
+
+    style_name: str = Field(default="clean_academic", description="Resolved style manifest id")
+    template_family: str = Field(default="clean_academic", description="Resolved page template family")
+    palette_id: str = Field(default="default", description="Resolved palette preset id")
+    resolved_by: Literal["keyword", "llm", "fallback"] = Field(
+        default="fallback",
+        description="How the style manifest was selected.",
+    )
+
+
 class PlanningDraft(BaseModel):
     """Complete planning draft — Phase 1 output."""
 
     meta: PlanningMeta
     visual: VisualPlan = Field(default_factory=VisualPlan)
+    style_routing: StyleRouting = Field(default_factory=StyleRouting)
     research_context: str = ""
     pages: list[PagePlan]
 
