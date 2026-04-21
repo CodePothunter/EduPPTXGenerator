@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+<rect x="0" y="0" width="1280" height="6" fill="{primary_color}"/>
+<circle cx="170" cy="140" r="64" fill="{primary_color}" fill-opacity=".08"/>
+<circle cx="1110" cy="150" r="72" fill="{secondary_color}" fill-opacity=".08"/>
+<rect x="200" y="120" width="880" height="470" rx="28" fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"/>
+<rect x="500" y="86" width="280" height="64" rx="32" fill="{secondary_bg_color}" stroke="{primary_color}" stroke-width="2"/>
+<circle cx="525" cy="118" r="7" fill="{accent_color}"/>
+<circle cx="755" cy="118" r="7" fill="{accent_color}"/>
+<g font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+<text x="640" y="128" text-anchor="middle" font-size="34" font-weight="bold" fill="{heading_color}">{title}</text>
+<text x="640" y="188" text-anchor="middle" font-size="20" fill="{text_color}" fill-opacity=".7">{subtitle}</text>
+<rect x="548" y="246" width="184" height="40" rx="20" fill="{primary_color}" fill-opacity=".12"/>
+<text x="640" y="272" text-anchor="middle" font-size="18" font-weight="bold" fill="{primary_color}">今天的收获</text>
+
+<rect x="250" y="320" width="220" height="150" rx="22" fill="{secondary_bg_color}"/>
+<circle cx="292" cy="355" r="18" fill="{primary_color}"/>
+<text x="292" y="362" text-anchor="middle" font-size="16" font-weight="bold" fill="white">1</text>
+<text x="360" y="362" text-anchor="middle" font-size="22" font-weight="bold" fill="{heading_color}">要点一</text>
+<text x="280" y="405" font-size="16" fill="{text_color}">● 本课重点内容</text>
+<text x="280" y="433" font-size="16" fill="{text_color}">● 一句简短回顾</text>
+
+<rect x="530" y="320" width="220" height="150" rx="22" fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
+<circle cx="572" cy="355" r="18" fill="{secondary_color}"/>
+<text x="572" y="362" text-anchor="middle" font-size="16" font-weight="bold" fill="white">2</text>
+<text x="640" y="362" text-anchor="middle" font-size="22" font-weight="bold" fill="{heading_color}">要点二</text>
+<text x="560" y="405" font-size="16" fill="{text_color}">● 方法或发现</text>
+<text x="560" y="433" font-size="16" fill="{text_color}">● 可替换成提醒</text>
+
+<rect x="810" y="320" width="220" height="150" rx="22" fill="{secondary_bg_color}"/>
+<circle cx="852" cy="355" r="18" fill="{accent_color}"/>
+<text x="852" y="362" text-anchor="middle" font-size="16" font-weight="bold" fill="white">3</text>
+<text x="920" y="362" text-anchor="middle" font-size="22" font-weight="bold" fill="{heading_color}">要点三</text>
+<text x="840" y="405" font-size="16" fill="{text_color}">● 练习或延伸</text>
+<text x="840" y="433" font-size="16" fill="{text_color}">● 下节课继续学</text>
+
+<rect x="360" y="510" width="560" height="44" rx="22" fill="{accent_color}" fill-opacity=".12"/>
+<text x="640" y="538" text-anchor="middle" font-size="18" font-weight="bold" fill="{accent_color}">今天也学得很棒！</text>
+<text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}">{page_number} / {total_pages}</text>
+</g>
+</svg>

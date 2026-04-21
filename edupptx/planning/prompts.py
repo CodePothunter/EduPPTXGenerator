@@ -114,7 +114,7 @@ _SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，
       "title": "页面标题",
       "subtitle": "副标题",
       "content_points": [],
-      "layout_hint": "full_image",
+      "layout_hint": "center_hero",
       "material_needs": {
         "background": "diagonal_gradient",
         "images": [],
@@ -175,10 +175,7 @@ material_needs.icons 必须从以下列表中选择（Lucide 图标集）：
 - `design_notes` 应明确写出：哪一张大卡片需要内部子卡片，以及子卡片承载的子点类型
 
 ## 背景主导的 cover/section 规则覆盖
-- 对于采用背景主导构图的 `cover` 或 `section` 页面，保持 `material_needs.images = []`，除非用户明确要求额外的前景插图。
-- 背景图不计入 `material_needs.images`。
-- 在 `design_notes` 中，将这些页面描述为“背景主导”、“全图构图”、“标题叠加在背景上”或“小型强调标签”，并避免描述任何大型居中的不透明卡片。
-- 就算cover/section 页面使用full_image布局，仍然不生成image，保持 `material_needs.images = []
+- 对于采用背景主导构图的 `cover` 或 `section` 页面，避免除背景图外的遮盖整张ppt的大型蒙版或者card。
 
 ## TOC 纵向列表安全规则覆盖
 

@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <!-- 结束页参考模板 -->
+  <defs>
+    <filter id="shadow" x="-5%" y="-5%" width="110%" height="110%">
+      <feDropShadow dx="0" dy="2" stdDeviation="4" flood-opacity="0.08"/>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}"/>
+
+  <!-- 装饰 -->
+  <circle cx="200" cy="360" r="180" fill="{primary_color}" fill-opacity="0.04"/>
+  <circle cx="1080" cy="360" r="200" fill="{secondary_color}" fill-opacity="0.04"/>
+
+  <!-- 主卡片 -->
+  <rect x="240" y="140" width="800" height="440" rx="16" fill="{card_bg_color}" filter="url(#shadow)"/>
+
+  <!-- 感谢语 -->
+  <text x="640" y="280" text-anchor="middle" font-size="48" font-weight="bold"
+        fill="{heading_color}"
+        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    谢谢观看
+  </text>
+  <text x="640" y="320" text-anchor="middle" font-size="20"
+        fill="{text_color}" fill-opacity="0.6"
+        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    {subtitle}
+  </text>
+
+  <!-- 分隔线 -->
+  <rect x="520" y="350" width="240" height="2" rx="1" fill="{primary_color}" fill-opacity="0.3"/>
+
+  <!-- 课程要点回顾区 -->
+  <rect x="340" y="380" width="600" height="160" rx="12" fill="{secondary_bg_color}"/>
+  <text x="640" y="415" text-anchor="middle" font-size="18" font-weight="bold"
+        fill="{primary_color}"
+        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    课程要点回顾
+  </text>
+  <text x="380" y="450" font-size="15" fill="{text_color}"
+        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    ● 要点一
+  </text>
+  <text x="380" y="478" font-size="15" fill="{text_color}"
+        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    ● 要点二
+  </text>
+  <text x="380" y="506" font-size="15" fill="{text_color}"
+        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    ● 要点三
+  </text>
+
+  <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}"
+        font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    {page_number} / {total_pages}
+  </text>
+</svg>

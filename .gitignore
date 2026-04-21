@@ -16,7 +16,18 @@ wheels/
 backgrounds_cache/
 materials_library/
 output/
-edupptx/design/page_templates
+edupptx/design/page_templates/*
+!edupptx/design/page_templates/clean_academic/
+!edupptx/design/page_templates/clean_academic/**
+!edupptx/design/page_templates/poster_bold/
+!edupptx/design/page_templates/poster_bold/**
+!edupptx/design/page_templates/editorial_grid/
+!edupptx/design/page_templates/editorial_grid/**
+!edupptx/design/page_templates/science_lab/
+!edupptx/design/page_templates/science_lab/**
+!edupptx/design/page_templates/语文/
+!edupptx/design/page_templates/语文/低年级/
+!edupptx/design/page_templates/语文/低年级/**
 *.pptx
 assets/fonts/
 *_resource.md
@@ -26,4 +37,3 @@ assets/fonts/
 
 # step test
 tools/
-

@@ -1,0 +1,22 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}"/>
+  <text x="50" y="50" font-size="32" font-weight="800" fill="{heading_color}" font-family="Noto Sans SC, Microsoft YaHei, Arial, sans-serif">{title}</text>
+  <text x="50" y="78" font-size="20" fill="{text_color}" font-family="Noto Sans SC, Microsoft YaHei, Arial, sans-serif">{subtitle}</text>
+  <rect x="50" y="110" width="520" height="540" rx="22" fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"/>
+  <text x="84" y="154" font-size="22" font-weight="700" fill="{heading_color}" font-family="Noto Sans SC, Microsoft YaHei, Arial, sans-serif">知识梳理</text>
+  <rect x="84" y="184" width="452" height="104" rx="16" fill="{secondary_bg_color}" fill-opacity="0.62"/>
+  <rect x="84" y="304" width="452" height="104" rx="16" fill="{secondary_bg_color}" fill-opacity="0.46"/>
+  <rect x="84" y="424" width="452" height="104" rx="16" fill="{secondary_bg_color}" fill-opacity="0.62"/>
+  <text x="110" y="228" font-size="19" font-weight="700" fill="{heading_color}" font-family="Noto Sans SC, Microsoft YaHei, Arial, sans-serif">要点一</text>
+  <text x="110" y="348" font-size="19" font-weight="700" fill="{heading_color}" font-family="Noto Sans SC, Microsoft YaHei, Arial, sans-serif">要点二</text>
+  <text x="110" y="468" font-size="19" font-weight="700" fill="{heading_color}" font-family="Noto Sans SC, Microsoft YaHei, Arial, sans-serif">要点三</text>
+  <rect x="610" y="110" width="620" height="540" rx="22" fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
+  <text x="644" y="154" font-size="22" font-weight="700" fill="{heading_color}" font-family="Noto Sans SC, Microsoft YaHei, Arial, sans-serif">图文示意</text>
+  <rect x="644" y="184" width="552" height="248" rx="18" fill="{secondary_bg_color}" fill-opacity="0.46" stroke="{secondary_color}" stroke-dasharray="8 6"/>
+  <text x="920" y="318" text-anchor="middle" font-size="24" font-weight="700" fill="{heading_color}" font-family="Noto Sans SC, Microsoft YaHei, Arial, sans-serif">插图 / 板书区</text>
+  <rect x="644" y="458" width="552" height="72" rx="14" fill="{secondary_bg_color}" fill-opacity="0.64"/>
+  <rect x="644" y="546" width="552" height="72" rx="14" fill="{secondary_bg_color}" fill-opacity="0.48"/>
+  <text x="672" y="502" font-size="18" font-weight="700" fill="{heading_color}" font-family="Noto Sans SC, Microsoft YaHei, Arial, sans-serif">补充说明</text>
+  <text x="672" y="590" font-size="18" font-weight="700" fill="{heading_color}" font-family="Noto Sans SC, Microsoft YaHei, Arial, sans-serif">课堂任务</text>
+  <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}" font-family="Noto Sans SC, Microsoft YaHei, Arial, sans-serif">{page_number} / {total_pages}</text>
+</svg>

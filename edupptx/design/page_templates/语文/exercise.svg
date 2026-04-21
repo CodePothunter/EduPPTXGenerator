@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}"/>
+  <g font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    <text x="50" y="50" font-size="32" font-weight="800" fill="{heading_color}">{title}</text>
+    <text x="50" y="82" font-size="20" fill="{text_color}">{subtitle}</text>
+    <rect x="50" y="110" width="1180" height="130" rx="24" fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"/>
+    <text x="84" y="164" font-size="24" font-weight="700" fill="{heading_color}">题目区</text>
+    <text x="84" y="204" font-size="22" fill="{text_color}">请根据题干填写、连线或圈一圈。</text>
+    <rect x="970" y="130" width="220" height="90" rx="18" fill="{secondary_bg_color}" stroke="{secondary_color}" stroke-width="2" stroke-dasharray="8 6"/>
+    <text x="1080" y="182" text-anchor="middle" font-size="18" font-weight="700" fill="{heading_color}">题目配图区</text>
+    <rect x="50" y="270" width="760" height="380" rx="28" fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
+    <text x="84" y="316" font-size="24" font-weight="700" fill="{heading_color}">答题区</text>
+    <rect x="84" y="340" width="692" height="270" rx="22" fill="{secondary_bg_color}" stroke="{secondary_color}" stroke-width="2" stroke-dasharray="8 6"/>
+    <text x="430" y="484" text-anchor="middle" font-size="28" font-weight="800" fill="{heading_color}">留白作答区</text>
+    <rect x="830" y="270" width="400" height="380" rx="28" fill="{card_bg_color}" stroke="{accent_color}" stroke-width="2"/>
+    <text x="864" y="316" font-size="24" font-weight="700" fill="{heading_color}">提示卡</text>
+    <rect x="870" y="340" width="320" height="180" rx="22" fill="{secondary_bg_color}" stroke="{secondary_color}" stroke-width="2" stroke-dasharray="8 6"/>
+    <text x="1030" y="432" text-anchor="middle" font-size="24" font-weight="800" fill="{heading_color}">图片插入区</text>
+    <rect x="890" y="548" width="280" height="58" rx="20" fill="{secondary_bg_color}"/>
+    <text x="1030" y="584" text-anchor="middle" font-size="20" font-weight="700" fill="{heading_color}">方法提醒</text>
+    <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}">{page_number} / {total_pages}</text>
+  </g>
+</svg>

@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}"/>
+  <g font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    <text x="50" y="52" font-size="32" font-weight="800" fill="{heading_color}">{title}</text>
+    <text x="50" y="84" font-size="20" fill="{text_color}">{subtitle}</text>
+    <g fill="{card_bg_color}">
+      <rect x="50" y="120" width="380" height="520" rx="28" stroke="{primary_color}" stroke-width="2"/>
+      <rect x="450" y="120" width="380" height="520" rx="28" stroke="{secondary_color}" stroke-width="2"/>
+      <rect x="850" y="120" width="380" height="520" rx="28" stroke="{accent_color}" stroke-width="2"/>
+    </g>
+    <g fill="{secondary_bg_color}" stroke="{secondary_color}" stroke-width="2" stroke-dasharray="8 6"><rect x="180" y="160" width="120" height="120" rx="28"/><rect x="580" y="160" width="120" height="120" rx="28"/><rect x="980" y="160" width="120" height="120" rx="28"/></g>
+    <g font-size="18" font-weight="700" fill="{heading_color}"><text x="240" y="228" text-anchor="middle">图片区</text><text x="640" y="228" text-anchor="middle">图片区</text><text x="1040" y="228" text-anchor="middle">图片区</text></g>
+    <g font-size="24" font-weight="700" fill="{heading_color}"><text x="110" y="332">知识一</text><text x="510" y="332">知识二</text><text x="910" y="332">知识三</text></g>
+    <g font-size="22" fill="{text_color}">
+      <text x="110" y="382">① 一条短总结</text><text x="510" y="382">① 一条短总结</text><text x="910" y="382">① 一条短总结</text>
+      <text x="110" y="422">② 一条短总结</text><text x="510" y="422">② 一条短总结</text><text x="910" y="422">② 一条短总结</text>
+      <text x="110" y="462">③ 容易错的点</text><text x="510" y="462">③ 容易错的点</text><text x="910" y="462">③ 容易错的点</text>
+    </g>
+    <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}">{page_number} / {total_pages}</text>
+  </g>
+</svg>
