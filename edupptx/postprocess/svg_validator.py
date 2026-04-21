@@ -20,6 +20,19 @@ CARD_OVERFLOW_TOLERANCE = 6
 SHALLOW_CARD_OVERFLOW_TOLERANCE = 12
 CONTENT_BOTTOM_LIMIT = 680
 TEXT_COLUMN_TOLERANCE = 60
+SUBTITLE_MAX_CHARS = 24
+MIN_TEXT_WRAP_WIDTH = 96.0
+TRANSLATE_RE = re.compile(r"translate\(\s*[-\d.]+(?:[\s,]+[-\d.]+)?\s*\)")
+WRAP_BREAK_AFTER_CHARS = set(" ,.;:!?，。！？；：、)]}】》」』")
+INLINE_STYLE_ATTRS = (
+    "fill",
+    "font-weight",
+    "font-style",
+    "text-decoration",
+    "opacity",
+    "stroke",
+    "stroke-width",
+)
 
 SAFE_FONTS = {"Noto Sans SC", "微软雅黑", "Microsoft YaHei", "Arial", "Helvetica", "sans-serif"}
 FALLBACK_FONT = "Noto Sans SC, Microsoft YaHei, Arial, sans-serif"
@@ -42,6 +55,12 @@ def _uses_timeline_layout(page: PagePlan | None) -> bool:
     if page is None:
         return False
     return page.page_type == "timeline" or page.layout_hint == "timeline"
+
+
+def _uses_center_hero_layout(page: PagePlan | None) -> bool:
+    if page is None:
+        return False
+    return page.layout_hint == "center_hero" or page.page_type in {"cover", "section"}
 
 
 def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[str, list[str]]:
@@ -73,10 +92,13 @@ def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[st
     _remove_foreign_objects(root, warnings)
     _remove_css_animations(root, warnings)
     _fix_fonts(root, warnings)
-    _wrap_long_text(root, warnings)
+    if not _uses_center_hero_layout(page):
+        _wrap_long_text(root, warnings)
     _clamp_boundaries(root, warnings)
+    _fix_image_overflow(root, warnings)
     if not _uses_structured_table(page):
-        _fix_text_overlaps(root, warnings)
+        if not _uses_center_hero_layout(page):
+            _fix_text_overlaps(root, warnings)
         _fix_text_outside_cards(root, warnings)
     if _uses_timeline_layout(page):
         _normalize_timeline_layout(root, page, warnings)
@@ -327,58 +349,329 @@ def _fix_fonts(root: etree._Element, warnings: list[str]) -> None:
             el.set("font-family", f"Noto Sans SC, {ff}")
 
 
+def _normalize_inline_text(payload: str | None) -> str | None:
+    if not payload:
+        return None
+    if payload.strip() == "":
+        if any(ch in payload for ch in "\n\r\t"):
+            return None
+        return " "
+    return re.sub(r"\s+", " ", payload)
+
+
+def _collect_inline_runs(
+    node: etree._Element,
+    inherited_attrs: dict[str, str] | None = None,
+) -> list[tuple[str, dict[str, str]]]:
+    inherited = dict(inherited_attrs or {})
+    runs: list[tuple[str, dict[str, str]]] = []
+
+    head = _normalize_inline_text(node.text)
+    if head:
+        runs.append((head, dict(inherited)))
+
+    for child in node:
+        if not _is_real_element(child) or etree.QName(child.tag).localname != "tspan":
+            continue
+        child_attrs = dict(inherited)
+        for attr in INLINE_STYLE_ATTRS:
+            val = child.get(attr)
+            if val is not None:
+                child_attrs[attr] = val
+        runs.extend(_collect_inline_runs(child, child_attrs))
+        tail = _normalize_inline_text(child.tail)
+        if tail:
+            runs.append((tail, dict(inherited)))
+
+    return runs
+
+
+def _has_explicit_multiline_tspans(text_el: etree._Element) -> bool:
+    fs = _text_font_size(text_el)
+    tspans = [
+        child
+        for child in text_el
+        if _is_real_element(child) and etree.QName(child.tag).localname == "tspan"
+    ]
+    if not tspans:
+        return False
+
+    for idx, tspan in enumerate(tspans):
+        dy = _parse_dy_value(tspan.get("dy"), fs)
+        if idx == 0:
+            if abs(dy) > 0.1:
+                return True
+            continue
+        if tspan.get("x") is not None:
+            return True
+        if abs(dy) > 0.1:
+            return True
+    return False
+
+
+def _expand_runs_to_chars(
+    runs: list[tuple[str, dict[str, str]]],
+) -> list[tuple[str, dict[str, str]]]:
+    chars: list[tuple[str, dict[str, str]]] = []
+    for text, attrs in runs:
+        for ch in text:
+            chars.append((ch, attrs))
+    return chars
+
+
+def _merge_char_runs(
+    chars: list[tuple[str, dict[str, str]]],
+) -> list[tuple[str, dict[str, str]]]:
+    if not chars:
+        return []
+
+    merged: list[tuple[str, dict[str, str]]] = []
+    current_text: list[str] = []
+    current_attrs = dict(chars[0][1])
+
+    for ch, attrs in chars:
+        if attrs != current_attrs and current_text:
+            merged.append(("".join(current_text), dict(current_attrs)))
+            current_text = [ch]
+            current_attrs = dict(attrs)
+            continue
+        current_text.append(ch)
+
+    if current_text:
+        merged.append(("".join(current_text), dict(current_attrs)))
+    return merged
+
+
+def _truncate_inline_runs(
+    runs: list[tuple[str, dict[str, str]]],
+    max_chars: int,
+) -> list[tuple[str, dict[str, str]]]:
+    remaining = max_chars
+    truncated: list[tuple[str, dict[str, str]]] = []
+
+    for text, attrs in runs:
+        if remaining <= 0:
+            break
+        piece = text[:remaining]
+        if piece:
+            truncated.append((piece, dict(attrs)))
+            remaining -= len(piece)
+
+    original_len = sum(len(text) for text, _ in runs)
+    if original_len > max_chars:
+        if truncated:
+            last_text, last_attrs = truncated[-1]
+            truncated[-1] = (last_text.rstrip(), last_attrs)
+        truncated.append(("...", {}))
+    return truncated
+
+
+def _estimate_char_width(ch: str, font_size: float) -> float:
+    if not ch:
+        return 0.0
+    if ch.isspace():
+        return font_size * 0.33
+    if ord(ch) < 128:
+        if ch.isalnum():
+            return font_size * 0.58
+        return font_size * 0.42
+    if ch in WRAP_BREAK_AFTER_CHARS:
+        return font_size * 0.55
+    return font_size * 0.96
+
+
+def _find_text_container_rect(
+    root: etree._Element,
+    tx: float,
+    ty: float,
+    text_bottom: float,
+) -> etree._Element | None:
+    candidates: list[tuple[etree._Element, tuple[float, float, float, float]]] = []
+    for rect in root.iter(f"{{{SVG_NS}}}rect"):
+        if _element_in_defs(rect) or _has_translated_group_ancestor(rect):
+            continue
+        box = _rect_box(rect)
+        if box is None:
+            continue
+        _, y, width, height = box
+        if width < 100 or height < 36:
+            continue
+        if height <= 8 and y <= 2:
+            continue
+        if _text_starts_in_card(tx, ty, box, edge_slack=6, vertical_slack=80) and text_bottom >= y - 4:
+            candidates.append((rect, box))
+
+    if not candidates:
+        return None
+
+    return min(
+        candidates,
+        key=lambda item: (
+            item[1][2] * item[1][3],
+            abs((item[1][0] + item[1][2] / 2.0) - tx),
+            abs((item[1][1] + item[1][3] / 2.0) - ((ty + text_bottom) / 2.0)),
+        ),
+    )[0]
+
+
+def _estimate_wrap_width(
+    root: etree._Element,
+    text_el: etree._Element,
+    tx: float,
+    ty: float,
+    text_bottom: float,
+) -> float:
+    container = _find_text_container_rect(root, tx, ty, text_bottom)
+    if container is not None:
+        box = _rect_box(container)
+        if box is not None:
+            rx, _, rw, _ = box
+            left_padding = max(12.0, tx - rx)
+            return max(MIN_TEXT_WRAP_WIDTH, rw - left_padding - 18.0)
+
+    if text_el.get("text-anchor") == "middle":
+        half_width = min(max(0.0, tx - 50.0), max(0.0, MAX_X - tx - 50.0))
+        return max(MIN_TEXT_WRAP_WIDTH, half_width * 2.0)
+
+    return max(MIN_TEXT_WRAP_WIDTH, MAX_X - tx - 50.0)
+
+
+def _wrap_char_runs_to_width(
+    chars: list[tuple[str, dict[str, str]]],
+    max_width: float,
+    font_size: float,
+) -> list[list[tuple[str, dict[str, str]]]]:
+    if not chars:
+        return []
+
+    lines: list[list[tuple[str, dict[str, str]]]] = []
+    start = 0
+    total = len(chars)
+
+    while start < total:
+        width = 0.0
+        last_break = None
+        end = start
+
+        while end < total:
+            ch = chars[end][0]
+            next_width = width + _estimate_char_width(ch, font_size)
+            if next_width > max_width and end > start:
+                break
+            width = next_width
+            if ch.isspace() or ch in WRAP_BREAK_AFTER_CHARS:
+                last_break = end + 1
+            end += 1
+
+        if end < total and last_break and last_break > start:
+            end = last_break
+
+        while end > start and chars[end - 1][0].isspace():
+            end -= 1
+        if end <= start:
+            end = start + 1
+
+        lines.append(_merge_char_runs(chars[start:end]))
+        start = end
+        while start < total and chars[start][0].isspace():
+            start += 1
+
+    return [line for line in lines if line]
+
+
+def _rewrite_text_with_lines(
+    text_el: etree._Element,
+    x: str,
+    lines: list[list[tuple[str, dict[str, str]]]],
+    line_height: int,
+) -> None:
+    for child in list(text_el):
+        text_el.remove(child)
+    text_el.text = None
+
+    for line_idx, line_runs in enumerate(lines):
+        for run_idx, (text, attrs) in enumerate(line_runs):
+            if not text:
+                continue
+            tspan = etree.SubElement(text_el, f"{{{SVG_NS}}}tspan")
+            if run_idx == 0:
+                tspan.set("x", x)
+                tspan.set("dy", str(line_height) if line_idx > 0 else "0")
+            for attr, value in attrs.items():
+                tspan.set(attr, value)
+            tspan.text = text
+
+
+def _is_page_subtitle_text(root: etree._Element, text_el: etree._Element) -> bool:
+    try:
+        tx = float(text_el.get("x", "0"))
+        ty = float(text_el.get("y", "0"))
+    except (ValueError, TypeError):
+        return False
+
+    fs = _text_font_size(text_el)
+    if ty < 68 or ty > 96 or fs < 16 or fs > 26:
+        return False
+
+    text_bottom = _get_text_bottom_y(text_el)
+    return _find_parent_card(root, text_el, tx, ty, text_bottom) is None
+
+
 def _wrap_long_text(root: etree._Element, warnings: list[str]) -> None:
     """Wrap long <text> content into <tspan> lines to prevent overflow."""
-    MAX_CHARS_PER_LINE = 22  # ~22 Chinese characters fit in a typical card
-
     for text_el in list(root.iter(f"{{{SVG_NS}}}text")):
-        # Skip if already has tspan children
-        if text_el.find(f"{{{SVG_NS}}}tspan") is not None:
+        if _is_footer_page_number_text(text_el):
             continue
-        # Skip formula text (has data-latex or is math content)
+        if _is_centered_short_label(text_el):
+            continue
+        if _has_translated_group_ancestor(text_el):
+            continue
         if text_el.get("data-latex") is not None or _is_math_content(text_el):
             continue
 
-        content = (text_el.text or "").strip()
-        if not content or len(content) <= MAX_CHARS_PER_LINE:
+        runs = _collect_inline_runs(text_el)
+        content = "".join(text for text, _ in runs).strip()
+        if not content:
             continue
 
-        # Get text attributes
         x = text_el.get("x", "0")
-        fs_str = text_el.get("font-size", "16")
         try:
-            fs = float(fs_str.replace("px", ""))
+            tx = float(x)
+            ty = float(text_el.get("y", "0"))
         except (ValueError, TypeError):
-            fs = 16
+            continue
 
-        # Split into lines
-        lines = []
-        while len(content) > MAX_CHARS_PER_LINE:
-            # Try to break at punctuation or space
-            cut = MAX_CHARS_PER_LINE
-            for sep in ("，", "。", "、", "；", " ", ",", ".", ";"):
-                idx = content.rfind(sep, 0, MAX_CHARS_PER_LINE + 1)
-                if idx > MAX_CHARS_PER_LINE // 2:
-                    cut = idx + 1
-                    break
-            lines.append(content[:cut])
-            content = content[cut:]
-        if content:
-            lines.append(content)
+        fs = _text_font_size(text_el)
+        line_height = int(fs * 1.4)
 
+        if _is_page_subtitle_text(root, text_el):
+            compact = re.sub(r"\s+", "", content)
+            if len(compact) > SUBTITLE_MAX_CHARS:
+                truncated_runs = _truncate_inline_runs(runs, SUBTITLE_MAX_CHARS)
+                _rewrite_text_with_lines(text_el, x, [truncated_runs], line_height)
+                warnings.append(
+                    f"Trimmed subtitle from {len(compact)} to {SUBTITLE_MAX_CHARS} chars to keep a single line"
+                )
+            continue
+
+        if _has_explicit_multiline_tspans(text_el):
+            continue
+
+        text_bottom = _get_text_bottom_y(text_el)
+        max_width = _estimate_wrap_width(root, text_el, tx, ty, text_bottom)
+        chars = _expand_runs_to_chars(runs)
+        estimated_width = sum(_estimate_char_width(ch, fs) for ch, _ in chars)
+        if estimated_width <= max_width:
+            continue
+
+        lines = _wrap_char_runs_to_width(chars, max_width, fs)
         if len(lines) <= 1:
             continue
 
-        # Replace text content with tspan elements
-        text_el.text = None
-        line_height = int(fs * 1.4)
-        for i, line in enumerate(lines):
-            tspan = etree.SubElement(text_el, f"{{{SVG_NS}}}tspan")
-            tspan.set("x", x)
-            tspan.set("dy", str(line_height) if i > 0 else "0")
-            tspan.text = line
-
-        warnings.append(f"Wrapped long text ({sum(len(l) for l in lines)} chars) into {len(lines)} lines")
+        _rewrite_text_with_lines(text_el, x, lines, line_height)
+        warnings.append(
+            f"Wrapped long text ({len(content)} chars) into {len(lines)} lines for {int(round(max_width))}px"
+        )
 
 
 def _clamp_value(val_str: str, lo: float, hi: float) -> tuple[str, bool]:
@@ -398,15 +691,17 @@ def _clamp_boundaries(root: etree._Element, warnings: list[str]) -> None:
     MIN_X = 50
     for tag in (f"{{{SVG_NS}}}text", f"{{{SVG_NS}}}rect", f"{{{SVG_NS}}}image"):
         for el in root.iter(tag):
+            if _has_translated_group_ancestor(el):
+                continue
             # Allow full-width top decoration bar (x=0, y=0, height≤8)
             if tag.endswith("rect"):
-                h = el.get("height", "0")
-                y = el.get("y", "0")
-                try:
-                    if float(h) <= 8 and float(y) <= 2:
+                box = _rect_box(el)
+                if box is not None:
+                    _, y, _, h = box
+                    if h <= 8 and y <= 2:
                         continue  # Skip decoration bar
-                except (ValueError, TypeError):
-                    pass
+                    if _is_full_slide_background_box(box):
+                        continue
             for attr, lo, hi in [("x", MIN_X, MAX_X), ("y", 0, MAX_Y)]:
                 val = el.get(attr)
                 if val is not None:
@@ -429,6 +724,12 @@ def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
     text_info = []
     for t in texts:
         if _is_footer_page_number_text(t):
+            continue
+        if _is_centered_short_label(t):
+            continue
+        if _is_page_subtitle_text(root, t):
+            continue
+        if _has_translated_group_ancestor(t):
             continue
         y_str = t.get("y")
         x_str = t.get("x", "0")
@@ -528,7 +829,11 @@ def _is_meaningful_card_rect(rect: etree._Element) -> bool:
     box = _rect_box(rect)
     if box is None:
         return False
+    if _is_full_slide_background_box(box):
+        return False
     _, y, width, height = box
+    if _is_shallow_footer_like_card(box):
+        return True
     if width < 100 or height < 50:
         return False
     if height <= 8 and y <= 2:
@@ -540,8 +845,39 @@ def _is_real_element(el: etree._Element) -> bool:
     return isinstance(getattr(el, "tag", None), str)
 
 
+def _is_full_slide_background_box(box: tuple[float, float, float, float]) -> bool:
+    x, y, width, height = box
+    return x <= 2 and y <= 2 and width >= MAX_X - 2 and height >= MAX_Y - 20
+
+
 def _text_content(text_el: etree._Element) -> str:
     return "".join(text_el.itertext()).strip()
+
+
+def _text_font_size(text_el: etree._Element) -> float:
+    fs_str = text_el.get("font-size", "16")
+    try:
+        return float(fs_str.replace("px", ""))
+    except (ValueError, TypeError):
+        return 16.0
+
+
+def _parse_dy_value(value: str | None, font_size: float) -> float:
+    if value is None:
+        return 0.0
+    try:
+        if "em" in value:
+            return float(value.replace("em", "")) * font_size
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+def _is_centered_short_label(text_el: etree._Element) -> bool:
+    if text_el.get("text-anchor") != "middle":
+        return False
+    compact = re.sub(r"\s+", "", _text_content(text_el))
+    return bool(compact) and len(compact) <= 3
 
 
 def _is_footer_page_number_text(text_el: etree._Element) -> bool:
@@ -579,7 +915,9 @@ def _collect_card_rects(root: etree._Element) -> list[etree._Element]:
     rects = [
         rect
         for rect in root.iter(f"{{{SVG_NS}}}rect")
-        if not _element_in_defs(rect) and _is_meaningful_card_rect(rect)
+        if not _element_in_defs(rect)
+        and not _has_translated_group_ancestor(rect)
+        and _is_meaningful_card_rect(rect)
     ]
     if len(rects) < 2:
         return rects
@@ -839,6 +1177,10 @@ def _iter_group_ancestors(el: etree._Element):
     for ancestor in el.iterancestors(group_tag):
         if _is_real_element(ancestor):
             yield ancestor
+
+
+def _has_translated_group_ancestor(el: etree._Element) -> bool:
+    return any(TRANSLATE_RE.search(ancestor.get("transform", "")) for ancestor in _iter_group_ancestors(el))
 
 
 def _text_matches_card_box(
@@ -1229,6 +1571,86 @@ def _find_parent_card(
     return _pick_best_card(relaxed_candidates, tx, ty, text_bottom)
 
 
+def _find_parent_card_for_box(
+    root: etree._Element,
+    x: float,
+    y: float,
+    bottom: float,
+) -> etree._Element | None:
+    candidates: list[tuple[etree._Element, tuple[float, float, float, float]]] = []
+    for rect in _collect_card_rects(root):
+        box = _rect_box(rect)
+        if box is None:
+            continue
+        if _text_starts_in_card(x, y, box, edge_slack=12, vertical_slack=24):
+            candidates.append((rect, box))
+    return _pick_best_card(candidates, x, y, bottom)
+
+
+def _fix_image_overflow(root: etree._Element, warnings: list[str]) -> None:
+    padding = 12.0
+    for img in root.iter(f"{{{SVG_NS}}}image"):
+        if _has_translated_group_ancestor(img):
+            continue
+        try:
+            x = float(img.get("x", "0"))
+            y = float(img.get("y", "0"))
+            width = float(img.get("width", "0"))
+            height = float(img.get("height", "0"))
+        except (ValueError, TypeError):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+
+        card_rect = _find_parent_card_for_box(root, x, y, y + height)
+        if card_rect is None:
+            continue
+        card_box = _rect_box(card_rect)
+        if card_box is None:
+            continue
+
+        card_x, card_y, card_w, card_h = card_box
+        card_right = card_x + card_w
+        card_bottom = card_y + card_h
+
+        min_x = card_x + padding
+        max_x = card_right - padding - width
+        if max_x >= min_x:
+            target_x = min(max(x, min_x), max_x)
+        else:
+            target_x = min_x
+        target_y = max(y, card_y + padding)
+
+        available_w = card_right - padding - target_x
+        available_h = card_bottom - padding - target_y
+        if available_w <= 0 or available_h <= 0:
+            continue
+
+        scale = min(1.0, available_w / width, available_h / height)
+        new_width = width * scale
+        new_height = height * scale
+
+        changed = False
+        if abs(target_x - x) > 0.5:
+            img.set("x", _format_numeric(target_x))
+            changed = True
+        if abs(target_y - y) > 0.5:
+            img.set("y", _format_numeric(target_y))
+            changed = True
+        if abs(new_width - width) > 0.5:
+            img.set("width", _format_numeric(new_width))
+            changed = True
+        if abs(new_height - height) > 0.5:
+            img.set("height", _format_numeric(new_height))
+            changed = True
+
+        if changed:
+            warnings.append(
+                "Adjusted image to fit card bounds "
+                f"{int(round(width))}x{int(round(height))}->{int(round(new_width))}x{int(round(new_height))}"
+            )
+
+
 def _fix_text_outside_cards_legacy_unused(root: etree._Element, warnings: list[str]) -> None:
     """Fix text that overflows its parent card rect boundary."""
     for text_el in root.iter(f"{{{SVG_NS}}}text"):
@@ -1264,6 +1686,10 @@ def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
     """Fix text that overflows its parent card rect boundary."""
     for text_el in root.iter(f"{{{SVG_NS}}}text"):
         if _is_footer_page_number_text(text_el):
+            continue
+        if _is_centered_short_label(text_el):
+            continue
+        if _has_translated_group_ancestor(text_el):
             continue
         try:
             tx = float(text_el.get("x", "0"))

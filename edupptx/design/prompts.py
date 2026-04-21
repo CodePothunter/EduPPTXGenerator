@@ -9,7 +9,12 @@ from typing import Literal
 
 from loguru import logger
 
-from edupptx.models import PagePlan, SlideAssets, VisualPlan, iter_image_slot_keys
+from edupptx.models import (
+    PagePlan,
+    SlideAssets,
+    VisualPlan,
+    iter_image_slot_keys,
+)
 
 _REFS_DIR = Path(__file__).parent / "references"
 _PAGE_TEMPLATES_DIR = Path(__file__).parent / "page_templates"
@@ -231,6 +236,7 @@ def build_svg_user_prompt(
     lines.append(f"- 标题：{page.title}")
     if page.subtitle:
         lines.append(f"- 副标题：{page.subtitle}")
+        lines.append("- 副标题必须保持单行，控制在 24 个汉字以内；如果信息过多，优先压缩表述，不要换行。")
     lines.append(f"- 建议布局：{page.layout_hint}")
 
     # 内容要点

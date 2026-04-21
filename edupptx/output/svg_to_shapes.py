@@ -1097,7 +1097,7 @@ def _infer_single_line_rich_text_width(
     return max(estimated_width * 1.02, available_width + padding)
 
 
-def _top_level_tspan_columns(elem: ET.Element) -> list[ET.Element]:
+def _top_level_tspan_columns(elem: ET.Element) -> list[list[ET.Element]]:
     raw_fs = _f(elem.get("font-size"), 16)
     tspans = [
         child for child in list(elem)
@@ -1106,14 +1106,31 @@ def _top_level_tspan_columns(elem: ET.Element) -> list[ET.Element]:
     if len(tspans) < 2:
         return []
 
-    columns: list[ET.Element] = []
-    last_x: float | None = None
+    columns: list[list[ET.Element]] = []
+    current_column: list[ET.Element] = []
     for ts in tspans:
-        x_attr = ts.get("x")
-        if x_attr is None:
-            return []
         dy = _f(ts.get("dy"), 0, font_size=raw_fs)
         if dy > 0:
+            return []
+        x_attr = ts.get("x")
+        if x_attr is not None:
+            if current_column:
+                columns.append(current_column)
+            current_column = [ts]
+            continue
+        if not current_column:
+            return []
+        current_column.append(ts)
+
+    if current_column:
+        columns.append(current_column)
+    if len(columns) < 2:
+        return []
+
+    last_x: float | None = None
+    for column in columns:
+        x_attr = column[0].get("x")
+        if x_attr is None:
             return []
         try:
             x_val = float(str(x_attr).strip().replace("px", ""))
@@ -1122,19 +1139,20 @@ def _top_level_tspan_columns(elem: ET.Element) -> list[ET.Element]:
         if last_x is not None and abs(x_val - last_x) < 40:
             return []
         last_x = x_val
-        columns.append(ts)
     return columns
 
 
-def _clone_text_from_tspan(elem: ET.Element, ts: ET.Element) -> ET.Element:
+def _clone_text_from_tspan_group(elem: ET.Element, group: list[ET.Element]) -> ET.Element:
     clone = ET.Element(elem.tag, attrib=elem.attrib.copy())
-    if ts.get("x") is not None:
-        clone.set("x", ts.get("x"))
-    if ts.get("y") is not None:
-        clone.set("y", ts.get("y"))
-    clone.text = ts.text
-    for child in list(ts):
-        clone.append(deepcopy(child))
+    if elem.text:
+        clone.text = elem.text
+    first = group[0]
+    if first.get("x") is not None:
+        clone.set("x", first.get("x"))
+    if first.get("y") is not None:
+        clone.set("y", first.get("y"))
+    for ts in group:
+        clone.append(deepcopy(ts))
     return clone
 
 
@@ -1163,7 +1181,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
 
     column_tspans = _top_level_tspan_columns(elem)
     if column_tspans:
-        return "".join(convert_text(_clone_text_from_tspan(elem, ts), ctx) for ts in column_tspans)
+        return "".join(convert_text(_clone_text_from_tspan_group(elem, group), ctx) for group in column_tspans)
 
     if tspans:
         # Mixed inline text via tspan. Preserve parent text + child tail so

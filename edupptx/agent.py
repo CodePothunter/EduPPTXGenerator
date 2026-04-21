@@ -46,6 +46,8 @@ def _needs_llm_review(page: PagePlan | None, warnings: list[str]) -> bool:
         "Wrapped long text",
         "Fixed text overlap",
         "Expanded card height",
+        "Adjusted image to fit card bounds",
+        "Trimmed subtitle",
         "Replaced unsafe font",
         "Clamped",
         "viewBox fixed",
@@ -177,7 +179,6 @@ class PPTXAgent:
         session = Session.__new__(Session)
         session.dir = session_dir
         session.output_path = session_dir / "output.pptx"
-
         bg_path = await self._phase2_background(draft.visual, session)
 
         if not debug:

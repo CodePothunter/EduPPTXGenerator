@@ -137,10 +137,12 @@ def _flatten_nested_tspans(root: etree._Element) -> None:
             break
 
         runs = _build_flat_tspan_runs(target)
+        preserved_tail = target.tail
         insert_at = parent.index(target)
         parent.remove(target)
         for offset, run in enumerate(runs):
             parent.insert(insert_at + offset, run)
+        _restore_replacement_tail(parent, insert_at, runs, preserved_tail)
 
 
 def _split_tspan_attrs(attrs: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
@@ -200,6 +202,28 @@ def _make_tspan_run(
         run.set(key, value)
     run.text = text
     return run
+
+
+def _restore_replacement_tail(
+    parent: etree._Element,
+    insert_at: int,
+    runs: list[etree._Element],
+    tail_text: str | None,
+) -> None:
+    if not tail_text:
+        return
+
+    if runs:
+        last = runs[-1]
+        last.tail = (last.tail or "") + tail_text
+        return
+
+    if insert_at > 0:
+        prev = parent[insert_at - 1]
+        prev.tail = (prev.tail or "") + tail_text
+        return
+
+    parent.text = (parent.text or "") + tail_text
 
 
 def _remove_scripts(root: etree._Element) -> None:
