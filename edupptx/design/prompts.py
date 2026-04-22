@@ -75,10 +75,7 @@ def _load_page_templates(
     template_family: str = _DEFAULT_TEMPLATE_FAMILY,
     template_variant: str | None = None,
 ) -> list[tuple[str, str]]:
-    """Load all matching SVG reference templates for a page type and family."""
-    target_stems = list(_template_stems_for_page_type(page_type))
-    if template_variant:
-        target_stems = [template_variant] + [stem for stem in target_stems if stem != template_variant]
+    """Load only the selected SVG reference template for one page."""
     families_to_try: list[str] = []
     if template_family:
         families_to_try.append(template_family)
@@ -89,20 +86,30 @@ def _load_page_templates(
         family_dir = _PAGE_TEMPLATES_DIR / family
         if not family_dir.exists():
             continue
-        matches: list[Path] = []
-        seen_paths: set[Path] = set()
-        for stem in target_stems:
-            exact_matches = sorted(family_dir.glob(f"{stem}.svg"))
-            prefixed_matches = sorted(family_dir.glob(f"{stem}_*.svg"))
-            for path in exact_matches + prefixed_matches:
-                if path in seen_paths:
-                    continue
-                seen_paths.add(path)
-                matches.append(path)
-        if not matches:
+
+        selected_paths: list[Path] = []
+        if template_variant:
+            variant_path = family_dir / f"{template_variant}.svg"
+            if variant_path.exists():
+                selected_paths = [variant_path]
+        else:
+            for stem in _template_stems_for_page_type(page_type):
+                exact_path = family_dir / f"{stem}.svg"
+                if exact_path.exists():
+                    selected_paths = [exact_path]
+                    break
+            if not selected_paths:
+                for stem in _template_stems_for_page_type(page_type):
+                    prefixed_matches = sorted(family_dir.glob(f"{stem}_*.svg"))
+                    if prefixed_matches:
+                        selected_paths = [prefixed_matches[0]]
+                        break
+
+        if not selected_paths:
             continue
+
         loaded: list[tuple[str, str]] = []
-        for path in matches:
+        for path in selected_paths:
             if path.suffix.lower() != ".svg":
                 continue
             content = _truncate_template_content(path.read_text(encoding="utf-8"))

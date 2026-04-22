@@ -10,13 +10,15 @@
 
     <rect x="410" y="118" width="820" height="108" rx="18" fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"/>
     <rect x="432" y="136" width="8" height="72" rx="4" fill="{primary_color}"/>
+    <circle cx="486" cy="172" r="30" fill="{secondary_color}"/>
     <text x="486" y="181" text-anchor="middle" font-size="28" font-weight="800" fill="{heading_color}">1</text>
     <text x="548" y="177" font-size="22" font-weight="700" fill="{heading_color}">{item_1_title}</text>
     <circle cx="1172" cy="172" r="28" fill="{primary_color}"/>
     <text x="1172" y="179" text-anchor="middle" font-size="18" font-weight="700" fill="{primary_color}">字</text>
-
+    <circle cx="486" cy="300" r="30" fill="{secondary_color}"/>
     <rect x="410" y="246" width="820" height="108" rx="18" fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
     <rect x="432" y="264" width="8" height="72" rx="4" fill="{secondary_color}"/>
+    
     <text x="486" y="309" text-anchor="middle" font-size="28" font-weight="800" fill="{heading_color}">2</text>
     <text x="548" y="305" font-size="22" font-weight="700" fill="{heading_color}">{item_2_title}</text>
     <circle cx="1172" cy="300" r="28" fill="{secondary_color}"/>

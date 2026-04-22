@@ -1,4 +1,4 @@
-"""Phase 1: 策划稿生成 — 1 次 LLM 调用输出 PlanningDraft。"""
+"""Planning pipeline helpers for stage-1 outlining and stage-2 refinement."""
 
 from __future__ import annotations
 
@@ -9,12 +9,79 @@ import re
 from loguru import logger
 
 from edupptx.config import Config
+from edupptx.design.template_router import TemplateManifest, build_page_variant_briefs
 from edupptx.llm_client import create_llm_client
 from edupptx.models import InputContext, PlanningDraft
 from edupptx.planning.prompts import (
-    build_planning_system_prompt,
-    build_planning_user_prompt,
+    build_outline_planning_system_prompt,
+    build_outline_planning_user_prompt,
+    build_refinement_planning_system_prompt,
+    build_refinement_planning_user_prompt,
 )
+
+
+def generate_planning_outline(
+    ctx: InputContext,
+    config: Config,
+) -> PlanningDraft:
+    """Generate the stage-1 page outline without template constraints."""
+
+    client = create_llm_client(config)
+    system = build_outline_planning_system_prompt()
+    user = build_outline_planning_user_prompt(
+        topic=ctx.topic,
+        requirements=ctx.requirements,
+        source_text=ctx.source_text,
+        research_summary=ctx.research_summary,
+    )
+
+    logger.info("Generating stage-1 planning outline for topic={}", ctx.topic)
+    response = client.chat(messages=[
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ])
+
+    draft = _parse_draft(response, ensure_reveals=False)
+    logger.info("Stage-1 outline: {} pages", len(draft.pages))
+    return draft
+
+
+def refine_planning_draft(
+    outline: PlanningDraft,
+    manifest: TemplateManifest,
+    config: Config,
+) -> PlanningDraft:
+    """Generate the stage-2 refined draft using matched template references."""
+
+    client = create_llm_client(config)
+    system = build_refinement_planning_system_prompt()
+    outline_json = json.dumps(outline.model_dump(), ensure_ascii=False, indent=2)
+    template_brief = build_page_variant_briefs(outline, manifest)
+    user = build_refinement_planning_user_prompt(
+        outline_json=outline_json,
+        template_refinement_brief=template_brief,
+        template_family=manifest.template_family,
+    )
+
+    logger.info("Refining planning draft with template family={}", manifest.template_family)
+    response = client.chat(messages=[
+        {"role": "system", "content": system},
+        {"role": "user", "content": user},
+    ])
+
+    draft = _parse_draft(response, ensure_reveals=False)
+    logger.info("Stage-2 refined draft: {} pages before reveal expansion", len(draft.pages))
+    return draft
+
+
+def finalize_reveal_pages(draft: PlanningDraft) -> PlanningDraft:
+    """Insert reveal pages after refinement while preserving pseudo-animation rules."""
+
+    data = draft.model_dump()
+    _ensure_reveal_pairs(data)
+    finalized = PlanningDraft.model_validate(data)
+    logger.info("Reveal expansion complete: {} pages", len(finalized.pages))
+    return finalized
 
 
 def generate_planning_draft(
@@ -22,36 +89,18 @@ def generate_planning_draft(
     config: Config,
     template_brief: str = "",
 ) -> PlanningDraft:
-    """Generate a planning draft from input context via a single LLM call."""
-    client = create_llm_client(config)
+    """Legacy wrapper kept for compatibility."""
 
-    system = build_planning_system_prompt()
-    user = build_planning_user_prompt(
-        topic=ctx.topic,
-        requirements=ctx.requirements,
-        source_text=ctx.source_text,
-        research_summary=ctx.research_summary,
-        template_brief=template_brief,
-    )
-
-    logger.info("Generating planning draft for topic={}", ctx.topic)
-    response = client.chat(messages=[
-        {"role": "system", "content": system},
-        {"role": "user", "content": user},
-    ])
-
-    draft = _parse_draft(response, ctx)
-    logger.info("Planning draft: {} pages", len(draft.pages))
-    return draft
+    _ = template_brief
+    return generate_planning_outline(ctx, config)
 
 
-def _parse_draft(response: str, ctx: InputContext) -> PlanningDraft:
+def _parse_draft(response: str, ensure_reveals: bool = False) -> PlanningDraft:
     """Extract JSON from LLM response and parse into PlanningDraft."""
-    # Try to extract JSON from markdown code block
+
     json_match = re.search(r"```(?:json)?\s*\n?(.*?)```", response, re.DOTALL)
     raw = json_match.group(1).strip() if json_match else response.strip()
 
-    # Clean common LLM artifacts
     if raw.startswith("```"):
         raw = raw.split("\n", 1)[1] if "\n" in raw else raw[3:]
     if raw.endswith("```"):
@@ -59,21 +108,30 @@ def _parse_draft(response: str, ctx: InputContext) -> PlanningDraft:
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError as e:
-        logger.warning("JSON parse failed, attempting repair: {}", e)
-        # Try fixing common issues: trailing commas
+    except json.JSONDecodeError as exc:
+        logger.warning("JSON parse failed, attempting repair: {}", exc)
         cleaned = re.sub(r",\s*([}\]])", r"\1", raw)
         data = json.loads(cleaned)
 
-    # Coerce unknown page_type/layout_hint to safe defaults
-    _VALID_PAGE_TYPES = {"cover", "toc", "section", "content", "data", "case", "closing",
-                         "timeline", "comparison", "exercise", "summary", "relation",
-                         "quiz", "formula", "experiment"}
+    _normalize_draft_dict(data)
+    if ensure_reveals:
+        _ensure_reveal_pairs(data)
+
+    return PlanningDraft.model_validate(data)
+
+
+def _normalize_draft_dict(data: dict) -> None:
+    _VALID_PAGE_TYPES = {
+        "cover", "toc", "section", "content", "data", "case", "closing",
+        "timeline", "comparison", "exercise", "summary", "relation",
+        "quiz", "formula", "experiment",
+    }
     _VALID_LAYOUT_HINTS = {
         "center_hero", "vertical_list", "bento_2col_equal", "bento_2col_asymmetric",
         "bento_3col", "hero_top_cards_bottom", "cards_top_hero_bottom",
         "mixed_grid", "full_image", "timeline", "comparison", "relation",
     }
+
     for page in data.get("pages", []):
         if page.get("page_type") not in _VALID_PAGE_TYPES:
             logger.warning("Unknown page_type '{}' → 'content'", page.get("page_type"))
@@ -81,21 +139,20 @@ def _parse_draft(response: str, ctx: InputContext) -> PlanningDraft:
         if page.get("layout_hint") not in _VALID_LAYOUT_HINTS:
             logger.warning("Unknown layout_hint '{}' → 'mixed_grid'", page.get("layout_hint"))
             page["layout_hint"] = "mixed_grid"
-        # LLM sometimes outputs content_points as a dict instead of a list
+
         cp = page.get("content_points")
         if isinstance(cp, dict):
-            # Flatten dict values into a list of strings
-            flat: list = []
-            for k, v in cp.items():
-                if isinstance(v, list):
-                    flat.extend(f"{k}: {item}" if len(cp) > 1 else str(item) for item in v)
+            flat: list[str] = []
+            for key, value in cp.items():
+                if isinstance(value, list):
+                    flat.extend(f"{key}: {item}" if len(cp) > 1 else str(item) for item in value)
                 else:
-                    flat.append(f"{k}: {v}")
+                    flat.append(f"{key}: {value}")
             page["content_points"] = flat
 
-    _ensure_reveal_pairs(data)
-
-    return PlanningDraft.model_validate(data)
+    meta = data.get("meta")
+    if isinstance(meta, dict) and isinstance(data.get("pages"), list):
+        meta["total_pages"] = len(data["pages"])
 
 
 _FILL_BLANK_PATTERN = re.compile(
@@ -130,6 +187,13 @@ def _needs_highlight_reveal(page: dict) -> bool:
         return False
     text = _join_page_text(page)
     return bool(_QUIZ_CHOICE_PATTERN.search(text) and _ANSWER_CUE_PATTERN.search(text))
+
+
+def _explicit_reveal_mode(page: dict) -> str | None:
+    reveal_mode = page.get("reveal_mode")
+    if reveal_mode in {"show_answer", "highlight_correct_option"} and page.get("reveal_from_page") is None:
+        return str(reveal_mode)
+    return None
 
 
 def _build_reveal_page(source_page: dict, reveal_mode: str) -> dict:
@@ -178,11 +242,12 @@ def _ensure_reveal_pairs(data: dict) -> None:
         if isinstance(next_page, dict) and next_page.get("reveal_from_page") == old_page_number:
             continue
 
-        reveal_mode: str | None = None
-        if _needs_show_answer_reveal(page_copy):
-            reveal_mode = "show_answer"
-        elif _needs_highlight_reveal(page_copy):
-            reveal_mode = "highlight_correct_option"
+        reveal_mode: str | None = _explicit_reveal_mode(page_copy)
+        if reveal_mode is None:
+            if _needs_show_answer_reveal(page_copy):
+                reveal_mode = "show_answer"
+            elif _needs_highlight_reveal(page_copy):
+                reveal_mode = "highlight_correct_option"
 
         if reveal_mode is None:
             continue

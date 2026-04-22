@@ -15,12 +15,6 @@
   <line x1="476" y1="334" x2="804" y2="334" stroke="{accent_color}" stroke-width="6" stroke-linecap="round"/>
   <text x="640" y="386" text-anchor="middle" font-size="24" fill="{text_color}" font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">{subtitle}</text>
 
-  <!-- 底部真实图片区：当前留空 -->
-  <image
-    x="465" y="470" width="350" height="160"
-    href=""
-    preserveAspectRatio="xMidYMid slice"
-  />
 
   <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}" font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">{page_number} / {total_pages}</text>
 </svg>

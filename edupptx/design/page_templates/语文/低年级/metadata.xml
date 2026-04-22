@@ -2,15 +2,14 @@
 <template>
   <identity>
     <name>yuwen_lower_grade_playful</name>
-    <label>
-      语文低年级 · 童趣启蒙风
-    </label>
+    <label>语文低年级 · 童趣启蒙风</label>
     <category>primary_lower_grade</category>
     <tags>
-      语文, 低年级, 一年级, 二年级, 识字, 拼音, 看图, 启蒙, 童趣
+      语文, 低年级, 一年级, 二年级, 识字, 拼音, 看图说话, 朗读, 课堂互动, 童趣, 启蒙
     </tags>
     <intro>
-      适用于一二年级语文启蒙教学的基础模板组。当前目录包含 cover、toc、section、content、exercise、quiz、summary、closing 八类页面，整体采用圆角卡片、大留白和柔和高亮配色。
+      适用于一二年级语文启蒙教学的模板组。当前目录包含 cover、toc、section、content、exercise、quiz、summary、closing，
+      以及多种内容页变体。整体风格采用圆角卡片、大留白、轻装饰和低年级友好的明快配色。
     </intro>
   </identity>
 
@@ -19,13 +18,13 @@
       语文, 一年级, 二年级, 低年级, 启蒙
     </subjects>
     <scenes>
-      识字, 拼音, 看图说话, 课堂导入, 练习, 闯关, 总结
+      识字, 拼音, 朗读, 看图说话, 课堂导入, 课堂讲解, 闯关练习, 课堂总结
     </scenes>
     <priority_keywords>
-      一年级, 二年级, 识字, 拼音, 口算, 图形认识, 生活情境, 故事, 看图, 观察, 小游戏, 闯关, 练一练
+      一年级, 二年级, 低年级, 识字, 写字, 拼音, 偏旁, 生字, 朗读, 课文, 看图说话, 观察, 表达, 闯关, 练一练, 总结
     </priority_keywords>
     <negative_keywords>
-      data, formula, comparison, 高理性, 数据分析, 公式推导
+      data, formula, comparison, 数据分析, 公式推导, 实验报告, 学术论文
     </negative_keywords>
   </routing>
 
@@ -46,120 +45,300 @@
 
   <planner>
     <summary>
-      基础版童趣启蒙模板。优先使用圆角卡片、清晰分区和大留白；图像数量与几何位置以当前 SVG 模板中的真实 image 槽位为准，不额外增减。
+      本模板的配色参考应以 visual.palette 为准。规划阶段不要机械照抄模板中的卡片数量和图片数量；
+      优先先完成内容策划，再根据 page_type、layout_hint 与具体 SVG 变体的命中情况，结合 variant_catalog 中的区间建议补全
+      content_points、material_needs、images、icons、design_notes 和 notes。
+      如果没有命中具体变体，则保留通用页面策划，不强行套模板。
     </summary>
 
     <page type="cover" variant="cover">
+      <title_max_chars>18</title_max_chars>
+      <subtitle_max_chars>28</subtitle_max_chars>
       <preferred_layout_hints>center_hero</preferred_layout_hints>
       <design_notes_hint>
-        主标题居中，标题下方保留两张并列封面配图，底部两个胶囊标签保持短词组。
+        封面页以居中标题和两张对称插图为主，标题区保持开阔，底部标签只放短词。
       </design_notes_hint>
       <image_slots>
         <slot id="cover_left" required="true" role="illustration" aspect_ratio="11:8" query_from="topic" query_suffix="lower-grade chinese cover illustration" source="search" x="226" y="370" width="220" height="160">
-          <notes>
-            左侧封面配图，位于中部大卡片内，和右侧图片左右对称。
-          </notes>
+          <notes>左侧封面配图，和右侧图片形成对称关系。</notes>
         </slot>
         <slot id="cover_right" required="true" role="illustration" aspect_ratio="11:8" query_from="topic" query_suffix="lower-grade chinese cover illustration" source="search" x="834" y="370" width="220" height="160">
-          <notes>
-            右侧封面配图，位于中部大卡片内，和左侧图片左右对称。
-          </notes>
+          <notes>右侧封面配图，和左侧图片形成对称关系。</notes>
         </slot>
       </image_slots>
     </page>
 
     <page type="toc" variant="toc">
+      <title_max_chars>14</title_max_chars>
+      <subtitle_max_chars>24</subtitle_max_chars>
+      <toc_items_max>5</toc_items_max>
       <preferred_layout_hints>vertical_list</preferred_layout_hints>
       <design_notes_hint>
-        左侧是整列目录配图，右侧是纵向目录项卡片列表。
+        左侧是整列目录配图，右侧是纵向目录项卡片列表；目录项保持短句和导航感。
       </design_notes_hint>
       <image_slots>
         <slot id="toc_cover" required="true" role="illustration" aspect_ratio="3:4" query_from="topic" query_suffix="lower-grade chinese toc illustration" source="search" x="82" y="180" width="276" height="368">
-          <notes>
-            目录页左侧主配图，放在竖向大卡片内部，不要新增第二张图。
-          </notes>
+          <notes>目录页左侧主配图，右侧目录区不再新增第二张图。</notes>
         </slot>
       </image_slots>
     </page>
 
     <page type="section" variant="section">
+      <title_max_chars>16</title_max_chars>
+      <subtitle_max_chars>24</subtitle_max_chars>
       <preferred_layout_hints>center_hero</preferred_layout_hints>
       <design_notes_hint>
-        章节标题卡片居中，底部保留一张横向章节配图作为过渡。
+        章节页以居中标题卡片和轻装饰为主，作为教学节奏切换页；当前 section.svg 不包含真实图片槽位。
       </design_notes_hint>
-      <image_slots>
-        <slot id="section_banner" required="true" role="illustration" aspect_ratio="35:16" query_from="topic" query_suffix="lower-grade chinese section banner illustration" source="search" x="465" y="470" width="350" height="160">
-          <notes>
-            底部横向章节配图，宽图比例明显，不要改成竖图。
-          </notes>
-        </slot>
-      </image_slots>
     </page>
 
     <page type="content" variant="content">
-      <preferred_layout_hints>mixed_grid</preferred_layout_hints>
+      <title_max_chars>18</title_max_chars>
+      <subtitle_max_chars>28</subtitle_max_chars>
+      <preferred_layout_hints>
+        mixed_grid, center_hero, bento_2col_equal, bento_2col_asymmetric, bento_3col,
+        cards_top_hero_bottom, hero_top_cards_bottom
+      </preferred_layout_hints>
       <design_notes_hint>
-        左侧为大图卡片，右上为知识点卡片，右下为表达或互动卡片。
+        内容页先围绕教学目标确定主信息块，再根据命中的内容页变体组织图片区、知识卡、表达卡或总结卡；
+        图片和卡片数量用区间理解，不要机械复刻模板。
       </design_notes_hint>
-      <image_slots>
-        <slot id="content_left_visual" required="true" role="illustration" aspect_ratio="67:42" query_from="topic" query_suffix="lower-grade chinese teaching illustration" source="search" x="84" y="160" width="402" height="252">
-          <notes>
-            左侧主图位于大卡片上半区，下方还有两个小信息卡，图片高度不要侵占下方卡片区域。
-          </notes>
-        </slot>
-      </image_slots>
     </page>
 
     <page type="exercise" variant="exercise">
+      <title_max_chars>20</title_max_chars>
+      <subtitle_max_chars>30</subtitle_max_chars>
       <preferred_layout_hints>mixed_grid</preferred_layout_hints>
       <design_notes_hint>
-        左侧是练习区，右侧是提示卡；图片只放在右侧提示卡上半区。
+        左侧为练习操作区，右侧为提示卡；题目和提示要稳定，便于题目页与答案揭晓页做伪动画式切换。
       </design_notes_hint>
       <image_slots>
-        <slot id="exercise_right_tip" required="true" role="illustration" aspect_ratio="32:15" query_from="topic" query_suffix="lower-grade chinese exercise tip illustration" source="search" x="870" y="332" width="320" height="150">
-          <notes>
-            右侧提示卡顶部横图，下方还需要保留方法提示文字卡片。
-          </notes>
+        <slot id="exercise_right_tip" required="false" role="illustration" aspect_ratio="32:15" query_from="topic+title" query_suffix="lower-grade chinese exercise tip illustration" source="search" x="870" y="332" width="320" height="150">
+          <notes>右侧提示卡顶部横图；如内容不需要图片，可只保留方法提醒文字区。</notes>
         </slot>
       </image_slots>
     </page>
 
     <page type="quiz" variant="quiz">
+      <title_max_chars>20</title_max_chars>
+      <subtitle_max_chars>30</subtitle_max_chars>
       <preferred_layout_hints>mixed_grid</preferred_layout_hints>
       <design_notes_hint>
-        三张题型卡横向排列，底部提示条横向展开；当前模板没有图片槽位。
+        题型卡横向排列，重点是题型区分清晰、答题节奏明确；当前 quiz.svg 没有真实图片槽位。
       </design_notes_hint>
     </page>
 
     <page type="summary" variant="summary">
+      <title_max_chars>18</title_max_chars>
+      <subtitle_max_chars>28</subtitle_max_chars>
       <preferred_layout_hints>mixed_grid</preferred_layout_hints>
       <design_notes_hint>
-        三栏总结卡等宽排列，每栏顶部各放一张正方形配图。
+        总结页以三栏归纳卡为主，每栏可配一张辅助小图，用来帮助低年级学生快速回看重点。
       </design_notes_hint>
       <image_slots>
-        <slot id="summary_left" required="true" role="illustration" aspect_ratio="1:1" query_from="content_points" query_suffix="lower-grade chinese summary icon illustration" source="search" x="180" y="160" width="120" height="120">
-          <notes>
-            第一栏顶部正方形配图。
-          </notes>
+        <slot id="summary_left" required="true" role="illustration" aspect_ratio="1:1" query_from="content" query_suffix="lower-grade chinese summary icon illustration" source="search" x="180" y="160" width="120" height="120">
+          <notes>左栏顶部正方形配图。</notes>
         </slot>
-        <slot id="summary_middle" required="true" role="illustration" aspect_ratio="1:1" query_from="content_points" query_suffix="lower-grade chinese summary icon illustration" source="search" x="580" y="160" width="120" height="120">
-          <notes>
-            第二栏顶部正方形配图。
-          </notes>
+        <slot id="summary_middle" required="true" role="illustration" aspect_ratio="1:1" query_from="content" query_suffix="lower-grade chinese summary icon illustration" source="search" x="580" y="160" width="120" height="120">
+          <notes>中栏顶部正方形配图。</notes>
         </slot>
-        <slot id="summary_right" required="true" role="illustration" aspect_ratio="1:1" query_from="content_points" query_suffix="lower-grade chinese summary icon illustration" source="search" x="980" y="160" width="120" height="120">
-          <notes>
-            第三栏顶部正方形配图。
-          </notes>
+        <slot id="summary_right" required="true" role="illustration" aspect_ratio="1:1" query_from="content" query_suffix="lower-grade chinese summary icon illustration" source="search" x="980" y="160" width="120" height="120">
+          <notes>右栏顶部正方形配图。</notes>
         </slot>
       </image_slots>
     </page>
 
     <page type="closing" variant="closing">
+      <title_max_chars>16</title_max_chars>
+      <subtitle_max_chars>26</subtitle_max_chars>
       <preferred_layout_hints>center_hero</preferred_layout_hints>
       <design_notes_hint>
-        收尾页以居中标题和三张要点卡为主，当前模板没有图片槽位。
+        收尾页以居中标题和三张回顾卡片为主，不额外补图，整体保持轻松收束感。
       </design_notes_hint>
     </page>
+
+    <variant_catalog>
+      <variant stem="cover" page_type="cover">
+        <layout_hint>center_hero</layout_hint>
+        <hit_keywords>封面, 导入, 开场, 课程标题, 课文题目</hit_keywords>
+        <image_range min="2" max="2"/>
+        <card_range min="1" max="1"/>
+        <page_features>
+          中央主卡片承载标题，底部两张对称插图和两个胶囊标签形成稳定封面节奏。
+        </page_features>
+        <reference_rule>
+          两张插图位置和尺寸可微调，但必须保持左右对称，不要改成单张大图。
+        </reference_rule>
+      </variant>
+
+      <variant stem="toc" page_type="toc">
+        <layout_hint>vertical_list</layout_hint>
+        <hit_keywords>目录, 学习任务, 学习内容, 学习步骤, 本课安排</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="3" max="5"/>
+        <page_features>
+          左图右目录。右侧目录卡是稳定的纵向导航列表，单项文字要短。
+        </page_features>
+        <reference_rule>
+          目录项按区间理解，可 3 到 5 项，不必机械复刻示例数量。
+        </reference_rule>
+      </variant>
+
+      <variant stem="section" page_type="section">
+        <layout_hint>center_hero</layout_hint>
+        <hit_keywords>章节过渡, 新任务开始, 第二部分, 第三部分, 过渡页, 学习任务</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="1" max="2"/>
+        <page_features>
+          章节标题卡居中，顶部胶囊提示条用于节奏切换，当前模板不含真实图片槽位。
+        </page_features>
+        <reference_rule>
+          保持过渡页的呼吸感，不要为了填满版面强加图片或过多说明文字。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content" page_type="content">
+        <layout_hint>mixed_grid</layout_hint>
+        <hit_keywords>观察, 说一说, 看一看, 知识点, 互动, 主图, 任务</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="3" max="5"/>
+        <page_features>
+          左侧主图，右上知识卡，右下表达或互动卡，左下可放 1 到 2 个补充小卡。
+        </page_features>
+        <reference_rule>
+          适合“一张主图 + 两块教学信息”的常规讲解页。左下小卡可按内容保留 1 到 2 个，不必固定写满。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_center_hero" page_type="content">
+        <layout_hint>center_hero</layout_hint>
+        <hit_keywords>核心句, 重点朗读, 重点提示, 中心表达, 主视觉, 大观点</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="2" max="4"/>
+        <page_features>
+          左侧大图偏方形，右侧大信息卡承载核心句或重点解释，底部可补 1 到 3 个辅助小卡。
+        </page_features>
+        <reference_rule>
+          适合“一个核心观点 + 少量支撑点”，不要把右侧大卡塞成密集段落。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_bento_2col_equal" page_type="content">
+        <layout_hint>bento_2col_equal</layout_hint>
+        <hit_keywords>两个角色, 两类事物, 左右对照, 并列比较, 两组信息, 双栏</hit_keywords>
+        <image_range min="2" max="2"/>
+        <card_range min="2" max="2"/>
+        <page_features>
+          双列等宽，上图下文，左右两栏适合并列呈现两个角色、两类特征或两组内容。
+        </page_features>
+        <reference_rule>
+          推荐保持 2 栏，不扩成 3 栏；每栏信息量尽量相近，形成并列阅读节奏。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_bento_2col_asymmetric" page_type="content">
+        <layout_hint>bento_2col_asymmetric</layout_hint>
+        <hit_keywords>主图配讲解, 一主一辅, 重点解析, 侧边提示, 图文解读, 主次分明</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="2" max="4"/>
+        <page_features>
+          左侧高幅主图，右侧上方是大讲解卡，右下可放 1 到 2 个补充卡，适合主次结构明显的页面。
+        </page_features>
+        <reference_rule>
+          优先保证主图和右上 hero 卡的主次关系，右下补充卡按内容裁剪，不强求固定数量。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_bento_3col" page_type="content">
+        <layout_hint>bento_3col</layout_hint>
+        <hit_keywords>三部分, 三点归纳, 三个角色, 三个发现, 三步, 三栏</hit_keywords>
+        <image_range min="3" max="3"/>
+        <card_range min="3" max="3"/>
+        <page_features>
+          三列等宽，上图下文，适合三个并列知识点、三个角色、三个观察对象或三个步骤。
+        </page_features>
+        <reference_rule>
+          推荐保持 3 栏，不扩成 2 栏或 4 栏；每栏标题和正文尽量短，保证低年级可扫读。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_cards_top_hero_bottom" page_type="content">
+        <layout_hint>cards_top_hero_bottom</layout_hint>
+        <hit_keywords>先归纳后看图, 上方卡片, 下方大图, 先说要点, 情境收束</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="2" max="34"/>
+        <page_features>
+          上方先放 2 到 3 张短卡做预告或归纳，下方放大图做情境承接。
+        </page_features>
+        <reference_rule>
+          适合“先点出观察任务，再看大图”。上方卡片按区间理解，不要机械复制示例卡数。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_hero_top_cards_bottom" page_type="content">
+        <layout_hint>hero_top_cards_bottom</layout_hint>
+        <hit_keywords>情境导入, 上图下卡, 先看图再说, 看图归纳, 大图导入</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="2" max="3"/>
+        <page_features>
+          上方先用大图导入，下方再用 2 到 3 张短卡补充知识点、任务或表达提示。
+        </page_features>
+        <reference_rule>
+          适合“先建立情境，再展开整理”。底部卡片保持短句，不要写成长段解释。
+        </reference_rule>
+      </variant>
+
+      <variant stem="exercise" page_type="exercise">
+        <layout_hint>mixed_grid</layout_hint>
+        <hit_keywords>练习, 闯关, 圈一圈, 连一连, 选一选, 操作区, 提示卡</hit_keywords>
+        <image_range min="0" max="1"/>
+        <card_range min="2" max="4"/>
+        <page_features>
+          顶部题目区，左侧操作区，右侧提示卡。提示卡顶部可有 1 张横图，也可以只放文字方法提示。
+        </page_features>
+        <reference_rule>
+          题目页与答案揭晓页必须保持版式稳定，只能做答案层变化，不能重排元素。
+        </reference_rule>
+      </variant>
+
+      <variant stem="quiz" page_type="quiz">
+        <layout_hint>mixed_grid</layout_hint>
+        <hit_keywords>选择题, 填空题, 判断题, 小测, 闯关, 答题提示</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="3" max="4"/>
+        <page_features>
+          中部三张题型卡横向排布，底部提示区横向展开，突出题型差异和答题节奏。
+        </page_features>
+        <reference_rule>
+          不补图，重点保持选项、留白和答案揭晓层的稳定性。
+        </reference_rule>
+      </variant>
+
+      <variant stem="summary" page_type="summary">
+        <layout_hint>mixed_grid</layout_hint>
+        <hit_keywords>总结, 回顾, 本课收获, 三点归纳, 知识小结</hit_keywords>
+        <image_range min="3" max="3"/>
+        <card_range min="3" max="3"/>
+        <page_features>
+          三栏总结卡等宽排布，每栏顶部一张正方形图，下面是 2 到 3 条短总结。
+        </page_features>
+        <reference_rule>
+          推荐保持 3 栏结构，但每栏正文可以按 2 到 3 条短点组织，不必写满。
+        </reference_rule>
+      </variant>
+
+      <variant stem="closing" page_type="closing">
+        <layout_hint>center_hero</layout_hint>
+        <hit_keywords>收尾, 再见, 课后任务, 今天的收获, 结束语</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="3" max="4"/>
+        <page_features>
+          中央收尾大卡，下半区三张并列回顾卡，底部一句鼓励性收束语。
+        </page_features>
+        <reference_rule>
+          收尾页以文字和回顾卡为主，不额外补图，保持轻松温和的结束氛围。
+        </reference_rule>
+      </variant>
+    </variant_catalog>
   </planner>
 </template>

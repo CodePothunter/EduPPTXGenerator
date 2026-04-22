@@ -27,13 +27,13 @@
          href=""
          preserveAspectRatio="xMidYMid slice"/>
 
-  <rect x="520" y="442" width="118" height="50" rx="12" fill="{secondary_bg_color}"/>
-  <rect x="662" y="442" width="118" height="50" rx="12" fill="{secondary_bg_color}"/>
+  <rect x="490" y="442" width="118" height="50" rx="12" fill="{secondary_bg_color}"/>
+  <rect x="690" y="442" width="118" height="50" rx="12" fill="{secondary_bg_color}"/>
 
   <g font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif"
      text-anchor="middle" font-size="18" font-weight="700" fill="{heading_color}">
-    <text x="579" y="474">{pill_left}</text>
-    <text x="721" y="474">{pill_right}</text>
+    <text x="550" y="474">{pill_left}</text>
+    <text x="750" y="474">{pill_right}</text>
   </g>
 
   <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}"

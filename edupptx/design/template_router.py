@@ -102,6 +102,21 @@ class PlannerPageSpec(BaseModel):
     image_slots: list[ImageSlotSpec] = Field(default_factory=list)
 
 
+class VariantSpec(BaseModel):
+    """A soft planning reference for one concrete SVG variant."""
+
+    stem: str
+    page_type: str = "content"
+    layout_hint: str = ""
+    hit_keywords: list[str] = Field(default_factory=list)
+    image_min: int | None = None
+    image_max: int | None = None
+    card_min: int | None = None
+    card_max: int | None = None
+    page_features: str = ""
+    reference_rule: str = ""
+
+
 class TemplateManifest(BaseModel):
     """Normalized metadata for one template family."""
 
@@ -115,6 +130,7 @@ class TemplateManifest(BaseModel):
     page_variants: dict[str, list[str]] = Field(default_factory=dict)
     planner_summary: str = ""
     planner_page_specs: dict[str, PlannerPageSpec] = Field(default_factory=dict)
+    variant_specs: dict[str, VariantSpec] = Field(default_factory=dict)
 
 
 def _default_palette_preset(palette_id: str = "default", label: str = "Default") -> PalettePreset:
@@ -336,6 +352,36 @@ def _parse_page_spec_node(node: ET.Element) -> PlannerPageSpec | None:
     )
 
 
+def _parse_range_node(parent: ET.Element, tag: str) -> tuple[int | None, int | None]:
+    node = parent.find(tag)
+    if node is None:
+        return None, None
+    min_value = _as_int(node.get("min") or _child_text(node, "min"))
+    max_value = _as_int(node.get("max") or _child_text(node, "max"))
+    return min_value, max_value
+
+
+def _parse_variant_spec_node(node: ET.Element) -> VariantSpec | None:
+    stem = node.get("stem") or _child_text(node, "stem")
+    if not stem:
+        return None
+
+    image_min, image_max = _parse_range_node(node, "image_range")
+    card_min, card_max = _parse_range_node(node, "card_range")
+    return VariantSpec(
+        stem=stem,
+        page_type=node.get("page_type") or _child_text(node, "page_type") or "content",
+        layout_hint=node.get("layout_hint") or _child_text(node, "layout_hint"),
+        hit_keywords=_text_list(node, "hit_keywords"),
+        image_min=image_min,
+        image_max=image_max,
+        card_min=card_min,
+        card_max=card_max,
+        page_features=_child_text(node, "page_features"),
+        reference_rule=_child_text(node, "reference_rule"),
+    )
+
+
 def _load_metadata_file(metadata_path: Path) -> TemplateManifest:
     root = ET.fromstring(metadata_path.read_text(encoding="utf-8"))
     family_name = _relative_family_name(metadata_path.parent)
@@ -353,11 +399,18 @@ def _load_metadata_file(metadata_path: Path) -> TemplateManifest:
         palettes = [_default_palette_preset()]
 
     page_specs: dict[str, PlannerPageSpec] = {}
+    variant_specs: dict[str, VariantSpec] = {}
     if planner is not None:
         for page_node in planner.findall("page"):
             spec = _parse_page_spec_node(page_node)
             if spec is not None:
                 page_specs[spec.page_type] = spec
+        variant_catalog = planner.find("variant_catalog")
+        if variant_catalog is not None:
+            for variant_node in variant_catalog.findall("variant"):
+                variant_spec = _parse_variant_spec_node(variant_node)
+                if variant_spec is not None:
+                    variant_specs[variant_spec.stem] = variant_spec
 
     preferred_layout_hints = _dedupe_keep_order([
         *(_text_list(root, "preferred_layout_hints")),
@@ -365,6 +418,11 @@ def _load_metadata_file(metadata_path: Path) -> TemplateManifest:
             hint
             for spec in page_specs.values()
             for hint in spec.preferred_layout_hints
+        ),
+        *(
+            spec.layout_hint
+            for spec in variant_specs.values()
+            if spec.layout_hint
         ),
     ])
 
@@ -393,6 +451,7 @@ def _load_metadata_file(metadata_path: Path) -> TemplateManifest:
         page_variants=_discover_page_variants(metadata_path.parent),
         planner_summary=_child_text(planner, "summary"),
         planner_page_specs=page_specs,
+        variant_specs=variant_specs,
     )
     return manifest
 
@@ -637,11 +696,6 @@ def apply_palette_preset(visual: VisualPlan, preset: PalettePreset) -> None:
     visual.secondary_bg_color = preset.secondary_bg_color
     visual.text_color = preset.text_color
     visual.heading_color = preset.heading_color
-    if preset.background_prompt:
-        if visual.background_prompt and preset.background_prompt not in visual.background_prompt:
-            visual.background_prompt = f"{preset.background_prompt}; {visual.background_prompt}"
-        else:
-            visual.background_prompt = preset.background_prompt
 
 
 def _page_routing_text(page: PagePlan) -> str:
@@ -662,6 +716,38 @@ def _variant_tokens(stem: str) -> list[str]:
         for token in re.split(r"[_\-\s]+", stem.casefold())
         if token and token not in _STOP_VARIANT_TOKENS
     ]
+
+
+def _score_variant_spec(spec: VariantSpec, page: PagePlan) -> int:
+    normalized = _page_routing_text(page).casefold()
+    score = 0
+
+    if spec.page_type == page.page_type:
+        score += 2
+    if spec.layout_hint:
+        if spec.layout_hint == page.layout_hint:
+            score += 5
+        else:
+            score -= 1
+
+    keyword_hits = 0
+    for keyword in spec.hit_keywords:
+        if keyword and keyword.casefold() in normalized:
+            keyword_hits += 1
+    score += keyword_hits * 2
+
+    for token in _variant_tokens(spec.stem):
+        if token in normalized:
+            score += 1
+
+    point_count = len(_flatten_content_points(page.content_points))
+    if point_count > 0 and spec.card_min is not None and spec.card_max is not None:
+        if spec.card_min <= point_count <= spec.card_max:
+            score += 2
+        elif point_count < max(1, spec.card_min - 1) or point_count > spec.card_max + 1:
+            score -= 1
+
+    return score
 
 
 def _choose_page_variant_with_llm(client: Any, page: PagePlan, candidates: list[str]) -> str | None:
@@ -705,6 +791,31 @@ def resolve_page_template_variant(
     client: Any = None,
 ) -> str | None:
     """Resolve the preferred template stem for one page."""
+
+    variant_specs = [
+        spec
+        for spec in manifest.variant_specs.values()
+        if spec.page_type == page.page_type
+    ]
+    if variant_specs:
+        scored_specs = sorted(
+            ((spec, _score_variant_spec(spec, page)) for spec in variant_specs),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        top_spec, top_score = scored_specs[0]
+        second_score = scored_specs[1][1] if len(scored_specs) > 1 else -999
+        if top_score >= 5 and top_score - second_score >= 2:
+            return top_spec.stem
+        llm_candidates = [spec.stem for spec, score in scored_specs[:3] if score >= 4]
+        if llm_candidates:
+            llm_choice = _choose_page_variant_with_llm(client, page, llm_candidates)
+            if llm_choice:
+                return llm_choice
+        if top_score >= 6:
+            return top_spec.stem
+        if page.page_type == "content":
+            return None
 
     candidates = list(
         manifest.page_variants.get(page.page_type)
@@ -872,6 +983,55 @@ def build_planning_brief(
     return "\n".join(lines)
 
 
+def build_page_variant_briefs(
+    draft: PlanningDraft,
+    manifest: TemplateManifest,
+) -> str:
+    """Build per-page soft template references for stage-2 planning refinement."""
+
+    sections: list[str] = []
+    for page in sorted(draft.pages, key=lambda item: item.page_number):
+        spec = manifest.variant_specs.get(page.template_variant or "")
+        if spec is None:
+            sections.append(
+                f"Page {page.page_number}: no matched variant. "
+                "Finish this page with general planning logic; do not force a template."
+            )
+            continue
+
+        range_parts: list[str] = []
+        if spec.card_min is not None or spec.card_max is not None:
+            range_parts.append(
+                f"card_range={spec.card_min if spec.card_min is not None else '?'}-"
+                f"{spec.card_max if spec.card_max is not None else '?'}"
+            )
+        if spec.image_min is not None or spec.image_max is not None:
+            range_parts.append(
+                f"image_range={spec.image_min if spec.image_min is not None else '?'}-"
+                f"{spec.image_max if spec.image_max is not None else '?'}"
+            )
+
+        lines = [
+            f"Page {page.page_number}: matched `{spec.stem}.svg`",
+            f"- page_type: {spec.page_type}",
+            f"- layout_hint: {spec.layout_hint or page.layout_hint}",
+        ]
+        if spec.hit_keywords:
+            lines.append(f"- hit_keywords: {', '.join(spec.hit_keywords)}")
+        if range_parts:
+            lines.append(f"- soft_ranges: {', '.join(range_parts)}")
+        if spec.page_features:
+            lines.append(f"- page_features: {spec.page_features}")
+        if spec.reference_rule:
+            lines.append(f"- reference_rule: {spec.reference_rule}")
+        lines.append(
+            "- use_rule: 模板只提供版式方向和区间参考，不要机械复制示例中的 card 数量、图片数量、位置或尺寸。"
+        )
+        sections.append("\n".join(lines))
+
+    return "\n\n".join(sections)
+
+
 def _trim_text(value: str | None, max_chars: int | None) -> str | None:
     if value is None or max_chars is None or max_chars <= 0:
         return value
@@ -963,11 +1123,10 @@ def align_draft_to_template(
 
 
 def apply_style_routing(draft: PlanningDraft, client: Any = None) -> PlanningDraft:
-    """Backwards-compatible wrapper: route deck, apply palette, assign variants."""
+    """Backwards-compatible wrapper: route deck and assign variants."""
 
-    routing, manifest, palette = resolve_style_routing(draft, client)
+    routing, manifest, _palette = resolve_style_routing(draft, client)
     draft.style_routing = routing
-    apply_palette_preset(draft.visual, palette)
     assign_page_template_variants(draft, manifest, client)
     return draft
 

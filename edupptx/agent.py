@@ -102,7 +102,6 @@ class PPTXAgent:
         # ── Phase 1a: Content Planning ──────────────────────
         session.log_step("template_routing", "Selecting template family and palette")
         routing, manifest, palette = self._phase0b_template_routing(ctx)
-        template_brief = self._build_template_brief(manifest, palette=palette)
         logger.info(
             "Template routing: style_name={}, template_family={}, palette_id={}, resolved_by={}",
             routing.style_name,
@@ -111,22 +110,35 @@ class PPTXAgent:
             routing.resolved_by,
         )
 
-        session.log_step("planning", "Generating content plan with selected template brief")
-        draft = self._phase1_planning(ctx, template_brief=template_brief)
+        session.log_step("planning_stage1", "Generating stage-1 content outline without template constraints")
+        draft = self._phase1_outline_planning(ctx)
         draft.style_routing = routing
-        logger.info("Content plan: {} pages", len(draft.pages))
+        logger.info("Stage-1 outline: {} pages", len(draft.pages))
 
-        # ── Phase 1b: Visual Planning ───────────────────────
-        session.log_step("visual_planning", "Generating visual plan with selected palette preset")
-        draft.visual = self._phase1b_visual_planning(
+        session.log_step("page_variant_assignment", "Matching template variants to outline pages")
+        draft = self._phase1b_page_variant_assignment(draft, manifest)
+
+        session.log_step("planning_stage2", "Refining outline with matched template references")
+        draft = self._phase1c_planning_refinement(draft, manifest)
+        draft.style_routing = routing
+        logger.info("Stage-2 refined draft: {} pages before reveal expansion", len(draft.pages))
+
+        session.log_step("reveal_expansion", "Expanding pseudo-animation reveal pages")
+        draft = self._phase1d_finalize_reveals(draft)
+        draft.style_routing = routing
+
+        session.log_step("page_variant_assignment", "Re-assigning template variants after refinement")
+        draft = self._phase1b_page_variant_assignment(draft, manifest)
+
+        # ── Phase 1e: Visual Planning ───────────────────────
+        session.log_step("visual_planning", "Generating visual plan with palette reference")
+        draft.visual = self._phase1e_visual_planning(
             draft,
             palette_hint=palette,
             template_label=manifest.label,
         )
-        session.log_step("page_variant_assignment", "Assigning page-level template variants")
-        draft = self._phase1c_page_variant_assignment(draft, manifest)
         session.log_step("template_alignment", "Aligning plan to selected template contracts")
-        draft = self._phase1d_template_alignment(draft, manifest)
+        draft = self._phase1f_template_alignment(draft, manifest)
         session.save_plan(draft.model_dump())
         self._save_design_spec(draft, session)
         logger.info("Visual plan: primary={}, bg_prompt={}...",
@@ -277,16 +289,28 @@ class PPTXAgent:
         client = self._build_llm_client()
         return resolve_style_routing_from_input(ctx, client=client)
 
-    def _build_template_brief(self, manifest, palette=None) -> str:
-        from edupptx.design.template_router import build_planning_brief
+    def _phase1_outline_planning(self, ctx: InputContext) -> PlanningDraft:
+        from edupptx.planning.content_planner import generate_planning_outline
 
-        return build_planning_brief(manifest, palette=palette)
+        return generate_planning_outline(ctx, self.config)
 
-    def _phase1_planning(self, ctx: InputContext, template_brief: str = "") -> PlanningDraft:
-        from edupptx.planning.content_planner import generate_planning_draft
-        return generate_planning_draft(ctx, self.config, template_brief=template_brief)
+    def _phase1b_page_variant_assignment(self, draft: PlanningDraft, manifest) -> PlanningDraft:
+        from edupptx.design.template_router import assign_page_template_variants
 
-    def _phase1b_visual_planning(self, draft: PlanningDraft, palette_hint=None, template_label: str = ""):
+        client = self._build_llm_client()
+        return assign_page_template_variants(draft, manifest, client=client)
+
+    def _phase1c_planning_refinement(self, draft: PlanningDraft, manifest) -> PlanningDraft:
+        from edupptx.planning.content_planner import refine_planning_draft
+
+        return refine_planning_draft(draft, manifest, self.config)
+
+    def _phase1d_finalize_reveals(self, draft: PlanningDraft) -> PlanningDraft:
+        from edupptx.planning.content_planner import finalize_reveal_pages
+
+        return finalize_reveal_pages(draft)
+
+    def _phase1e_visual_planning(self, draft: PlanningDraft, palette_hint=None, template_label: str = ""):
         from edupptx.planning.visual_planner import generate_visual_plan
         return generate_visual_plan(
             draft,
@@ -295,20 +319,13 @@ class PPTXAgent:
             template_label=template_label,
         )
 
-    def _phase1c_page_variant_assignment(self, draft: PlanningDraft, manifest) -> PlanningDraft:
-        from edupptx.design.template_router import assign_page_template_variants
-
-        client = self._build_llm_client()
-        return assign_page_template_variants(draft, manifest, client=client)
-
-    def _phase1d_template_alignment(self, draft: PlanningDraft, manifest) -> PlanningDraft:
+    def _phase1f_template_alignment(self, draft: PlanningDraft, manifest) -> PlanningDraft:
         from edupptx.design.template_router import align_draft_to_template
 
         return align_draft_to_template(draft, manifest)
 
     def _ensure_template_state(self, draft: PlanningDraft) -> PlanningDraft:
         from edupptx.design.template_router import (
-            apply_palette_preset,
             assign_page_template_variants,
             load_style_manifest,
             resolve_style_routing,
@@ -331,9 +348,6 @@ class PPTXAgent:
         if manifest is None:
             routing, manifest, palette = resolve_style_routing(draft, client=client)
             draft.style_routing = routing
-
-        if palette is not None:
-            apply_palette_preset(draft.visual, palette)
 
         assign_page_template_variants(draft, manifest, client=client)
         align_draft_to_template(draft, manifest)

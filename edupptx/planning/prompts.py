@@ -15,11 +15,37 @@ def _load_ref(name: str) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def build_planning_system_prompt() -> str:
+def build_outline_planning_system_prompt() -> str:
+    return _OUTLINE_SYSTEM_PROMPT
+
+
+def build_outline_planning_user_prompt(
+    topic: str,
+    requirements: str = "",
+    source_text: str | None = None,
+    research_summary: str | None = None,
+) -> str:
+    parts = [f"请先完成第 1 阶段内容策划。\n\n**主题：** {topic}"]
+
+    if requirements:
+        parts.append(f"\n**附加要求：** {requirements}")
+
+    if source_text:
+        truncated = source_text[:8000] + ("..." if len(source_text) > 8000 else "")
+        parts.append(f"\n**参考文档内容：**\n{truncated}")
+
+    if research_summary:
+        parts.append(f"\n**网络搜索资料：**\n{research_summary}")
+
+    parts.append("\n请输出第 1 阶段策划 JSON。")
+    return "\n".join(parts)
+
+
+def build_refinement_planning_system_prompt() -> str:
     from edupptx.materials.icons import list_icons
 
     icon_list = ", ".join(list_icons())
-    template = _SYSTEM_PROMPT_TEMPLATE.replace("{icon_list}", icon_list)
+    template = _REFINEMENT_SYSTEM_PROMPT.replace("{icon_list}", icon_list)
     notes_requirements = _load_ref("notes-guidelines.md")
     image_rules = _load_ref("planning-image-rules.md")
 
@@ -31,12 +57,38 @@ def build_planning_system_prompt() -> str:
     return "\n\n".join(parts)
 
 
-_SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，负责根据主题、受众和补充资料，输出结构化的 PPT 规划 JSON。
+def build_refinement_planning_user_prompt(
+    outline_json: str,
+    template_refinement_brief: str,
+    template_family: str,
+) -> str:
+    parts = [
+        "请完成第 2 阶段模板细化规划。",
+        "",
+        "**阶段 1 初稿：**",
+        f"```json\n{outline_json}\n```",
+    ]
 
-## 输出目标
-- 直接输出一个合法 JSON，不要附加解释文字
-- 规划要兼顾教学逻辑、页面节奏、页面类型和素材需求
-- 如果给了模板参考，优先遵守其中的 page_type、layout_hint、字数、图片槽位和节奏限制
+    if template_refinement_brief.strip():
+        parts.extend([
+            "",
+            f"**已命中的模板家族：** {template_family}",
+            "",
+            "**逐页模板细化参考：**",
+            f"```text\n{template_refinement_brief}\n```",
+        ])
+
+    parts.append("\n请输出第 2 阶段完整规划 JSON。")
+    return "\n".join(parts)
+
+
+_OUTLINE_SYSTEM_PROMPT = """你是一位资深的教育演示文稿策划师，当前只负责第 1 阶段：内容初稿规划。
+
+## 阶段目标
+- 先确定整套 PPT 的教学结构、页数和节奏
+- 先决定每页的 `page_type`、`title`、`subtitle`、`content_points`、`layout_hint`
+- 这一阶段不要引入任何模板、SVG、metadata、配色、图片槽位、卡片数量等参考
+- 这一阶段不要为模板去反推内容结构
 
 ## 页面类型
 - `cover`: 封面页
@@ -69,34 +121,83 @@ _SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，
 - `comparison`
 - `relation`
 
-## material_needs 规则
+## 阶段 1 约束
+- 页数范围通常为 5-25 页
+- 必须包含 `cover` 和 `closing`
+- `layout_hint` 应根据内容特征变化，避免所有页重复
+- `toc` 只写短目录，不要写成长段解释
+- `timeline` 页的 `content_points` 应天然适合时间节点
+- `relation` 页的 `content_points` 应天然适合关系图
+- 不要在这一阶段生成 reveal 页，也不要为了伪动画提前复制题目页
+- `material_needs`、`design_notes`、`notes` 在这一阶段可以留空或省略
+
+## 输出格式
+直接输出合法 JSON，不要附加解释文字。结构如下：
+
+```json
+{
+  "meta": {
+    "topic": "主题",
+    "audience": "目标受众",
+    "purpose": "教学目的",
+    "style_direction": "自然语言风格方向",
+    "total_pages": 10
+  },
+  "research_context": "搜索资料摘要",
+  "pages": [
+    {
+      "page_number": 1,
+      "page_type": "cover",
+      "title": "页面标题",
+      "subtitle": "副标题",
+      "content_points": [],
+      "layout_hint": "center_hero"
+    }
+  ]
+}
+```"""
+
+
+_REFINEMENT_SYSTEM_PROMPT = """你是一位资深的教育演示文稿策划师，当前负责第 2 阶段：模板细化规划。
+
+## 阶段目标
+- 输入是第 1 阶段内容初稿，输出是完整规划 JSON
+- 保留阶段 1 的页数、顺序和主线节奏
+- 允许对单页 `content_points`、`layout_hint` 做小幅优化，但不要推翻整套结构
+- 本阶段补全：`material_needs`、`design_notes`、`notes`
+
+## 模板使用规则
+- 只参考当前页命中的单个模板变体，不要同时融合多个模板
+- 模板只是页面特征参考，不是刚性蓝图
+- 不要机械照抄模板示例中的 card 数量、图片数量、位置或尺寸
+- 如果模板参考写的是 `card_range` / `image_range`，把它理解成建议区间，而不是硬性数量
+- 即使参考了模板，最终页面仍然应服从当前页的教学内容，而不是反过来让内容硬塞进模板
+- 如果某页没有命中模板，就直接按通用教学逻辑完成该页规划
+
+## 图片与图标规则
 - `images` 是有序数组，不是集合
 - 一块独立图片区，对应一条 `images` 记录
 - `aspect_ratio` 只能从以下集合选择：
   `1:1`, `3:4`, `4:3`, `16:9`, `9:16`, `3:2`, `2:3`, `21:9`
 - 多图页面中，`images` 顺序默认与版面顺序一致：从左到右、从上到下
-- 如果 `design_notes` 或模板参考明确要求多个图片区，`images` 数量必须匹配
 - `icons` 只能从以下列表选择：{icon_list}
 
-## 规划约束
-- 页数范围通常为 5-25 页
-- 必须包含 `cover` 和 `closing`
-- `design_notes` 用一句话概括页面设计意图
-- `notes` 写教师讲解话术
-- `layout_hint` 应根据内容特征变化，避免所有页重复
-- `toc` 应保持导航感，目录项要短，不要写成长段解释
-- `relation` 页适合概念关系、分类关系、因果链，不要退化成普通列表页
-- `timeline` 页中每个 `content_point` 对应一个独立时间节点
+## 页面规划要求
+- `design_notes` 用一句话概括页面设计意图，说明页面如何承载内容
+- `notes` 写教师讲解话术，必须贴合本页真实内容
+- `material_needs.images` 的数量应服务于教学表达，不要为了凑模板示例而强行增减
+- `cover` / `closing` / `section` 等节奏页应保持简洁，不要过度堆料
 
-## reveal 页面规则
-- 当 `quiz` / `exercise` 需要“先出题，后揭晓答案”时，必须规划为 2 张连续页面
-- 揭晓页必须与源题页保持相同 `page_type`、`layout_hint`、`title`、`content_points`、`material_needs`
-- 揭晓页只补答案层，不新增图片区、不改变原有布局
-- 选择题/判断题使用 `reveal_mode="highlight_correct_option"`
-- 填空题/简答题使用 `reveal_mode="show_answer"`
+## reveal / 伪动画规则
+- 不要手动创建 reveal 页，不要复制题目页
+- 如果某个 `quiz` / `exercise` 页面需要“先出题，后揭晓答案”的伪动画效果，请在源题页上显式设置 `reveal_mode`
+- 选择题 / 判断题使用 `reveal_mode="highlight_correct_option"`
+- 填空题 / 简答题使用 `reveal_mode="show_answer"`
+- `reveal_from_page` 在源题页保持为 null，系统会在规划后自动复制出揭晓页
+- 题目页的 `design_notes` 和 `notes` 应体现“先作答、稍后揭晓”的课堂节奏
 
 ## 输出格式
-严格输出如下 JSON 结构：
+直接输出合法 JSON，不要附加解释文字。输出完整结构：
 
 ```json
 {
@@ -117,7 +218,7 @@ _SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，
       "content_points": [],
       "layout_hint": "center_hero",
       "material_needs": {
-        "background": "diagonal_gradient",
+        "background": null,
         "images": [],
         "icons": [],
         "chart": null
@@ -132,6 +233,12 @@ _SYSTEM_PROMPT_TEMPLATE = """你是一位资深的教育演示文稿策划师，
 ```"""
 
 
+def build_planning_system_prompt() -> str:
+    """Legacy wrapper kept for compatibility."""
+
+    return build_refinement_planning_system_prompt()
+
+
 def build_planning_user_prompt(
     topic: str,
     requirements: str = "",
@@ -139,24 +246,11 @@ def build_planning_user_prompt(
     research_summary: str | None = None,
     template_brief: str = "",
 ) -> str:
-    parts = [f"请为以下主题策划一份教育演示文稿：\n\n**主题：** {topic}"]
+    """Legacy wrapper kept for compatibility."""
 
-    if requirements:
-        parts.append(f"\n**附加要求：** {requirements}")
-
-    if source_text:
-        truncated = source_text[:8000] + ("..." if len(source_text) > 8000 else "")
-        parts.append(f"\n**参考文档内容：**\n{truncated}")
-
-    if research_summary:
-        parts.append(f"\n**网络搜索资料：**\n{research_summary}")
-
-    if template_brief:
-        parts.append(
-            "\n**已选模板参考（规划阶段优先遵守）：**\n"
-            "以下内容来自已选模板的 metadata，可用于约束 page_type、layout_hint、标题长度、图片槽位和内容节奏：\n"
-            f"```text\n{template_brief}\n```"
-        )
-
-    parts.append("\n请输出策划稿 JSON。")
-    return "\n".join(parts)
+    return build_outline_planning_user_prompt(
+        topic=topic,
+        requirements=requirements,
+        source_text=source_text,
+        research_summary=research_summary,
+    )

@@ -33,7 +33,7 @@ _SYSTEM_PROMPT = """你是一位教育演示文稿的视觉设计顾问。
 
 ## 原则
 - 教育场景优先：可读、克制、清晰
-- 如果用户或模板已经给出调色板，优先沿用，不要重新发明另一套主色
+- 如果用户或模板已经给出调色参考，可以参考其色相与气质，但不要机械照抄
 - `background_prompt` 应描述淡雅、低干扰、适合承载文字的背景
 - `content_density` 只能是 `lecture` 或 `review`
 - `accent_color` 只用于重点，不要做大面积背景色"""
@@ -49,11 +49,6 @@ def _apply_palette_hint(visual_plan: VisualPlan, palette_hint) -> VisualPlan:
     visual_plan.secondary_bg_color = palette_hint.secondary_bg_color
     visual_plan.text_color = palette_hint.text_color
     visual_plan.heading_color = palette_hint.heading_color
-    if palette_hint.background_prompt:
-        if visual_plan.background_prompt and palette_hint.background_prompt not in visual_plan.background_prompt:
-            visual_plan.background_prompt = f"{palette_hint.background_prompt}; {visual_plan.background_prompt}"
-        elif not visual_plan.background_prompt:
-            visual_plan.background_prompt = palette_hint.background_prompt
     return visual_plan
 
 
@@ -84,7 +79,7 @@ def generate_visual_plan(
 
     if palette_hint is not None:
         user_prompt += (
-            "\n\n## 已选模板调色板（优先遵守）\n"
+            "\n\n## 已选模板调色参考（仅供参考，不要机械照抄）\n"
             f"- template: {template_label or draft.style_routing.style_name or 'selected'}\n"
             f"- primary: {palette_hint.primary_color}\n"
             f"- secondary: {palette_hint.secondary_color}\n"
@@ -93,7 +88,8 @@ def generate_visual_plan(
             f"- secondary_bg: {palette_hint.secondary_bg_color}\n"
             f"- text: {palette_hint.text_color}\n"
             f"- heading: {palette_hint.heading_color}\n"
-            "请保留这套颜色关系，只补充适合的 background_prompt 和 content_density。"
+            "请结合主题内容、背景气质和页面结构自行决定最终配色；"
+            "可以参考这组颜色的明度、纯度和亲和感，但不要被它锁死。"
         )
 
     try:
@@ -106,7 +102,7 @@ def generate_visual_plan(
             max_tokens=1024,
         )
         visual_plan = _parse_visual_plan(response)
-        return _apply_palette_hint(visual_plan, palette_hint)
+        return visual_plan
     except Exception as exc:
         logger.warning("Visual planning failed, using defaults: {}", exc)
         return _apply_palette_hint(VisualPlan(), palette_hint)
