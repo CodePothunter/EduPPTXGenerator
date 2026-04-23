@@ -187,6 +187,27 @@ def _build_color_spec(vp: VisualPlan) -> str:
 """
 
 
+def _build_family_decoration_guidance(template_family: str) -> str:
+    family = (template_family or "").replace("\\", "/").strip("/")
+    if family == "语文/低年级":
+        return (
+            "\n### 低年级语文装饰语言\n"
+            "- 即使参考模板中未显式绘制装饰元素，也允许主动补充轻装饰。\n"
+            "- 推荐装饰母题：浅色圆点、小星形、波浪线、胶囊贴纸、小书签角标、轻量曲线。\n"
+            "- 装饰数量建议每页 3-8 个，透明度建议 `opacity 0.08-0.18`。\n"
+            "- 装饰优先放在标题区四角、卡片外侧空白区、卡片角落和页脚附近，不得遮挡正文、图片和题目区。"
+        )
+    if family == "数学/低年级":
+        return (
+            "\n### 低年级数学装饰语言\n"
+            "- 即使参考模板中未显式绘制装饰元素，也允许主动补充轻装饰。\n"
+            "- 推荐装饰母题：计数圆点、数字徽章、几何小图形、短箭头、虚线轨迹、规则点阵。\n"
+            "- 装饰数量建议每页 3-8 个，透明度建议 `opacity 0.08-0.18`。\n"
+            "- 装饰优先放在标题区四角、卡片外侧空白区、卡片角落和页脚附近，不得遮挡正文、图片和操作区。"
+        )
+    return ""
+
+
 def build_svg_system_prompt(
     style_guide: str,
     visual_plan: VisualPlan | None = None,
@@ -264,6 +285,20 @@ def build_svg_user_prompt(
     if page.design_notes:
         lines.append(f"\n### 设计备注\n{page.design_notes}")
 
+    if not page.reveal_from_page:
+        lines.append(
+            "\n### 装饰元素自主生成规则\n"
+            "参考模板主要用于约束页面骨架、卡片关系、图片区位置、间距和视觉层级，"
+            "不要求逐项复刻模板里已经出现的装饰图形。\n"
+            "- 如果模板中缺少装饰元素，但风格指南或设计备注要求有轻装饰，则必须主动补充\n"
+            "- 装饰元素只允许放在安全空白区，不得遮挡标题、正文、图片、题目区或操作区\n"
+            "- 装饰优先使用 `circle`、`rect`、`line`、`path`、`polygon` 或简洁 `<use data-icon>`\n"
+            "- 装饰应使用主色、辅色或强调色的低透明度版本，体现节奏，不承担主要信息"
+        )
+        family_decoration_guidance = _build_family_decoration_guidance(template_family)
+        if family_decoration_guidance:
+            lines.append(family_decoration_guidance)
+
     lines.append(
         "\n### 行内高亮文本规则\n"
         "如果一句正文里需要局部高亮，必须把整句话写在同一个 `<text>` 元素内，"
@@ -295,6 +330,16 @@ def build_svg_user_prompt(
                 "- 子卡片数量优先与该卡片内的同级短要点数量一致（允许 2–5 个）\n"
                 "- 只有在均分后高度明显不足，或该大卡片本身是大面积图片区时，才回退为普通列表"
             )
+
+    if page.layout_hint == "hero_with_microcards":
+        lines.append(
+            "\n### hero_with_microcards 布局提示\n"
+            "该布局必须保持“页面只有一张外层 hero 大卡片，再在大卡片内部组织微模块”的主结构。\n"
+            "- 外层大卡片是页面视觉主体，不要把微模块拆到大卡片外部\n"
+            "- 卡内微模块可组织为 2-6 个小单元，形态可以是小卡、分栏短句、强调块或提示条\n"
+            "- 同一页内部的微模块应共享统一节奏和样式，不要混用彼此冲突的结构\n"
+            "- 如果内容主要是卡内分区，就不要退化成 mixed_grid；如果内容只是单条结论，也不要硬凑很多微模块"
+        )
 
     if page.reveal_from_page:
         reveal_mode_text = {
@@ -403,7 +448,8 @@ def build_svg_user_prompt(
             "\n### 参考模板家族\n"
             f"当前页面优先参考 `{template_family}` 模板目录。实际导入模板来源：{loaded_families}。"
             "请综合下面所有同页型参考模板的布局结构和视觉风格生成新的 SVG，"
-            "但不要复制模板中的具体文字内容。"
+            "但不要复制模板中的具体文字内容，也不要把模板里出现过的每一个装饰元素当成必须复刻的对象。"
+            "模板主要约束布局骨架与视觉节奏，轻装饰可以根据当前页面内容和风格指南自主补充。"
         )
         for template_name, template_svg in template_svgs:
             lines.append(f"\n#### 参考模板：{template_name}\n```svg\n{template_svg}\n```")

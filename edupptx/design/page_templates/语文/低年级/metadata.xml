@@ -68,17 +68,17 @@
       </image_slots>
     </page>
 
-    <page type="toc" variant="toc">
+    <page type="toc" variant="toc_1">
       <title_max_chars>14</title_max_chars>
       <subtitle_max_chars>24</subtitle_max_chars>
-      <toc_items_max>5</toc_items_max>
+      <toc_items_max>8</toc_items_max>
       <preferred_layout_hints>vertical_list</preferred_layout_hints>
       <design_notes_hint>
-        左侧是整列目录配图，右侧是纵向目录项卡片列表；目录项保持短句和导航感。
+        目录页按条目数量切换布局：条目较少时使用配图+单列目录，条目较多时使用双列目录；目录项保持短句和导航感。
       </design_notes_hint>
       <image_slots>
-        <slot id="toc_cover" required="true" role="illustration" aspect_ratio="3:4" query_from="topic" query_suffix="lower-grade chinese toc illustration" source="search" x="82" y="180" width="276" height="368">
-          <notes>目录页左侧主配图，右侧目录区不再新增第二张图。</notes>
+        <slot id="toc_cover" required="false" role="illustration" aspect_ratio="3:4" query_from="topic" query_suffix="lower-grade chinese toc illustration" source="search" x="82" y="180" width="276" height="368">
+          <notes>当目录页使用带配图的变体时，使用这张目录主配图。</notes>
         </slot>
       </image_slots>
     </page>
@@ -92,16 +92,25 @@
       </design_notes_hint>
     </page>
 
-    <page type="content" variant="content">
+    <page type="content" variant="content_mixed_grid">
       <title_max_chars>18</title_max_chars>
       <subtitle_max_chars>28</subtitle_max_chars>
       <preferred_layout_hints>
-        mixed_grid, center_hero, bento_2col_equal, bento_2col_asymmetric, bento_3col,
-        cards_top_hero_bottom, hero_top_cards_bottom
+        mixed_grid, bento_2col_equal, bento_2col_asymmetric, bento_3col,
+        cards_top_hero_bottom, hero_top_cards_bottom, hero_with_microcards
       </preferred_layout_hints>
       <design_notes_hint>
         内容页先围绕教学目标确定主信息块，再根据命中的内容页变体组织图片区、知识卡、表达卡或总结卡；
         图片和卡片数量用区间理解，不要机械复刻模板。
+      </design_notes_hint>
+    </page>
+
+    <page type="relation" variant="relation_1">
+      <title_max_chars>18</title_max_chars>
+      <subtitle_max_chars>24</subtitle_max_chars>
+      <preferred_layout_hints>relation</preferred_layout_hints>
+      <design_notes_hint>
+        关系页以中心节点统领四周分支节点，适合概念关系、结构关系、分类关系或因果关系；优先保持“中心卡 + 连线 + 分支卡”的关系图结构。
       </design_notes_hint>
     </page>
 
@@ -171,9 +180,9 @@
         </reference_rule>
       </variant>
 
-      <variant stem="toc" page_type="toc">
+      <variant stem="toc_1" page_type="toc">
         <layout_hint>vertical_list</layout_hint>
-        <hit_keywords>目录, 学习任务, 学习内容, 学习步骤, 本课安排</hit_keywords>
+        <hit_keywords>目录, 学习任务, 学习内容, 学习步骤, 本课安排, 单列目录</hit_keywords>
         <image_range min="1" max="1"/>
         <card_range min="3" max="5"/>
         <page_features>
@@ -181,6 +190,19 @@
         </page_features>
         <reference_rule>
           目录项按区间理解，可 3 到 5 项，不必机械复刻示例数量。
+        </reference_rule>
+      </variant>
+
+      <variant stem="toc_2" page_type="toc">
+        <layout_hint>vertical_list</layout_hint>
+        <hit_keywords>目录, 学习任务, 学习内容, 学习步骤, 本课安排, 双列目录, 目录概览</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="6" max="8"/>
+        <page_features>
+          双列目录卡并列排布，适合条目更多的目录概览页；目录项仍然保持短句和清晰导航感。
+        </page_features>
+        <reference_rule>
+          当目录项达到 6 到 8 项时优先使用双列目录，不再补配图，避免信息区过挤。
         </reference_rule>
       </variant>
 
@@ -197,7 +219,7 @@
         </reference_rule>
       </variant>
 
-      <variant stem="content" page_type="content">
+      <variant stem="content_mixed_grid" page_type="content">
         <layout_hint>mixed_grid</layout_hint>
         <hit_keywords>观察, 说一说, 看一看, 知识点, 互动, 主图, 任务</hit_keywords>
         <image_range min="1" max="1"/>
@@ -207,19 +229,6 @@
         </page_features>
         <reference_rule>
           适合“一张主图 + 两块教学信息”的常规讲解页。左下小卡可按内容保留 1 到 2 个，不必固定写满。
-        </reference_rule>
-      </variant>
-
-      <variant stem="content_center_hero" page_type="content">
-        <layout_hint>center_hero</layout_hint>
-        <hit_keywords>核心句, 重点朗读, 重点提示, 中心表达, 主视觉, 大观点</hit_keywords>
-        <image_range min="1" max="1"/>
-        <card_range min="2" max="4"/>
-        <page_features>
-          左侧大图偏方形，右侧大信息卡承载核心句或重点解释，底部可补 1 到 3 个辅助小卡。
-        </page_features>
-        <reference_rule>
-          适合“一个核心观点 + 少量支撑点”，不要把右侧大卡塞成密集段落。
         </reference_rule>
       </variant>
 
@@ -288,6 +297,19 @@
         </reference_rule>
       </variant>
 
+      <variant stem="relation_1" page_type="relation">
+        <layout_hint>relation</layout_hint>
+        <hit_keywords>关系图, 结构关系, 分类关系, 因果关系, 关联, 构成, 中心与分支</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="4" max="4"/>
+        <page_features>
+          中心主卡位于画面中部，四个分支卡分布在四角，以连线表达中心与各节点的关系。
+        </page_features>
+        <reference_rule>
+          适合“一个中心概念 + 四个关联节点”的关系页；优先保持图式关系，不要退化成普通项目符号列表。
+        </reference_rule>
+      </variant>
+
       <variant stem="exercise" page_type="exercise">
         <layout_hint>mixed_grid</layout_hint>
         <hit_keywords>练习, 闯关, 圈一圈, 连一连, 选一选, 操作区, 提示卡</hit_keywords>
@@ -339,6 +361,32 @@
           收尾页以文字和回顾卡为主，不额外补图，保持轻松温和的结束氛围。
         </reference_rule>
       </variant>
+      <variant stem="content_hero_with_microcards_1" page_type="content">
+        <layout_hint>hero_with_microcards</layout_hint>
+        <hit_keywords>并列短信息模块, 短信息模块, 分组提示单元, 主内容展开, 总述展开, 微卡片, 识字卡片, 拼音, 组词, 观察提示, 练习项</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="2" max="6"/>
+        <page_features>
+          一张外层大卡片包裹内容，顶部说明条承载总述或任务，卡内按统一节奏排布 2 到 6 个短信息单元；适合主内容先给出、再由多个并列微模块展开。
+        </page_features>
+        <reference_rule>
+          保持“外层大卡 + 内部统一微卡”的结构，不要把微卡拆到大卡外；同一页内只使用一种微卡样式，每个微卡只承载短信息。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_hero_with_microcards_2" page_type="content">
+        <layout_hint>hero_with_microcards</layout_hint>
+        <hit_keywords>连续文本展示, 文本展示, 诵读展示, 居中文本, 单列正文, 双列正文, 标题作者正文</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="1" max="8"/>
+        <page_features>
+          一张居中大卡片承载标题、署名信息与正文，1 到 4 行时使用单列居中正文，5 到 8 行时切换为双列正文；适合连续文本的集中展示。
+        </page_features>
+        <reference_rule>
+          保持整页只有一张主卡，正文在主卡内部完成单列或双列组织；不要再拆成并列微卡，也不要加入额外外层小卡。
+        </reference_rule>
+      </variant>
+
     </variant_catalog>
   </planner>
 </template>

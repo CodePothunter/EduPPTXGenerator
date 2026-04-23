@@ -14,6 +14,7 @@ Adapted from ppt-master (MIT license) with additions for:
 from __future__ import annotations
 
 import base64
+import io
 import math
 import re
 from copy import deepcopy
@@ -23,6 +24,7 @@ from typing import Optional
 from xml.etree import ElementTree as ET
 
 from loguru import logger
+from PIL import Image
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -1350,6 +1352,138 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     )
 
 
+def _load_image_data(href: str) -> tuple[bytes, str] | None:
+    if href.startswith("data:"):
+        match = re.match(r"data:image/(\w+);base64,(.+)", href, re.DOTALL)
+        if not match:
+            return None
+        img_format = match.group(1).lower()
+        if img_format == "jpeg":
+            img_format = "jpg"
+        return base64.b64decode(match.group(2)), img_format
+
+    try:
+        image_path = Path(href)
+        img_data = image_path.read_bytes()
+        img_format = image_path.suffix.lstrip(".").lower()
+        if img_format == "jpeg":
+            img_format = "jpg"
+        return img_data, img_format
+    except Exception:
+        return None
+
+
+def _get_image_size(img_data: bytes) -> tuple[int, int] | None:
+    try:
+        with Image.open(io.BytesIO(img_data)) as img:
+            return img.size
+    except Exception:
+        return None
+
+
+def _parse_preserve_aspect_ratio(value: str | None) -> tuple[str, str, str]:
+    align_x = "mid"
+    align_y = "mid"
+    mode = "meet"
+    if not value:
+        return align_x, align_y, mode
+
+    tokens = [token for token in value.strip().split() if token and token != "defer"]
+    if not tokens:
+        return align_x, align_y, mode
+    if tokens[0] == "none":
+        return "mid", "mid", "none"
+
+    align_token = tokens[0]
+    match = re.fullmatch(r"x(Min|Mid|Max)Y(Min|Mid|Max)", align_token)
+    if match:
+        align_x = match.group(1).lower()
+        align_y = match.group(2).lower()
+        tokens = tokens[1:]
+
+    if tokens:
+        candidate_mode = tokens[0].lower()
+        if candidate_mode in {"meet", "slice"}:
+            mode = candidate_mode
+    return align_x, align_y, mode
+
+
+def _aligned_offset(container: float, content: float, align: str) -> float:
+    if align == "min":
+        return 0.0
+    if align == "max":
+        return max(container - content, 0.0)
+    return max((container - content) / 2.0, 0.0)
+
+
+def _compute_meet_transform(
+    frame_x: float,
+    frame_y: float,
+    frame_w: float,
+    frame_h: float,
+    image_w: int,
+    image_h: int,
+    align_x: str,
+    align_y: str,
+) -> tuple[float, float, float, float] | None:
+    if image_w <= 0 or image_h <= 0 or frame_w <= 0 or frame_h <= 0:
+        return None
+
+    scale = min(frame_w / image_w, frame_h / image_h)
+    fitted_w = image_w * scale
+    fitted_h = image_h * scale
+    fitted_x = frame_x + _aligned_offset(frame_w, fitted_w, align_x)
+    fitted_y = frame_y + _aligned_offset(frame_h, fitted_h, align_y)
+    return fitted_x, fitted_y, fitted_w, fitted_h
+
+
+def _compute_slice_src_rect(
+    frame_w: float,
+    frame_h: float,
+    image_w: int,
+    image_h: int,
+    align_x: str,
+    align_y: str,
+) -> tuple[int, int, int, int] | None:
+    if image_w <= 0 or image_h <= 0 or frame_w <= 0 or frame_h <= 0:
+        return None
+
+    image_ratio = image_w / image_h
+    frame_ratio = frame_w / frame_h
+    left = top = right = bottom = 0.0
+
+    if math.isclose(image_ratio, frame_ratio, rel_tol=1e-6, abs_tol=1e-6):
+        return None
+
+    if image_ratio > frame_ratio:
+        visible_fraction = frame_ratio / image_ratio
+        crop_total = max(0.0, 1.0 - visible_fraction)
+        if align_x == "min":
+            right = crop_total
+        elif align_x == "max":
+            left = crop_total
+        else:
+            left = crop_total / 2.0
+            right = crop_total / 2.0
+    else:
+        visible_fraction = image_ratio / frame_ratio
+        crop_total = max(0.0, 1.0 - visible_fraction)
+        if align_y == "min":
+            bottom = crop_total
+        elif align_y == "max":
+            top = crop_total
+        else:
+            top = crop_total / 2.0
+            bottom = crop_total / 2.0
+
+    return (
+        round(left * 100000),
+        round(top * 100000),
+        round(right * 100000),
+        round(bottom * 100000),
+    )
+
+
 def convert_image(elem: ET.Element, ctx: ConvertContext) -> str:
     href = elem.get("href") or elem.get(f"{{{XLINK_NS}}}href")
     if not href:
@@ -1361,23 +1495,26 @@ def convert_image(elem: ET.Element, ctx: ConvertContext) -> str:
     if w <= 0 or h <= 0:
         return ""
 
-    if href.startswith("data:"):
-        match = re.match(r"data:image/(\w+);base64,(.+)", href, re.DOTALL)
-        if not match:
-            return ""
-        img_format = match.group(1).lower()
-        if img_format == "jpeg":
-            img_format = "jpg"
-        img_data = base64.b64decode(match.group(2))
-    else:
-        # External file
-        try:
-            img_data = Path(href).read_bytes()
-            img_format = Path(href).suffix.lstrip(".").lower()
-            if img_format == "jpeg":
-                img_format = "jpg"
-        except Exception:
-            return ""
+    image_payload = _load_image_data(href)
+    if image_payload is None:
+        return ""
+    img_data, img_format = image_payload
+    image_size = _get_image_size(img_data)
+    align_x, align_y, mode = _parse_preserve_aspect_ratio(elem.get("preserveAspectRatio"))
+    src_rect_xml = ""
+    if image_size is not None and mode != "none":
+        image_w, image_h = image_size
+        if mode == "slice":
+            src_rect = _compute_slice_src_rect(w, h, image_w, image_h, align_x, align_y)
+            if src_rect is not None:
+                left, top, right, bottom = src_rect
+                src_rect_xml = (
+                    f'<a:srcRect l="{left}" t="{top}" r="{right}" b="{bottom}"/>\n'
+                )
+        else:
+            meet_transform = _compute_meet_transform(x, y, w, h, image_w, image_h, align_x, align_y)
+            if meet_transform is not None:
+                x, y, w, h = meet_transform
 
     img_idx = len(ctx.media_files) + 1
     img_filename = f"s{ctx.slide_num}_img{img_idx}.{img_format}"
@@ -1395,6 +1532,7 @@ def convert_image(elem: ET.Element, ctx: ConvertContext) -> str:
         f'<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>\n'
         f'<p:nvPr/>\n</p:nvPicPr>\n<p:blipFill>\n'
         f'<a:blip r:embed="{r_id}"/>\n'
+        f'{src_rect_xml}'
         f'<a:stretch><a:fillRect/></a:stretch>\n</p:blipFill>\n<p:spPr>\n'
         f'<a:xfrm><a:off x="{px_to_emu(x)}" y="{px_to_emu(y)}"/>'
         f'<a:ext cx="{px_to_emu(w)}" cy="{px_to_emu(h)}"/></a:xfrm>\n'

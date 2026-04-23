@@ -129,8 +129,26 @@ def _normalize_draft_dict(data: dict) -> None:
     _VALID_LAYOUT_HINTS = {
         "center_hero", "vertical_list", "bento_2col_equal", "bento_2col_asymmetric",
         "bento_3col", "hero_top_cards_bottom", "cards_top_hero_bottom",
+        "hero_with_microcards",
         "mixed_grid", "full_image", "timeline", "comparison", "relation",
     }
+    _VALID_IMAGE_ROLES = {"hero", "illustration", "icon", "background"}
+
+    def _normalize_image_role(value: object) -> str:
+        text = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
+        if not text:
+            return "illustration"
+        if text in _VALID_IMAGE_ROLES:
+            return text
+        if text in {"hero_banner", "banner", "cover", "cover_image", "main_visual", "main_image"}:
+            return "hero"
+        if "background" in text or text == "bg":
+            return "background"
+        if "icon" in text:
+            return "icon"
+        if "hero" in text or "banner" in text:
+            return "hero"
+        return "illustration"
 
     for page in data.get("pages", []):
         if page.get("page_type") not in _VALID_PAGE_TYPES:
@@ -149,6 +167,14 @@ def _normalize_draft_dict(data: dict) -> None:
                 else:
                     flat.append(f"{key}: {value}")
             page["content_points"] = flat
+
+        material_needs = page.get("material_needs")
+        if isinstance(material_needs, dict):
+            images = material_needs.get("images")
+            if isinstance(images, list):
+                for image in images:
+                    if isinstance(image, dict):
+                        image["role"] = _normalize_image_role(image.get("role"))
 
     meta = data.get("meta")
     if isinstance(meta, dict) and isinstance(data.get("pages"), list):

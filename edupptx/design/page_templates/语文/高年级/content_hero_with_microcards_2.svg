@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}"/>
+
+  <g font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    <!-- 标题区：按页面布局规则 -->
+    <text x="50" y="50" font-size="32" font-weight="800" fill="{heading_color}">{title}</text>
+    <text x="50" y="78" font-size="20" fill="{text_color}">{subtitle}</text>
+
+    <!-- 居中的大内容 card -->
+    <rect x="230" y="150" width="820" height="470" rx="24"
+          fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"/>
+
+    <!-- 题目与作者 -->
+    <text x="640" y="232" text-anchor="middle" font-size="36" font-weight="800" fill="{heading_color}">{content_title}</text>
+    <text x="640" y="272" text-anchor="middle" font-size="22" fill="{text_color}">{content_author}</text>
+
+    <!-- 分隔线 -->
+    <line x1="410" y1="306" x2="870" y2="306" stroke="{secondary_color}" stroke-width="2"/>
+
+    <!--
+      正文模式切换规则：
+      - 1~4 行：singlecol_display = inline, twocol_display = none
+      - 5~8 行：singlecol_display = none, twocol_display = inline
+      推荐值：inline / none
+    -->
+
+    <!-- 单列模式：1~4行时启用，内容整体居中 -->
+    <g display="{singlecol_display}">
+      <text x="640" y="382" text-anchor="middle" font-size="24" fill="{text_color}">
+        <tspan x="640" dy="0">{single_line_1}</tspan>
+        <tspan x="640" dy="44">{single_line_2}</tspan>
+        <tspan x="640" dy="44">{single_line_3}</tspan>
+        <tspan x="640" dy="44">{single_line_4}</tspan>
+      </text>
+    </g>
+
+    <!-- 双列模式：5~8行时启用 -->
+    <g display="{twocol_display}">
+      <text x="470" y="372" text-anchor="middle" font-size="22" fill="{text_color}">
+        <tspan x="470" dy="0">{left_line_1}</tspan>
+        <tspan x="470" dy="40">{left_line_2}</tspan>
+        <tspan x="470" dy="40">{left_line_3}</tspan>
+        <tspan x="470" dy="40">{left_line_4}</tspan>
+      </text>
+
+      <text x="810" y="372" text-anchor="middle" font-size="22" fill="{text_color}">
+        <tspan x="810" dy="0">{right_line_1}</tspan>
+        <tspan x="810" dy="40">{right_line_2}</tspan>
+        <tspan x="810" dy="40">{right_line_3}</tspan>
+        <tspan x="810" dy="40">{right_line_4}</tspan>
+      </text>
+    </g>
+
+    <!-- 页码 -->
+    <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}">{page_number} / {total_pages}</text>
+  </g>
+</svg>

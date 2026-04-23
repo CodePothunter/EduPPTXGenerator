@@ -45,7 +45,7 @@ N 次并行 LLM 调用 (max 4 workers)，每页生成一个完整 SVG (viewBox="
 
 ### Bento Grid 布局系统
 
-卡片式模块化布局，11 种组合模式:
+卡片式模块化布局，13 种组合模式:
 
 | 布局 | 适用场景 |
 |------|---------|
@@ -56,10 +56,12 @@ N 次并行 LLM 调用 (max 4 workers)，每页生成一个完整 SVG (viewBox="
 | bento_3col | 三要素并列 |
 | hero_top_cards_bottom | 概述+细节 |
 | cards_top_hero_bottom | 铺垫+结论 |
+| hero_with_microcards | 一张主卡 + 卡内微模块 |
 | mixed_grid | 复杂内容 |
 | full_image | 全图展示 |
 | timeline | 时间线、流程 |
 | comparison | 正反对比 |
+| relation | 关系图、结构图 |
 
 ### SVG 约束
 

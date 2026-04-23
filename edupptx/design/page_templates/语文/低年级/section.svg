@@ -5,16 +5,17 @@
   <polygon points="236,124 244,140 262,142 248,154 252,172 236,163 220,172 224,154 210,142 228,140" fill="{accent_color}" fill-opacity="0.24"/>
   <polygon points="1030,140 1038,156 1056,158 1042,170 1046,188 1030,179 1014,188 1018,170 1004,158 1022,156" fill="{accent_color}" fill-opacity="0.24"/>
 
-  <rect x="250" y="176" width="780" height="250" rx="32" fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"/>
+  <!-- 主卡片：下边界下移并以画布垂直中心为中线 -->
+  <rect x="250" y="176" width="780" height="368" rx="32" fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"/>
 
   <!-- 上移后的小 card -->
   <rect x="518" y="108" width="244" height="58" rx="24" fill="{secondary_bg_color}"/>
-  <text x="640" y="144" text-anchor="middle" font-size="24" font-weight="700" fill="{heading_color}" font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">新任务开始啦</text>
+  <text x="640" y="144" text-anchor="middle" font-size="24" font-weight="700" fill="{heading_color}" font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">{badge_text}</text>
 
-  <text x="640" y="300" text-anchor="middle" font-size="50" font-weight="800" fill="{heading_color}" font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">{title}</text>
-  <line x1="476" y1="334" x2="804" y2="334" stroke="{accent_color}" stroke-width="6" stroke-linecap="round"/>
-  <text x="640" y="386" text-anchor="middle" font-size="24" fill="{text_color}" font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">{subtitle}</text>
-
+  <!-- 根据卡片尺寸重新调整的文字位置 -->
+  <text x="640" y="338" text-anchor="middle" font-size="50" font-weight="800" fill="{heading_color}" font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">{title}</text>
+  <line x1="476" y1="372" x2="804" y2="372" stroke="{accent_color}" stroke-width="6" stroke-linecap="round"/>
+  <text x="640" y="426" text-anchor="middle" font-size="24" fill="{text_color}" font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">{subtitle}</text>
 
   <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}" font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">{page_number} / {total_pages}</text>
 </svg>

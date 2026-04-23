@@ -195,10 +195,17 @@ def _relative_family_name(family_dir: Path) -> str:
     return family_dir.relative_to(_PAGE_TEMPLATES_DIR).as_posix()
 
 
+def _is_backup_svg_stem(stem: str) -> bool:
+    normalized = stem.casefold().strip()
+    return bool(re.search(r"(?:^|[_\-\s])copy(?:\s*\d+)?$", normalized))
+
+
 def _discover_page_variants(family_dir: Path) -> dict[str, list[str]]:
     variants: dict[str, list[str]] = {}
     for path in sorted(family_dir.glob("*.svg")):
         stem = path.stem
+        if _is_backup_svg_stem(stem):
+            continue
         for page_type in _PAGE_TYPES:
             if stem == page_type or stem.startswith(f"{page_type}_"):
                 variants.setdefault(page_type, []).append(stem)
@@ -718,6 +725,66 @@ def _variant_tokens(stem: str) -> list[str]:
     ]
 
 
+def _score_hero_with_microcards_variant(spec: VariantSpec, page: PagePlan) -> int:
+    if page.layout_hint != "hero_with_microcards":
+        return 0
+    if not spec.stem.startswith("content_hero_with_microcards_"):
+        return 0
+
+    points = [text.strip() for text in _flatten_content_points(page.content_points) if str(text).strip()]
+    if not points:
+        return 0
+
+    point_count = len(points)
+    lengths = [len(text) for text in points]
+    avg_len = sum(lengths) / point_count
+    max_len = max(lengths)
+    has_subtitle = bool(str(page.subtitle or "").strip())
+
+    if spec.stem.endswith("_1"):
+        score = 0
+        if 2 <= point_count <= 6:
+            score += 2
+        if avg_len <= 18:
+            score += 2
+        if max_len <= 28:
+            score += 1
+        if has_subtitle and point_count >= 4:
+            score -= 1
+        return score
+
+    if spec.stem.endswith("_2"):
+        score = 0
+        if has_subtitle and point_count >= 4:
+            score += 5
+        elif has_subtitle:
+            score += 2
+        if 1 <= point_count <= 8:
+            score += 1
+        if avg_len >= 8 or max_len >= 14:
+            score += 1
+        return score
+
+    return 0
+
+
+def _score_toc_variant(spec: VariantSpec, page: PagePlan) -> int:
+    if page.page_type != "toc" or spec.page_type != "toc":
+        return 0
+
+    point_count = len(_flatten_content_points(page.content_points))
+    if point_count <= 0:
+        return 0
+
+    if spec.stem == "toc_1":
+        return 6 if point_count <= 5 else -3
+
+    if spec.stem == "toc_2":
+        return 6 if point_count > 5 else -3
+
+    return 0
+
+
 def _score_variant_spec(spec: VariantSpec, page: PagePlan) -> int:
     normalized = _page_routing_text(page).casefold()
     score = 0
@@ -746,6 +813,9 @@ def _score_variant_spec(spec: VariantSpec, page: PagePlan) -> int:
             score += 2
         elif point_count < max(1, spec.card_min - 1) or point_count > spec.card_max + 1:
             score -= 1
+
+    score += _score_toc_variant(spec, page)
+    score += _score_hero_with_microcards_variant(spec, page)
 
     return score
 
@@ -817,11 +887,13 @@ def resolve_page_template_variant(
         if page.page_type == "content":
             return None
 
-    candidates = list(
-        manifest.page_variants.get(page.page_type)
-        or manifest.page_variants.get("content", [])
-    )
+    candidates = list(manifest.page_variants.get(page.page_type, []))
+    if not candidates and page.page_type == "content":
+        candidates = list(manifest.page_variants.get("content", []))
+
     spec = manifest.planner_page_specs.get(page.page_type)
+    if spec is None and page.page_type == "content":
+        spec = manifest.planner_page_specs.get("content")
     if spec and spec.variant:
         candidates = _dedupe_keep_order([spec.variant] + candidates)
     if not candidates:
@@ -1085,9 +1157,12 @@ def align_draft_to_template(
                     page.template_variant = source.template_variant
             continue
 
-        spec = manifest.planner_page_specs.get(page.page_type) or manifest.planner_page_specs.get("content")
+        spec = manifest.planner_page_specs.get(page.page_type)
+        if spec is None and page.page_type == "content":
+            spec = manifest.planner_page_specs.get("content")
         if spec is None:
             continue
+        variant_spec = manifest.variant_specs.get(page.template_variant or "")
 
         if spec.preferred_layout_hints and page.layout_hint not in spec.preferred_layout_hints:
             page.layout_hint = spec.preferred_layout_hints[0]
@@ -1095,13 +1170,27 @@ def align_draft_to_template(
         page.title = _trim_text(page.title, spec.title_max_chars) or page.title
         page.subtitle = _trim_text(page.subtitle, spec.subtitle_max_chars)
 
-        if page.page_type == "toc" and spec.toc_items_max is not None and len(page.content_points) > spec.toc_items_max:
-            page.content_points = page.content_points[:spec.toc_items_max]
+        toc_items_max = spec.toc_items_max
+        if page.page_type == "toc" and variant_spec is not None and variant_spec.card_max is not None:
+            toc_items_max = variant_spec.card_max
+        if page.page_type == "toc" and toc_items_max is not None and len(page.content_points) > toc_items_max:
+            page.content_points = page.content_points[:toc_items_max]
 
         if spec.design_notes_hint and not page.design_notes.strip():
             page.design_notes = spec.design_notes_hint
 
         current_images = list(page.material_needs.images or [])
+        if page.page_type == "toc":
+            if page.template_variant == "toc_2":
+                current_images = []
+            elif page.template_variant == "toc_1" and not current_images and spec.image_slots:
+                slot = spec.image_slots[0]
+                current_images.append(ImageNeed(
+                    query=_build_image_query(draft, page, slot),
+                    source=slot.source,  # type: ignore[arg-type]
+                    role=slot.role,      # type: ignore[arg-type]
+                    aspect_ratio=slot.aspect_ratio,
+                ))
         for index, slot in enumerate(spec.image_slots):
             if index < len(current_images):
                 current_images[index].aspect_ratio = slot.aspect_ratio

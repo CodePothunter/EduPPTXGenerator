@@ -38,6 +38,7 @@ LayoutHint = Literal[
     "bento_3col",
     "hero_top_cards_bottom",
     "cards_top_hero_bottom",
+    "hero_with_microcards",
     "mixed_grid",
     "full_image",
     "timeline",

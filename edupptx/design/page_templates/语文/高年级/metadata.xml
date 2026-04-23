@@ -1,0 +1,231 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+  <identity>
+    <name>yuwen_upper_grade_reader</name>
+    <label>语文高年级 · 清晰阅读风</label>
+    <category>primary_upper_grade</category>
+    <tags>
+      语文, 高年级, 五年级, 六年级, 阅读理解, 课文解析, 古诗文, 比较阅读, 人物分析, 结构化表达
+    </tags>
+    <intro>
+      适用于小学语文高年级阅读与讲解场景的模板组。当前目录只包含封面和内容页变体，内容页覆盖图文联读、双栏并列、对照表、古诗文展示和讲解总结等结构，
+      整体风格更克制、更清晰，适合高年级的阅读分析、文本比较和表达提炼。
+    </intro>
+  </identity>
+
+  <routing>
+    <subjects>
+      语文, 五年级, 六年级, 高年级, 阅读
+    </subjects>
+    <scenes>
+      课文导入, 阅读解析, 人物分析, 段落赏析, 古诗文诵读, 比较阅读, 写作提示, 结构化讲解
+    </scenes>
+    <priority_keywords>
+      高年级, 五年级, 六年级, 阅读理解, 课文解析, 人物, 情节, 主旨, 结构, 古诗, 古文, 比较阅读, 对照, 赏析, 写作提示
+    </priority_keywords>
+    <negative_keywords>
+      口算, 加减法, 图形认识, 实验报告, 化学, 物理, 英语口语, 拼音识字启蒙
+    </negative_keywords>
+  </routing>
+
+  <visual>
+    <palette id="upper_grade_reader">
+      <label>Upper Grade Reader</label>
+      <keywords>calm, structured, reading, clean, academic</keywords>
+      <primary>#3656A6</primary>
+      <secondary>#7BA4D9</secondary>
+      <accent>#E3A23B</accent>
+      <card_bg>#FFFFFF</card_bg>
+      <secondary_bg>#F5F8FF</secondary_bg>
+      <text>#344054</text>
+      <heading>#1F3A68</heading>
+      <background_prompt>clean reading desk mood, light paper texture, calm blue accents, structured white cards</background_prompt>
+    </palette>
+  </visual>
+
+  <planner>
+    <summary>
+      本目录当前只提供 cover 和 content 两类模板，适合作为语文高年级阅读风格家族使用。规划阶段优先组织阅读任务、文本结构和分析重点，再根据 layout_hint 命中具体内容页变体。
+      如果页面类型在本目录中没有对应 SVG，不要回退到 content 变体冒充其他页型；保持该页通用规划即可。目录中存在备份文件 content_bento_2col_equal copy.svg，不参与路由。
+    </summary>
+
+    <page type="cover" variant="cover">
+      <title_max_chars>24</title_max_chars>
+      <subtitle_max_chars>36</subtitle_max_chars>
+      <preferred_layout_hints>center_hero</preferred_layout_hints>
+      <design_notes_hint>
+        封面页以居中标题卡、简洁装饰和页脚页码为主，建立高年级阅读课件的清晰、沉稳和有序感。
+      </design_notes_hint>
+    </page>
+
+    <page type="content" variant="content_mixed_grid_2">
+      <title_max_chars>24</title_max_chars>
+      <subtitle_max_chars>34</subtitle_max_chars>
+      <preferred_layout_hints>
+        mixed_grid, bento_2col_equal, bento_2col_asymmetric, bento_3col,
+        cards_top_hero_bottom, hero_top_cards_bottom, hero_with_microcards, comparison
+      </preferred_layout_hints>
+      <design_notes_hint>
+        内容页优先围绕阅读任务、分析维度和表达结果组织信息，再根据变体结构选择主图、表格、讲解卡、对照区或连续文本区。高年级内容允许更完整的句子，但仍要保持结构清晰和阅读节奏稳定。
+      </design_notes_hint>
+    </page>
+
+    <variant_catalog>
+      <variant stem="cover" page_type="cover">
+        <layout_hint>center_hero</layout_hint>
+        <hit_keywords>封面, 单元导入, 阅读专题, 课文题目, 课程标题</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="1" max="1"/>
+        <page_features>
+          中央大卡承载标题和副标题，顶部胶囊标签和底部页码强化清晰、克制的阅读封面节奏。
+        </page_features>
+        <reference_rule>
+          保持中心构图和轻装饰，不要突然加入大面积主图。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_mixed_grid_2" page_type="content">
+        <layout_hint>mixed_grid</layout_hint>
+        <hit_keywords>图文联读, 阅读任务, 主图加知识点, 观察与表达, 课文插图分析, 画面导读</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="3" max="5"/>
+        <page_features>
+          左侧主图承载阅读情境，右上知识卡和右下表达卡分工明确，左下可补 1 到 2 个短任务卡。
+        </page_features>
+        <reference_rule>
+          适合一张主图带动阅读理解和表达任务，不要把右侧卡片写成冗长段落。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_bento_2col_equal" page_type="content">
+        <layout_hint>bento_2col_equal</layout_hint>
+        <hit_keywords>双材料并列, 两人物并列, 两组信息, 两个意象, 并列阅读, 双栏对照</hit_keywords>
+        <image_range min="2" max="2"/>
+        <card_range min="2" max="2"/>
+        <page_features>
+          一个示例主卡表达“可复制的双列等宽卡”结构，每列包含插图、标题和短标签。
+        </page_features>
+        <reference_rule>
+          推荐保持 2 栏等宽结构，适合平行阅读和并列比较，不扩成 3 栏。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_bento_2col_asymmetric" page_type="content">
+        <layout_hint>bento_2col_asymmetric</layout_hint>
+        <hit_keywords>主图配解析, 重点段落解读, 情节图解, 细节赏析, 人物观察, 主次分明</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="2" max="4"/>
+        <page_features>
+          左侧大图承载阅读情境，右侧 hero 卡负责主讲解，右下再补短提示卡。
+        </page_features>
+        <reference_rule>
+          适合“主图 + 主结论 + 补充提示”的页面，补充卡保持短句。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_bento_2col_asymmetric_2" page_type="content">
+        <layout_hint>bento_2col_asymmetric</layout_hint>
+        <hit_keywords>插图配长文解析, 图旁长文, 阅读理解分条, 讲解型图文页, 图片加条目讲解</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="2" max="4"/>
+        <page_features>
+          左侧放大图片卡，右侧放大文字卡，适合连续条目式讲解和图旁长文解析。
+        </page_features>
+        <reference_rule>
+          适合有一张关键插图且右侧需要放较完整分点说明的阅读讲解页。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_bento_3col" page_type="content">
+        <layout_hint>bento_3col</layout_hint>
+        <hit_keywords>三点归纳, 三个角度, 三个人物, 三个意象, 三段并列, 三栏阅读</hit_keywords>
+        <image_range min="3" max="3"/>
+        <card_range min="3" max="3"/>
+        <page_features>
+          一个示例列卡表达“可复制的三列等宽卡”结构，每列包含图片和短正文。
+        </page_features>
+        <reference_rule>
+          适合三点归纳或三角度分析，保持三栏节奏，不要扩成更多列。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_cards_top_hero_bottom" page_type="content">
+        <layout_hint>cards_top_hero_bottom</layout_hint>
+        <hit_keywords>先归纳后看图, 上方任务卡, 先提任务再看画面, 阅读前提示, 上卡下图</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="2" max="4"/>
+        <page_features>
+          上方短卡先给阅读任务或观察角度，下方 hero 图承接情境和文本对象。
+        </page_features>
+        <reference_rule>
+          适合先布置任务、再进入画面和文本情境的阅读页。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_hero_top_cards_bottom" page_type="content">
+        <layout_hint>hero_top_cards_bottom</layout_hint>
+        <hit_keywords>先看图再归纳, 情境导读, 上图下卡, 先看插图后提炼, 画面导入</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="2" max="4"/>
+        <page_features>
+          上方 hero 图先建立阅读情境，下方短卡再整理分析结论、提示和任务。
+        </page_features>
+        <reference_rule>
+          适合一张关键画面导入后再做分点提炼的页面。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_comparison" page_type="content">
+        <layout_hint>comparison</layout_hint>
+        <hit_keywords>维度对照, 表格比较, 比较阅读, 多维对照, 对照表, 结构比较</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="3" max="4"/>
+        <page_features>
+          整页以四列表格式对照为核心，适合按多个维度并列比较人物、文本、情节或表达方式。
+        </page_features>
+        <reference_rule>
+          适合纯对照结构，不补图，重点保持表头和各维度信息整齐对应。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_comparison_2" page_type="content">
+        <layout_hint>comparison</layout_hint>
+        <hit_keywords>总述加对照, 先总后分, 概述后比较, 结论先行, 分维度对照</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="3" max="4"/>
+        <page_features>
+          上方 hero 总述卡先给出结论或总览，下方表格再展开分维度对照。
+        </page_features>
+        <reference_rule>
+          适合“先给总论，再做对照分析”的讲解页，不要把上下两区混成同层信息。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_hero_with_microcards_2" page_type="content">
+        <layout_hint>hero_with_microcards</layout_hint>
+        <hit_keywords>连续文本展示, 古诗文展示, 诵读页, 正文排版, 标题作者正文, 课文片段</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="1" max="8"/>
+        <page_features>
+          一张居中大卡承载标题、署名信息与正文，正文可按 1 到 4 行单列或 5 到 8 行双列展示。
+        </page_features>
+        <reference_rule>
+          适合古诗、古文、现代诗、课文片段等连续文本展示，保持“单一主卡 + 卡内文本组织”。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_hero_with_microcards_3" page_type="content">
+        <layout_hint>hero_with_microcards</layout_hint>
+        <hit_keywords>讲解总结结构, 长段讲解, 结论强调, 底部提示条, 重点提醒, 讲解页</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="1" max="5"/>
+        <page_features>
+          一张放大的主卡承载小节标题、长条目讲解、强调结论和底部提示条，适合讲解总结结构。
+        </page_features>
+        <reference_rule>
+          适合“长段讲解 + 结论强调 + 底部提醒”的高年级讲解页，不再补外层图卡。
+        </reference_rule>
+      </variant>
+    </variant_catalog>
+  </planner>
+</template>
