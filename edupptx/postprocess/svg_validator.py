@@ -48,7 +48,7 @@ _MATH_CONTENT_RE = re.compile(
 def _uses_structured_table(page: PagePlan | None) -> bool:
     if page is None:
         return False
-    return page.page_type == "comparison" or page.layout_hint == "comparison"
+    return page.layout_hint == "comparison"
 
 
 def _uses_timeline_layout(page: PagePlan | None) -> bool:
@@ -100,6 +100,7 @@ def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[st
         if not _uses_center_hero_layout(page):
             _fix_text_overlaps(root, warnings)
         _fix_text_outside_cards(root, warnings)
+        _normalize_stacked_card_heights(root, warnings)
     if _uses_timeline_layout(page):
         _normalize_timeline_layout(root, page, warnings)
     _check_image_hrefs(root, warnings)
@@ -624,6 +625,8 @@ def _wrap_long_text(root: etree._Element, warnings: list[str]) -> None:
             continue
         if _is_centered_short_label(text_el):
             continue
+        if _is_centered_page_banner(text_el):
+            continue
         if _has_translated_group_ancestor(text_el):
             continue
         if text_el.get("data-latex") is not None or _is_math_content(text_el):
@@ -726,6 +729,8 @@ def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
         if _is_footer_page_number_text(t):
             continue
         if _is_centered_short_label(t):
+            continue
+        if _is_centered_page_banner(t):
             continue
         if _is_page_subtitle_text(root, t):
             continue
@@ -880,6 +885,20 @@ def _is_centered_short_label(text_el: etree._Element) -> bool:
     return bool(compact) and len(compact) <= 3
 
 
+def _is_centered_page_banner(text_el: etree._Element) -> bool:
+    if text_el.get("text-anchor") != "middle":
+        return False
+    compact = re.sub(r"\s+", "", _text_content(text_el))
+    if len(compact) <= 3:
+        return False
+    try:
+        x = float(text_el.get("x", "0"))
+        y = float(text_el.get("y", "0"))
+    except (ValueError, TypeError):
+        return False
+    return 420 <= x <= 860 and y >= 560
+
+
 def _is_footer_page_number_text(text_el: etree._Element) -> bool:
     try:
         x = float(text_el.get("x", "0"))
@@ -927,6 +946,9 @@ def _collect_card_rects(root: etree._Element) -> list[etree._Element]:
     for rect in rects:
         box = boxes[id(rect)]
         if box is None:
+            continue
+        if _is_shallow_footer_like_card(box):
+            cards.append(rect)
             continue
         x, y, width, height = box
         right = x + width
@@ -1217,6 +1239,10 @@ def _text_starts_in_card(
     )
 
 
+def _allows_relaxed_card_match(text_el: etree._Element) -> bool:
+    return not _is_centered_page_banner(text_el)
+
+
 def _pick_best_card(
     candidates: list[tuple[etree._Element, tuple[float, float, float, float]]],
     tx: float,
@@ -1232,8 +1258,9 @@ def _pick_best_card(
         overflow = max(0.0, text_bottom - card_bottom)
         center_y = (ty + text_bottom) / 2.0
         return (
-            overflow,
+            0 if _is_shallow_footer_like_card((rx, ry, rw, rh)) else 1,
             rw * rh,
+            overflow,
             abs((ry + rh / 2.0) - center_y),
             abs((rx + rw / 2.0) - tx),
         )
@@ -1258,11 +1285,28 @@ def _find_parent_card_in_groups(
             continue
 
         if len(group_cards) == 1:
-            return group_cards[0][0]
+            rect, box = group_cards[0]
+            if _text_matches_card_box(
+                tx,
+                ty,
+                text_bottom,
+                box,
+                overflow_slack=48 if _is_shallow_footer_like_card(box) else 28,
+            ):
+                return rect
+            if _allows_relaxed_card_match(text_el) and _text_starts_in_card(tx, ty, box):
+                return rect
+            continue
 
         matched = [
             item for item in group_cards
-            if _text_matches_card_box(tx, ty, text_bottom, item[1])
+            if _text_matches_card_box(
+                tx,
+                ty,
+                text_bottom,
+                item[1],
+                overflow_slack=48 if _is_shallow_footer_like_card(item[1]) else 28,
+            )
         ]
         best = _pick_best_card(matched, tx, ty, text_bottom)
         if best is not None:
@@ -1555,7 +1599,13 @@ def _find_parent_card(
         box = _rect_box(rect)
         if box is None:
             continue
-        if _text_matches_card_box(tx, ty, text_bottom, box):
+        if _text_matches_card_box(
+            tx,
+            ty,
+            text_bottom,
+            box,
+            overflow_slack=48 if _is_shallow_footer_like_card(box) else 28,
+        ):
             candidates.append((rect, box))
     best = _pick_best_card(candidates, tx, ty, text_bottom)
     if best is not None:
@@ -1566,7 +1616,7 @@ def _find_parent_card(
         box = _rect_box(rect)
         if box is None:
             continue
-        if _text_starts_in_card(tx, ty, box):
+        if _allows_relaxed_card_match(text_el) and _text_starts_in_card(tx, ty, box):
             relaxed_candidates.append((rect, box))
     return _pick_best_card(relaxed_candidates, tx, ty, text_bottom)
 
@@ -1689,6 +1739,8 @@ def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
             continue
         if _is_centered_short_label(text_el):
             continue
+        if _is_centered_page_banner(text_el):
+            continue
         if _has_translated_group_ancestor(text_el):
             continue
         try:
@@ -1718,7 +1770,12 @@ def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
         )
 
         if overflow > overflow_tolerance:
-            if _is_shallow_footer_like_card(box):
+            is_shallow_card = _is_shallow_footer_like_card(box)
+            target_h = text_bottom - ry + 4
+            max_h = CONTENT_BOTTOM_LIMIT - ry
+            new_h = min(target_h, max_h) if is_shallow_card else target_h
+
+            if is_shallow_card and new_h <= rh:
                 shifted_up = _shift_text_up_within_card(root, text_el, box, overflow)
                 if shifted_up > 0:
                     text_bottom = _get_text_bottom_y(text_el)
@@ -1729,10 +1786,9 @@ def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
                     )
                     if overflow <= overflow_tolerance:
                         continue
+                target_h = text_bottom - ry + 4
+                new_h = min(target_h, max_h)
 
-            target_h = text_bottom - ry + 4
-            max_h = CONTENT_BOTTOM_LIMIT - ry
-            new_h = min(target_h, max_h) if _is_shallow_footer_like_card(box) else target_h
             rounded_new_h = float(int(new_h))
             delta = max(0.0, rounded_new_h - rh)
             if delta <= 0:
@@ -1757,6 +1813,51 @@ def _fix_text_outside_cards(root: etree._Element, warnings: list[str]) -> None:
             if shifted_cards:
                 warning += f"; shifted {shifted_cards} following cards by {int(delta)}"
             warnings.append(warning)
+
+
+def _normalize_stacked_card_heights(root: etree._Element, warnings: list[str]) -> None:
+    groups: dict[tuple[int, int], list[tuple[etree._Element, tuple[float, float, float, float]]]] = {}
+    for rect in root.iter(f"{{{SVG_NS}}}rect"):
+        if _element_in_defs(rect) or _has_translated_group_ancestor(rect):
+            continue
+        if not _is_meaningful_card_rect(rect):
+            continue
+        box = _rect_box(rect)
+        if box is None:
+            continue
+        x, _, width, height = box
+        if width < 500 or height < 70 or height > 180:
+            continue
+        key = (round(x / 8), round(width / 8))
+        groups.setdefault(key, []).append((rect, box))
+
+    for cards in groups.values():
+        if len(cards) < 3:
+            continue
+        cards.sort(key=lambda item: item[1][1])
+        heights = [box[3] for _, box in cards]
+        target_h = max(heights)
+        if target_h - min(heights) < 8:
+            continue
+
+        changed = 0
+        for idx, (rect, box) in enumerate(cards):
+            _, y, _, height = box
+            if height >= target_h:
+                continue
+            if idx + 1 < len(cards):
+                next_y = cards[idx + 1][1][1]
+                if y + target_h > next_y - 8:
+                    continue
+            elif y + target_h > CONTENT_BOTTOM_LIMIT:
+                continue
+            rect.set("height", str(int(target_h)))
+            changed += 1
+
+        if changed:
+            warnings.append(
+                f"Normalized {changed} stacked card height(s) to {int(target_h)}"
+            )
 
 
 def _check_image_hrefs(root: etree._Element, warnings: list[str]) -> None:

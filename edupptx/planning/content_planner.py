@@ -22,7 +22,7 @@ from edupptx.planning.prompts import (
 
 def generate_planning_outline(
     ctx: InputContext,
-    config: Config
+    config: Config,
 ) -> PlanningDraft:
     """Generate the stage-1 page outline without template constraints."""
 
@@ -106,12 +106,7 @@ def _parse_draft(response: str, ensure_reveals: bool = False) -> PlanningDraft:
     if raw.endswith("```"):
         raw = raw[:-3]
 
-    try:
-        data = json.loads(raw)
-    except json.JSONDecodeError as exc:
-        logger.warning("JSON parse failed, attempting repair: {}", exc)
-        cleaned = re.sub(r",\s*([}\]])", r"\1", raw)
-        data = json.loads(cleaned)
+    data = _load_json_with_repair(raw)
 
     _normalize_draft_dict(data)
     if ensure_reveals:
@@ -120,11 +115,25 @@ def _parse_draft(response: str, ensure_reveals: bool = False) -> PlanningDraft:
     return PlanningDraft.model_validate(data)
 
 
+def _load_json_with_repair(raw: str) -> dict:
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError as exc:
+        logger.warning("JSON parse failed, attempting repair: {}", exc)
+
+    cleaned = re.sub(r",\s*([}\]])", r"\1", raw)
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        # Some LLMs emit literal line breaks inside JSON strings. Keep this
+        # fallback narrow: only after normal parsing and trailing-comma repair fail.
+        return json.loads(cleaned, strict=False)
+
+
 def _normalize_draft_dict(data: dict) -> None:
     _VALID_PAGE_TYPES = {
         "cover", "toc", "section", "content", "data", "case", "closing",
-        "timeline", "comparison", "exercise", "summary", "relation",
-        "quiz", "formula", "experiment",
+        "timeline", "exercise", "summary", "quiz", "formula", "experiment",
     }
     _VALID_LAYOUT_HINTS = {
         "center_hero", "vertical_list", "bento_2col_equal", "bento_2col_asymmetric",
@@ -133,6 +142,7 @@ def _normalize_draft_dict(data: dict) -> None:
         "mixed_grid", "full_image", "timeline", "comparison", "relation",
     }
     _VALID_IMAGE_ROLES = {"hero", "illustration", "icon", "background"}
+    _LAYOUT_ONLY_PAGE_TYPES = {"comparison", "relation"}
 
     def _normalize_image_role(value: object) -> str:
         text = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
@@ -151,6 +161,13 @@ def _normalize_draft_dict(data: dict) -> None:
         return "illustration"
 
     for page in data.get("pages", []):
+        page_type = str(page.get("page_type") or "").strip()
+        if page_type in _LAYOUT_ONLY_PAGE_TYPES:
+            layout_hint = str(page.get("layout_hint") or "").strip()
+            if not layout_hint or layout_hint == "mixed_grid" or layout_hint not in _VALID_LAYOUT_HINTS:
+                page["layout_hint"] = page_type
+            page["page_type"] = "content"
+
         if page.get("page_type") not in _VALID_PAGE_TYPES:
             logger.warning("Unknown page_type '{}' → 'content'", page.get("page_type"))
             page["page_type"] = "content"

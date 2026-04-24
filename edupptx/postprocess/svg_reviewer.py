@@ -10,6 +10,11 @@ from edupptx.config import Config
 from edupptx.llm_client import create_llm_client
 from edupptx.models import PagePlan, VisualPlan
 
+_IMAGE_HREF_PLACEHOLDER_RE = re.compile(
+    r"<image\b[^>]*(?:href|xlink:href)\s*=\s*['\"](__IMAGE_[A-Z0-9_]+__)['\"]",
+    re.IGNORECASE,
+)
+
 _REVIEW_SYSTEM_PROMPT = """\
 你是 SVG 质量审核专家。你的任务是审查一个 PPT 页面的 SVG 代码，结合自动检测到的问题列表，输出修正后的完整 SVG。
 
@@ -28,7 +33,7 @@ _REVIEW_SYSTEM_PROMPT = """\
 11. **对比层次 (Contrast)**：检查字号是否形成层次——标题 ≥28px，正文 16-24px，标注 ≤14px。如层次不清，调整关键字号。确保主色和强调色有足够的视觉区分。
 12. **重复统一 (Repetition)**：检查同类元素的视觉一致性——所有卡片的 rx 值是否相同？颜色是否遵循配色方案？间距是否统一？如有不一致，统一为出现次数最多的值。
 13. **邻近分组 (Proximity)**：检查相关内容是否在空间上靠近——标题与正文的间距应 < 卡片之间的间距。不同内容分组之间应有明确的间距分隔（≥20px）。
-14. **表格结构保护**：对于 `comparison` 页面或 `comparison` 布局，必须保留原始表格的行数、列数、表头行、列分隔线、行高顺序和单元格内容顺序。不要把表格重写成普通卡片布局；只允许在单元格内部微调文字位置、字号和换行。
+14. **表格结构保护**：对于 `layout_hint=comparison` 布局，必须保留原始表格的行数、列数、表头行、列分隔线、行高顺序和单元格内容顺序。不要把表格重写成普通卡片布局；只允许在单元格内部微调文字位置、字号和换行。
 15. **行内高亮保护**：如果一句正文使用同一个 `<text>` 内的连续 `<tspan>` 做局部高亮，必须保留前文、高亮词和后文的连续关系。不要把同一句话拆成多个独立 `<text>`，不要生成嵌套 `<tspan>`，不要丢失高亮词前后的正文。
 
 ## 输出要求
@@ -53,6 +58,36 @@ _REVIEW_SYSTEM_PROMPT += """
 - 如果图片对卡片来说过大，就缩小图片，或把它向内移动。
 - 与其溢出，不如使用更小但安全的图片框。
 """
+
+_REVIEW_SYSTEM_PROMPT += """
+
+## Image placeholder hard rules
+
+- All `__IMAGE_...__` tokens are reserved placeholders for later image injection and must be preserved exactly.
+- Do not remove `<image>` nodes that contain `__IMAGE_...__`; do not replace them with `<rect>`, `<text>`, or labels such as "插图1".
+- You may adjust image x/y/width/height, but `href="__IMAGE_...__"` or `xlink:href="__IMAGE_...__"` must remain unchanged.
+"""
+
+
+def _image_href_placeholder_counts(svg_content: str) -> dict[str, int]:
+    """Count image injection placeholders that are still attached to image hrefs."""
+    counts: dict[str, int] = {}
+    for placeholder in _IMAGE_HREF_PLACEHOLDER_RE.findall(svg_content):
+        counts[placeholder] = counts.get(placeholder, 0) + 1
+    return counts
+
+
+def _missing_image_href_placeholders(original_svg: str, reviewed_svg: str) -> dict[str, int]:
+    """Return image href placeholders that disappeared during LLM review."""
+    original = _image_href_placeholder_counts(original_svg)
+    reviewed = _image_href_placeholder_counts(reviewed_svg)
+    missing: dict[str, int] = {}
+    for placeholder, count in original.items():
+        reviewed_count = reviewed.get(placeholder, 0)
+        if reviewed_count < count:
+            missing[placeholder] = count - reviewed_count
+    return missing
+
 
 def review_and_fix_svg(
     svg_content: str,
@@ -85,9 +120,9 @@ def review_and_fix_svg(
         f"## SVG 代码\n```svg\n{svg_content}\n```\n\n"
         f"请审查以上 SVG，修正所有问题后输出完整 SVG。"
     )
-    if page.page_type == "comparison" or page.layout_hint == "comparison":
+    if page.layout_hint == "comparison":
         user_prompt += (
-            "\n\n## comparison 页额外要求\n"
+            "\n\n## layout_hint=comparison 额外要求\n"
             "- 保留原始表格结构：表头、列分隔线、各数据行、单元格顺序都不能改\n"
             "- 不要新增或删除行列，不要改成普通卡片布局\n"
             "- 只允许在单元格内部微调文本位置和换行"
@@ -111,6 +146,15 @@ def review_and_fix_svg(
         )
         reviewed = _extract_svg(response)
         if reviewed and "<svg" in reviewed:
+            missing_placeholders = _missing_image_href_placeholders(svg_content, reviewed)
+            if missing_placeholders:
+                missing_text = ", ".join(sorted(missing_placeholders))
+                logger.warning(
+                    "Slide {} LLM review removed image placeholder(s): {}; keeping pre-review SVG",
+                    page.page_number,
+                    missing_text,
+                )
+                return svg_content
             logger.info("Slide {} reviewed by LLM ({} chars)", page.page_number, len(reviewed))
             return reviewed
         logger.warning("Slide {} LLM review returned invalid SVG, keeping original", page.page_number)

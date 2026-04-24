@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ── Phase 0: Input ──────────────────────────────────────
@@ -26,8 +26,7 @@ class InputContext:
 
 PageType = Literal[
     "cover", "toc", "section", "content", "data", "case", "closing",
-    "timeline", "comparison", "exercise", "summary", "relation",
-    "quiz", "formula", "experiment",
+    "timeline", "exercise", "summary", "quiz", "formula", "experiment",
 ]
 
 LayoutHint = Literal[
@@ -156,6 +155,22 @@ class PagePlan(BaseModel):
         description="Pseudo-animation answer reveal mode for quiz/exercise pages.",
     )
     notes: str = Field(default="", description="Speaker notes")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_layout_only_page_types(cls, data):
+        if not isinstance(data, dict):
+            return data
+        page_type = str(data.get("page_type") or "").strip()
+        if page_type not in {"comparison", "relation"}:
+            return data
+
+        normalized = dict(data)
+        layout_hint = str(normalized.get("layout_hint") or "").strip()
+        if not layout_hint or layout_hint == "mixed_grid":
+            normalized["layout_hint"] = page_type
+        normalized["page_type"] = "content"
+        return normalized
 
 
 class PlanningMeta(BaseModel):

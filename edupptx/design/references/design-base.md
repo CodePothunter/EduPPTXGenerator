@@ -181,6 +181,8 @@
 | `comparison` | 正反对比、优缺点 | 左右对比卡片，颜色区分正负 |
 | `relation` | 关系图、因果图、结构图 | 中心/主节点 + 分支节点 + 连接线/箭头 |
 
+> `comparison` 和 `relation` 是 `content` 页的 `layout_hint`，不是独立 `page_type`。
+
 ### `hero_with_microcards` 使用要点
 
 - 页面层级上必须先有一张外层 hero 大卡片，再在大卡片内部组织 2–6 个微模块。

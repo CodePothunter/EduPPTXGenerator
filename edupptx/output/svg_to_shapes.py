@@ -69,6 +69,32 @@ INHERITED_PRESENTATION_ATTRS = (
     "stroke-dasharray",
 )
 
+INHERITED_TEXT_ATTRS = (
+    "fill",
+    "opacity",
+    "fill-opacity",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "text-anchor",
+    "dominant-baseline",
+)
+
+NAMED_COLORS = {
+    "black": "000000",
+    "white": "FFFFFF",
+    "red": "FF0000",
+    "green": "008000",
+    "blue": "0000FF",
+    "yellow": "FFFF00",
+    "cyan": "00FFFF",
+    "magenta": "FF00FF",
+    "gray": "808080",
+    "grey": "808080",
+    "transparent": None,
+}
+
 
 # ---------------------------------------------------------------------------
 # Context
@@ -165,6 +191,13 @@ def parse_hex_color(color_str: str) -> str | None:
     if not color_str:
         return None
     color_str = color_str.strip()
+    named = NAMED_COLORS.get(color_str.lower())
+    if color_str.lower() in NAMED_COLORS:
+        return named
+    rgb_match = re.fullmatch(r"rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)", color_str)
+    if rgb_match:
+        r, g, b = (max(0, min(255, int(part))) for part in rgb_match.groups())
+        return f"{r:02X}{g:02X}{b:02X}"
     if color_str.startswith("#"):
         color_str = color_str[1:]
     if len(color_str) == 3:
@@ -1020,6 +1053,43 @@ def _iter_ancestors(elem: ET.Element, ctx: ConvertContext):
         current = ctx.parent_map.get(id(current))
 
 
+def _effective_attr(
+    elem: ET.Element,
+    ctx: ConvertContext,
+    name: str,
+    default: str | None = None,
+) -> str | None:
+    value = default
+    for ancestor in reversed(list(_iter_ancestors(elem, ctx))):
+        attr = ancestor.get(name)
+        if attr is not None:
+            value = attr
+    attr = elem.get(name)
+    return attr if attr is not None else value
+
+
+def _effective_text_attrs(elem: ET.Element, ctx: ConvertContext) -> dict[str, str]:
+    attrs: dict[str, str] = {}
+    for name in INHERITED_TEXT_ATTRS:
+        value = _effective_attr(elem, ctx, name)
+        if value is not None:
+            attrs[name] = value
+    return attrs
+
+
+def _effective_text_opacity(elem: ET.Element, ctx: ConvertContext) -> float | None:
+    opacity = 1.0
+    for attr_name in ("opacity", "fill-opacity"):
+        value = _effective_attr(elem, ctx, attr_name)
+        if value is None:
+            continue
+        try:
+            opacity *= float(value)
+        except ValueError:
+            pass
+    return opacity if opacity < 1.0 else None
+
+
 def _meaningful_container_rects(ancestor: ET.Element) -> list[ET.Element]:
     rects: list[ET.Element] = []
     for child in list(ancestor):
@@ -1099,6 +1169,37 @@ def _infer_single_line_rich_text_width(
     return max(estimated_width * 1.02, available_width + padding)
 
 
+def _infer_text_container_width(
+    elem: ET.Element,
+    ctx: ConvertContext,
+    text_x: float,
+    text_y: float,
+    estimated_width: float,
+    padding: float,
+    text_anchor: str,
+) -> float:
+    rect = _find_text_container_rect(elem, ctx, text_x, text_y)
+    if rect is None:
+        return estimated_width
+
+    rect_x = ctx_x(_f(rect.get("x")), ctx)
+    rect_w = ctx_w(_f(rect.get("width")), ctx)
+    rect_right = rect_x + rect_w
+    side_padding = max(padding, 12.0 * ctx.scale_x)
+
+    if text_anchor == "middle":
+        half_width = min(text_x - rect_x, rect_right - text_x) - side_padding
+        available_width = half_width * 2.0
+    elif text_anchor == "end":
+        available_width = text_x - rect_x - side_padding
+    else:
+        available_width = rect_right - text_x - side_padding
+
+    if available_width <= 0:
+        return estimated_width
+    return max(available_width + padding, 24.0 * ctx.scale_x)
+
+
 def _top_level_tspan_columns(elem: ET.Element) -> list[list[ET.Element]]:
     raw_fs = _f(elem.get("font-size"), 16)
     tspans = [
@@ -1144,8 +1245,15 @@ def _top_level_tspan_columns(elem: ET.Element) -> list[list[ET.Element]]:
     return columns
 
 
-def _clone_text_from_tspan_group(elem: ET.Element, group: list[ET.Element]) -> ET.Element:
+def _clone_text_from_tspan_group(
+    elem: ET.Element,
+    group: list[ET.Element],
+    inherited_attrs: dict[str, str] | None = None,
+) -> ET.Element:
     clone = ET.Element(elem.tag, attrib=elem.attrib.copy())
+    if inherited_attrs:
+        for name, value in inherited_attrs.items():
+            clone.attrib.setdefault(name, value)
     if elem.text:
         clone.text = elem.text
     first = group[0]
@@ -1162,12 +1270,15 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     """Convert SVG <text> with optional <tspan> children to DrawingML text shape."""
     # Collect paragraphs: each tspan with dy>0 starts a new line
     paragraphs: list[list[dict]] = []  # list of [{"text", "bold", "size", "color"}]
-    base_fs = _f(elem.get("font-size"), 16) * ctx.scale_y
-    base_weight = elem.get("font-weight", "400")
-    base_color = parse_hex_color(elem.get("fill", "#000000")) or "000000"
-    font_family_str = elem.get("font-family", "")
-    text_anchor = elem.get("text-anchor", "start")
-    opacity = get_fill_opacity(elem)
+    inherited_text_attrs = _effective_text_attrs(elem, ctx)
+    base_fill = inherited_text_attrs.get("fill", "#000000")
+    raw_fs = _f(inherited_text_attrs.get("font-size"), 16)
+    base_fs = raw_fs * ctx.scale_y
+    base_weight = inherited_text_attrs.get("font-weight", "400")
+    base_color = parse_hex_color(base_fill) or "000000"
+    font_family_str = inherited_text_attrs.get("font-family", "")
+    text_anchor = inherited_text_attrs.get("text-anchor", "start")
+    opacity = _effective_text_opacity(elem, ctx)
     fonts = parse_font_family(font_family_str)
     x_base = ctx_x(_f(elem.get("x")), ctx)
     y_base = ctx_y(_f(elem.get("y")), ctx)
@@ -1176,22 +1287,26 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
         if child.tag in (f"{{{SVG_NS}}}tspan", "tspan")
     ]
     has_positive_tspan_dy = any(
-        _f(ts.get("dy"), 0, font_size=_f(elem.get("font-size"), 16)) > 0
+        _f(ts.get("dy"), 0, font_size=raw_fs) > 0
         for ts in tspans
     )
-    normalize_inline_whitespace = bool(tspans) and not has_positive_tspan_dy
+    # Pretty-printed SVG commonly inserts indentation whitespace around
+    # inline/multiline tspans. PowerPoint keeps that whitespace in text runs,
+    # which can trigger extra wrapping that is not visible in the SVG.
+    normalize_inline_whitespace = bool(tspans)
 
     column_tspans = _top_level_tspan_columns(elem)
     if column_tspans:
-        return "".join(convert_text(_clone_text_from_tspan_group(elem, group), ctx) for group in column_tspans)
+        return "".join(
+            convert_text(_clone_text_from_tspan_group(elem, group, inherited_text_attrs), ctx)
+            for group in column_tspans
+        )
 
     if tspans:
         # Mixed inline text via tspan. Preserve parent text + child tail so
         # runs like `前文<tspan fill="...">关键词</tspan>后文` don't lose text.
         current_line: list[dict] = []
         total_dy = 0.0
-        # base_fs is already scaled; use unscaled for em conversion
-        raw_fs = _f(elem.get("font-size"), 16)
         _append_text_run(
             current_line,
             elem.text,
@@ -1204,8 +1319,8 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
             dy = _f(ts.get("dy"), 0, font_size=raw_fs)
             total_dy += dy
             ts_weight = ts.get("font-weight", base_weight)
-            ts_size = _f(ts.get("font-size"), base_fs / ctx.scale_y) * ctx.scale_y
-            ts_color = parse_hex_color(ts.get("fill") or elem.get("fill", "#000000")) or base_color
+            ts_size = _f(ts.get("font-size"), raw_fs) * ctx.scale_y
+            ts_color = parse_hex_color(ts.get("fill") or base_fill) or base_color
             if dy > 0 and current_line:
                 paragraphs.append(current_line)
                 current_line = []
@@ -1264,14 +1379,17 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     if is_single_line_rich_text:
         box_w = _infer_single_line_rich_text_width(elem, ctx, x_base, y_base, box_w, padding)
 
-    # For multiline text inside cards, try to use tspan's x to infer a reasonable
-    # fixed width so wrapping works correctly in PowerPoint
     if is_multiline and tspans:
         # Use the tspan x attribute if available — it tells us the card's left edge
-        ts_x = _f(tspans[0].get("x"), 0) * ctx.scale_x + ctx.translate_x
-        # Estimate right edge from slide width (1280) minus some margin
-        inferred_width = max(box_w, (1230 - ts_x) * 0.95)
-        box_w = min(inferred_width, 1200)  # cap at reasonable max
+        box_w = _infer_text_container_width(
+            elem,
+            ctx,
+            x_base,
+            y_base,
+            box_w,
+            padding,
+            text_anchor,
+        )
 
     # Adjust for text-anchor
     if text_anchor == "middle":
@@ -1282,7 +1400,7 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
         box_x = x_base - padding
 
     # y in SVG is baseline; move up to get top of text box
-    dominant_baseline = elem.get("dominant-baseline", "auto")
+    dominant_baseline = inherited_text_attrs.get("dominant-baseline", "auto")
     is_centered_label = dominant_baseline in ("middle", "central") and text_anchor == "middle"
     if is_centered_label:
         # Centered label (e.g., number inside a circle): y is visual center
@@ -1308,10 +1426,12 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     if is_multiline:
         # Use the dy value from tspans as line spacing (in hundredths of pt)
         avg_dy = base_fs * 1.4  # default
-        if tspans and len(tspans) > 1:
-            dy_val = _f(tspans[1].get("dy"), 0, font_size=raw_fs)
-            if dy_val > 0:
-                avg_dy = dy_val * ctx.scale_y
+        if tspans:
+            for ts in tspans:
+                dy_val = _f(ts.get("dy"), 0, font_size=raw_fs)
+                if dy_val > 0:
+                    avg_dy = dy_val * ctx.scale_y
+                    break
         spc_pts = int(avg_dy * FONT_PX_TO_HUNDREDTHS_PT)
         line_spc_xml = f'<a:lnSpc><a:spcPts val="{spc_pts}"/></a:lnSpc>'
 
@@ -1330,8 +1450,10 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
             )
         paras_xml.append(f'<a:p><a:pPr algn="{algn}">{line_spc_xml}</a:pPr>{"".join(runs_xml)}</a:p>')
 
-    # Always wrap="square" — enables word wrap for user editability in PowerPoint
-    wrap_mode = "none" if is_single_line_rich_text else "square"
+    # Plain text keeps PowerPoint word wrap for editability.
+    # Tspan-authored text already encodes its line breaks. Disable PowerPoint
+    # auto-wrap for those shapes so PPTX layout matches the SVG.
+    wrap_mode = "none" if tspans else "square"
 
     shape_id = ctx.next_id()
     # For centered labels (number in circle), use vertical center anchor

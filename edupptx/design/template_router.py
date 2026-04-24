@@ -40,15 +40,14 @@ _PAGE_TYPES = (
     "case",
     "closing",
     "timeline",
-    "comparison",
     "exercise",
     "summary",
-    "relation",
     "quiz",
     "formula",
     "experiment",
 )
-_STOP_VARIANT_TOKENS = set(_PAGE_TYPES)
+_LAYOUT_ONLY_PAGE_TYPES = {"comparison", "relation"}
+_STOP_VARIANT_TOKENS = set(_PAGE_TYPES) | _LAYOUT_ONLY_PAGE_TYPES
 _TRUE_VALUES = {"1", "true", "yes", "y", "required"}
 
 
@@ -126,6 +125,8 @@ class VariantSpec(BaseModel):
     image_max: int | None = None
     card_min: int | None = None
     card_max: int | None = None
+    subcard_min: int | None = None
+    subcard_max: int | None = None
     page_features: str = ""
     reference_rule: str = ""
 
@@ -208,6 +209,13 @@ def _relative_family_name(family_dir: Path) -> str:
     return family_dir.relative_to(_PAGE_TEMPLATES_DIR).as_posix()
 
 
+def _normalize_page_type(value: str | None) -> str:
+    page_type = str(value or "").strip()
+    if page_type in _LAYOUT_ONLY_PAGE_TYPES:
+        return "content"
+    return page_type
+
+
 def _is_backup_svg_stem(stem: str) -> bool:
     normalized = stem.casefold().strip()
     return bool(re.search(r"(?:^|[_\-\s])copy(?:\s*\d+)?$", normalized))
@@ -219,9 +227,17 @@ def _discover_page_variants(family_dir: Path) -> dict[str, list[str]]:
         stem = path.stem
         if _is_backup_svg_stem(stem):
             continue
+        matched = False
         for page_type in _PAGE_TYPES:
             if stem == page_type or stem.startswith(f"{page_type}_"):
                 variants.setdefault(page_type, []).append(stem)
+                matched = True
+                break
+        if matched:
+            continue
+        for layout_only_type in _LAYOUT_ONLY_PAGE_TYPES:
+            if stem == layout_only_type or stem.startswith(f"{layout_only_type}_"):
+                variants.setdefault("content", []).append(stem)
                 break
     for page_type, stems in list(variants.items()):
         exact = [stem for stem in stems if stem == page_type]
@@ -352,6 +368,7 @@ def _parse_page_spec_node(node: ET.Element) -> PlannerPageSpec | None:
     page_type = node.get("type") or _child_text(node, "type")
     if not page_type:
         return None
+    page_type = _normalize_page_type(page_type)
 
     image_slots: list[ImageSlotSpec] = []
     slots_parent = node.find("image_slots")
@@ -401,15 +418,18 @@ def _parse_variant_spec_node(node: ET.Element) -> VariantSpec | None:
 
     image_min, image_max = _parse_range_node(node, "image_range")
     card_min, card_max = _parse_range_node(node, "card_range")
+    subcard_min, subcard_max = _parse_range_node(node, "subcard_range")
     return VariantSpec(
         stem=stem,
-        page_type=node.get("page_type") or _child_text(node, "page_type") or "content",
+        page_type=_normalize_page_type(node.get("page_type") or _child_text(node, "page_type") or "content"),
         layout_hint=node.get("layout_hint") or _child_text(node, "layout_hint"),
         hit_keywords=_text_list(node, "hit_keywords"),
         image_min=image_min,
         image_max=image_max,
         card_min=card_min,
         card_max=card_max,
+        subcard_min=subcard_min,
+        subcard_max=subcard_max,
         page_features=_child_text(node, "page_features"),
         reference_rule=_child_text(node, "reference_rule"),
     )
@@ -495,7 +515,10 @@ def _load_metadata_file(metadata_path: Path) -> TemplateManifest:
         for page_node in planner.findall("page"):
             spec = _parse_page_spec_node(page_node)
             if spec is not None:
-                page_specs[spec.page_type] = spec
+                if spec.page_type in page_specs:
+                    page_specs[spec.page_type] = _merge_page_spec(page_specs[spec.page_type], spec)
+                else:
+                    page_specs[spec.page_type] = spec
         variant_catalog = planner.find("variant_catalog")
         if variant_catalog is not None:
             for variant_node in variant_catalog.findall("variant"):
@@ -587,9 +610,12 @@ def _merge_page_spec(
     primary: PlannerPageSpec,
     shared: PlannerPageSpec,
 ) -> PlannerPageSpec:
+    variant = primary.variant or shared.variant
+    if primary.variant and shared.variant and primary.variant != shared.variant:
+        variant = None
     return PlannerPageSpec(
         page_type=primary.page_type or shared.page_type,
-        variant=primary.variant or shared.variant,
+        variant=variant,
         title_max_chars=primary.title_max_chars if primary.title_max_chars is not None else shared.title_max_chars,
         subtitle_max_chars=primary.subtitle_max_chars if primary.subtitle_max_chars is not None else shared.subtitle_max_chars,
         body_max_chars=primary.body_max_chars if primary.body_max_chars is not None else shared.body_max_chars,
@@ -619,6 +645,8 @@ def merge_template_manifests(
         shared_spec = shared.planner_page_specs.get(page_type)
         if primary_spec is not None and shared_spec is not None:
             merged_page_specs[page_type] = _merge_page_spec(primary_spec, shared_spec)
+            if page_type == "content":
+                merged_page_specs[page_type].variant = None
         elif primary_spec is not None:
             merged_page_specs[page_type] = primary_spec.model_copy(deep=True)
         elif shared_spec is not None:
@@ -1001,11 +1029,62 @@ def _score_toc_variant(spec: VariantSpec, page: PagePlan) -> int:
     return 0
 
 
+def _estimate_top_level_card_count(page: PagePlan) -> int | None:
+    """Estimate the number of outer cards, excluding nested micro/subcards."""
+
+    point_count = len(_flatten_content_points(page.content_points))
+    layout_hint = page.layout_hint
+
+    if page.page_type in {"cover", "section", "closing"}:
+        return 1
+    if page.page_type == "toc":
+        return point_count or None
+
+    if layout_hint in {"center_hero", "full_image", "hero_with_microcards", "relation"}:
+        return 1
+    if layout_hint == "comparison":
+        routing_text = _page_routing_text(page)
+        if any(keyword in routing_text for keyword in ("先总后分", "概述", "总结", "结论")):
+            return 2
+        return 1
+    if layout_hint in {"bento_2col_equal", "bento_2col_asymmetric"}:
+        return 2
+    if layout_hint == "bento_3col":
+        return 3
+    if layout_hint in {"hero_top_cards_bottom", "cards_top_hero_bottom"}:
+        if point_count <= 0:
+            return 3
+        return min(max(point_count, 2), 4)
+    if layout_hint == "mixed_grid":
+        if point_count <= 0:
+            return None
+        return min(max(point_count, 2), 5)
+    if page.page_type in {"exercise", "quiz", "summary"}:
+        if point_count <= 0:
+            return None
+        return min(max(point_count, 2), 4)
+
+    return point_count or None
+
+
+def _estimate_subcard_count(page: PagePlan) -> int | None:
+    """Estimate nested card-like units such as microcards, nodes, or table rows."""
+
+    point_count = len(_flatten_content_points(page.content_points))
+    if point_count <= 0:
+        return None
+
+    if page.layout_hint in {"hero_with_microcards", "relation", "comparison"}:
+        return point_count
+
+    return None
+
+
 def _score_variant_spec(spec: VariantSpec, page: PagePlan) -> int:
     normalized = _page_routing_text(page).casefold()
     score = 0
 
-    if spec.page_type == page.page_type:
+    if _normalize_page_type(spec.page_type) == _normalize_page_type(page.page_type):
         score += 2
     if spec.layout_hint:
         if spec.layout_hint == page.layout_hint:
@@ -1023,11 +1102,18 @@ def _score_variant_spec(spec: VariantSpec, page: PagePlan) -> int:
         if token in normalized:
             score += 1
 
-    point_count = len(_flatten_content_points(page.content_points))
-    if point_count > 0 and spec.card_min is not None and spec.card_max is not None:
-        if spec.card_min <= point_count <= spec.card_max:
+    top_level_card_count = _estimate_top_level_card_count(page)
+    if top_level_card_count is not None and spec.card_min is not None and spec.card_max is not None:
+        if spec.card_min <= top_level_card_count <= spec.card_max:
             score += 2
-        elif point_count < max(1, spec.card_min - 1) or point_count > spec.card_max + 1:
+        elif top_level_card_count < max(1, spec.card_min - 1) or top_level_card_count > spec.card_max + 1:
+            score -= 1
+
+    subcard_count = _estimate_subcard_count(page)
+    if subcard_count is not None and spec.subcard_min is not None and spec.subcard_max is not None:
+        if spec.subcard_min <= subcard_count <= spec.subcard_max:
+            score += 2
+        elif subcard_count < max(1, spec.subcard_min - 1) or subcard_count > spec.subcard_max + 1:
             score -= 1
 
     score += _score_toc_variant(spec, page)
@@ -1091,10 +1177,11 @@ def resolve_page_template_variant(
 ) -> str | None:
     """Resolve the preferred template stem for one page."""
 
+    page_type = _normalize_page_type(page.page_type)
     variant_specs = [
         spec
         for spec in manifest.variant_specs.values()
-        if spec.page_type == page.page_type
+        if _normalize_page_type(spec.page_type) == page_type
     ]
     if variant_specs:
         scored_specs = sorted(
@@ -1112,15 +1199,15 @@ def resolve_page_template_variant(
                 return llm_choice
         if top_score >= 6:
             return top_spec.stem
-        if page.page_type == "content":
+        if page_type == "content":
             return None
 
-    candidates = list(manifest.page_variants.get(page.page_type, []))
-    if not candidates and page.page_type == "content":
+    candidates = list(manifest.page_variants.get(page_type, []))
+    if not candidates and page_type == "content":
         candidates = list(manifest.page_variants.get("content", []))
 
-    spec = manifest.planner_page_specs.get(page.page_type)
-    if spec is None and page.page_type == "content":
+    spec = manifest.planner_page_specs.get(page_type)
+    if spec is None and page_type == "content":
         spec = manifest.planner_page_specs.get("content")
     if spec and spec.variant:
         candidates = _dedupe_keep_order([spec.variant] + candidates)
@@ -1133,9 +1220,9 @@ def resolve_page_template_variant(
     scored: list[tuple[str, int]] = []
     for candidate in candidates:
         score = 0
-        if candidate == page.page_type:
+        if candidate == page_type:
             score += 2
-        if candidate.startswith(f"{page.page_type}_"):
+        if candidate.startswith(f"{page_type}_"):
             score += 1
         for token in _variant_tokens(candidate):
             if token in normalized:
@@ -1316,8 +1403,13 @@ def build_page_variant_briefs(
         range_parts: list[str] = []
         if spec.card_min is not None or spec.card_max is not None:
             range_parts.append(
-                f"card_range={spec.card_min if spec.card_min is not None else '?'}-"
+                f"top_level_card_range={spec.card_min if spec.card_min is not None else '?'}-"
                 f"{spec.card_max if spec.card_max is not None else '?'}"
+            )
+        if spec.subcard_min is not None or spec.subcard_max is not None:
+            range_parts.append(
+                f"subcard_range={spec.subcard_min if spec.subcard_min is not None else '?'}-"
+                f"{spec.subcard_max if spec.subcard_max is not None else '?'}"
             )
         if spec.image_min is not None or spec.image_max is not None:
             range_parts.append(
@@ -1399,8 +1491,9 @@ def align_draft_to_template(
                     page.template_variant = source.template_variant
             continue
 
-        spec = manifest.planner_page_specs.get(page.page_type)
-        if spec is None and page.page_type == "content":
+        page_type = _normalize_page_type(page.page_type)
+        spec = manifest.planner_page_specs.get(page_type)
+        if spec is None and page_type == "content":
             spec = manifest.planner_page_specs.get("content")
         if spec is None:
             continue

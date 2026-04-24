@@ -30,8 +30,9 @@
 
   <planner>
     <summary>
-      本目录只提供高年级专属模板，不承载本地配色与背景提示。运行时会先匹配高年级主家族，
-      再自动合并“复用”目录中的通用页型和通用内容版式。规划时优先强调结构清晰、比较维度明确、
+      规划提示：高年级优先结构清晰、维度明确、结论稳定、适当对比，文字可较低年级更懂；可保留必要解释句，但避免堆砌图片和低龄化装饰。
+      本目录只提供高年级专属模板，不承载本地配色与背景提示。运行时会先确定高年级主家族作为整体风格方向，
+      页面级模板选择会把本目录与“复用”目录中的通用页型和通用内容版式同池打分。规划时优先强调结构清晰、比较维度明确、
       归纳结论稳定，不使用低龄化表达。
     </summary>
 
@@ -73,6 +74,7 @@
         <hit_keywords>三栏归纳, 三点总结, 三个角度, 三个维度, 三组要点, 三项指标, 三级分析, 三方面概括</hit_keywords>
         <image_range min="0" max="0"/>
         <card_range min="3" max="3"/>
+        <subcard_range min="0" max="6"/>
         <page_features>
           三列等宽结构，每列以大标题或大数值开头，下接两条短说明，适合高年级三点归纳和并列分析。
         </page_features>
@@ -85,7 +87,7 @@
         <layout_hint>comparison</layout_hint>
         <hit_keywords>对照, 比较, 表格, 多维比较, 比较阅读, 对照分析</hit_keywords>
         <image_range min="0" max="0"/>
-        <card_range min="3" max="4"/>
+        <card_range min="1" max="1"/>
         <page_features>
           多维度表格化对照，适合纯对照分析。
         </page_features>
@@ -98,7 +100,7 @@
         <layout_hint>comparison</layout_hint>
         <hit_keywords>先总后分, 总述加对照, 概述后比较, 先结论后分析</hit_keywords>
         <image_range min="0" max="0"/>
-        <card_range min="3" max="4"/>
+        <card_range min="2" max="2"/>
         <page_features>
           上方先给总结或概述，下方再做维度对照。
         </page_features>
@@ -110,8 +112,9 @@
       <variant stem="content_hero_with_microcards_3" page_type="content">
         <layout_hint>hero_with_microcards</layout_hint>
         <hit_keywords>讲解总结结构, 长段讲解, 结论强调, 底部提示条, 重点提醒, 解释说明</hit_keywords>
-        <image_range min="0" max="0"/>
-        <card_range min="1" max="5"/>
+        <image_range min="0" max="1"/>
+        <card_range min="1" max="1"/>
+        <subcard_range min="0" max="5"/>
         <page_features>
           单一大卡承载长段讲解、结论强调和底部提示。
         </page_features>

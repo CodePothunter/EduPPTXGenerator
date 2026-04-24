@@ -29,7 +29,7 @@ edupptx/design/page_templates/
 ├── closing.svg         # 结束页模板
 ├── quiz.svg            # (可选) 练习检测页模板
 ├── formula.svg         # (可选) 公式推导页模板
-├── comparison.svg      # (可选) 对比表格页模板
+├── content_comparison.svg      # (可选) content 页的 comparison 布局模板
 ├── experiment.svg      # (可选) 实验步骤页模板
 ├── summary.svg         # (可选) 知识归纳页模板
 ├── data.svg            # (可选) 数据展示页模板
@@ -175,10 +175,14 @@ font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans
 ```python
 PageType = Literal[
     "cover", "toc", "section", "content", "data", "case", "closing",
-    "timeline", "comparison", "exercise", "summary",
+    "timeline", "exercise", "summary",
     "quiz", "formula", "experiment",
 ]
 ```
+
+`comparison` 和 `relation` 不属于 `PageType`，应作为 `layout_hint` 使用；对应模板通常写成
+`content_comparison*.svg` 或 `content_relation*.svg`，并在 metadata 的 `variant_catalog` 中声明
+`page_type="content"`。
 
 ### 步骤 2: 创建 SVG 文件
 

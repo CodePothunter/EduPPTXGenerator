@@ -31,7 +31,7 @@
 - `content_cards_top_hero_bottom.svg`
 - `content_hero_top_cards_bottom.svg`
 - `content_hero_with_microcards_2.svg`
-- `relation_1.svg`
+- `content_relation_1.svg`
 - `exercise.svg`
 - `quiz.svg`
 - `summary.svg`

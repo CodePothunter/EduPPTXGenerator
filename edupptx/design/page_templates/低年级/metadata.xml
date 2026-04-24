@@ -30,8 +30,9 @@
 
   <planner>
     <summary>
-      本目录只提供低年级专属模板，不承载本地配色与背景提示。运行时会先匹配低年级主家族，
-      再自动合并复用目录中的通用页型和通用版式。规划阶段优先保持短句、低信息密度和强引导感。
+      规划提示：低年级优先少字多图、短句强引导；每页聚焦 1 个核心任务，内容点尽量拆成 2-4 个可扫读短点。
+      本目录只提供低年级专属模板，不承载本地配色与背景提示。运行时会先确定低年级主家族作为整体风格方向，
+      页面级模板选择会把本目录与复用目录中的通用页型和通用版式同池打分。规划阶段优先保持短句、低信息密度和强引导感。
     </summary>
 
     <page type="cover" variant="cover">
@@ -57,7 +58,7 @@
       <variant stem="cover" page_type="cover">
         <layout_hint>center_hero</layout_hint>
         <hit_keywords>封面, 导入, 开场, 课程标题, 课题, 单元首页</hit_keywords>
-        <image_range min="0" max="0"/>
+        <image_range min="2" max="2"/>
         <card_range min="1" max="1"/>
         <page_features>
           居中标题卡和低年级轻装饰构成封面主体，强调一眼建立课程主题。
@@ -71,7 +72,8 @@
         <layout_hint>hero_with_microcards</layout_hint>
         <hit_keywords>并列短信息模块, 微卡, 短任务, 观察提示, 练习项, 生字, 拼音, 组词, 启蒙</hit_keywords>
         <image_range min="0" max="0"/>
-        <card_range min="2" max="6"/>
+        <card_range min="1" max="1"/>
+        <subcard_range min="2" max="8"/>
         <page_features>
           一张大卡包裹 2 到 6 个统一节奏的微卡片，适合总述加并列短信息展开。
         </page_features>

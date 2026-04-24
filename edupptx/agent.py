@@ -23,7 +23,7 @@ from edupptx.session import Session
 def _uses_structured_table(page: PagePlan | None) -> bool:
     if page is None:
         return False
-    return page.page_type == "comparison" or page.layout_hint == "comparison"
+    return page.layout_hint == "comparison"
 
 
 def _needs_llm_review(page: PagePlan | None, warnings: list[str]) -> bool:
@@ -47,6 +47,7 @@ def _needs_llm_review(page: PagePlan | None, warnings: list[str]) -> bool:
         "Fixed text overlap",
         "Expanded card height",
         "Adjusted image to fit card bounds",
+        "PPT 对 SVG clipPath",
         "Trimmed subtitle",
         "Replaced unsafe font",
         "Clamped",

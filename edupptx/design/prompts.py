@@ -566,7 +566,7 @@ def build_svg_user_prompt(
             "6. 每个节点使用一个独立 <g> 包裹图片、圆点、说明卡和文字，便于后处理整体微调"
         ),
         "relation": (
-            "这是关系图页。设计要求：\n"
+            "这是 content 页的 relation 关系图布局。设计要求：\n"
             "1. 使用中心节点 + 分支节点 + 连接线/箭头的关系图结构，而不是普通列表或表格。\n"
             "2. 将 content_points 解释为关系节点、分支节点或关系陈述，优先组织成 3-6 个短节点。\n"
             "3. 若存在核心概念，放在中心或左侧主节点；其余节点按层级或因果关系分布在周围。\n"
@@ -579,7 +579,7 @@ def build_svg_user_prompt(
             "1. 表头行用主色背景 + 白色文字\n"
             "2. 数据行交替使用 card_bg 和 secondary_bg\n"
             "3. 用 <rect> + <text> + <line> 构建表格\n"
-            "4. 参考 page-types.md 中 comparison 类型的布局定义"
+            "4. 参考 page-types.md 中 layout_hint=comparison 的布局定义"
         ),
         "summary": (
             "这是知识归纳页。设计要求：\n"
@@ -599,8 +599,11 @@ def build_svg_user_prompt(
         "5. 如果文本放不下，应缩短措辞，而不是把卡片压缩到低于最小高度。\n"
         "6. 使用稳定的卡片间距：4 张卡片时为 14-16px，5 张卡片时为 10-12px。\n"
     )
-    if page.page_type in type_hints:
-        lines.append(f"\n### 页面类型提示\n{type_hints[page.page_type]}")
+    emitted_hint_keys: set[str] = set()
+    for hint_key in (page.page_type, page.layout_hint):
+        if hint_key in type_hints and hint_key not in emitted_hint_keys:
+            lines.append(f"\n### 页面类型提示\n{type_hints[hint_key]}")
+            emitted_hint_keys.add(hint_key)
 
     lines.append(
         f"\n请生成第 {page.page_number} 页的完整 SVG 代码。"

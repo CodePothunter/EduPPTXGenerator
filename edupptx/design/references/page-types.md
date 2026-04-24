@@ -298,7 +298,7 @@ LLM 生成对应类型幻灯片时，应参照此文件的坐标和结构。
 
 ---
 
-## 4. comparison — 对比表格页
+## 4. layout_hint=comparison — content 对比表格布局
 
 **适用场景**：多概念/多方案横向对比、性质参数列表、知识点异同分析。
 
@@ -325,7 +325,7 @@ LLM 生成对应类型幻灯片时，应参照此文件的坐标和结构。
 ### SVG 示例
 
 ```xml
-<!-- comparison: 对比表格页 -->
+<!-- layout_hint=comparison: content 对比表格布局 -->
 <!-- 表格外框 -->
 <rect x="50" y="100" width="1180" height="560" rx="14" fill="{card_bg_color}"/>
 
@@ -546,9 +546,9 @@ LLM 生成对应类型幻灯片时，应参照此文件的坐标和结构。
 | Card 4 | 430 | 434 | 800 | 96 |
 | Card 5 | 430 | 542 | 800 | 96 |
 
-## relation
+## layout_hint=relation
 
-- Use this layout for concept relation, causal relation, structure relation, or classification relation pages.
+- Use this content layout for concept relation, causal relation, structure relation, or classification relation layouts.
 - Preferred composition:
   - one center or anchor node
   - 3-6 branch nodes
@@ -562,4 +562,4 @@ LLM 生成对应类型幻灯片时，应参照此文件的坐标和结构。
   - minimum node gap: `24`
   - keep connector lines outside text whenever possible
 - Prefer one `<g>` per node so postprocess can keep node text and node box together.
-- Do not degrade a relation page into a plain bullet list if the content is mainly node-to-node relations.
+- Do not degrade a content page with `layout_hint=relation` into a plain bullet list if the content is mainly node-to-node relations.

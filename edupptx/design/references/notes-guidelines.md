@@ -92,11 +92,11 @@ content，practice也内容过多，可以适当增加字数
 讲清知识点、概念、因果、步骤或方法，并提醒一个易错点。
 如果本页列出了示例、对比项、词语、公式组成部分或操作对象，Notes 必须自然点出其中的关键内容，不能只概括方法而不提页面材料。
 
-5. Analysis（data / timeline / comparison）：
+5. Analysis（data / timeline / content + layout_hint=comparison）：
 先告诉学生看哪里，再提炼最关键结论。
 - data：讲趋势、对比、异常点，不机械报数
 - timeline：讲阶段推进、转折节点、前后因果
-- comparison：讲比较维度、关键差异、判断标准
+- layout_hint=comparison：讲比较维度、关键差异、判断标准
 必须围绕图表 / 时间节点 / 比较对象本身展开，不能只说“我们看出差异很明显”。
 
 6. Case：
@@ -147,9 +147,9 @@ content，practice也内容过多，可以适当增加字数
 - 不输出标题，不输出“Notes:”，不分点列提纲
 
 【输入页面类型】
-cover / toc / section / content / data / case / timeline / comparison / exercise / summary / quiz / formula / experiment / closing
+cover / toc / section / content / data / case / timeline / exercise / summary / quiz / formula / experiment / closing
 
 其中：
-- data / timeline / comparison 按 analysis 方式写
+- data / timeline / content + layout_hint=comparison 按 analysis 方式写
 - exercise / quiz 按 practice 方式写
 - 未识别类型默认按 content 写
