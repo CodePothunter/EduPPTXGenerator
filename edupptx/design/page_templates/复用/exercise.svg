@@ -1,93 +1,31 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
-  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}"/>
-
-  <g font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
-    <circle cx="88" cy="42" r="12" fill="{accent_color}" fill-opacity=".18"/>
-
-    <text x="50" y="50" font-size="32" font-weight="800" fill="{heading_color}">
-      {title}
-    </text>
-    <text x="50" y="92" font-size="20" fill="{text_color}">
-      {subtitle}
-    </text>
-
-    <!-- 题目区 -->
-    <rect
-      x="50" y="120" width="1180" height="120" rx="24"
-      fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"
-    />
-    <text x="84" y="168" font-size="24" font-weight="700" fill="{heading_color}">
-      题目区
-    </text>
-    <text x="84" y="208" font-size="22" fill="{text_color}">
-      请根据题目要求圈一圈、连一连或选一选。
-    </text>
-
-    <!-- 左侧练习区 -->
-    <rect
-      x="50" y="270" width="760" height="390" rx="28"
-      fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"
-    />
-    <text x="84" y="316" font-size="24" font-weight="700" fill="{heading_color}">
-      练习区
-    </text>
-
-    <rect
-      x="84" y="342" width="692" height="214" rx="22"
-      fill="{secondary_bg_color}" stroke="{secondary_color}" stroke-width="2"
-      stroke-dasharray="8 6"
-    />
-    <text x="430" y="448" text-anchor="middle" font-size="28" font-weight="800" fill="{heading_color}">
-      操作区
-    </text>
-    <text x="430" y="484" text-anchor="middle" font-size="18" fill="{text_color}">
-      可用于圈画、连线、排序或选择
-    </text>
-
-    <rect x="84" y="582" width="210" height="46" rx="18" fill="{secondary_bg_color}"/>
-    <rect x="316" y="582" width="210" height="46" rx="18" fill="{secondary_bg_color}"/>
-    <rect x="548" y="582" width="228" height="46" rx="18" fill="{secondary_bg_color}"/>
-
-    <text x="189" y="611" text-anchor="middle" font-size="18" font-weight="700" fill="{heading_color}">
-      圈一圈
-    </text>
-    <text x="421" y="611" text-anchor="middle" font-size="18" font-weight="700" fill="{heading_color}">
-      连一连
-    </text>
-    <text x="662" y="611" text-anchor="middle" font-size="18" font-weight="700" fill="{heading_color}">
-      选一选
-    </text>
-
-    <!-- 右侧提示卡 -->
-    <rect
-      x="830" y="270" width="400" height="390" rx="28"
-      fill="{card_bg_color}" stroke="{accent_color}" stroke-width="2"
-    />
-    <text x="864" y="316" font-size="24" font-weight="700" fill="{heading_color}">
-      提示卡
-    </text>
-
-    <!-- 右侧真实图片区：当前留空 -->
-    <image
-      x="870" y="342" width="320" height="150"
-      href=""
-      preserveAspectRatio="xMidYMid slice"
-    />
-
-    <rect
-      x="870" y="522" width="320" height="94" rx="22"
-      fill="{secondary_bg_color}"
-    />
-    <text x="1030" y="558" text-anchor="middle" font-size="20" font-weight="700" fill="{heading_color}">
-      方法提醒
-    </text>
-    <text x="900" y="594" font-size="16" fill="{text_color}">
-      ● 先看题目，再观察图片
-    </text>
-
-    <!-- 页码 -->
-    <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}">
-      {page_number} / {total_pages}
-    </text>
-  </g>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" font-family="Noto Sans SC,Microsoft YaHei,Arial,Helvetica,sans-serif">
+  <rect width="1280" height="6" fill="{primary_color}"/>
+  <circle cx="88" cy="42" r="12" fill="{accent_color}" fill-opacity=".18"/>
+  <!-- Title -->
+  <text x="50" y="50" font-size="32" font-weight="800" fill="{heading_color}">{title}</text>
+  <text x="50" y="92" font-size="20" fill="{text_color}">{subtitle}</text>
+  <!-- Prompt -->
+  <rect x="50" y="120" width="1180" height="120" rx="24" fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"/>
+  <text x="84" y="168" font-size="24" font-weight="700" fill="{heading_color}">Task</text>
+  <text x="84" y="208" font-size="22" fill="{text_color}">Circle, match, or choose.</text>
+  <!-- Practice -->
+  <rect x="50" y="270" width="760" height="390" rx="28" fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
+  <text x="84" y="316" font-size="24" font-weight="700" fill="{heading_color}">Practice</text>
+  <rect x="84" y="342" width="692" height="214" rx="22" fill="{secondary_bg_color}" stroke="{secondary_color}" stroke-width="2" stroke-dasharray="8 6"/>
+  <text x="430" y="448" text-anchor="middle" font-size="28" font-weight="800" fill="{heading_color}">Action Area</text>
+  <text x="430" y="484" text-anchor="middle" font-size="18" fill="{text_color}">Use for marking, linking, ordering, or picking.</text>
+  <rect x="84" y="582" width="210" height="46" rx="18" fill="{secondary_bg_color}"/>
+  <rect x="316" y="582" width="210" height="46" rx="18" fill="{secondary_bg_color}"/>
+  <rect x="548" y="582" width="228" height="46" rx="18" fill="{secondary_bg_color}"/>
+  <text x="189" y="611" text-anchor="middle" font-size="18" font-weight="700" fill="{heading_color}">Circle</text>
+  <text x="421" y="611" text-anchor="middle" font-size="18" font-weight="700" fill="{heading_color}">Match</text>
+  <text x="662" y="611" text-anchor="middle" font-size="18" font-weight="700" fill="{heading_color}">Choose</text>
+  <!-- Tip Card -->
+  <rect x="830" y="270" width="400" height="390" rx="28" fill="{card_bg_color}" stroke="{accent_color}" stroke-width="2"/>
+  <text x="864" y="316" font-size="24" font-weight="700" fill="{heading_color}">Tips</text>
+  <image x="870" y="342" width="320" height="150" href="" preserveAspectRatio="xMidYMid slice"/>
+  <rect x="870" y="522" width="320" height="94" rx="22" fill="{secondary_bg_color}"/>
+  <text x="1030" y="558" text-anchor="middle" font-size="20" font-weight="700" fill="{heading_color}">Method</text>
+  <text x="900" y="594" font-size="16" fill="{text_color}">Read the task, then view the image.</text>
+  <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}">{page_number} / {total_pages}</text>
 </svg>

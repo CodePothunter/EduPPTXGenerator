@@ -16,6 +16,19 @@ def _normalize_family(value: str | None) -> str:
     return (value or "").replace("\\", "/").strip("/")
 
 
+def _resolve_image_style_family(value: str | None) -> str:
+    """Shared page templates inherit the matched primary family style."""
+
+    normalized = _normalize_family(value)
+    if "低年级" in normalized:
+        return "低年级"
+    if "高年级" in normalized:
+        return "高年级"
+    if "复用" in normalized:
+        return "复用"
+    return normalized
+
+
 def _dedupe_keep_order(values: list[str]) -> list[str]:
     seen: set[str] = set()
     ordered: list[str] = []
@@ -143,7 +156,7 @@ def resolve_ai_image_prompt(
 
     profile_data = _load_profile_data()
     defaults = profile_data.get("defaults", {})
-    template_family = _normalize_family(draft.style_routing.template_family)
+    template_family = _resolve_image_style_family(draft.style_routing.template_family)
     routing_text = _build_routing_text(draft, page, need)
     selected_profiles = _select_profiles(template_family, page, need, routing_text)
 

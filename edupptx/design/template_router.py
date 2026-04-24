@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from functools import lru_cache
 from pathlib import Path
@@ -415,37 +416,16 @@ def _parse_variant_spec_node(node: ET.Element) -> VariantSpec | None:
 
 
 @lru_cache(maxsize=1)
-def _load_reference_palette_routing() -> tuple[dict[str, PalettePreset], list[PaletteRoutingRule]]:
+def _load_reference_palette_rules() -> list[PaletteRoutingRule]:
     path = _REFS_DIR / _PALETTE_ROUTING_REFERENCE_NAME
     if not path.exists():
-        return {}, []
+        return []
 
     try:
         root = ET.parse(path).getroot()
     except ET.ParseError as exc:
         logger.warning("Failed to parse palette routing reference {}: {}", path, exc)
-        return {}, []
-
-    palette_map: dict[str, PalettePreset] = {}
-    palette_library = root.find("palette_library")
-    if palette_library is not None:
-        for node in palette_library.findall("palette"):
-            preset = _parse_palette_node(node)
-            if preset is not None:
-                palette_map[preset.id] = preset
-
-    palette_color_bias = root.find("palette_color_bias")
-    if palette_color_bias is not None:
-        for node in palette_color_bias.findall("palette"):
-            palette_id = node.get("id") or _child_text(node, "id")
-            if not palette_id:
-                continue
-            color_bias = _child_text(node, "color_bias")
-            if not color_bias:
-                continue
-            preset = palette_map.get(palette_id)
-            if preset is not None:
-                preset.background_color_bias = color_bias
+        return []
 
     rules: list[PaletteRoutingRule] = []
     palette_routing = root.find("palette_routing")
@@ -455,7 +435,47 @@ def _load_reference_palette_routing() -> tuple[dict[str, PalettePreset], list[Pa
             if rule is not None:
                 rules.append(rule)
     rules.sort(key=lambda item: item.priority, reverse=True)
-    return palette_map, rules
+    return rules
+
+
+@lru_cache(maxsize=64)
+def _load_reference_palette_by_id(palette_id: str) -> PalettePreset | None:
+    normalized = str(palette_id or "").strip()
+    if not normalized:
+        return None
+
+    path = _REFS_DIR / _PALETTE_ROUTING_REFERENCE_NAME
+    if not path.exists():
+        return None
+
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError as exc:
+        logger.warning("Failed to parse palette routing reference {}: {}", path, exc)
+        return None
+
+    palette: PalettePreset | None = None
+    palette_library = root.find("palette_library")
+    if palette_library is not None:
+        for node in palette_library.findall("palette"):
+            candidate_id = node.get("id") or _child_text(node, "id") or "default"
+            if candidate_id == normalized:
+                palette = _parse_palette_node(node)
+                break
+    if palette is None:
+        return None
+
+    palette_color_bias = root.find("palette_color_bias")
+    if palette_color_bias is not None:
+        for node in palette_color_bias.findall("palette"):
+            candidate_id = node.get("id") or _child_text(node, "id")
+            if candidate_id != normalized:
+                continue
+            color_bias = _child_text(node, "color_bias")
+            if color_bias:
+                palette.background_color_bias = color_bias
+            break
+    return palette
 
 
 def _load_metadata_file(metadata_path: Path) -> TemplateManifest:
@@ -838,34 +858,33 @@ def _find_palette_by_id(manifest: TemplateManifest, palette_id: str | None) -> P
     for preset in manifest.palette_presets:
         if preset.id == normalized:
             return preset
-    reference_palettes, _rules = _load_reference_palette_routing()
-    return reference_palettes.get(normalized)
+    return _load_reference_palette_by_id(normalized)
 
 
 def _choose_reference_palette(routing_text: str) -> tuple[PalettePreset | None, PaletteRoutingRule | None]:
-    reference_palettes, rules = _load_reference_palette_routing()
-    if not reference_palettes or not rules:
+    rules = _load_reference_palette_rules()
+    if not rules:
         return None, None
 
     normalized = routing_text.casefold()
-    scored: list[tuple[int, int, int, PalettePreset, PaletteRoutingRule]] = []
+    scored: list[tuple[int, int, int, PaletteRoutingRule]] = []
     for rule in rules:
-        palette = reference_palettes.get(rule.apply_palette)
-        if palette is None:
-            continue
         if rule.match_terms:
             hits = sum(1 for term in rule.match_terms if term and term.casefold() in normalized)
             if hits == 0:
                 continue
         else:
             hits = 0
-        scored.append((rule.priority, hits, len(rule.match_terms), palette, rule))
+        scored.append((rule.priority, hits, len(rule.match_terms), rule))
 
     if not scored:
         return None, None
     scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
-    _priority, _hits, _term_count, palette, rule = scored[0]
-    return palette, rule
+    for _priority, _hits, _term_count, rule in scored:
+        palette = _load_reference_palette_by_id(rule.apply_palette)
+        if palette is not None:
+            return palette, rule
+    return None, scored[0][3]
 
 
 def resolve_palette_preset(
@@ -1017,6 +1036,19 @@ def _score_variant_spec(spec: VariantSpec, page: PagePlan) -> int:
     return score
 
 
+def _stable_variant_tiebreaker(page: PagePlan, stem: str) -> int:
+    """Break equal-fit template ties without favoring the primary family order."""
+
+    seed = "|".join([
+        str(page.page_number),
+        page.page_type or "",
+        page.layout_hint or "",
+        page.title or "",
+        stem,
+    ])
+    return int(hashlib.sha1(seed.encode("utf-8")).hexdigest()[:8], 16)
+
+
 def _choose_page_variant_with_llm(client: Any, page: PagePlan, candidates: list[str]) -> str | None:
     if client is None or len(candidates) <= 1:
         return None
@@ -1059,14 +1091,6 @@ def resolve_page_template_variant(
 ) -> str | None:
     """Resolve the preferred template stem for one page."""
 
-    candidate_order = {
-        stem: index
-        for index, stem in enumerate(manifest.page_variants.get(page.page_type, []))
-    }
-    if page.page_type == "content":
-        for stem in manifest.page_variants.get("content", []):
-            candidate_order.setdefault(stem, len(candidate_order))
-
     variant_specs = [
         spec
         for spec in manifest.variant_specs.values()
@@ -1075,19 +1099,11 @@ def resolve_page_template_variant(
     if variant_specs:
         scored_specs = sorted(
             ((spec, _score_variant_spec(spec, page)) for spec in variant_specs),
-            key=lambda item: (-item[1], candidate_order.get(item[0].stem, 9999), item[0].stem),
+            key=lambda item: (-item[1], _stable_variant_tiebreaker(page, item[0].stem), item[0].stem),
         )
         top_spec, top_score = scored_specs[0]
         second_score = scored_specs[1][1] if len(scored_specs) > 1 else -999
-        second_order = (
-            candidate_order.get(scored_specs[1][0].stem, 9999)
-            if len(scored_specs) > 1
-            else 9999
-        )
-        top_order = candidate_order.get(top_spec.stem, 9999)
         if top_score >= 5 and top_score - second_score >= 2:
-            return top_spec.stem
-        if top_score >= 5 and top_score == second_score and top_order < second_order:
             return top_spec.stem
         llm_candidates = [spec.stem for spec, score in scored_specs[:3] if score >= 4]
         if llm_candidates:
@@ -1115,7 +1131,7 @@ def resolve_page_template_variant(
 
     normalized = _page_routing_text(page).casefold()
     scored: list[tuple[str, int]] = []
-    for index, candidate in enumerate(candidates):
+    for candidate in candidates:
         score = 0
         if candidate == page.page_type:
             score += 2
@@ -1124,9 +1140,8 @@ def resolve_page_template_variant(
         for token in _variant_tokens(candidate):
             if token in normalized:
                 score += 2
-        score -= index
         scored.append((candidate, score))
-    scored.sort(key=lambda item: item[1], reverse=True)
+    scored.sort(key=lambda item: (-item[1], _stable_variant_tiebreaker(page, item[0]), item[0]))
     top_candidate, top_score = scored[0]
     second_score = scored[1][1] if len(scored) > 1 else -999
     if top_score > second_score:
@@ -1151,9 +1166,14 @@ def resolve_style_routing_from_text(
 
     manifest, resolved_by = _choose_manifest_by_keywords(routing_text, primary_manifests, layout_hints)
     if manifest is None:
-        manifest = _choose_manifest_with_llm(client, routing_text, primary_manifests, layout_hints)
-        if manifest is not None:
-            resolved_by = "llm"
+        has_primary_signal = any(
+            _score_manifest(candidate, routing_text, layout_hints) > 0
+            for candidate in primary_manifests
+        )
+        if has_primary_signal:
+            manifest = _choose_manifest_with_llm(client, routing_text, primary_manifests, layout_hints)
+            if manifest is not None:
+                resolved_by = "llm"
     if manifest is None:
         manifest = _default_manifest_from_list(manifests)
         resolved_by = "fallback"

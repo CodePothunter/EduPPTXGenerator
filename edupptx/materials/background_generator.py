@@ -18,9 +18,9 @@ def build_background_prompt(visual: VisualPlan) -> str:
     prompt = visual.background_prompt.strip()
     if not prompt:
         prompt = (
-            f"Subtle abstract gradient background, soft {visual.primary_color} tones, "
-            "minimalist geometric pattern, light and clean, professional presentation "
-            "background, 16:9 aspect ratio, high resolution"
+            f"淡雅抽象渐变背景，轻微偏向 {visual.primary_color} 色调，"
+            "简洁几何纹理，画面干净明亮，适合教学演示承载文字，"
+            "16:9 横版，高分辨率"
         )
 
     color_bias = visual.background_color_bias.strip()

@@ -100,8 +100,13 @@ class PPTXAgent:
                      ctx.topic, ctx.source_text is not None, ctx.research_summary is not None)
 
         # ── Phase 1a: Content Planning ──────────────────────
-        session.log_step("template_routing", "Selecting template family and palette")
-        routing, manifest, palette = self._phase0b_template_routing(ctx)
+        session.log_step("planning_stage1", "Generating stage-1 content outline without template constraints")
+        draft = self._phase1_outline_planning(ctx)
+        logger.info("Stage-1 outline: {} pages", len(draft.pages))
+
+        session.log_step("template_routing", "Selecting template family and palette from outline")
+        routing, manifest, palette = self._phase1a_template_routing(draft)
+        draft.style_routing = routing
         logger.info(
             "Template routing: style_name={}, template_family={}, palette_id={}, resolved_by={}",
             routing.style_name,
@@ -109,11 +114,6 @@ class PPTXAgent:
             routing.palette_id,
             routing.resolved_by,
         )
-
-        session.log_step("planning_stage1", "Generating stage-1 content outline without template constraints")
-        draft = self._phase1_outline_planning(ctx)
-        draft.style_routing = routing
-        logger.info("Stage-1 outline: {} pages", len(draft.pages))
 
         session.log_step("page_variant_assignment", "Matching template variants to outline pages")
         draft = self._phase1b_page_variant_assignment(draft, manifest)
@@ -178,6 +178,7 @@ class PPTXAgent:
             draft,
             all_assets,
             draft.style_routing.style_name or style,
+            session,
             debug=debug,
         )
         logger.info("Generated {} SVG slides", len(slides))
@@ -234,6 +235,7 @@ class PPTXAgent:
             draft,
             all_assets,
             draft.style_routing.style_name or style,
+            session,
             debug=debug,
         )
         svg_paths = self._phase4_postprocess(slides, session, all_assets, draft=draft, do_review=True)
@@ -283,11 +285,11 @@ class PPTXAgent:
             logger.warning("LLM client unavailable: {}", str(exc)[:120])
             return None
 
-    def _phase0b_template_routing(self, ctx: InputContext):
-        from edupptx.design.template_router import resolve_style_routing_from_input
+    def _phase1a_template_routing(self, draft: PlanningDraft):
+        from edupptx.design.template_router import resolve_style_routing
 
         client = self._build_llm_client()
-        return resolve_style_routing_from_input(ctx, client=client)
+        return resolve_style_routing(draft, client=client)
 
     def _phase1_outline_planning(self, ctx: InputContext) -> PlanningDraft:
         from edupptx.planning.content_planner import generate_planning_outline
@@ -446,11 +448,26 @@ class PPTXAgent:
         self, draft: PlanningDraft,
         all_assets: dict[int, SlideAssets],
         style: str,
+        session: Session,
         debug: bool = False,
     ) -> list[GeneratedSlide]:
         from edupptx.design.svg_generator import generate_slide_svgs
+
+        slides_raw_dir = session.dir / "slides_raw"
+        slides_raw_dir.mkdir(exist_ok=True)
+
+        def _save_raw_slide(slide: GeneratedSlide) -> None:
+            raw_path = slides_raw_dir / f"slide_{slide.page_number:02d}.svg"
+            raw_path.write_text(slide.svg_content, encoding="utf-8")
+            logger.info("Slide {} raw SVG saved: {}", slide.page_number, raw_path)
+
         return await generate_slide_svgs(
-            draft, all_assets, style, self.config, debug=debug,
+            draft,
+            all_assets,
+            style,
+            self.config,
+            debug=debug,
+            on_slide=_save_raw_slide,
         )
 
     def _phase4_postprocess(

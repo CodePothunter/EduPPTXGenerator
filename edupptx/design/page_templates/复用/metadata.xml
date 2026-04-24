@@ -65,7 +65,7 @@
         cards_top_hero_bottom, hero_top_cards_bottom, hero_with_microcards
       </preferred_layout_hints>
       <design_notes_hint>
-        通用内容页优先服务于结构稳定和信息清晰，不机械复刻示例卡数；如主家族存在更强的专属变体，应优先使用主家族。
+        通用内容页优先服务于结构稳定和信息清晰，不机械复刻示例卡数；与主家族内容模板同池选择，按当前页面内容和布局匹配度决定。
       </design_notes_hint>
     </page>
 

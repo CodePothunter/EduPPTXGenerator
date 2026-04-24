@@ -22,7 +22,7 @@ from edupptx.planning.prompts import (
 
 def generate_planning_outline(
     ctx: InputContext,
-    config: Config,
+    config: Config
 ) -> PlanningDraft:
     """Generate the stage-1 page outline without template constraints."""
 

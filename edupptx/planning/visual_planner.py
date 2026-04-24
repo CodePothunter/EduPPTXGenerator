@@ -22,7 +22,7 @@ _SYSTEM_PROMPT = """你是一位教育演示文稿的视觉设计顾问。
   "primary_color": "#hex",
   "secondary_color": "#hex",
   "accent_color": "#hex",
-  "background_prompt": "英文背景描述",
+  "background_prompt": "中文背景描述",
   "card_bg_color": "#hex",
   "secondary_bg_color": "#hex",
   "text_color": "#hex",
@@ -34,7 +34,7 @@ _SYSTEM_PROMPT = """你是一位教育演示文稿的视觉设计顾问。
 ## 原则
 - 教育场景优先：可读、克制、清晰
 - 如果用户或模板已经给出调色参考，可以参考其色相与气质，但不要机械照抄
-- `background_prompt` 应描述淡雅、低干扰、适合承载文字的背景
+- `background_prompt` 必须使用中文，描述淡雅、低干扰、适合承载文字的背景
 - `content_density` 只能是 `lecture` 或 `review`
 - `accent_color` 只用于重点，不要做大面积背景色"""
 
@@ -90,6 +90,7 @@ def generate_visual_plan(
             f"- secondary_bg: {palette_hint.secondary_bg_color}\n"
             f"- text: {palette_hint.text_color}\n"
             f"- heading: {palette_hint.heading_color}\n"
+            f"- background_color_bias: {getattr(palette_hint, 'background_color_bias', '') or 'none'}\n"
             "请结合主题内容、背景气质和页面结构自行决定最终配色；"
             "可以参考这组颜色的明度、纯度和亲和感，但不要被它锁死。"
         )

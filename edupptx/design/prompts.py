@@ -29,14 +29,13 @@ _PAGE_TYPE_TEMPLATE_STEMS = {
     "section": ("section",),
     "content": ("content",),
     "closing": ("closing",),
-    # Other types (quiz, formula, experiment, etc.) fall back to content.svg
 }
 
 _MAX_TEMPLATE_CHARS = 3000  # Token budget per template
 _DEFAULT_TEMPLATE_FAMILY = "复用"
 _CHART_TEMPLATE_MAP = {
     "timeline": ("timeline.svg",),
-    "relation": ("关系图.svg",),
+    "relation": ("relation.svg", "关系图.svg"),
 }
 
 _IMAGE_BOUNDARY_RULES = """
@@ -67,7 +66,7 @@ def _truncate_template_content(content: str) -> str:
 
 
 def _template_stems_for_page_type(page_type: str) -> tuple[str, ...]:
-    return _PAGE_TYPE_TEMPLATE_STEMS.get(page_type, ("content",))
+    return _PAGE_TYPE_TEMPLATE_STEMS.get(page_type, ())
 
 
 def _load_page_templates(
@@ -442,11 +441,13 @@ def build_svg_user_prompt(
         )
 
     # 页面 SVG 参考模板（LLM 照着画，不是填充模板）
-    template_svgs = _load_page_templates(
-        page.page_type,
-        template_family=template_family,
-        template_variant=page.template_variant,
-    )
+    template_svgs = []
+    if page.template_variant:
+        template_svgs = _load_page_templates(
+            page.page_type,
+            template_family=template_family,
+            template_variant=page.template_variant,
+        )
     if template_svgs:
         loaded_families = ", ".join(sorted({name.split("/", 1)[0] for name, _ in template_svgs}))
         if page.template_variant:
@@ -460,6 +461,19 @@ def build_svg_user_prompt(
         )
         for template_name, template_svg in template_svgs:
             lines.append(f"\n#### 参考模板：{template_name}\n```svg\n{template_svg}\n```")
+    else:
+        if page.template_variant:
+            lines.append(
+                "\n### 页面模板状态\n"
+                f"当前未命中模板变体 `{page.template_variant}`。不要强行套用其它 page_type 或无关模板。"
+                "请仅根据页面类型规则、建议布局、style guide、design notes 和可用图示参考自主设计本页。"
+            )
+        else:
+            lines.append(
+                "\n### 页面模板状态\n"
+                "当前没有可用的 page template 参考。不要强行回退到其它现有模板。"
+                "请仅根据页面类型规则、建议布局、style guide、design notes 和可用图示参考自主设计本页。"
+            )
 
     chart_templates = _load_chart_templates(page.page_type, page.layout_hint)
     if chart_templates:

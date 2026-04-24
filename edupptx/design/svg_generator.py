@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections.abc import Callable
 
 from loguru import logger
 
@@ -112,6 +113,7 @@ async def generate_slide_svgs(
     style_name: str,
     config: Config,
     debug: bool = False,
+    on_slide: Callable[[GeneratedSlide], None] | None = None,
 ) -> list[GeneratedSlide]:
     """Generate SVG slides, sequentially for reveal pages and in parallel otherwise."""
 
@@ -165,11 +167,16 @@ async def generate_slide_svgs(
                 )
                 results.append(slide)
                 generated_svgs[page.page_number] = slide.svg_content
+                if on_slide is not None:
+                    on_slide(slide)
             except Exception:
                 logger.exception("Slide {} SVG generation failed", page.page_number)
                 fallback_svg = _failure_svg(page.page_number)
-                results.append(GeneratedSlide(page_number=page.page_number, svg_content=fallback_svg))
+                slide = GeneratedSlide(page_number=page.page_number, svg_content=fallback_svg)
+                results.append(slide)
                 generated_svgs[page.page_number] = fallback_svg
+                if on_slide is not None:
+                    on_slide(slide)
     else:
         max_workers = min(total_pages, config.llm_concurrency)
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
@@ -192,10 +199,16 @@ async def generate_slide_svgs(
             for future in as_completed(future_to_page):
                 page_num = future_to_page[future]
                 try:
-                    results.append(future.result())
+                    slide = future.result()
+                    results.append(slide)
+                    if on_slide is not None:
+                        on_slide(slide)
                 except Exception:
                     logger.exception("Slide {} SVG generation failed", page_num)
-                    results.append(GeneratedSlide(page_number=page_num, svg_content=_failure_svg(page_num)))
+                    slide = GeneratedSlide(page_number=page_num, svg_content=_failure_svg(page_num))
+                    results.append(slide)
+                    if on_slide is not None:
+                        on_slide(slide)
 
     results.sort(key=lambda slide: slide.page_number)
     logger.info("SVG generation completed: {} slides", len(results))
