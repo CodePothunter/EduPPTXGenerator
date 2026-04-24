@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from functools import lru_cache
 from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree as ET
@@ -21,10 +22,13 @@ from edupptx.models import (
 
 
 _PAGE_TEMPLATES_DIR = Path(__file__).parent / "page_templates"
+_REFS_DIR = Path(__file__).parent / "references"
 _METADATA_NAME = "metadata.xml"
 _STYLE_GUIDE_NAME = "style_guide.md"
-_DEFAULT_STYLE_NAME = "clean_academic"
-_DEFAULT_TEMPLATE_FAMILY = "clean_academic"
+_PALETTE_ROUTING_REFERENCE_NAME = "palette-routing.xml"
+_DEFAULT_STYLE_NAME = "shared_reusable_core"
+_DEFAULT_TEMPLATE_FAMILY = "复用"
+_SHARED_TEMPLATE_FAMILY = "复用"
 _IGNORED_FAMILIES = {"old", "__pycache__"}
 _PAGE_TYPES = (
     "cover",
@@ -64,11 +68,19 @@ class PalettePreset(BaseModel):
     primary_color: str = "#1E40AF"
     secondary_color: str = "#3B82F6"
     accent_color: str = "#F59E0B"
-    background_prompt: str = ""
+    background_color_bias: str = ""
     card_bg_color: str = "#FFFFFF"
     secondary_bg_color: str = "#F8FAFC"
     text_color: str = "#1E293B"
     heading_color: str = "#0F172A"
+
+
+class PaletteRoutingRule(BaseModel):
+    """One global palette routing rule loaded from design references."""
+
+    priority: int = 0
+    match_terms: list[str] = Field(default_factory=list)
+    apply_palette: str = ""
 
 
 class ImageSlotSpec(BaseModel):
@@ -141,7 +153,7 @@ def _default_palette_preset(palette_id: str = "default", label: str = "Default")
         primary_color=visual.primary_color,
         secondary_color=visual.secondary_color,
         accent_color=visual.accent_color,
-        background_prompt=visual.background_prompt,
+        background_color_bias=visual.background_color_bias,
         card_bg_color=visual.card_bg_color,
         secondary_bg_color=visual.secondary_bg_color,
         text_color=visual.text_color,
@@ -314,11 +326,24 @@ def _parse_palette_node(node: ET.Element | None) -> PalettePreset | None:
         primary_color=_child_text(node, "primary") or "#1E40AF",
         secondary_color=_child_text(node, "secondary") or "#3B82F6",
         accent_color=_child_text(node, "accent") or "#F59E0B",
-        background_prompt=_child_text(node, "background_prompt"),
         card_bg_color=_child_text(node, "card_bg") or "#FFFFFF",
         secondary_bg_color=_child_text(node, "secondary_bg") or "#F8FAFC",
         text_color=_child_text(node, "text") or "#1E293B",
         heading_color=_child_text(node, "heading") or "#0F172A",
+    )
+
+
+def _parse_palette_routing_rule_node(node: ET.Element | None) -> PaletteRoutingRule | None:
+    if node is None:
+        return None
+    apply_palette = node.get("apply_palette") or _child_text(node, "apply_palette")
+    if not apply_palette:
+        return None
+    priority = _as_int(node.get("priority") or _child_text(node, "priority")) or 0
+    return PaletteRoutingRule(
+        priority=priority,
+        match_terms=_split_tokens(_child_text(node, "match_terms")),
+        apply_palette=apply_palette.strip(),
     )
 
 
@@ -389,21 +414,60 @@ def _parse_variant_spec_node(node: ET.Element) -> VariantSpec | None:
     )
 
 
+@lru_cache(maxsize=1)
+def _load_reference_palette_routing() -> tuple[dict[str, PalettePreset], list[PaletteRoutingRule]]:
+    path = _REFS_DIR / _PALETTE_ROUTING_REFERENCE_NAME
+    if not path.exists():
+        return {}, []
+
+    try:
+        root = ET.parse(path).getroot()
+    except ET.ParseError as exc:
+        logger.warning("Failed to parse palette routing reference {}: {}", path, exc)
+        return {}, []
+
+    palette_map: dict[str, PalettePreset] = {}
+    palette_library = root.find("palette_library")
+    if palette_library is not None:
+        for node in palette_library.findall("palette"):
+            preset = _parse_palette_node(node)
+            if preset is not None:
+                palette_map[preset.id] = preset
+
+    palette_color_bias = root.find("palette_color_bias")
+    if palette_color_bias is not None:
+        for node in palette_color_bias.findall("palette"):
+            palette_id = node.get("id") or _child_text(node, "id")
+            if not palette_id:
+                continue
+            color_bias = _child_text(node, "color_bias")
+            if not color_bias:
+                continue
+            preset = palette_map.get(palette_id)
+            if preset is not None:
+                preset.background_color_bias = color_bias
+
+    rules: list[PaletteRoutingRule] = []
+    palette_routing = root.find("palette_routing")
+    if palette_routing is not None:
+        for node in palette_routing.findall("rule"):
+            rule = _parse_palette_routing_rule_node(node)
+            if rule is not None:
+                rules.append(rule)
+    rules.sort(key=lambda item: item.priority, reverse=True)
+    return palette_map, rules
+
+
 def _load_metadata_file(metadata_path: Path) -> TemplateManifest:
     root = ET.fromstring(metadata_path.read_text(encoding="utf-8"))
     family_name = _relative_family_name(metadata_path.parent)
     identity = root.find("identity")
     routing = root.find("routing")
-    visual = root.find("visual")
     planner = root.find("planner")
 
-    palettes = [
-        preset
-        for preset in (_parse_palette_node(node) for node in (visual.findall("palette") if visual is not None else []))
-        if preset is not None
-    ]
-    if not palettes:
-        palettes = [_default_palette_preset()]
+    # Palette and background routing are now driven by global design references.
+    # Template metadata only carries structural planning information.
+    palettes = [_default_palette_preset()]
 
     page_specs: dict[str, PlannerPageSpec] = {}
     variant_specs: dict[str, VariantSpec] = {}
@@ -481,23 +545,119 @@ def load_style_manifests() -> list[TemplateManifest]:
     return list(manifests_by_family.values())
 
 
-def load_style_manifest(template_family: str) -> TemplateManifest | None:
+def _combine_text_blocks(*values: str) -> str:
+    parts = [value.strip() for value in values if str(value or "").strip()]
+    return "\n".join(parts)
+
+
+def _merge_image_slots(
+    primary_slots: list[ImageSlotSpec],
+    shared_slots: list[ImageSlotSpec],
+) -> list[ImageSlotSpec]:
+    merged = [slot.model_copy(deep=True) for slot in primary_slots]
+    existing_ids = {slot.slot_id for slot in merged if slot.slot_id}
+    for slot in shared_slots:
+        if slot.slot_id and slot.slot_id in existing_ids:
+            continue
+        merged.append(slot.model_copy(deep=True))
+    return merged
+
+
+def _merge_page_spec(
+    primary: PlannerPageSpec,
+    shared: PlannerPageSpec,
+) -> PlannerPageSpec:
+    return PlannerPageSpec(
+        page_type=primary.page_type or shared.page_type,
+        variant=primary.variant or shared.variant,
+        title_max_chars=primary.title_max_chars if primary.title_max_chars is not None else shared.title_max_chars,
+        subtitle_max_chars=primary.subtitle_max_chars if primary.subtitle_max_chars is not None else shared.subtitle_max_chars,
+        body_max_chars=primary.body_max_chars if primary.body_max_chars is not None else shared.body_max_chars,
+        toc_items_max=primary.toc_items_max if primary.toc_items_max is not None else shared.toc_items_max,
+        preferred_layout_hints=_dedupe_keep_order(primary.preferred_layout_hints + shared.preferred_layout_hints),
+        design_notes_hint=_combine_text_blocks(shared.design_notes_hint, primary.design_notes_hint),
+        image_slots=_merge_image_slots(primary.image_slots, shared.image_slots),
+    )
+
+
+def merge_template_manifests(
+    primary: TemplateManifest,
+    shared: TemplateManifest | None,
+) -> TemplateManifest:
+    if shared is None or primary.template_family == _SHARED_TEMPLATE_FAMILY:
+        return primary
+
+    merged_page_variants: dict[str, list[str]] = {}
+    for page_type in set(shared.page_variants) | set(primary.page_variants):
+        merged_page_variants[page_type] = _dedupe_keep_order(
+            primary.page_variants.get(page_type, []) + shared.page_variants.get(page_type, [])
+        )
+
+    merged_page_specs: dict[str, PlannerPageSpec] = {}
+    for page_type in set(shared.planner_page_specs) | set(primary.planner_page_specs):
+        primary_spec = primary.planner_page_specs.get(page_type)
+        shared_spec = shared.planner_page_specs.get(page_type)
+        if primary_spec is not None and shared_spec is not None:
+            merged_page_specs[page_type] = _merge_page_spec(primary_spec, shared_spec)
+        elif primary_spec is not None:
+            merged_page_specs[page_type] = primary_spec.model_copy(deep=True)
+        elif shared_spec is not None:
+            merged_page_specs[page_type] = shared_spec.model_copy(deep=True)
+
+    merged_variant_specs = {
+        stem: spec.model_copy(deep=True)
+        for stem, spec in shared.variant_specs.items()
+    }
+    merged_variant_specs.update({
+        stem: spec.model_copy(deep=True)
+        for stem, spec in primary.variant_specs.items()
+    })
+
+    return TemplateManifest(
+        style_name=primary.style_name,
+        label=primary.label,
+        description=primary.description or shared.description,
+        template_family=primary.template_family,
+        keywords=primary.keywords.model_copy(deep=True),
+        preferred_layout_hints=_dedupe_keep_order(primary.preferred_layout_hints + shared.preferred_layout_hints),
+        palette_presets=[preset.model_copy(deep=True) for preset in primary.palette_presets],
+        page_variants=merged_page_variants,
+        planner_summary=_combine_text_blocks(primary.planner_summary, shared.planner_summary),
+        planner_page_specs=merged_page_specs,
+        variant_specs=merged_variant_specs,
+    )
+
+
+def load_style_manifest(template_family: str, merge_shared: bool = True) -> TemplateManifest | None:
     """Load one manifest by template-family path."""
 
     normalized = template_family.replace("\\", "/").strip("/")
+    raw_manifest: TemplateManifest | None = None
     for manifest in load_style_manifests():
         if manifest.template_family == normalized:
-            return manifest
-    return None
+            raw_manifest = manifest
+            break
+    if raw_manifest is None:
+        return None
+    if not merge_shared or normalized == _SHARED_TEMPLATE_FAMILY:
+        return raw_manifest
+    shared_manifest = load_style_manifest(_SHARED_TEMPLATE_FAMILY, merge_shared=False)
+    return merge_template_manifests(raw_manifest, shared_manifest)
 
 
-def load_style_guide(template_family: str) -> str:
-    """Load `style_guide.md` from the selected template family."""
+def load_style_guide(template_family: str, include_shared: bool = True) -> str:
+    """Load `style_guide.md` from one selected family, optionally merged with shared guidance."""
 
-    guide_path = _PAGE_TEMPLATES_DIR / template_family / _STYLE_GUIDE_NAME
-    if not guide_path.exists():
-        return ""
-    return guide_path.read_text(encoding="utf-8").strip()
+    normalized = template_family.replace("\\", "/").strip("/")
+    guides: list[str] = []
+    if include_shared and normalized != _SHARED_TEMPLATE_FAMILY:
+        shared_path = _PAGE_TEMPLATES_DIR / _SHARED_TEMPLATE_FAMILY / _STYLE_GUIDE_NAME
+        if shared_path.exists():
+            guides.append(shared_path.read_text(encoding="utf-8").strip())
+    guide_path = _PAGE_TEMPLATES_DIR / normalized / _STYLE_GUIDE_NAME
+    if guide_path.exists():
+        guides.append(guide_path.read_text(encoding="utf-8").strip())
+    return "\n\n".join(part for part in guides if part)
 
 
 def collect_template_routing_text(draft: PlanningDraft) -> str:
@@ -671,26 +831,61 @@ def _default_manifest_from_list(manifests: list[TemplateManifest]) -> TemplateMa
     return manifests[0]
 
 
-def _choose_palette_preset(manifest: TemplateManifest, routing_text: str) -> PalettePreset:
-    if not manifest.palette_presets:
-        return _default_palette_preset()
-    if len(manifest.palette_presets) == 1:
-        return manifest.palette_presets[0]
+def _find_palette_by_id(manifest: TemplateManifest, palette_id: str | None) -> PalettePreset | None:
+    normalized = str(palette_id or "").strip()
+    if not normalized:
+        return None
+    for preset in manifest.palette_presets:
+        if preset.id == normalized:
+            return preset
+    reference_palettes, _rules = _load_reference_palette_routing()
+    return reference_palettes.get(normalized)
+
+
+def _choose_reference_palette(routing_text: str) -> tuple[PalettePreset | None, PaletteRoutingRule | None]:
+    reference_palettes, rules = _load_reference_palette_routing()
+    if not reference_palettes or not rules:
+        return None, None
 
     normalized = routing_text.casefold()
-    scored: list[tuple[PalettePreset, int]] = []
-    for preset in manifest.palette_presets:
-        score = 0
-        if preset.id.casefold() in normalized:
-            score += 3
-        if preset.label and preset.label.casefold() in normalized:
-            score += 2
-        for keyword in preset.keywords:
-            if keyword and keyword.casefold() in normalized:
-                score += 1
-        scored.append((preset, score))
-    scored.sort(key=lambda item: item[1], reverse=True)
-    return scored[0][0]
+    scored: list[tuple[int, int, int, PalettePreset, PaletteRoutingRule]] = []
+    for rule in rules:
+        palette = reference_palettes.get(rule.apply_palette)
+        if palette is None:
+            continue
+        if rule.match_terms:
+            hits = sum(1 for term in rule.match_terms if term and term.casefold() in normalized)
+            if hits == 0:
+                continue
+        else:
+            hits = 0
+        scored.append((rule.priority, hits, len(rule.match_terms), palette, rule))
+
+    if not scored:
+        return None, None
+    scored.sort(key=lambda item: (item[0], item[1], item[2]), reverse=True)
+    _priority, _hits, _term_count, palette, rule = scored[0]
+    return palette, rule
+
+
+def resolve_palette_preset(
+    manifest: TemplateManifest,
+    routing_text: str = "",
+    preferred_palette_id: str | None = None,
+) -> PalettePreset:
+    preferred = _find_palette_by_id(manifest, preferred_palette_id)
+    if preferred is not None:
+        return preferred
+
+    reference_palette, reference_rule = _choose_reference_palette(routing_text)
+    if reference_palette is not None and reference_rule is not None:
+        return reference_palette
+
+    return _default_palette_preset()
+
+
+def _choose_palette_preset(manifest: TemplateManifest, routing_text: str) -> PalettePreset:
+    return resolve_palette_preset(manifest, routing_text)
 
 
 def apply_palette_preset(visual: VisualPlan, preset: PalettePreset) -> None:
@@ -703,6 +898,8 @@ def apply_palette_preset(visual: VisualPlan, preset: PalettePreset) -> None:
     visual.secondary_bg_color = preset.secondary_bg_color
     visual.text_color = preset.text_color
     visual.heading_color = preset.heading_color
+    if preset.background_color_bias:
+        visual.background_color_bias = preset.background_color_bias
 
 
 def _page_routing_text(page: PagePlan) -> str:
@@ -862,6 +1059,14 @@ def resolve_page_template_variant(
 ) -> str | None:
     """Resolve the preferred template stem for one page."""
 
+    candidate_order = {
+        stem: index
+        for index, stem in enumerate(manifest.page_variants.get(page.page_type, []))
+    }
+    if page.page_type == "content":
+        for stem in manifest.page_variants.get("content", []):
+            candidate_order.setdefault(stem, len(candidate_order))
+
     variant_specs = [
         spec
         for spec in manifest.variant_specs.values()
@@ -870,12 +1075,19 @@ def resolve_page_template_variant(
     if variant_specs:
         scored_specs = sorted(
             ((spec, _score_variant_spec(spec, page)) for spec in variant_specs),
-            key=lambda item: item[1],
-            reverse=True,
+            key=lambda item: (-item[1], candidate_order.get(item[0].stem, 9999), item[0].stem),
         )
         top_spec, top_score = scored_specs[0]
         second_score = scored_specs[1][1] if len(scored_specs) > 1 else -999
+        second_order = (
+            candidate_order.get(scored_specs[1][0].stem, 9999)
+            if len(scored_specs) > 1
+            else 9999
+        )
+        top_order = candidate_order.get(top_spec.stem, 9999)
         if top_score >= 5 and top_score - second_score >= 2:
+            return top_spec.stem
+        if top_score >= 5 and top_score == second_score and top_order < second_order:
             return top_spec.stem
         llm_candidates = [spec.stem for spec, score in scored_specs[:3] if score >= 4]
         if llm_candidates:
@@ -931,23 +1143,33 @@ def resolve_style_routing_from_text(
     """Resolve style routing from free text plus optional layout hints."""
 
     manifests = load_style_manifests()
-    manifest, resolved_by = _choose_manifest_by_keywords(routing_text, manifests, layout_hints)
+    primary_manifests = [
+        manifest
+        for manifest in manifests
+        if manifest.template_family != _SHARED_TEMPLATE_FAMILY
+    ] or manifests
+
+    manifest, resolved_by = _choose_manifest_by_keywords(routing_text, primary_manifests, layout_hints)
     if manifest is None:
-        manifest = _choose_manifest_with_llm(client, routing_text, manifests, layout_hints)
+        manifest = _choose_manifest_with_llm(client, routing_text, primary_manifests, layout_hints)
         if manifest is not None:
             resolved_by = "llm"
     if manifest is None:
         manifest = _default_manifest_from_list(manifests)
         resolved_by = "fallback"
 
-    palette = _choose_palette_preset(manifest, routing_text)
+    effective_manifest = merge_template_manifests(
+        manifest,
+        load_style_manifest(_SHARED_TEMPLATE_FAMILY, merge_shared=False),
+    )
+    palette = _choose_palette_preset(effective_manifest, routing_text)
     routing = StyleRouting(
         style_name=manifest.style_name,
         template_family=manifest.template_family,
         palette_id=palette.id,
         resolved_by=resolved_by,
     )
-    return routing, manifest, palette
+    return routing, effective_manifest, palette
 
 
 def resolve_style_routing_from_input(

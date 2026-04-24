@@ -1,0 +1,215 @@
+{
+  "defaults": {
+    "quality_terms": [
+      "clear educational illustration",
+      "high legibility",
+      "single coherent scene",
+      "composition suitable for presentation slides"
+    ],
+    "negative_terms": [
+      "no text",
+      "no watermark",
+      "no logo",
+      "no collage",
+      "no split panels",
+      "no interface elements",
+      "background not cluttered"
+    ],
+    "role_prompts": {
+      "hero": [
+        "large main figure or main scene",
+        "strong visual focus",
+        "enough negative space for slide layout"
+      ],
+      "illustration": [
+        "clear subject",
+        "supportive simple background",
+        "easy to crop into a card"
+      ],
+      "icon": [
+        "single centered object",
+        "minimal background",
+        "clean silhouette"
+      ],
+      "background": [
+        "low-detail supporting scene",
+        "soft low-contrast atmosphere",
+        "works under text overlay"
+      ]
+    },
+    "page_type_prompts": {
+      "cover": [
+        "hero composition",
+        "clear visual center",
+        "generous outer margins"
+      ],
+      "toc": [
+        "supporting illustration",
+        "simple structure",
+        "not visually dominant"
+      ],
+      "section": [
+        "symbolic divider illustration",
+        "clear visual separation",
+        "strong pacing cue"
+      ],
+      "content": [
+        "teaching illustration",
+        "focused instructional content",
+        "clear hierarchy"
+      ],
+      "exercise": [
+        "lightweight helper illustration",
+        "small supporting scene",
+        "keep the middle area clean"
+      ],
+      "summary": [
+        "summary-card friendly illustration",
+        "simple symbolic scene"
+      ]
+    },
+    "aspect_ratio_prompts": {
+      "1:1": "centered balanced composition",
+      "3:4": "vertical composition",
+      "4:3": "compact horizontal composition",
+      "16:9": "wide horizontal composition",
+      "9:16": "tall vertical composition",
+      "3:2": "medium horizontal composition",
+      "2:3": "medium vertical composition",
+      "21:9": "ultra-wide panoramic composition"
+    }
+  },
+  "profiles": [
+    {
+      "id": "shared_base",
+      "priority": 5,
+      "match": {
+        "template_families": ["复用"]
+      },
+      "prompt_terms": [
+        "clean neutral educational illustration",
+        "cross-subject reusable visual language",
+        "stable structure and restrained styling"
+      ]
+    },
+    {
+      "id": "lower_grade_base",
+      "priority": 10,
+      "match": {
+        "template_families": ["低年级"]
+      },
+      "prompt_terms": [
+        "children's educational picture-book illustration",
+        "rounded shapes",
+        "friendly primary-school atmosphere",
+        "bright classroom-friendly palette"
+      ],
+      "negative_terms": [
+        "avoid dark dramatic lighting",
+        "avoid cold business-like scenes"
+      ]
+    },
+    {
+      "id": "lower_grade_literacy",
+      "priority": 30,
+      "match": {
+        "template_families": ["低年级"],
+        "keywords_any": ["语文", "识字", "拼音", "词语", "生字", "组词", "字义", "反义词", "近义词", "朗读"]
+      },
+      "prompt_terms": [
+        "object-focused literacy teaching illustration",
+        "clear flashcard-like structure",
+        "simple background",
+        "one main learning object or a tiny teaching scene"
+      ]
+    },
+    {
+      "id": "lower_grade_picture_talk",
+      "priority": 28,
+      "match": {
+        "template_families": ["低年级"],
+        "keywords_any": ["看图", "观察", "说话", "写话", "人物", "动作", "地点", "心情", "故事"]
+      },
+      "prompt_terms": [
+        "narrative observation scene illustration",
+        "clear character actions and environment",
+        "gentle storybook staging",
+        "easy for students to describe and observe"
+      ]
+    },
+    {
+      "id": "lower_grade_math_geometry",
+      "priority": 30,
+      "match": {
+        "template_families": ["低年级"],
+        "keywords_any": ["数学", "图形", "几何", "形状", "角", "边", "圆形", "三角形", "正方形", "长方形"]
+      },
+      "prompt_terms": [
+        "playful elementary math learning illustration",
+        "geometric teaching illustration",
+        "manipulative-like shapes",
+        "clear category separation"
+      ]
+    },
+    {
+      "id": "lower_grade_math_counting",
+      "priority": 29,
+      "match": {
+        "template_families": ["低年级"],
+        "keywords_any": ["数数", "计算", "加法", "减法", "算式", "比较大小", "多少", "分成", "应用题"]
+      },
+      "prompt_terms": [
+        "playful elementary math learning illustration",
+        "counting and arithmetic teaching illustration",
+        "objects easy to count",
+        "clear grouping and quantity cues"
+      ]
+    },
+    {
+      "id": "upper_grade_base",
+      "priority": 10,
+      "match": {
+        "template_families": ["高年级"]
+      },
+      "prompt_terms": [
+        "editorial educational illustration",
+        "quiet reading atmosphere",
+        "clear visual hierarchy",
+        "restrained palette"
+      ],
+      "negative_terms": [
+        "avoid childish toy-like cartoon style",
+        "avoid exaggerated playful props"
+      ]
+    },
+    {
+      "id": "upper_grade_poetry",
+      "priority": 30,
+      "match": {
+        "template_families": ["高年级"],
+        "keywords_any": ["古诗", "古文", "诗歌", "诵读", "朗读", "诗句", "作者"]
+      },
+      "prompt_terms": [
+        "literary editorial illustration",
+        "poetic atmosphere",
+        "paper-like texture",
+        "restrained negative space",
+        "subtle cultural imagery"
+      ]
+    },
+    {
+      "id": "upper_grade_analysis",
+      "priority": 28,
+      "match": {
+        "template_families": ["高年级"],
+        "keywords_any": ["阅读", "人物", "主题", "中心思想", "分析", "赏析", "段落", "表达", "比较", "对照"]
+      },
+      "prompt_terms": [
+        "analytical reading support illustration",
+        "mature classroom editorial tone",
+        "symbolic but clear scene elements",
+        "designed for structured explanation"
+      ]
+    }
+  ]
+}

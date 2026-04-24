@@ -49,6 +49,8 @@ def _apply_palette_hint(visual_plan: VisualPlan, palette_hint) -> VisualPlan:
     visual_plan.secondary_bg_color = palette_hint.secondary_bg_color
     visual_plan.text_color = palette_hint.text_color
     visual_plan.heading_color = palette_hint.heading_color
+    if getattr(palette_hint, "background_color_bias", "") and not visual_plan.background_color_bias:
+        visual_plan.background_color_bias = palette_hint.background_color_bias
     return visual_plan
 
 
@@ -102,7 +104,7 @@ def generate_visual_plan(
             max_tokens=1024,
         )
         visual_plan = _parse_visual_plan(response)
-        return visual_plan
+        return _apply_palette_hint(visual_plan, palette_hint)
     except Exception as exc:
         logger.warning("Visual planning failed, using defaults: {}", exc)
         return _apply_palette_hint(VisualPlan(), palette_hint)

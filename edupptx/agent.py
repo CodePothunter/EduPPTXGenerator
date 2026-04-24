@@ -329,6 +329,7 @@ class PPTXAgent:
             assign_page_template_variants,
             load_style_manifest,
             resolve_style_routing,
+            resolve_palette_preset,
             align_draft_to_template,
         )
 
@@ -338,12 +339,11 @@ class PPTXAgent:
         if draft.style_routing.template_family:
             manifest = load_style_manifest(draft.style_routing.template_family)
             if manifest is not None:
-                for preset in manifest.palette_presets:
-                    if preset.id == draft.style_routing.palette_id:
-                        palette = preset
-                        break
-                if palette is None and manifest.palette_presets:
-                    palette = manifest.palette_presets[0]
+                palette = resolve_palette_preset(
+                    manifest,
+                    routing_text=self._collect_template_routing_text(draft),
+                    preferred_palette_id=draft.style_routing.palette_id,
+                )
 
         if manifest is None:
             routing, manifest, palette = resolve_style_routing(draft, client=client)
@@ -352,6 +352,11 @@ class PPTXAgent:
         assign_page_template_variants(draft, manifest, client=client)
         align_draft_to_template(draft, manifest)
         return draft
+
+    def _collect_template_routing_text(self, draft: PlanningDraft) -> str:
+        from edupptx.design.template_router import collect_template_routing_text
+
+        return collect_template_routing_text(draft)
 
     def _save_design_spec(self, draft: PlanningDraft, session: Session) -> None:
         """Save human-readable design specification for audit and debugging."""
@@ -403,6 +408,7 @@ class PPTXAgent:
         self, draft: PlanningDraft, session: Session,
     ) -> dict[int, SlideAssets]:
         from edupptx.materials.image_provider import fetch_images
+        from edupptx.materials.image_prompt_router import build_routed_image_needs
 
         all_assets: dict[int, SlideAssets] = {}
         materials_dir = session.dir / "materials"
@@ -413,8 +419,9 @@ class PPTXAgent:
 
             # Fetch images if needed
             if page.material_needs.images:
-                fetched = await fetch_images(page.material_needs.images, self.config)
-                for (slot_key, _need), result in zip(iter_image_slot_keys(page.material_needs.images), fetched):
+                routed_image_needs = build_routed_image_needs(draft, page)
+                fetched = await fetch_images(routed_image_needs, self.config)
+                for (slot_key, _need), result in zip(iter_image_slot_keys(routed_image_needs), fetched):
                     if result and result.local_path and result.local_path.exists():
                         suffix = result.local_path.suffix.lower() or ".img"
                         dest = materials_dir / f"page_{page.page_number:02d}_{slot_key}{suffix}"

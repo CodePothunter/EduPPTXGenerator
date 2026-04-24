@@ -15,7 +15,7 @@ _REVIEW_SYSTEM_PROMPT = """\
 
 ## 审查重点
 
-1. **页面标题位置**：对除 `center_hero` 和 'full_image' 布局之外的页面，页面标题必须在 x=50, y=50 附近（font-size=28-36），副标题在 y=78-90。如果标题 y > 100 或被其他元素遮挡，必须修正到标准位置。'cover' 和 `section`页允许保留居中标题、居中副标题和居中分隔装饰，不要强制挪到顶部标题区",
+1. **页面标题位置**：对除 `center_hero` 和 'full_image' 布局之外的页面，页面标题必须在 x=50, y=50 附近（font-size=28-36），副标题在 y=90-100。如果标题 y > 100 或被其他元素遮挡，必须修正到标准位置。'cover' 和 `section`页允许保留居中标题、居中副标题和居中分隔装饰，不要强制挪到顶部标题区",
 2. **文字溢出/重叠**：检查 <text> 的 y 坐标是否在其所属 <rect> 的 y~y+height 范围内。特别注意 <tspan dy="..."> 会让实际渲染位置下移，最后一个 tspan 的累加 y 不能超出卡片底部
 3. **圆形编号对齐**：<circle> + <text> 组成的序号组件，text 的 y 必须等于 circle 的 cy，text 的 x 必须等于 circle 的 cx。如果发现 text y 比 circle cy 大 20px 以上，修正 text y = circle cy
 4. **卡片边界**：所有卡片和内容元素 x ≥ 50，x+width ≤ 1230，不超出画布。唯一例外是顶部装饰条（height≤8 的全宽 rect）允许 x=0

@@ -1,0 +1,56 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <defs>
+    <clipPath id="img">
+      <rect x="118" y="138" width="334" height="500" rx="36"/>
+    </clipPath>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}"/>
+
+  <g font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    <text x="50" y="50" font-size="32" font-weight="800" fill="{heading_color}">
+      {title}
+    </text>
+    <text x="50" y="92" font-size="19" fill="{text_color}">
+      {subtitle}
+    </text>
+
+    <!-- 左侧主视觉区 -->
+    <rect x="118" y="138" width="334" height="500" rx="36"
+          fill="{secondary_bg_color}" stroke="{primary_color}" stroke-width="2.2"/>
+    <image x="118" y="138" width="334" height="500"
+           href="{image_href}"
+           preserveAspectRatio="xMidYMid slice"
+           clip-path="url(#img)"/>
+
+    <!-- 右上 hero 区 -->
+    <rect x="530" y="138" width="680" height="244" rx="30"
+          fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2.2"/>
+    <text x="564" y="188" font-size="28" font-weight="800" fill="{heading_color}">
+      {hero_title}
+    </text>
+    <text x="564" y="230" font-size="20" fill="{text_color}">
+      <tspan x="564" dy="0">{line1}</tspan>
+      <tspan x="564" dy="32">{line2}</tspan>
+      <tspan x="564" dy="32">{line3}</tspan>
+    </text>
+
+    <!-- 右下示例小卡 -->
+    <rect x="530" y="406" width="322" height="232" rx="28"
+          fill="{secondary_bg_color}" stroke="{secondary_color}" stroke-width="2.2"/>
+    <text x="560" y="448" font-size="24" font-weight="800" fill="{heading_color}">
+      {card_title}
+    </text>
+    <text x="560" y="485" font-size="18" fill="{text_color}">
+      <tspan x="560" dy="0">{card_l1}</tspan>
+      <tspan x="560" dy="28">{card_l2}</tspan>
+      <tspan x="560" dy="28">{card_l3}</tspan>
+    </text>
+
+    <!-- 底部 / 右侧 support cards：重复 1-2 个，等宽排列，gap=20 -->
+
+    <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}">
+      {page_number} / {total_pages}
+    </text>
+  </g>
+</svg>

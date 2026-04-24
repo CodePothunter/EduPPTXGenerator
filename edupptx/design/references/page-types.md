@@ -511,7 +511,7 @@ LLM 生成对应类型幻灯片时，应参照此文件的坐标和结构。
 
 - Use this layout for TOC / learning navigation pages rendered as a single vertical list of horizontal cards.
 - Treat TOC cards as fixed-height navigation cards rather than flexible content blocks.
-- Card stack safe region: `x=430..1230`, `y=110..650`.
+- Card stack safe region: `x=430..1230`, `y=120..660`.
 - For 4 cards:
   - card height `>= 104`
   - vertical gap `14-16`
@@ -555,7 +555,7 @@ LLM 生成对应类型幻灯片时，应参照此文件的坐标和结构。
   - explicit connectors using `<line>` / `<path>` / arrows
 - Keep the whole relation graph inside:
   - `x=50..1230`
-  - `y=100..650`
+  - `y=110..660`
 - Recommended geometry:
   - center node: `x=450..830`, `y=250..430`, `w=220..360`, `h=90..150`
   - branch nodes: `w=140..260`, `h=64..120`

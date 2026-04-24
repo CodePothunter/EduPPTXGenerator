@@ -179,6 +179,10 @@ class VisualPlan(BaseModel):
     secondary_bg_color: str = Field(default="#F8FAFC", description="次背景色")
     text_color: str = Field(default="#1E293B", description="正文色")
     heading_color: str = Field(default="#0F172A", description="标题色")
+    background_color_bias: str = Field(
+        default="",
+        description="Optional palette-specific color-bias sentence appended after the background prompt.",
+    )
     content_density: Literal["lecture", "review"] = Field(
         default="lecture", description="内容密度模式"
     )
@@ -187,8 +191,8 @@ class VisualPlan(BaseModel):
 class StyleRouting(BaseModel):
     """Deck-level style routing resolved before SVG generation."""
 
-    style_name: str = Field(default="clean_academic", description="Resolved style manifest id")
-    template_family: str = Field(default="clean_academic", description="Resolved page template family")
+    style_name: str = Field(default="shared_reusable_core", description="Resolved style manifest id")
+    template_family: str = Field(default="复用", description="Resolved page template family")
     palette_id: str = Field(default="default", description="Resolved palette preset id")
     resolved_by: Literal["keyword", "llm", "fallback"] = Field(
         default="fallback",

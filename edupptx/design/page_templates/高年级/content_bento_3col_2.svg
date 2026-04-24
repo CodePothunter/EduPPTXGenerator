@@ -1,0 +1,44 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}" />
+
+  <g font-family="Noto Sans CJK SC, Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+
+    <!-- 标题区 -->
+    <text x="50" y="52" font-size="32" font-weight="800" fill="{heading_color}">{title}</text>
+    <text x="50" y="82" font-size="19" fill="{text_color}" fill-opacity="0.88">{subtitle}</text>
+
+    <!-- 示例列卡：改为“顶部标题 + 中部分割线 + 下方小 card 分点描述”的结构 -->
+    <rect x="50" y="130" width="350" height="520" rx="32"
+          fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2.2" />
+
+    <!-- 上部标题区 -->
+    <text x="225" y="250" text-anchor="middle" font-size="78" font-weight="800" fill="{accent_color}">{hero_value}</text>
+    <text x="225" y="306" text-anchor="middle" font-size="26" font-weight="700" fill="{heading_color}">{hero_title}</text>
+
+    <!-- 中部分割线 -->
+    <line x1="84" y1="352" x2="366" y2="352" stroke="{primary_color}" stroke-width="2.4" stroke-linecap="round"/>
+
+    <!-- 小 card 1 -->
+    <rect x="81" y="384" width="288" height="116" rx="18" fill="{secondary_bg_color}" fill-opacity="0.92"/>
+    <rect x="100" y="406" width="11" height="22" rx="2" fill="{accent_color}"/>
+    <text x="129" y="423" font-size="18" font-weight="800" fill="{accent_color}">{point1_title}</text>
+    <text x="100" y="456" font-size="16" fill="{text_color}" fill-opacity="0.96">
+      <tspan x="100" dy="0">{point1_l1}</tspan>
+      <tspan x="100" dy="28">{point1_l2}</tspan>
+    </text>
+
+    <!-- 小 card 2 -->
+    <rect x="81" y="524" width="288" height="96" rx="18" fill="{secondary_bg_color}" fill-opacity="0.92"/>
+    <rect x="100" y="545" width="11" height="22" rx="2" fill="{accent_color}"/>
+    <text x="129" y="562" font-size="18" font-weight="800" fill="{accent_color}">{point2_title}</text>
+    <text x="100" y="594" font-size="16" fill="{text_color}" fill-opacity="0.96">
+      <tspan x="100" dy="0">{point2_l1}</tspan>
+      <tspan x="100" dy="28">{point2_l2}</tspan>
+    </text>
+
+    <!-- 更多同类元素：复制 2 个相同列卡，保持等宽排列，gap=40 -->
+
+    <!-- 页码 -->
+    <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}" fill-opacity="0.8">{page_number} / {total_pages}</text>
+  </g>
+</svg>

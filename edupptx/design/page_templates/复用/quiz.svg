@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <rect width="1280" height="6" fill="{primary_color}"/>
+  <g font-family="Noto Sans SC,微软雅黑,Microsoft YaHei,Arial,Helvetica,sans-serif">
+    <circle cx="78" cy="44" r="12" fill="{accent_color}" fill-opacity=".18"/>
+    <circle cx="1188" cy="54" r="10" fill="{secondary_color}" fill-opacity=".18"/>
+
+    <text x="50" y="50" font-size="32" font-weight="800" fill="{heading_color}">{title}</text>
+    <text x="50" y="92" font-size="20" fill="{text_color}">{subtitle}</text>
+
+    <rect x="50" y="120" width="1180" height="120" rx="24" fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"/>
+    <circle cx="100" cy="180" r="18" fill="{secondary_bg_color}" stroke="{primary_color}" stroke-width="2"/>
+    <text x="100" y="187" text-anchor="middle" font-size="20" font-weight="700" fill="{primary_color}">练</text>
+    <text x="140" y="175" font-size="22" font-weight="700" fill="{heading_color}">请根据题目要求完成练习</text>
+    <text x="140" y="206" font-size="18" fill="{text_color}">可以选一选、填一填、判一判，也可以圈出或说出答案。</text>
+
+    <rect x="50" y="280" width="380" height="210" rx="26" fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
+    <circle cx="90" cy="328" r="20" fill="{primary_color}"/>
+    <text x="90" y="335" text-anchor="middle" font-size="18" font-weight="800" fill="#fff">1</text>
+    <rect x="118" y="306" width="86" height="30" rx="15" fill="{secondary_bg_color}"/>
+    <text x="161" y="326" text-anchor="middle" font-size="16" font-weight="700" fill="{primary_color}">选择题</text>
+    <text x="128" y="366" font-size="22" font-weight="700" fill="{heading_color}">题目一（读音1 / 读音2）</text>
+    <circle cx="126" cy="424" r="16" fill="{secondary_color}"/>
+    <text x="126" y="430" text-anchor="middle" font-size="16" font-weight="700" fill="#fff">A</text>
+    <text x="156" y="430" font-size="18" fill="{text_color}">选项一</text>
+    <circle cx="256" cy="424" r="16" fill="{accent_color}"/>
+    <text x="256" y="430" text-anchor="middle" font-size="16" font-weight="700" fill="#fff">B</text>
+    <text x="286" y="430" font-size="18" fill="{text_color}">选项二</text>
+
+    <rect x="450" y="280" width="380" height="210" rx="26" fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
+    <circle cx="490" cy="328" r="20" fill="{primary_color}"/>
+    <text x="490" y="335" text-anchor="middle" font-size="18" font-weight="800" fill="#fff">2</text>
+    <rect x="518" y="306" width="86" height="30" rx="15" fill="{secondary_bg_color}"/>
+    <text x="561" y="326" text-anchor="middle" font-size="16" font-weight="700" fill="{primary_color}">填空题</text>
+    <text x="528" y="366" font-size="22" font-weight="700" fill="{heading_color}">请把正确答案填在横线上</text>
+    <text x="528" y="415" font-size="20" fill="{text_color}">这个字读作：</text>
+    <line x1="650" y1="408" x2="770" y2="408" stroke="{accent_color}" stroke-width="4" stroke-linecap="round"/>
+    <circle cx="776" cy="408" r="4" fill="{accent_color}"/>
+    <text x="528" y="450" font-size="16" fill="{text_color}" fill-opacity=".75">可填写拼音、词语或答案</text>
+
+    <rect x="850" y="280" width="380" height="210" rx="26" fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
+    <circle cx="890" cy="328" r="20" fill="{primary_color}"/>
+    <text x="890" y="335" text-anchor="middle" font-size="18" font-weight="800" fill="#fff">3</text>
+    <rect x="918" y="306" width="86" height="30" rx="15" fill="{secondary_bg_color}"/>
+    <text x="961" y="326" text-anchor="middle" font-size="16" font-weight="700" fill="{primary_color}">判断题</text>
+    <text x="928" y="366" font-size="22" font-weight="700" fill="{heading_color}">下面的说法对吗？</text>
+    <rect x="928" y="396" width="112" height="42" rx="21" fill="{secondary_color}"/>
+    <text x="984" y="423" text-anchor="middle" font-size="20" font-weight="700" fill="#fff">√ 正确</text>
+    <rect x="1056" y="396" width="112" height="42" rx="21" fill="{accent_color}"/>
+    <text x="1112" y="423" text-anchor="middle" font-size="20" font-weight="700" fill="#fff">× 错误</text>
+    <text x="928" y="458" font-size="16" fill="{text_color}" fill-opacity=".75">也可替换成“对/不对”“是/不是”</text>
+
+    <rect x="50" y="520" width="1180" height="120" rx="24" fill="{secondary_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
+    <text x="84" y="565" font-size="24" font-weight="700" fill="{primary_color}">答题小提示</text>
+    <text x="84" y="602" font-size="19" fill="{text_color}">先认真读题，再根据题型完成练习。</text>
+
+    <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}">{page_number} / {total_pages}</text>
+  </g>
+</svg>

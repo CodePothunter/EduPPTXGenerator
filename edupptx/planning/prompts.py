@@ -48,12 +48,15 @@ def build_refinement_planning_system_prompt() -> str:
     template = _REFINEMENT_SYSTEM_PROMPT.replace("{icon_list}", icon_list)
     notes_requirements = _load_ref("notes-guidelines.md")
     image_rules = _load_ref("planning-image-rules.md")
+    image_prompt_routing = _load_ref("image-prompt-routing.md")
 
     parts = [template]
     if notes_requirements:
         parts.append(notes_requirements)
     if image_rules:
         parts.append(image_rules)
+    if image_prompt_routing:
+        parts.append(image_prompt_routing)
     return "\n\n".join(parts)
 
 

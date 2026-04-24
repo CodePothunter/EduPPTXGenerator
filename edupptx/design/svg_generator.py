@@ -67,7 +67,7 @@ def _generate_one(
     assets: SlideAssets,
     total_pages: int,
     reference_svg: str | None = None,
-    template_family: str = "clean_academic",
+    template_family: str = "复用",
     debug: bool = False,
 ) -> GeneratedSlide:
     """Generate one SVG slide synchronously for thread-pool execution."""

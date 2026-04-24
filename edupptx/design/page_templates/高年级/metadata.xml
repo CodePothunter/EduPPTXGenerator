@@ -1,0 +1,124 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+  <identity>
+    <name>upper_grade_structured_core</name>
+    <label>高年级 · 分析与结构化内容页</label>
+    <category>primary_upper_grade</category>
+    <tags>
+      高年级, 四年级, 五年级, 六年级, 结构化, 比较, 对照, 分析, 归纳, 总结强化, 长文本
+    </tags>
+    <intro>
+      适用于四年级及以上的分析型页面家族。当前目录提供高年级专属封面页，以及三栏归纳、
+      对照比较、总结强化等内容变体；其余目录页、章节页、练习页、总结页和收尾页由“复用”目录补齐。
+    </intro>
+  </identity>
+
+  <routing>
+    <subjects>
+      高年级, 四年级, 五年级, 六年级, 进阶
+    </subjects>
+    <scenes>
+      比较阅读, 对照分析, 结构化讲解, 三点归纳, 长文本说明, 结论强化
+    </scenes>
+    <priority_keywords>
+      四年级, 五年级, 六年级, 高年级, 分析, 比较, 对照, 结构化, 归纳, 总结, 长文本, 多维
+    </priority_keywords>
+    <negative_keywords>
+      启蒙, 识字, 拼音, 强童趣, 低龄微卡
+    </negative_keywords>
+  </routing>
+
+  <planner>
+    <summary>
+      本目录只提供高年级专属模板，不承载本地配色与背景提示。运行时会先匹配高年级主家族，
+      再自动合并“复用”目录中的通用页型和通用内容版式。规划时优先强调结构清晰、比较维度明确、
+      归纳结论稳定，不使用低龄化表达。
+    </summary>
+
+    <page type="cover" variant="cover">
+      <title_max_chars>24</title_max_chars>
+      <subtitle_max_chars>32</subtitle_max_chars>
+      <preferred_layout_hints>center_hero</preferred_layout_hints>
+      <design_notes_hint>
+        高年级封面页宜克制、清晰、留白稳定，避免低龄化装饰堆叠。
+      </design_notes_hint>
+    </page>
+
+    <page type="content" variant="content_hero_with_microcards_3">
+      <title_max_chars>24</title_max_chars>
+      <subtitle_max_chars>32</subtitle_max_chars>
+      <preferred_layout_hints>comparison, bento_3col, hero_with_microcards</preferred_layout_hints>
+      <design_notes_hint>
+        高年级内容页允许更完整的句子、结论和比较维度；优先使用对照、三点归纳、总结强化等结构，
+        保持分析感和层次清晰。
+      </design_notes_hint>
+    </page>
+
+    <variant_catalog>
+      <variant stem="cover" page_type="cover">
+        <layout_hint>center_hero</layout_hint>
+        <hit_keywords>封面, 单元导入, 阅读专题, 课程标题, 课题</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="1" max="1"/>
+        <page_features>
+          居中标题卡和克制装饰构成高年级封面结构。
+        </page_features>
+        <reference_rule>
+          保持整洁与稳定，不额外堆叠低龄化元素。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_bento_3col_2" page_type="content">
+        <layout_hint>bento_3col</layout_hint>
+        <hit_keywords>三栏归纳, 三点总结, 三个角度, 三个维度, 三组要点, 三项指标, 三级分析, 三方面概括</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="3" max="3"/>
+        <page_features>
+          三列等宽结构，每列以大标题或大数值开头，下接两条短说明，适合高年级三点归纳和并列分析。
+        </page_features>
+        <reference_rule>
+          优先用于无图片、强结构、三栏并列的高年级内容；保持列间节奏一致，不退回图文混排模板。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_comparison" page_type="content">
+        <layout_hint>comparison</layout_hint>
+        <hit_keywords>对照, 比较, 表格, 多维比较, 比较阅读, 对照分析</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="3" max="4"/>
+        <page_features>
+          多维度表格化对照，适合纯对照分析。
+        </page_features>
+        <reference_rule>
+          优先保持维度对齐，不补无关图片。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_comparison_2" page_type="content">
+        <layout_hint>comparison</layout_hint>
+        <hit_keywords>先总后分, 总述加对照, 概述后比较, 先结论后分析</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="3" max="4"/>
+        <page_features>
+          上方先给总结或概述，下方再做维度对照。
+        </page_features>
+        <reference_rule>
+          保持总述区与对照区的层级分明。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_hero_with_microcards_3" page_type="content">
+        <layout_hint>hero_with_microcards</layout_hint>
+        <hit_keywords>讲解总结结构, 长段讲解, 结论强调, 底部提示条, 重点提醒, 解释说明</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="1" max="5"/>
+        <page_features>
+          单一大卡承载长段讲解、结论强调和底部提示。
+        </page_features>
+        <reference_rule>
+          适合总结强化型讲解，不再拆成外层零散小卡。
+        </reference_rule>
+      </variant>
+    </variant_catalog>
+  </planner>
+</template>

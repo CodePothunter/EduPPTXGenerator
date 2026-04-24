@@ -5,7 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
-
+python-version
 # Virtual environments
 .venv
 
@@ -16,19 +16,7 @@ wheels/
 backgrounds_cache/
 materials_library/
 output/
-edupptx/design/page_templates/*
-!edupptx/design/page_templates/clean_academic/
-!edupptx/design/page_templates/clean_academic/**
-!edupptx/design/page_templates/poster_bold/
-!edupptx/design/page_templates/poster_bold/**
-!edupptx/design/page_templates/editorial_grid/
-!edupptx/design/page_templates/editorial_grid/**
-!edupptx/design/page_templates/science_lab/
-!edupptx/design/page_templates/science_lab/**
-!edupptx/design/page_templates/语文/
-!edupptx/design/page_templates/语文/低年级/
-!edupptx/design/page_templates/语文/低年级/**
-*.pptx
+
 assets/fonts/
 *_resource.md
 2026年美伊战争深度分析报告_slide_01.svg
@@ -37,3 +25,9 @@ assets/fonts/
 乘法的初步认识.md
 # step test
 tools/
+
+test_1.log
+test_2.log
+test_3.log
+test_new.log
+test.log
