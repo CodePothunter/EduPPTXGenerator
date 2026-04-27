@@ -55,12 +55,14 @@ output/session_xxx/
 
 ```
 edupptx/
-  agent.py                    # 7 阶段管线编排器
+  agent.py                    # 5 阶段管线编排器
   models.py                   # 数据模型 (InputContext, PlanningDraft, VisualPlan, ...)
   llm_client.py               # OpenAI 兼容 LLM 客户端
   config.py                   # 环境变量配置
   session.py                  # 会话目录管理
   cli.py                      # CLI 入口 (gen/render/plan/styles)
+  style_schema.py             # 风格 JSON schema + ResolvedStyle 数据类
+  style_resolver.py           # palette ref 解析 + 命名 intent 映射
   planning/
     content_planner.py        # Phase 1a: 内容规划 LLM
     visual_planner.py         # Phase 1b: 视觉规划 LLM
@@ -69,21 +71,29 @@ edupptx/
     prompts.py                # SVG 生成 prompt (Bento Grid + 约束)
     svg_generator.py          # Phase 3: 并行 SVG 生成
     style_templates/          # SVG 风格模板 (5 套教育主题)
+    references/               # V3 设计参考文档 (design-base, shared-standards, executor-*, page-types)
+    chart_templates/          # 图表 SVG 参考模板 (bar/line/pie/kpi/timeline)
   materials/
     image_provider.py         # 多源图片获取 (Pixabay/Unsplash/Seedream)
     background_generator.py   # Phase 2: Seedream 统一背景生成
+    backgrounds.py            # Pillow 程序化背景生成 (渐变/几何)
     seedream.py               # Seedream AI 文生图 provider
-    icons.py                  # 109 个 Lucide SVG 图标
+    pixabay.py                # Pixabay 图片搜索
+    unsplash.py               # Unsplash 图片搜索
+    icons.py                  # 255 个 Lucide SVG 图标
   postprocess/
     svg_validator.py          # SVG 自动修复 (viewBox/字体/边界/重叠)
     svg_sanitizer.py          # PPT 兼容清理 (去 script/事件)
     svg_reviewer.py           # Phase 4: LLM 审阅修正 SVG
   output/
     svg_to_shapes.py          # SVG→DrawingML 原生形状转换器
-    pptx_assembler.py         # PPTX ZIP 打包 (3 种模式)
+    pptx_assembler.py         # PPTX 打包 (native shapes / embed 两种模式)
   input/
     document_parser.py        # PDF/Word/MD 文档解析
     web_researcher.py         # Tavily 联网搜索
+styles/                       # 风格主题 JSON (emerald, blue, ...)
+assets/
+  icons/                      # 255 个 Lucide SVG 图标 (MIT)
 output/                       # 会话输出目录 (gitignored)
 docs/
 tests/
@@ -146,13 +156,13 @@ VISION_GEN_APIKEY=image-api-key
 
 - **框架**: pytest
 - **运行**: `uv run pytest tests/ -v`
-- **注意**: V1 测试待迁移，部分 import 已失效
 
 ## 设计文档
 
 - 设计理念: `docs/design-philosophy.md`
 - 布局系统: `docs/layout-system.md`
-- SVG 管线: `docs/svg-pipeline.md` (V2)
+- SVG 管线: `docs/svg-pipeline.md`
+- V2 设计规格: `docs/superpowers/specs/2026-04-13-v2-svg-pipeline-design.md`
 
 ## Git 约定
 
@@ -179,3 +189,12 @@ Key routing rules:
 - Architecture review → invoke plan-eng-review
 - Save progress, checkpoint, resume → invoke checkpoint
 - Code quality, health check → invoke health
+
+## Self-Validation
+Create a visual QA validation pipeline for our PPTX generator at `tests/visual_qa.py`. It should:
+1. Take a generated .pptx file path as input
+2. Convert each slide to PNG using `libreoffice --headless --convert-to png` (or python-pptx shape bounds if LibreOffice unavailable)
+3. For each slide, extract all shape bounding boxes from python-pptx and check: (a) no two non-background shapes overlap by more than 10%, (b) no text frame content overflows its container height (compare actual text lines × font size vs shape height), (c) no shape extends beyond slide dimensions, (d) no slide is more than 70% empty space
+4. Output a JSON report: `{slide_number, issues: [{type, severity, description, shapes_involved}]}`
+5. Add a pytest wrapper `test_visual_qa.py` that generates a sample PPTX with our pipeline and asserts zero critical issues
+6. Run the tests and iterate until they pass. Then integrate this as a post-generation validation step in the main generator pipeline so it runs automatically after every generation.

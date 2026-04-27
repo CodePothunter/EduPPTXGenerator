@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <defs>
+    <clipPath id="i1">
+      <rect x="81" y="160" width="288" height="216" rx="26" />
+    </clipPath>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}" />
+
+  <g font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    <path d="M 50 104 Q 60 98 70 104 T 90 104 T 110 104 T 130 104 T 150 104 T 170 104 T 190 104 T 210 104"
+          fill="none" stroke="{accent_color}" stroke-width="3" stroke-linecap="round"/>
+
+    <!-- 标题区 -->
+    <text x="50" y="50" font-size="32" font-weight="800" fill="{heading_color}">
+      {title}
+    </text>
+    <text x="50" y="92" font-size="19" fill="{text_color}">
+      {subtitle}
+    </text>
+
+    <!-- 示例列卡 -->
+    <rect
+      x="50"
+      y="130"
+      width="350"
+      height="520"
+      rx="32"
+      fill="{card_bg_color}"
+      stroke="{primary_color}"
+      stroke-width="2.2"
+    />
+
+
+    <!-- 图片区 -->
+    <rect
+      x="81"
+      y="160"
+      width="288"
+      height="216"
+      rx="26"
+      fill="{secondary_bg_color}"
+      stroke="{primary_color}"
+      stroke-width="2"
+    />
+    <image
+      x="81"
+      y="160"
+      width="288"
+      height="216"
+      href="{image_href_1}"
+      preserveAspectRatio="xMidYMid slice"
+      clip-path="url(#i1)"
+    />
+
+    <!-- 图片区贴纸 -->
+    <rect x="98" y="142" width="88" height="28" rx="14" fill="{accent_color}"/>
+    <circle cx="114" cy="156" r="5" fill="{card_bg_color}"/>
+    <text x="130" y="161" font-size="14" font-weight="700" fill="{heading_color}">
+      {badge_text}
+    </text>
+
+        <text
+      x="84"
+      y="422"
+      font-size="28"
+      font-weight="800"
+      fill="{heading_color}"
+    >
+      {card1_title}
+    </text>
+    <text
+      x="84"
+      y="460"
+      font-size="24"
+      fill="{text_color}"
+    >
+      <tspan x="84" dy="0">{card1_l1}</tspan>
+      <tspan x="84" dy="46">{card1_l2}</tspan>
+      <tspan x="84" dy="46">{card1_l3}</tspan>
+    </text>
+
+    <!-- 更多同类元素：复制 2 个相同列卡，保持等宽排列，gap=40 -->
+
+    <!-- 页码 -->
+    <text
+      x="1220"
+      y="700"
+      text-anchor="end"
+      font-size="13"
+      fill="{text_color}"
+    >
+      {page_number} / {total_pages}
+    </text>
+  </g>
+</svg>

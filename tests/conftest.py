@@ -4,7 +4,6 @@ import pytest
 from pathlib import Path
 
 from edupptx.config import Config
-from edupptx.material_library import MaterialLibrary
 from edupptx.session import Session
 from edupptx.style_resolver import resolve_style
 from edupptx.style_schema import load_style
@@ -24,11 +23,6 @@ def config():
         llm_model="test-model",
         llm_base_url="http://localhost:8080/v1",
     )
-
-
-@pytest.fixture
-def library(tmp_path):
-    return MaterialLibrary(tmp_path / "test_library")
 
 
 @pytest.fixture

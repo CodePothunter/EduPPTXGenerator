@@ -1,0 +1,405 @@
+<visual>
+
+  <palette_library>
+
+    <palette id="lower_grade_core">
+      <primary>#9FD8F2</primary>
+      <secondary>#FFD34E</secondary>
+      <accent>#6ad6cb</accent>
+      <card_bg>#FFFCF7</card_bg>
+      <secondary_bg>#EAF7FC</secondary_bg>
+      <text>#2F2A28</text>
+      <heading>#497A97</heading>
+    </palette>
+
+    <palette id="writing_warm_brown">
+      <primary>#C98952</primary>
+      <secondary>#EAD7B8</secondary>
+      <accent>#75cbef</accent>
+      <card_bg>#FFFDF9</card_bg>
+      <secondary_bg>#F8F0E2</secondary_bg>
+      <text>#3A2F28</text>
+      <heading>#9B6234</heading>
+    </palette>
+
+    <palette id="playful_coral">
+      <primary>#FF7F8E</primary>
+      <secondary>#7ED3FF</secondary>
+      <accent>#FFD166</accent>
+      <card_bg>#FFFFFF</card_bg>
+      <secondary_bg>#FFF1F4</secondary_bg>
+      <text>#4A4A4A</text>
+      <heading>#D95C71</heading>
+    </palette>
+
+    <palette id="forest_green">
+      <primary>#69B578</primary>
+      <secondary>#CBEFBD</secondary>
+      <accent>#F6C85F</accent>
+      <card_bg>#FEFFF9</card_bg>
+      <secondary_bg>#EEF9EA</secondary_bg>
+      <text>#33413A</text>
+      <heading>#3E7A4E</heading>
+    </palette>
+
+    <palette id="pond_blue">
+      <primary>#5DADE2</primary>
+      <secondary>#A9DFBF</secondary>
+      <accent>#F5B041</accent>
+      <card_bg>#FDFEFF</card_bg>
+      <secondary_bg>#EAF6FF</secondary_bg>
+      <text>#35536B</text>
+      <heading>#2E86C1</heading>
+    </palette>
+
+    <palette id="autumn_ochre">
+      <primary>#C97B45</primary>
+      <secondary>#E8B86D</secondary>
+      <accent>#8BB174</accent>
+      <card_bg>#FFFDF8</card_bg>
+      <secondary_bg>#FAF1E3</secondary_bg>
+      <text>#4A372C</text>
+      <heading>#9B5A2E</heading>
+    </palette>
+
+    <palette id="winter_cool_blue">
+      <primary>#8FB6D8</primary>
+      <secondary>#DCEAF5</secondary>
+      <accent>#E78A8A</accent>
+      <card_bg>#FFFFFF</card_bg>
+      <secondary_bg>#F4F9FD</secondary_bg>
+      <text>#3C4956</text>
+      <heading>#5C7D99</heading>
+    </palette>
+
+    <palette id="dreamy_purple_blue">
+      <primary>#8C7AE6</primary>
+      <secondary>#A29BFE</secondary>
+      <accent>#FFD166</accent>
+      <card_bg>#FEFDFF</card_bg>
+      <secondary_bg>#F3F0FF</secondary_bg>
+      <text>#433C5C</text>
+      <heading>#6C5BC7</heading>
+    </palette>
+
+    <palette id="fable_red_brown">
+      <primary>#C65D4A</primary>
+      <secondary>#E9C7A7</secondary>
+      <accent>#5C8D89</accent>
+      <card_bg>#FFFDFB</card_bg>
+      <secondary_bg>#FAEFE7</secondary_bg>
+      <text>#43342E</text>
+      <heading>#9B4637</heading>
+    </palette>
+
+    <palette id="classical_qingdai">
+      <primary>#5C7A7A</primary>
+      <secondary>#C9D7D0</secondary>
+      <accent>#C08A5B</accent>
+      <card_bg>#FCFBF7</card_bg>
+      <secondary_bg>#EEF2EC</secondary_bg>
+      <text>#2F3437</text>
+      <heading>#425B5B</heading>
+    </palette>
+
+    <palette id="bamboo_ink_green">
+      <primary>#4F6F52</primary>
+      <secondary>#DDE6D5</secondary>
+      <accent>#B08968</accent>
+      <card_bg>#FBFAF6</card_bg>
+      <secondary_bg>#F0F4EA</secondary_bg>
+      <text>#2F322E</text>
+      <heading>#39513A</heading>
+    </palette>
+
+    <palette id="vermilion_gold">
+      <primary>#B33A3A</primary>
+      <secondary>#E7D3A7</secondary>
+      <accent>#D97C2B</accent>
+      <card_bg>#FFFDF9</card_bg>
+      <secondary_bg>#F8F0E0</secondary_bg>
+      <text>#3B2E2A</text>
+      <heading>#8F2A2A</heading>
+    </palette>
+
+    <palette id="literary_blue_gray">
+      <primary>#6C8AA6</primary>
+      <secondary>#D8E2EC</secondary>
+      <accent>#D9A66B</accent>
+      <card_bg>#FDFDFB</card_bg>
+      <secondary_bg>#F2F6F9</secondary_bg>
+      <text>#2F3842</text>
+      <heading>#51697F</heading>
+    </palette>
+
+    <palette id="homeland_red_blue">
+      <primary>#B14A4A</primary>
+      <secondary>#6F8FAF</secondary>
+      <accent>#E5C07B</accent>
+      <card_bg>#FFFDFC</card_bg>
+      <secondary_bg>#F6F7FA</secondary_bg>
+      <text>#2E3440</text>
+      <heading>#8D3838</heading>
+    </palette>
+
+    <palette id="knowledge_blue_green">
+      <primary>#4C8DAE</primary>
+      <secondary>#7EC8A5</secondary>
+      <accent>#F2C14E</accent>
+      <card_bg>#FFFFFF</card_bg>
+      <secondary_bg>#EEF8F6</secondary_bg>
+      <text>#33424C</text>
+      <heading>#356B87</heading>
+    </palette>
+
+    <palette id="math_blue_orange">
+      <primary>#4A90E2</primary>
+      <secondary>#D6E9FF</secondary>
+      <accent>#F5A623</accent>
+      <card_bg>#FFFFFF</card_bg>
+      <secondary_bg>#EEF5FF</secondary_bg>
+      <text>#2C3E50</text>
+      <heading>#2F6FA5</heading>
+    </palette>
+
+    <palette id="math_deep_blue">
+      <primary>#2C3E50</primary>
+      <secondary>#D5DBDB</secondary>
+      <accent>#E67E22</accent>
+      <card_bg>#FFFFFF</card_bg>
+      <secondary_bg>#F4F6F6</secondary_bg>
+      <text>#1B2631</text>
+      <heading>#1F3A4D</heading>
+    </palette>
+
+    <palette id="physics_dark_teal">
+      <primary>#2E6F95</primary>
+      <secondary>#A9D6E5</secondary>
+      <accent>#FFB703</accent>
+      <card_bg>#FFFFFF</card_bg>
+      <secondary_bg>#EAF6FB</secondary_bg>
+      <text>#1B3A4B</text>
+      <heading>#1F5F7A</heading>
+    </palette>
+
+    <palette id="default_yuwen_balanced">
+      <primary>#6FA8DC</primary>
+      <secondary>#D9EAD3</secondary>
+      <accent>#F6B26B</accent>
+      <card_bg>#FFFDFB</card_bg>
+      <secondary_bg>#F4F8FB</secondary_bg>
+      <text>#333333</text>
+      <heading>#4C6A86</heading>
+    </palette>
+
+  </palette_library>
+
+  <palette_routing>
+
+    <rule priority="110">
+      <match_terms>池塘,荷塘,荷花,莲叶,湖水,水面,小蝌蚪,青蛙,倒影,河边,水边</match_terms>
+      <apply_palette>pond_blue</apply_palette>
+    </rule>
+
+    <rule priority="108">
+      <match_terms>冰雪,雪景,雪花,下雪,冬天,寒冬,梅花,冰面,冰晶</match_terms>
+      <apply_palette>winter_cool_blue</apply_palette>
+    </rule>
+
+    <rule priority="106">
+      <match_terms>秋天,秋景,落叶,枫叶,丰收,稻谷,果实,金秋</match_terms>
+      <apply_palette>autumn_ochre</apply_palette>
+    </rule>
+
+    <rule priority="104">
+      <match_terms>春节,中秋,端午,元宵,节日,传统节日,民俗,年俗,灯笼,团圆,传统文化,中国传统文化,二十四节气,节气</match_terms>
+      <apply_palette>vermilion_gold</apply_palette>
+    </rule>
+
+    <rule priority="103">
+      <match_terms>爱国,英雄,祖国,国旗,家国,民族,革命,红色故事,红色主题,少先队</match_terms>
+      <apply_palette>homeland_red_blue</apply_palette>
+    </rule>
+
+    <rule priority="102">
+      <match_terms>童话,神话,想象,奇幻,梦境,梦想,星空,月亮,童话故事,神话故事</match_terms>
+      <apply_palette>dreamy_purple_blue</apply_palette>
+    </rule>
+
+    <rule priority="101">
+      <match_terms>寓言,寓意,启示,道理,品格,诚信,友善,勇敢,古代寓言,文言寓言</match_terms>
+      <apply_palette>fable_red_brown</apply_palette>
+    </rule>
+
+    <rule priority="100">
+      <match_terms>古诗,诗词,诗歌,诗句,诵读,诗意,意象,山水诗,边塞诗,田园诗</match_terms>
+      <apply_palette>classical_qingdai</apply_palette>
+    </rule>
+
+    <rule priority="99">
+      <match_terms>文言文,古文,文言词,古代散文,古人,竹石,山水,君子,雅致</match_terms>
+      <apply_palette>bamboo_ink_green</apply_palette>
+    </rule>
+
+    <rule priority="97">
+      <match_terms>动物,植物,森林,树木,花草,春天,春景,自然观察,自然保护,环保,生态,绿色生活,生命科学,生物,食物链</match_terms>
+      <apply_palette>forest_green</apply_palette>
+    </rule>
+
+    <rule priority="96">
+      <match_terms>说明文,科普,科学,科学现象,自然科学,科学原理,百科知识,探索发现,校园,规则,安全教育,校园安全,交通安全,学习习惯,合作学习,劳动教育,心理健康,健康教育,文明礼仪</match_terms>
+      <apply_palette>knowledge_blue_green</apply_palette>
+    </rule>
+
+    <rule priority="95">
+      <match_terms>物理,力学,受力,重力,摩擦力,运动规律,电路,电流,电压,光学,光线,能量,声学,机械,科技,工程,实验</match_terms>
+      <apply_palette>physics_dark_teal</apply_palette>
+    </rule>
+
+    <rule priority="94">
+      <match_terms>化学,物质,反应,溶液,酸碱,燃烧,实验现象,实验步骤,实验记录</match_terms>
+      <apply_palette>physics_dark_teal</apply_palette>
+    </rule>
+
+    <rule priority="93">
+      <match_terms>地理,地图,地形,气候,河流,山脉,海洋,城市,乡村,位置,方向,路线</match_terms>
+      <apply_palette>knowledge_blue_green</apply_palette>
+    </rule>
+
+    <rule priority="93">
+      <match_terms>英语,单词,字母,句型,对话,语法,阅读短文,phonics,word,sentence,dialogue</match_terms>
+      <apply_palette>knowledge_blue_green</apply_palette>
+    </rule>
+
+    <rule priority="92">
+      <match_terms>历史,朝代,历史人物,历史故事,文化遗产,博物馆,时间线,发展历程</match_terms>
+      <apply_palette>literary_blue_gray</apply_palette>
+    </rule>
+
+    <rule priority="91">
+      <match_terms>写人,记事,散文,阅读理解,阅读分析,文章结构,中心思想,段落,赏析,表达方法,比较阅读,写作方法,作文,日记,记叙文,成长,学习目标,目标管理,学习计划,时间管理,学习方法</match_terms>
+      <apply_palette>literary_blue_gray</apply_palette>
+    </rule>
+
+    <rule priority="90">
+      <match_terms>方程,函数,几何证明,平面几何,立体几何,坐标,一次函数,二次函数,比例,统计,概率,面积,周长,体积,推导,数据分析,统计图,折线图,柱状图,图表</match_terms>
+      <apply_palette>math_deep_blue</apply_palette>
+    </rule>
+
+    <rule priority="89">
+      <match_terms>数学,口算,计算,加法,减法,乘法,除法,加减乘除,加减,乘除,算式,估算,倍数,小数,百分数,分数,应用题,数一数,比多少,认识图形</match_terms>
+      <apply_palette>math_blue_orange</apply_palette>
+    </rule>
+
+    <rule priority="82">
+      <match_terms>拼音,识字,生字,字词,词语,组词,偏旁,部首,反义词,近义词,拼读,朗读训练,拼音朗读,低年级课文,一年级课文,二年级课文,三年级课文</match_terms>
+      <apply_palette>lower_grade_core</apply_palette>
+    </rule>
+
+    <rule priority="81">
+      <match_terms>写字,笔顺,笔画,书写,田字格,硬笔,书法,规范字</match_terms>
+      <apply_palette>writing_warm_brown</apply_palette>
+    </rule>
+
+    <rule priority="80">
+      <match_terms>儿歌,童谣,游戏,游戏活动,课堂活动,童趣,绘本,看图说话,看图写话,观察说话</match_terms>
+      <apply_palette>playful_coral</apply_palette>
+    </rule>
+
+    <rule priority="70">
+      <match_terms>一年级,二年级,三年级,低年级,启蒙,入门,小学低段</match_terms>
+      <apply_palette>lower_grade_core</apply_palette>
+    </rule>
+
+    <rule priority="69">
+      <match_terms>四年级,五年级,六年级,高年级,进阶,阅读分析,小学高段,综合学习</match_terms>
+      <apply_palette>literary_blue_gray</apply_palette>
+    </rule>
+
+    <rule priority="1">
+      <apply_palette>default_yuwen_balanced</apply_palette>
+    </rule>
+
+  </palette_routing>
+
+  <palette_color_bias>
+
+    <palette id="lower_grade_core">
+      <color_bias>整体色调可轻微偏向明亮天空蓝与柔和暖黄，保持高明度与轻快感</color_bias>
+    </palette>
+
+    <palette id="writing_warm_brown">
+      <color_bias>整体色调可轻微偏向米色与温暖棕色，降低饱和度，呈现纸张质感</color_bias>
+    </palette>
+
+    <palette id="playful_coral">
+      <color_bias>整体色调可轻微偏向珊瑚粉与浅蓝，对比柔和但保持活泼感</color_bias>
+    </palette>
+
+    <palette id="forest_green">
+      <color_bias>整体色调可轻微偏向清新绿色，明度适中，避免过深或过暗</color_bias>
+    </palette>
+
+    <palette id="pond_blue">
+      <color_bias>整体色调可轻微偏向清透蓝色与浅青绿，增加通透感与轻盈感</color_bias>
+    </palette>
+
+    <palette id="autumn_ochre">
+      <color_bias>整体色调可轻微偏向暖赭色与柔和金色，营造温暖但不过重的色彩氛围</color_bias>
+    </palette>
+
+    <palette id="winter_cool_blue">
+      <color_bias>整体色调可轻微偏向低饱和冷蓝与浅灰蓝，保持清淡与安静</color_bias>
+    </palette>
+
+    <palette id="dreamy_purple_blue">
+      <color_bias>整体色调可轻微偏向紫蓝色与淡紫光感，饱和度适中偏柔和</color_bias>
+    </palette>
+
+    <palette id="fable_red_brown">
+      <color_bias>整体色调可轻微偏向红棕与米色，色彩温和不过分鲜艳</color_bias>
+    </palette>
+
+    <palette id="classical_qingdai">
+      <color_bias>整体色调可轻微偏向青黛灰绿，降低对比度，保持克制与留白感</color_bias>
+    </palette>
+
+    <palette id="bamboo_ink_green">
+      <color_bias>整体色调可轻微偏向墨绿与灰绿，饱和度偏低，呈现沉静气质</color_bias>
+    </palette>
+
+    <palette id="vermilion_gold">
+      <color_bias>整体色调可轻微偏向朱红与米金，红色控制在点缀级别不过度铺满</color_bias>
+    </palette>
+
+    <palette id="literary_blue_gray">
+      <color_bias>整体色调可轻微偏向蓝灰与中性色，降低饱和度以提升阅读舒适度</color_bias>
+    </palette>
+
+    <palette id="homeland_red_blue">
+      <color_bias>整体色调可轻微偏向深红与沉稳蓝，控制对比，保持庄重感</color_bias>
+    </palette>
+
+    <palette id="knowledge_blue_green">
+      <color_bias>整体色调可轻微偏向蓝绿与白色，保持清晰、干净与结构感</color_bias>
+    </palette>
+
+    <palette id="math_blue_orange">
+      <color_bias>整体色调可轻微偏向清爽蓝色，辅以少量橙色强调重点</color_bias>
+    </palette>
+
+    <palette id="math_deep_blue">
+      <color_bias>整体色调可轻微偏向深蓝与灰色，增强理性与结构感，避免高饱和</color_bias>
+    </palette>
+
+    <palette id="physics_dark_teal">
+      <color_bias>整体色调可轻微偏向冷青色与深蓝，辅以少量亮色点缀增强科技感</color_bias>
+    </palette>
+
+    <palette id="default_yuwen_balanced">
+      <color_bias>整体色调保持中性平衡，可略微偏向浅蓝与柔和暖色，避免明显色彩倾向</color_bias>
+    </palette>
+
+  </palette_color_bias>
+
+</visual>

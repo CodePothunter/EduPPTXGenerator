@@ -16,8 +16,18 @@ class Session:
         self.dir.mkdir(parents=True, exist_ok=True)
         (self.dir / "materials").mkdir(exist_ok=True)
         (self.dir / "slides").mkdir(exist_ok=True)
+        (self.dir / "slides_raw").mkdir(exist_ok=True)
         self.thinking_file = self.dir / "thinking.jsonl"
         self.output_path = self.dir / "output.pptx"
+
+    @classmethod
+    def from_existing(cls, session_dir: Path) -> "Session":
+        """Bind to an existing session directory (for resume / render workflows)."""
+        obj = cls.__new__(cls)
+        obj.dir = Path(session_dir)
+        obj.thinking_file = obj.dir / "thinking.jsonl"
+        obj.output_path = obj.dir / "output.pptx"
+        return obj
 
     def log_step(self, step_type: str, content: str) -> None:
         """Append a thinking step to thinking.jsonl."""

@@ -1,0 +1,72 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400" font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+
+  <!-- Background -->
+  <rect width="600" height="400" fill="#FFFFFF"/>
+
+  <!-- Title -->
+  <text x="300" y="30" text-anchor="middle" font-size="16" font-weight="bold" fill="#333333">季度销售业绩对比</text>
+
+  <!-- Chart area: x=60..560, y=50..320 -->
+
+  <!-- Grid lines (horizontal) -->
+  <line x1="60" y1="320" x2="560" y2="320" stroke="#E0E0E0" stroke-width="1"/>
+  <line x1="60" y1="253" x2="560" y2="253" stroke="#E0E0E0" stroke-width="1" stroke-dasharray="4,3"/>
+  <line x1="60" y1="186" x2="560" y2="186" stroke="#E0E0E0" stroke-width="1" stroke-dasharray="4,3"/>
+  <line x1="60" y1="119" x2="560" y2="119" stroke="#E0E0E0" stroke-width="1" stroke-dasharray="4,3"/>
+  <line x1="60" y1="52"  x2="560" y2="52"  stroke="#E0E0E0" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <!-- Y-axis -->
+  <line x1="60" y1="50" x2="60" y2="320" stroke="#BBBBBB" stroke-width="1.5"/>
+
+  <!-- Y-axis tick values -->
+  <text x="50" y="324" text-anchor="end" font-size="11" fill="#666666">0</text>
+  <text x="50" y="257" text-anchor="end" font-size="11" fill="#666666">25</text>
+  <text x="50" y="190" text-anchor="end" font-size="11" fill="#666666">50</text>
+  <text x="50" y="123" text-anchor="end" font-size="11" fill="#666666">75</text>
+  <text x="50" y="56"  text-anchor="end" font-size="11" fill="#666666">100</text>
+
+  <!-- Y-axis label -->
+  <text x="15" y="185" text-anchor="middle" font-size="12" fill="#555555" transform="rotate(-90,15,185)">数值（万元）</text>
+
+  <!-- Bars: width=60, gap=40, start x=100 -->
+  <!-- Bar 1: Q1, value=62 → height = 62/100 * 270 = 167.4 -->
+  <rect x="100" y="152.6" width="60" height="167.4" fill="#4A90D9" rx="3"/>
+  <text x="130" y="145" text-anchor="middle" font-size="12" font-weight="bold" fill="#4A90D9">62</text>
+  <text x="130" y="340" text-anchor="middle" font-size="12" fill="#555555">Q1</text>
+
+  <!-- Bar 2: Q2, value=85 → height = 85/100 * 270 = 229.5 -->
+  <rect x="200" y="90.5" width="60" height="229.5" fill="#50C878" rx="3"/>
+  <text x="230" y="83" text-anchor="middle" font-size="12" font-weight="bold" fill="#50C878">85</text>
+  <text x="230" y="340" text-anchor="middle" font-size="12" fill="#555555">Q2</text>
+
+  <!-- Bar 3: Q3, value=73 → height = 73/100 * 270 = 197.1 -->
+  <rect x="300" y="122.9" width="60" height="197.1" fill="#FF6B6B" rx="3"/>
+  <text x="330" y="115" text-anchor="middle" font-size="12" font-weight="bold" fill="#FF6B6B">73</text>
+  <text x="330" y="340" text-anchor="middle" font-size="12" fill="#555555">Q3</text>
+
+  <!-- Bar 4: Q4, value=91 → height = 91/100 * 270 = 245.7 -->
+  <rect x="400" y="74.3" width="60" height="245.7" fill="#FFD93D" rx="3"/>
+  <text x="430" y="67" text-anchor="middle" font-size="12" font-weight="bold" fill="#B8920E">91</text>
+  <text x="430" y="340" text-anchor="middle" font-size="12" fill="#555555">Q4</text>
+
+  <!-- Bar 5: Q5, value=78 → height = 78/100 * 270 = 210.6 -->
+  <rect x="500" y="109.4" width="60" height="210.6" fill="#6C5CE7" rx="3"/>
+  <text x="530" y="102" text-anchor="middle" font-size="12" font-weight="bold" fill="#6C5CE7">78</text>
+  <text x="530" y="340" text-anchor="middle" font-size="12" fill="#555555">Q5</text>
+
+  <!-- X-axis label -->
+  <text x="310" y="370" text-anchor="middle" font-size="12" fill="#555555">季度</text>
+
+  <!-- Legend -->
+  <rect x="200" y="385" width="12" height="12" fill="#4A90D9" rx="2"/>
+  <text x="216" y="395" font-size="11" fill="#555555">Q1</text>
+  <rect x="250" y="385" width="12" height="12" fill="#50C878" rx="2"/>
+  <text x="266" y="395" font-size="11" fill="#555555">Q2</text>
+  <rect x="300" y="385" width="12" height="12" fill="#FF6B6B" rx="2"/>
+  <text x="316" y="395" font-size="11" fill="#555555">Q3</text>
+  <rect x="350" y="385" width="12" height="12" fill="#FFD93D" rx="2"/>
+  <text x="366" y="395" font-size="11" fill="#555555">Q4</text>
+  <rect x="400" y="385" width="12" height="12" fill="#6C5CE7" rx="2"/>
+  <text x="416" y="395" font-size="11" fill="#555555">Q5</text>
+
+</svg>

@@ -14,14 +14,17 @@ Adapted from ppt-master (MIT license) with additions for:
 from __future__ import annotations
 
 import base64
+import io
 import math
 import re
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 from xml.etree import ElementTree as ET
 
 from loguru import logger
+from PIL import Image
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -54,6 +57,44 @@ DASH_PRESETS = {
     "8,4": "lgDash", "8 4": "lgDash",
 }
 
+INHERITED_PRESENTATION_ATTRS = (
+    "fill",
+    "stroke",
+    "opacity",
+    "fill-opacity",
+    "stroke-opacity",
+    "stroke-width",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-dasharray",
+)
+
+INHERITED_TEXT_ATTRS = (
+    "fill",
+    "opacity",
+    "fill-opacity",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "text-anchor",
+    "dominant-baseline",
+)
+
+NAMED_COLORS = {
+    "black": "000000",
+    "white": "FFFFFF",
+    "red": "FF0000",
+    "green": "008000",
+    "blue": "0000FF",
+    "yellow": "FFFF00",
+    "cyan": "00FFFF",
+    "magenta": "FF00FF",
+    "gray": "808080",
+    "grey": "808080",
+    "transparent": None,
+}
+
 
 # ---------------------------------------------------------------------------
 # Context
@@ -73,6 +114,8 @@ class ConvertContext:
     media_files: dict[str, bytes] = field(default_factory=dict)
     rel_entries: list[dict[str, str]] = field(default_factory=list)
     rel_id_counter: int = 2      # rId1 reserved for slideLayout
+    root: ET.Element | None = None
+    parent_map: dict[int, ET.Element] = field(default_factory=dict)
 
     def next_id(self) -> int:
         cid = self.id_counter
@@ -99,6 +142,8 @@ class ConvertContext:
             media_files=self.media_files,
             rel_entries=self.rel_entries,
             rel_id_counter=self.rel_id_counter,
+            root=self.root,
+            parent_map=self.parent_map,
         )
 
     def sync_from_child(self, child_ctx: ConvertContext):
@@ -113,10 +158,14 @@ class ConvertContext:
 def px_to_emu(px: float) -> int:
     return round(px * EMU_PER_PX)
 
-def _f(val: str | None, default: float = 0.0) -> float:
+def _f(val: str | None, default: float = 0.0, font_size: float = 16.0) -> float:
+    """Parse SVG numeric value, supporting px and em units."""
     if val is None:
         return default
+    val = val.strip()
     try:
+        if val.endswith("em") and not val.endswith("rem"):
+            return float(val[:-2]) * font_size
         return float(val.replace("px", "").strip())
     except (ValueError, TypeError):
         return default
@@ -142,6 +191,13 @@ def parse_hex_color(color_str: str) -> str | None:
     if not color_str:
         return None
     color_str = color_str.strip()
+    named = NAMED_COLORS.get(color_str.lower())
+    if color_str.lower() in NAMED_COLORS:
+        return named
+    rgb_match = re.fullmatch(r"rgb\(\s*(\d{1,3})\s*,\s*(\d{1,3})\s*,\s*(\d{1,3})\s*\)", color_str)
+    if rgb_match:
+        r, g, b = (max(0, min(255, int(part))) for part in rgb_match.groups())
+        return f"{r:02X}{g:02X}{b:02X}"
     if color_str.startswith("#"):
         color_str = color_str[1:]
     if len(color_str) == 3:
@@ -232,11 +288,16 @@ def is_cjk_char(ch: str) -> bool:
             0x20000 <= cp <= 0x2A6DF)
 
 
+FULLWIDTH_PUNCTUATION = set("“”‘’，。！？；：、（）《》【】「」『』〈〉〔〕")
+
+
 def estimate_text_width(text: str, font_size: float, bold: bool = False) -> float:
     width = 0.0
     for ch in text:
         if is_cjk_char(ch):
             width += font_size
+        elif ch in FULLWIDTH_PUNCTUATION:
+            width += font_size * 0.9
         elif ch == " ":
             width += font_size * 0.3
         elif ch in "mMwWOQ":
@@ -259,6 +320,21 @@ def _xml_escape(text: str) -> str:
                 .replace("<", "&lt;")
                 .replace(">", "&gt;")
                 .replace('"', "&quot;"))
+
+
+def _normalize_text_segment(text: str | None) -> str:
+    """Normalize SVG text nodes while preserving meaningful spacing."""
+    if text is None or not text.strip():
+        return ""
+
+    has_leading_space = text[0].isspace()
+    has_trailing_space = text[-1].isspace()
+    normalized = re.sub(r"\s+", " ", text.strip())
+    if has_leading_space:
+        normalized = " " + normalized
+    if has_trailing_space:
+        normalized = normalized + " "
+    return normalized
 
 
 def build_solid_fill(color: str, opacity: float | None = None) -> str:
@@ -716,7 +792,14 @@ def convert_rect(elem: ET.Element, ctx: ConvertContext) -> str:
     y = ctx_y(_f(elem.get("y")), ctx)
     w = ctx_w(_f(elem.get("width")), ctx)
     h = ctx_h(_f(elem.get("height")), ctx)
-    if w <= 0 or h <= 0:
+    # Normalize negative dimensions (SVG bar charts use negative height to grow upward)
+    if w < 0:
+        x += w
+        w = -w
+    if h < 0:
+        y += h
+        h = -h
+    if w == 0 or h == 0:
         return ""
 
     fill_op = get_fill_opacity(elem)
@@ -909,49 +992,354 @@ def convert_polygon(elem: ET.Element, ctx: ConvertContext) -> str:
 # Text converter — supports <tspan> multi-line → multi-paragraph
 # ---------------------------------------------------------------------------
 
+
+def _collect_tspan_text(ts: ET.Element) -> str:
+    """Collect all text from a tspan, including arbitrarily nested descendants."""
+    # itertext() walks all descendants depth-first, yielding text and tail
+    return "".join(ts.itertext())
+
+
+def _normalize_single_line_inline_whitespace(text: str | None) -> str | None:
+    """Remove XML formatting whitespace from inline rich text without forcing reflow.
+
+    This is only safe for single-line rich text where line breaks in the source
+    are indentation artifacts rather than intentional visual line breaks.
+    """
+    if text is None:
+        return None
+    text = re.sub(r"\s*[\r\n]+\s*", "", text)
+    text = text.replace("\t", " ")
+    text = re.sub(r" {2,}", " ", text)
+    return text
+
+
+def _append_text_run(
+    line: list[dict],
+    text: str | None,
+    *,
+    bold: bool,
+    size: float,
+    color: str,
+    normalize_inline_whitespace: bool = False,
+) -> None:
+    """Append a non-empty text run while preserving mixed inline content order."""
+    if text is None:
+        return
+    if normalize_inline_whitespace:
+        text = _normalize_single_line_inline_whitespace(text)
+    if not text.strip():
+        return
+    run = {
+        "text": text,
+        "bold": bold,
+        "size": size,
+        "color": color,
+    }
+    if (
+        line
+        and line[-1]["bold"] == run["bold"]
+        and line[-1]["size"] == run["size"]
+        and line[-1]["color"] == run["color"]
+    ):
+        line[-1]["text"] += text
+    else:
+        line.append(run)
+
+
+def _iter_ancestors(elem: ET.Element, ctx: ConvertContext):
+    current = ctx.parent_map.get(id(elem))
+    while current is not None:
+        yield current
+        current = ctx.parent_map.get(id(current))
+
+
+def _effective_attr(
+    elem: ET.Element,
+    ctx: ConvertContext,
+    name: str,
+    default: str | None = None,
+) -> str | None:
+    value = default
+    for ancestor in reversed(list(_iter_ancestors(elem, ctx))):
+        attr = ancestor.get(name)
+        if attr is not None:
+            value = attr
+    attr = elem.get(name)
+    return attr if attr is not None else value
+
+
+def _effective_text_attrs(elem: ET.Element, ctx: ConvertContext) -> dict[str, str]:
+    attrs: dict[str, str] = {}
+    for name in INHERITED_TEXT_ATTRS:
+        value = _effective_attr(elem, ctx, name)
+        if value is not None:
+            attrs[name] = value
+    return attrs
+
+
+def _effective_text_opacity(elem: ET.Element, ctx: ConvertContext) -> float | None:
+    opacity = 1.0
+    for attr_name in ("opacity", "fill-opacity"):
+        value = _effective_attr(elem, ctx, attr_name)
+        if value is None:
+            continue
+        try:
+            opacity *= float(value)
+        except ValueError:
+            pass
+    return opacity if opacity < 1.0 else None
+
+
+def _meaningful_container_rects(ancestor: ET.Element) -> list[ET.Element]:
+    rects: list[ET.Element] = []
+    for child in list(ancestor):
+        tag = child.tag.replace(f"{{{SVG_NS}}}", "")
+        if tag != "rect":
+            continue
+        width = _f(child.get("width"), 0)
+        height = _f(child.get("height"), 0)
+        if width >= 100 and height >= 40:
+            rects.append(child)
+    return rects
+
+
+def _rect_contains_point(rect: ET.Element, ctx: ConvertContext, text_x: float, text_y: float) -> bool:
+    rx = ctx_x(_f(rect.get("x")), ctx)
+    ry = ctx_y(_f(rect.get("y")), ctx)
+    rw = ctx_w(_f(rect.get("width")), ctx)
+    rh = ctx_h(_f(rect.get("height")), ctx)
+    return rx - 4 <= text_x <= rx + rw + 4 and ry - 8 <= text_y <= ry + rh + 8
+
+
+def _sibling_container_rects(elem: ET.Element, ctx: ConvertContext) -> list[ET.Element]:
+    parent = ctx.parent_map.get(id(elem))
+    if parent is None:
+        return []
+    return [rect for rect in _meaningful_container_rects(parent) if rect is not elem]
+
+
+def _find_text_container_rect(
+    elem: ET.Element,
+    ctx: ConvertContext,
+    text_x: float,
+    text_y: float,
+) -> ET.Element | None:
+    best_rect: ET.Element | None = None
+    best_area: float | None = None
+    for rect in _sibling_container_rects(elem, ctx):
+        if not _rect_contains_point(rect, ctx, text_x, text_y):
+            continue
+        rw = ctx_w(_f(rect.get("width")), ctx)
+        rh = ctx_h(_f(rect.get("height")), ctx)
+        area = rw * rh
+        if best_area is None or area < best_area:
+            best_rect = rect
+            best_area = area
+    for ancestor in _iter_ancestors(elem, ctx):
+        for rect in _meaningful_container_rects(ancestor):
+            if not _rect_contains_point(rect, ctx, text_x, text_y):
+                continue
+            rw = ctx_w(_f(rect.get("width")), ctx)
+            rh = ctx_h(_f(rect.get("height")), ctx)
+            area = rw * rh
+            if best_area is None or area < best_area:
+                best_rect = rect
+                best_area = area
+    return best_rect
+
+
+def _infer_single_line_rich_text_width(
+    elem: ET.Element,
+    ctx: ConvertContext,
+    text_x: float,
+    text_y: float,
+    estimated_width: float,
+    padding: float,
+) -> float:
+    rect = _find_text_container_rect(elem, ctx, text_x, text_y)
+    if rect is None:
+        return estimated_width * 1.08
+
+    rect_x = ctx_x(_f(rect.get("x")), ctx)
+    rect_w = ctx_w(_f(rect.get("width")), ctx)
+    right_padding = max(padding, 12.0 * ctx.scale_x)
+    available_width = rect_x + rect_w - text_x - right_padding
+    if available_width <= 0:
+        return estimated_width * 1.08
+    return max(estimated_width * 1.02, available_width + padding)
+
+
+def _infer_text_container_width(
+    elem: ET.Element,
+    ctx: ConvertContext,
+    text_x: float,
+    text_y: float,
+    estimated_width: float,
+    padding: float,
+    text_anchor: str,
+) -> float:
+    rect = _find_text_container_rect(elem, ctx, text_x, text_y)
+    if rect is None:
+        return estimated_width
+
+    rect_x = ctx_x(_f(rect.get("x")), ctx)
+    rect_w = ctx_w(_f(rect.get("width")), ctx)
+    rect_right = rect_x + rect_w
+    side_padding = max(padding, 12.0 * ctx.scale_x)
+
+    if text_anchor == "middle":
+        half_width = min(text_x - rect_x, rect_right - text_x) - side_padding
+        available_width = half_width * 2.0
+    elif text_anchor == "end":
+        available_width = text_x - rect_x - side_padding
+    else:
+        available_width = rect_right - text_x - side_padding
+
+    if available_width <= 0:
+        return estimated_width
+    return max(available_width + padding, 24.0 * ctx.scale_x)
+
+
+def _top_level_tspan_columns(elem: ET.Element) -> list[list[ET.Element]]:
+    raw_fs = _f(elem.get("font-size"), 16)
+    tspans = [
+        child for child in list(elem)
+        if child.tag in (f"{{{SVG_NS}}}tspan", "tspan")
+    ]
+    if len(tspans) < 2:
+        return []
+
+    columns: list[list[ET.Element]] = []
+    current_column: list[ET.Element] = []
+    for ts in tspans:
+        dy = _f(ts.get("dy"), 0, font_size=raw_fs)
+        if dy > 0:
+            return []
+        x_attr = ts.get("x")
+        if x_attr is not None:
+            if current_column:
+                columns.append(current_column)
+            current_column = [ts]
+            continue
+        if not current_column:
+            return []
+        current_column.append(ts)
+
+    if current_column:
+        columns.append(current_column)
+    if len(columns) < 2:
+        return []
+
+    last_x: float | None = None
+    for column in columns:
+        x_attr = column[0].get("x")
+        if x_attr is None:
+            return []
+        try:
+            x_val = float(str(x_attr).strip().replace("px", ""))
+        except (ValueError, TypeError):
+            return []
+        if last_x is not None and abs(x_val - last_x) < 40:
+            return []
+        last_x = x_val
+    return columns
+
+
+def _clone_text_from_tspan_group(
+    elem: ET.Element,
+    group: list[ET.Element],
+    inherited_attrs: dict[str, str] | None = None,
+) -> ET.Element:
+    clone = ET.Element(elem.tag, attrib=elem.attrib.copy())
+    if inherited_attrs:
+        for name, value in inherited_attrs.items():
+            clone.attrib.setdefault(name, value)
+    if elem.text:
+        clone.text = elem.text
+    first = group[0]
+    if first.get("x") is not None:
+        clone.set("x", first.get("x"))
+    if first.get("y") is not None:
+        clone.set("y", first.get("y"))
+    for ts in group:
+        clone.append(deepcopy(ts))
+    return clone
+
+
 def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     """Convert SVG <text> with optional <tspan> children to DrawingML text shape."""
     # Collect paragraphs: each tspan with dy>0 starts a new line
     paragraphs: list[list[dict]] = []  # list of [{"text", "bold", "size", "color"}]
-    base_fs = _f(elem.get("font-size"), 16) * ctx.scale_y
-    base_weight = elem.get("font-weight", "400")
-    base_color = parse_hex_color(elem.get("fill", "#000000")) or "000000"
-    font_family_str = elem.get("font-family", "")
-    text_anchor = elem.get("text-anchor", "start")
-    opacity = get_fill_opacity(elem)
+    inherited_text_attrs = _effective_text_attrs(elem, ctx)
+    base_fill = inherited_text_attrs.get("fill", "#000000")
+    raw_fs = _f(inherited_text_attrs.get("font-size"), 16)
+    base_fs = raw_fs * ctx.scale_y
+    base_weight = inherited_text_attrs.get("font-weight", "400")
+    base_color = parse_hex_color(base_fill) or "000000"
+    font_family_str = inherited_text_attrs.get("font-family", "")
+    text_anchor = inherited_text_attrs.get("text-anchor", "start")
+    opacity = _effective_text_opacity(elem, ctx)
     fonts = parse_font_family(font_family_str)
     x_base = ctx_x(_f(elem.get("x")), ctx)
     y_base = ctx_y(_f(elem.get("y")), ctx)
+    tspans = [
+        child for child in list(elem)
+        if child.tag in (f"{{{SVG_NS}}}tspan", "tspan")
+    ]
+    has_positive_tspan_dy = any(
+        _f(ts.get("dy"), 0, font_size=raw_fs) > 0
+        for ts in tspans
+    )
+    # Pretty-printed SVG commonly inserts indentation whitespace around
+    # inline/multiline tspans. PowerPoint keeps that whitespace in text runs,
+    # which can trigger extra wrapping that is not visible in the SVG.
+    normalize_inline_whitespace = bool(tspans)
 
-    tspans = list(elem.iter(f"{{{SVG_NS}}}tspan"))
-    if not tspans:
-        # Also check non-namespaced tspans
-        tspans = list(elem.iter("tspan"))
+    column_tspans = _top_level_tspan_columns(elem)
+    if column_tspans:
+        return "".join(
+            convert_text(_clone_text_from_tspan_group(elem, group, inherited_text_attrs), ctx)
+            for group in column_tspans
+        )
 
     if tspans:
-        # Multi-line via tspan
+        # Mixed inline text via tspan. Preserve parent text + child tail so
+        # runs like `前文<tspan fill="...">关键词</tspan>后文` don't lose text.
         current_line: list[dict] = []
         total_dy = 0.0
+        _append_text_run(
+            current_line,
+            elem.text,
+            bold=base_weight in ("bold", "600", "700", "800", "900"),
+            size=base_fs,
+            color=base_color,
+            normalize_inline_whitespace=normalize_inline_whitespace,
+        )
         for ts in tspans:
-            dy = _f(ts.get("dy"), 0)
+            dy = _f(ts.get("dy"), 0, font_size=raw_fs)
             total_dy += dy
-            ts_text = (ts.text or "").strip()
-            if not ts_text:
-                continue
             ts_weight = ts.get("font-weight", base_weight)
-            ts_size = _f(ts.get("font-size"), base_fs / ctx.scale_y) * ctx.scale_y
-            ts_color = parse_hex_color(ts.get("fill") or elem.get("fill", "#000000")) or base_color
-            run = {
-                "text": ts_text,
-                "bold": ts_weight in ("bold", "600", "700", "800", "900"),
-                "size": ts_size,
-                "color": ts_color,
-            }
+            ts_size = _f(ts.get("font-size"), raw_fs) * ctx.scale_y
+            ts_color = parse_hex_color(ts.get("fill") or base_fill) or base_color
             if dy > 0 and current_line:
                 paragraphs.append(current_line)
-                current_line = [run]
-            else:
-                current_line.append(run)
+                current_line = []
+            _append_text_run(
+                current_line,
+                _collect_tspan_text(ts),
+                bold=ts_weight in ("bold", "600", "700", "800", "900"),
+                size=ts_size,
+                color=ts_color,
+                normalize_inline_whitespace=normalize_inline_whitespace,
+            )
+            _append_text_run(
+                current_line,
+                ts.tail,
+                bold=base_weight in ("bold", "600", "700", "800", "900"),
+                size=base_fs,
+                color=base_color,
+                normalize_inline_whitespace=normalize_inline_whitespace,
+            )
         if current_line:
             paragraphs.append(current_line)
     else:
@@ -966,11 +1354,13 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
             "color": base_color,
         }])
 
+
     if not paragraphs:
         return ""
 
     is_multiline = len(paragraphs) > 1
     is_bold = base_weight in ("bold", "600", "700", "800", "900")
+    is_single_line_rich_text = bool(tspans) and not has_positive_tspan_dy and len(paragraphs) == 1
 
     # Calculate text box dimensions
     max_width = 0.0
@@ -986,14 +1376,20 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     box_w = max_width + padding * 2
     box_h = total_height + padding * 2
 
-    # For multiline text inside cards, try to use tspan's x to infer a reasonable
-    # fixed width so wrapping works correctly in PowerPoint
+    if is_single_line_rich_text:
+        box_w = _infer_single_line_rich_text_width(elem, ctx, x_base, y_base, box_w, padding)
+
     if is_multiline and tspans:
         # Use the tspan x attribute if available — it tells us the card's left edge
-        ts_x = _f(tspans[0].get("x"), 0) * ctx.scale_x + ctx.translate_x
-        # Estimate right edge from slide width (1280) minus some margin
-        inferred_width = max(box_w, (1230 - ts_x) * 0.95)
-        box_w = min(inferred_width, 1200)  # cap at reasonable max
+        box_w = _infer_text_container_width(
+            elem,
+            ctx,
+            x_base,
+            y_base,
+            box_w,
+            padding,
+            text_anchor,
+        )
 
     # Adjust for text-anchor
     if text_anchor == "middle":
@@ -1003,8 +1399,18 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     else:
         box_x = x_base - padding
 
-    # y in SVG is baseline; move up
-    box_y = y_base - base_fs * 0.85
+    # y in SVG is baseline; move up to get top of text box
+    dominant_baseline = inherited_text_attrs.get("dominant-baseline", "auto")
+    is_centered_label = dominant_baseline in ("middle", "central") and text_anchor == "middle"
+    if is_centered_label:
+        # Centered label (e.g., number inside a circle): y is visual center
+        # Make a tight box centered on that point
+        box_y = y_base - box_h / 2
+    elif dominant_baseline in ("middle", "central"):
+        box_y = y_base - base_fs * 0.5
+    else:
+        # Default: SVG y is alphabetic baseline
+        box_y = y_base - base_fs * 0.85
 
     # Alignment
     algn_map = {"start": "l", "middle": "ctr", "end": "r"}
@@ -1020,10 +1426,12 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
     if is_multiline:
         # Use the dy value from tspans as line spacing (in hundredths of pt)
         avg_dy = base_fs * 1.4  # default
-        if tspans and len(tspans) > 1:
-            dy_val = _f(tspans[1].get("dy"), 0)
-            if dy_val > 0:
-                avg_dy = dy_val * ctx.scale_y
+        if tspans:
+            for ts in tspans:
+                dy_val = _f(ts.get("dy"), 0, font_size=raw_fs)
+                if dy_val > 0:
+                    avg_dy = dy_val * ctx.scale_y
+                    break
         spc_pts = int(avg_dy * FONT_PX_TO_HUNDREDTHS_PT)
         line_spc_xml = f'<a:lnSpc><a:spcPts val="{spc_pts}"/></a:lnSpc>'
 
@@ -1042,11 +1450,15 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
             )
         paras_xml.append(f'<a:p><a:pPr algn="{algn}">{line_spc_xml}</a:pPr>{"".join(runs_xml)}</a:p>')
 
-    # wrap="square" for multiline text (enables word wrap within box),
-    # wrap="none" for single-line (auto-size to content width)
-    wrap_mode = "square" if is_multiline else "none"
+    # Plain text keeps PowerPoint word wrap for editability.
+    # Tspan-authored text already encodes its line breaks. Disable PowerPoint
+    # auto-wrap for those shapes so PPTX layout matches the SVG.
+    wrap_mode = "none" if tspans else "square"
 
     shape_id = ctx.next_id()
+    # For centered labels (number in circle), use vertical center anchor
+    v_anchor = "ctr" if is_centered_label else "t"
+
     return (
         f'<p:sp>\n<p:nvSpPr>\n'
         f'<p:cNvPr id="{shape_id}" name="Text {shape_id}"/>\n'
@@ -1056,9 +1468,141 @@ def convert_text(elem: ET.Element, ctx: ConvertContext) -> str:
         f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>\n'
         f'<a:noFill/><a:ln><a:noFill/></a:ln>\n</p:spPr>\n'
         f'<p:txBody>\n'
-        f'<a:bodyPr wrap="{wrap_mode}" lIns="0" tIns="0" rIns="0" bIns="0" anchor="t" anchorCtr="0"/>\n'
+        f'<a:bodyPr wrap="{wrap_mode}" lIns="0" tIns="0" rIns="0" bIns="0" anchor="{v_anchor}" anchorCtr="0"/>\n'
         f'<a:lstStyle/>\n'
         f'{"".join(paras_xml)}\n</p:txBody>\n</p:sp>'
+    )
+
+
+def _load_image_data(href: str) -> tuple[bytes, str] | None:
+    if href.startswith("data:"):
+        match = re.match(r"data:image/(\w+);base64,(.+)", href, re.DOTALL)
+        if not match:
+            return None
+        img_format = match.group(1).lower()
+        if img_format == "jpeg":
+            img_format = "jpg"
+        return base64.b64decode(match.group(2)), img_format
+
+    try:
+        image_path = Path(href)
+        img_data = image_path.read_bytes()
+        img_format = image_path.suffix.lstrip(".").lower()
+        if img_format == "jpeg":
+            img_format = "jpg"
+        return img_data, img_format
+    except Exception:
+        return None
+
+
+def _get_image_size(img_data: bytes) -> tuple[int, int] | None:
+    try:
+        with Image.open(io.BytesIO(img_data)) as img:
+            return img.size
+    except Exception:
+        return None
+
+
+def _parse_preserve_aspect_ratio(value: str | None) -> tuple[str, str, str]:
+    align_x = "mid"
+    align_y = "mid"
+    mode = "meet"
+    if not value:
+        return align_x, align_y, mode
+
+    tokens = [token for token in value.strip().split() if token and token != "defer"]
+    if not tokens:
+        return align_x, align_y, mode
+    if tokens[0] == "none":
+        return "mid", "mid", "none"
+
+    align_token = tokens[0]
+    match = re.fullmatch(r"x(Min|Mid|Max)Y(Min|Mid|Max)", align_token)
+    if match:
+        align_x = match.group(1).lower()
+        align_y = match.group(2).lower()
+        tokens = tokens[1:]
+
+    if tokens:
+        candidate_mode = tokens[0].lower()
+        if candidate_mode in {"meet", "slice"}:
+            mode = candidate_mode
+    return align_x, align_y, mode
+
+
+def _aligned_offset(container: float, content: float, align: str) -> float:
+    if align == "min":
+        return 0.0
+    if align == "max":
+        return max(container - content, 0.0)
+    return max((container - content) / 2.0, 0.0)
+
+
+def _compute_meet_transform(
+    frame_x: float,
+    frame_y: float,
+    frame_w: float,
+    frame_h: float,
+    image_w: int,
+    image_h: int,
+    align_x: str,
+    align_y: str,
+) -> tuple[float, float, float, float] | None:
+    if image_w <= 0 or image_h <= 0 or frame_w <= 0 or frame_h <= 0:
+        return None
+
+    scale = min(frame_w / image_w, frame_h / image_h)
+    fitted_w = image_w * scale
+    fitted_h = image_h * scale
+    fitted_x = frame_x + _aligned_offset(frame_w, fitted_w, align_x)
+    fitted_y = frame_y + _aligned_offset(frame_h, fitted_h, align_y)
+    return fitted_x, fitted_y, fitted_w, fitted_h
+
+
+def _compute_slice_src_rect(
+    frame_w: float,
+    frame_h: float,
+    image_w: int,
+    image_h: int,
+    align_x: str,
+    align_y: str,
+) -> tuple[int, int, int, int] | None:
+    if image_w <= 0 or image_h <= 0 or frame_w <= 0 or frame_h <= 0:
+        return None
+
+    image_ratio = image_w / image_h
+    frame_ratio = frame_w / frame_h
+    left = top = right = bottom = 0.0
+
+    if math.isclose(image_ratio, frame_ratio, rel_tol=1e-6, abs_tol=1e-6):
+        return None
+
+    if image_ratio > frame_ratio:
+        visible_fraction = frame_ratio / image_ratio
+        crop_total = max(0.0, 1.0 - visible_fraction)
+        if align_x == "min":
+            right = crop_total
+        elif align_x == "max":
+            left = crop_total
+        else:
+            left = crop_total / 2.0
+            right = crop_total / 2.0
+    else:
+        visible_fraction = image_ratio / frame_ratio
+        crop_total = max(0.0, 1.0 - visible_fraction)
+        if align_y == "min":
+            bottom = crop_total
+        elif align_y == "max":
+            top = crop_total
+        else:
+            top = crop_total / 2.0
+            bottom = crop_total / 2.0
+
+    return (
+        round(left * 100000),
+        round(top * 100000),
+        round(right * 100000),
+        round(bottom * 100000),
     )
 
 
@@ -1073,23 +1617,26 @@ def convert_image(elem: ET.Element, ctx: ConvertContext) -> str:
     if w <= 0 or h <= 0:
         return ""
 
-    if href.startswith("data:"):
-        match = re.match(r"data:image/(\w+);base64,(.+)", href, re.DOTALL)
-        if not match:
-            return ""
-        img_format = match.group(1).lower()
-        if img_format == "jpeg":
-            img_format = "jpg"
-        img_data = base64.b64decode(match.group(2))
-    else:
-        # External file
-        try:
-            img_data = Path(href).read_bytes()
-            img_format = Path(href).suffix.lstrip(".").lower()
-            if img_format == "jpeg":
-                img_format = "jpg"
-        except Exception:
-            return ""
+    image_payload = _load_image_data(href)
+    if image_payload is None:
+        return ""
+    img_data, img_format = image_payload
+    image_size = _get_image_size(img_data)
+    align_x, align_y, mode = _parse_preserve_aspect_ratio(elem.get("preserveAspectRatio"))
+    src_rect_xml = ""
+    if image_size is not None and mode != "none":
+        image_w, image_h = image_size
+        if mode == "slice":
+            src_rect = _compute_slice_src_rect(w, h, image_w, image_h, align_x, align_y)
+            if src_rect is not None:
+                left, top, right, bottom = src_rect
+                src_rect_xml = (
+                    f'<a:srcRect l="{left}" t="{top}" r="{right}" b="{bottom}"/>\n'
+                )
+        else:
+            meet_transform = _compute_meet_transform(x, y, w, h, image_w, image_h, align_x, align_y)
+            if meet_transform is not None:
+                x, y, w, h = meet_transform
 
     img_idx = len(ctx.media_files) + 1
     img_filename = f"s{ctx.slide_num}_img{img_idx}.{img_format}"
@@ -1107,6 +1654,7 @@ def convert_image(elem: ET.Element, ctx: ConvertContext) -> str:
         f'<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>\n'
         f'<p:nvPr/>\n</p:nvPicPr>\n<p:blipFill>\n'
         f'<a:blip r:embed="{r_id}"/>\n'
+        f'{src_rect_xml}'
         f'<a:stretch><a:fillRect/></a:stretch>\n</p:blipFill>\n<p:spPr>\n'
         f'<a:xfrm><a:off x="{px_to_emu(x)}" y="{px_to_emu(y)}"/>'
         f'<a:ext cx="{px_to_emu(w)}" cy="{px_to_emu(h)}"/></a:xfrm>\n'
@@ -1137,17 +1685,19 @@ def convert_g(elem: ET.Element, ctx: ConvertContext) -> str:
     transform = elem.get("transform", "")
     dx, dy, sx, sy = parse_transform(transform)
     filter_id = resolve_url_id(elem.get("filter", ""))
-    group_fill = elem.get("fill")
-    group_opacity = elem.get("opacity")
+    group_attrs = {
+        attr: elem.get(attr)
+        for attr in INHERITED_PRESENTATION_ATTRS
+        if elem.get(attr) is not None
+    }
 
     child_ctx = ctx.child(dx, dy, sx, sy, filter_id)
     shapes = []
     for child in elem:
         # Propagate group attributes to children
-        if group_fill and not child.get("fill"):
-            child.set("fill", group_fill)
-        if group_opacity and not child.get("opacity"):
-            child.set("opacity", group_opacity)
+        for attr, value in group_attrs.items():
+            if not child.get(attr):
+                child.set(attr, value)
         shape_xml = convert_element(child, child_ctx)
         if shape_xml:
             shapes.append(shape_xml)
@@ -1207,6 +1757,14 @@ def collect_defs(root: ET.Element) -> dict[str, ET.Element]:
     return defs
 
 
+def build_parent_map(root: ET.Element) -> dict[int, ET.Element]:
+    parent_map: dict[int, ET.Element] = {}
+    for parent in root.iter():
+        for child in list(parent):
+            parent_map[id(child)] = parent
+    return parent_map
+
+
 def convert_element(elem: ET.Element, ctx: ConvertContext) -> str:
     tag = elem.tag.replace(f"{{{SVG_NS}}}", "")
     converters = {
@@ -1249,7 +1807,7 @@ def convert_svg_to_slide_shapes(
 
     root = ET.fromstring(content)
     defs = collect_defs(root)
-    ctx = ConvertContext(defs=defs, slide_num=slide_num)
+    ctx = ConvertContext(defs=defs, slide_num=slide_num, root=root, parent_map=build_parent_map(root))
 
     shapes = []
     converted = skipped = 0

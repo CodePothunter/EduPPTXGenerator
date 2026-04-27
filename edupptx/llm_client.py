@@ -23,6 +23,9 @@ class LLMClient:
         )
         self._model = config.llm_model
         self._is_doubao = "volces.com" in (config.llm_base_url or "")
+        self._is_deepseek = "deepseek.com" in (config.llm_base_url or "")
+        self._thinking = config.llm_thinking
+        self._reasoning_effort = config.llm_reasoning_effort
 
     def chat(
         self,
@@ -39,6 +42,16 @@ class LLMClient:
         # Doubao-specific: disable thinking for structured output
         if self._is_doubao:
             kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        elif self._is_deepseek:
+            extra_body: dict[str, Any] = {}
+            thinking = self._thinking or ("enabled" if self._model == "deepseek-v4-pro" else "")
+            reasoning_effort = self._reasoning_effort or ("high" if self._model == "deepseek-v4-pro" else "")
+            if thinking:
+                extra_body["thinking"] = {"type": thinking}
+            if reasoning_effort:
+                extra_body["reasoning_effort"] = reasoning_effort
+            if extra_body:
+                kwargs["extra_body"] = extra_body
         resp = self._client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content or ""
 

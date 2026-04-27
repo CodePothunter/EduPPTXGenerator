@@ -1,9 +1,8 @@
 """Assemble SVG files into a PPTX presentation.
 
-Three modes:
+Two modes:
 - Default: SVG→native DrawingML shapes (directly editable, no "Convert to Shape")
 - Embed: SVG+PNG dual embedding (ZIP post-processing, image-only, --embed flag)
-- Legacy native: svg2pptx library (--legacy-native flag)
 
 The default mode parses each SVG element and converts it to a native PowerPoint
 shape (rect, text box, path, etc.), producing fully editable output.
@@ -11,9 +10,6 @@ shape (rect, text box, path, etc.), producing fully editable output.
 
 from __future__ import annotations
 
-import base64
-import io
-import re
 import shutil
 import tempfile
 import zipfile
@@ -35,27 +31,65 @@ NS_RELS = "http://schemas.openxmlformats.org/package/2006/relationships"
 IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
 
 
-def assemble_pptx(svg_paths: list[Path], output_path: Path, native: bool = False,
-                   embed: bool = False) -> Path:
+def assemble_pptx(svg_paths: list[Path], output_path: Path,
+                   embed: bool = False, bg_path: Path | None = None,
+                   speaker_notes: list[str] | None = None) -> Path:
     """Create a PPTX from SVG files.
 
     Args:
         svg_paths: Sorted list of SVG file paths (one per slide)
         output_path: Where to save the PPTX
-        native: If True, use legacy svg2pptx library.
         embed: If True, embed SVG+PNG as images (old default).
+        bg_path: Optional background image to place behind every slide.
+        speaker_notes: Speaker notes aligned to slide order.
     """
-    if native:
-        return _assemble_legacy_native(svg_paths, output_path)
     if embed:
-        return _assemble_svg_embed(svg_paths, output_path)
-    return _assemble_native_shapes(svg_paths, output_path)
+        result = _assemble_svg_embed(svg_paths, output_path)
+    else:
+        result = _assemble_native_shapes(svg_paths, output_path, bg_path=bg_path)
+    _apply_speaker_notes(result, speaker_notes)
+    return result
+
+
+def _apply_speaker_notes(pptx_path: Path, speaker_notes: list[str] | None) -> None:
+    """Write per-slide speaker notes into the generated PPTX."""
+    if not speaker_notes or not any(note and note.strip() for note in speaker_notes):
+        return
+
+    prs = Presentation(str(pptx_path))
+    slide_count = len(prs.slides)
+    if slide_count != len(speaker_notes):
+        logger.warning(
+            "Speaker notes count ({}) does not match slide count ({})",
+            len(speaker_notes), slide_count,
+        )
+
+    for idx, slide in enumerate(prs.slides):
+        note = speaker_notes[idx] if idx < len(speaker_notes) else ""
+        if not note or not note.strip():
+            continue
+        _set_text_frame_text(slide.notes_slide.notes_text_frame, note)
+
+    prs.save(str(pptx_path))
+
+
+def _set_text_frame_text(text_frame, text: str) -> None:
+    """Replace a pptx text frame with paragraph-preserving plain text."""
+    lines = text.splitlines() or [text]
+    text_frame.clear()
+
+    first_paragraph = text_frame.paragraphs[0]
+    first_paragraph.text = lines[0]
+    for line in lines[1:]:
+        paragraph = text_frame.add_paragraph()
+        paragraph.text = line
 
 
 # ── Native Shapes Mode (Default) ──────────────────────
 
 
-def _assemble_native_shapes(svg_paths: list[Path], output_path: Path) -> Path:
+def _assemble_native_shapes(svg_paths: list[Path], output_path: Path,
+                             bg_path: Path | None = None) -> Path:
     """Convert SVG elements to native DrawingML shapes (directly editable)."""
     from edupptx.output.svg_to_shapes import convert_svg_to_slide_shapes
 
@@ -81,11 +115,44 @@ def _assemble_native_shapes(svg_paths: list[Path], output_path: Path) -> Path:
 
         any_images = False
 
+        # Copy background image to media once (shared by all slides)
+        bg_media_name = ""
+        if bg_path and bg_path.exists():
+            bg_ext = bg_path.suffix.lstrip(".").lower() or "png"
+            bg_media_name = f"background.{bg_ext}"
+            shutil.copy2(bg_path, media_dir / bg_media_name)
+            any_images = True
+            logger.debug("Background image: {}", bg_media_name)
+
         for i, svg_path in enumerate(svg_paths, 1):
             try:
                 slide_xml, media_files, rel_entries = convert_svg_to_slide_shapes(
                     svg_path, slide_num=i
                 )
+
+                # Inject background image as bottom-layer picture
+                bg_rel_id = ""
+                if bg_media_name:
+                    bg_rel_id = f"rIdBg{i}"
+                    bg_pic_xml = (
+                        f'<p:pic>\n<p:nvPicPr>\n'
+                        f'<p:cNvPr id="99{i}" name="Background"/>\n'
+                        f'<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>\n'
+                        f'<p:nvPr/>\n</p:nvPicPr>\n<p:blipFill>\n'
+                        f'<a:blip r:embed="{bg_rel_id}"/>\n'
+                        f'<a:stretch><a:fillRect/></a:stretch>\n'
+                        f'</p:blipFill>\n<p:spPr>\n'
+                        f'<a:xfrm><a:off x="0" y="0"/>'
+                        f'<a:ext cx="{SLIDE_W}" cy="{SLIDE_H}"/></a:xfrm>\n'
+                        f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>\n'
+                        f'</p:spPr>\n</p:pic>\n'
+                    )
+                    # Insert after <p:grpSpPr>...</p:grpSpPr> (before SVG shapes)
+                    slide_xml = slide_xml.replace(
+                        '</p:grpSpPr>\n',
+                        f'</p:grpSpPr>\n{bg_pic_xml}',
+                        1,
+                    )
 
                 # Write slide XML
                 (extract_dir / "ppt" / "slides" / f"slide{i}.xml").write_text(
@@ -97,8 +164,13 @@ def _assemble_native_shapes(svg_paths: list[Path], output_path: Path) -> Path:
                     (media_dir / media_name).write_bytes(media_data)
                     any_images = True
 
-                # Build rels XML
+                # Build rels XML (include background rel if present)
                 extra_rels = ""
+                if bg_rel_id:
+                    extra_rels += (
+                        f'\n  <Relationship Id="{bg_rel_id}" '
+                        f'Type="{IMAGE_REL_TYPE}" Target="../media/{bg_media_name}"/>'
+                    )
                 for rel in rel_entries:
                     extra_rels += (
                         f'\n  <Relationship Id="{rel["id"]}" '
@@ -297,107 +369,3 @@ def _make_slide_rels(png_rid: str, png_name: str, svg_rid: str, svg_name: str, h
 </Relationships>'''
 
 
-# ── Legacy Native Mode (svg2pptx library) ──────────────
-
-
-def _assemble_legacy_native(svg_paths: list[Path], output_path: Path) -> Path:
-    """Convert SVG to native editable shapes via svg2pptx library (legacy)."""
-    from svg2pptx import SVGConverter
-
-    prs = Presentation()
-    prs.slide_width = Emu(SLIDE_W)
-    prs.slide_height = Emu(SLIDE_H)
-    converter = SVGConverter()
-
-    for svg_path in svg_paths:
-        slide = prs.slides.add_slide(prs.slide_layouts[6])
-        try:
-            converter.add_to_slide(str(svg_path), slide)
-            _embed_images_from_svg(slide, svg_path)
-            _fix_textbox_widths(prs, slide)
-            logger.debug("Native: {} ({} shapes)", svg_path.name, len(slide.shapes))
-        except Exception as e:
-            logger.warning("svg2pptx failed for {}: {}", svg_path.name, e)
-            _add_png_fallback(slide, svg_path)
-
-    prs.save(str(output_path))
-    return output_path
-
-
-def _embed_images_from_svg(slide, svg_path: Path) -> None:
-    """Parse SVG <image> elements and embed as PPTX pictures."""
-    try:
-        content = svg_path.read_text(encoding="utf-8")
-        content = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#)", "&amp;", content)
-        root = etree.fromstring(content.encode("utf-8"))
-    except Exception:
-        return
-
-    for img in root.iter(f"{{{SVG_NS}}}image"):
-        href = img.get("href") or img.get(f"{{{XLINK_NS}}}href") or ""
-        if not href:
-            continue
-        x, y = _pf(img.get("x")), _pf(img.get("y"))
-        w, h = _pf(img.get("width"), 200), _pf(img.get("height"), 150)
-
-        img_data = None
-        if href.startswith("data:image"):
-            try:
-                _, b64 = href.split(",", 1)
-                img_data = base64.b64decode(b64)
-            except Exception:
-                continue
-        elif Path(href).exists():
-            img_data = Path(href).read_bytes()
-
-        if img_data:
-            try:
-                slide.shapes.add_picture(
-                    io.BytesIO(img_data),
-                    Emu(int(x * SCALE_X)), Emu(int(y * SCALE_Y)),
-                    Emu(int(w * SCALE_X)), Emu(int(h * SCALE_Y)),
-                )
-            except Exception as e:
-                logger.debug("Image embed failed: {}", e)
-
-
-def _fix_textbox_widths(prs: Presentation, slide) -> None:
-    """Expand TextBox widths for CJK text."""
-    from pptx.util import Pt
-    for shape in slide.shapes:
-        if not shape.has_text_frame:
-            continue
-        text = shape.text_frame.text.strip()
-        if not text:
-            continue
-        fs_emu = Pt(16)
-        for para in shape.text_frame.paragraphs:
-            for run in para.runs:
-                if run.font.size:
-                    fs_emu = run.font.size
-                    break
-        fs_pt = fs_emu / 12700
-        lines = text.split("\n")
-        max_line = max(lines, key=len)
-        needed = int(len(max_line) * fs_pt * 0.75 * 12700)
-        if needed > shape.width:
-            max_w = prs.slide_width - shape.left - Emu(50000)
-            shape.width = min(needed, max(max_w, shape.width))
-
-
-def _pf(s: str | None, default: float = 0) -> float:
-    if not s:
-        return default
-    try:
-        return float(s.replace("px", "").strip())
-    except (ValueError, TypeError):
-        return default
-
-
-def _add_png_fallback(slide, svg_path: Path) -> None:
-    try:
-        import cairosvg
-        png = cairosvg.svg2png(url=str(svg_path), output_width=2560, output_height=1440)
-        slide.shapes.add_picture(io.BytesIO(png), Emu(0), Emu(0), Emu(SLIDE_W), Emu(SLIDE_H))
-    except Exception as e:
-        logger.error("PNG fallback failed for {}: {}", svg_path.name, e)

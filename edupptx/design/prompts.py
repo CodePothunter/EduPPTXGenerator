@@ -1,12 +1,148 @@
-"""SVG 生成的提示词工程。"""
+"""SVG 生成的提示词工程 — V3 reference 文件组装。"""
 
 from __future__ import annotations
 
 import base64
 import io
 from pathlib import Path
+from typing import Literal
 
-from edupptx.models import PagePlan, SlideAssets
+from loguru import logger
+
+from edupptx.models import (
+    PagePlan,
+    SlideAssets,
+    VisualPlan,
+    iter_image_slot_keys,
+)
+
+_REFS_DIR = Path(__file__).parent / "references"
+_PAGE_TEMPLATES_DIR = Path(__file__).parent / "page_templates"
+_CHART_TEMPLATES_DIR = Path(__file__).parent / "chart_templates"
+
+# Page types that map to one or more template stems.
+# `section` keeps `session` as an alias so subject-specific template folders
+# can provide divider pages without having to rename existing assets.
+_PAGE_TYPE_TEMPLATE_STEMS = {
+    "cover": ("cover",),
+    "toc": ("toc",),
+    "section": ("section",),
+    "content": ("content",),
+    "closing": ("closing",),
+}
+
+_MAX_TEMPLATE_CHARS = 3000  # Token budget per template
+_DEFAULT_TEMPLATE_FAMILY = "复用"
+_CHART_TEMPLATE_MAP = {
+    "timeline": ("timeline.svg",),
+    "relation": ("relation.svg", "关系图.svg"),
+}
+
+_IMAGE_BOUNDARY_RULES = """
+## 图片边界硬性规则
+
+当你把 `<image>` 放进卡片或任何有边界的面板时，图片框本身必须完全落在该容器内部。
+
+- 不要依赖 `clipPath`、`mask` 或 overflow hidden 去掩盖错误的图片框。
+- 必须满足以下不等式：
+  `image_x >= card_x`
+  `image_y >= card_y`
+  `image_x + image_width <= card_x + card_width`
+  `image_y + image_height <= card_y + card_height`
+- 如果卡片需要内边距，除非模板明确展示为贴边媒体，否则四周至少保留 12px 内边距。
+- 如果不确定安全尺寸，宁可把图片做小，也不要做大。
+- `<image>` 的 width/height 必须先根据卡片边界来确定，实际位图会在后续步骤再注入。
+- 如果 `material_needs.images` 为某张图片指定了 `aspect_ratio`，则该图片对应的 SVG 图片框宽高比必须与该比例严格一致。
+- 严禁把 `1:1` 的图片框画成 `4:3`、`16:9` 或其他比例；也严禁把 `4:3`/`3:4`/`16:9`/`9:16` 的图片框偷改成近似比例。
+- 先决定图片框的 `width/height`，再检查 `width / height` 是否匹配规划比例；比例不匹配时，必须改框尺寸，不要硬塞图片。
+- 对所有真实图片元素，默认添加 `preserveAspectRatio="xMidYMid slice"`，避免拉伸变形。
+"""
+
+
+def _truncate_template_content(content: str) -> str:
+    if len(content) > _MAX_TEMPLATE_CHARS:
+        return content[:_MAX_TEMPLATE_CHARS] + "\n<!-- ... 截断 ... -->\n</svg>"
+    return content
+
+
+def _template_stems_for_page_type(page_type: str) -> tuple[str, ...]:
+    return _PAGE_TYPE_TEMPLATE_STEMS.get(page_type, ())
+
+
+def _load_page_templates(
+    page_type: str,
+    template_family: str = _DEFAULT_TEMPLATE_FAMILY,
+    template_variant: str | None = None,
+) -> list[tuple[str, str]]:
+    """Load only the selected SVG reference template for one page."""
+    families_to_try: list[str] = []
+    if template_family:
+        families_to_try.append(template_family)
+    if _DEFAULT_TEMPLATE_FAMILY not in families_to_try:
+        families_to_try.append(_DEFAULT_TEMPLATE_FAMILY)
+
+    for family in families_to_try:
+        family_dir = _PAGE_TEMPLATES_DIR / family
+        if not family_dir.exists():
+            continue
+
+        selected_paths: list[Path] = []
+        if template_variant:
+            variant_path = family_dir / f"{template_variant}.svg"
+            if variant_path.exists():
+                selected_paths = [variant_path]
+        else:
+            for stem in _template_stems_for_page_type(page_type):
+                exact_path = family_dir / f"{stem}.svg"
+                if exact_path.exists():
+                    selected_paths = [exact_path]
+                    break
+            if not selected_paths:
+                for stem in _template_stems_for_page_type(page_type):
+                    prefixed_matches = sorted(family_dir.glob(f"{stem}_*.svg"))
+                    if prefixed_matches:
+                        selected_paths = [prefixed_matches[0]]
+                        break
+
+        if not selected_paths:
+            continue
+
+        loaded: list[tuple[str, str]] = []
+        for path in selected_paths:
+            if path.suffix.lower() != ".svg":
+                continue
+            content = _truncate_template_content(path.read_text(encoding="utf-8"))
+            loaded.append((f"{family}/{path.name}", content))
+        if loaded:
+            return loaded
+    return []
+
+
+def _load_chart_templates(page_type: str, layout_hint: str | None = None) -> list[tuple[str, str]]:
+    keys_to_try: list[str] = []
+    if page_type:
+        keys_to_try.append(page_type)
+    if layout_hint and layout_hint not in keys_to_try:
+        keys_to_try.append(layout_hint)
+
+    loaded: list[tuple[str, str]] = []
+    for key in keys_to_try:
+        for filename in _CHART_TEMPLATE_MAP.get(key, ()):
+            path = _CHART_TEMPLATES_DIR / filename
+            if not path.exists():
+                continue
+            content = _truncate_template_content(path.read_text(encoding="utf-8"))
+            loaded.append((filename, content))
+    return loaded
+
+
+def _load_ref(name: str) -> str:
+    """Load a reference markdown file."""
+    path = _REFS_DIR / name
+    if not path.exists():
+        logger.warning("Reference file not found: {} — prompt quality may degrade", path)
+        return ""
+    return path.read_text(encoding="utf-8")
 
 
 def _compress_and_encode(image_path: Path, max_width: int = 400, quality: int = 50) -> str | None:
@@ -25,234 +161,103 @@ def _compress_and_encode(image_path: Path, max_width: int = 400, quality: int = 
         return None
 
 
-BENTO_GRID_SPEC = """\
-## Bento Grid 布局系统
-
-Bento Grid 是一种基于卡片的模块化布局，专为教育演示设计。
-
-### 核心原则
-1. **卡片是基本布局单元**：每页包含 1-5+ 张卡片，数量由内容决定
-2. **面积 = 重要性**：最大的卡片承载最核心的信息
-3. **统一间距**：所有卡片之间保持 20px 间距
-4. **圆角一致**：所有卡片使用相同的圆角半径（推荐 12-16px）
-5. **内边距充足**：卡片内部至少 24px 内边距，文字不贴边
-
-### 布局组合
-
-| 布局名称 | 适用场景 | 卡片分布描述 |
-|---------|---------|------------|
-| center_hero | 封面、标题页 | 单张大卡片居中，承载标题和副标题 |
-| vertical_list | 要点列举、定义 | 纵向等宽卡片堆叠，每张一个要点 |
-| bento_2col_equal | 对比、两方面分析 | 左右等宽两列 |
-| bento_2col_asymmetric | 主次内容 | 左宽右窄（约 2:1），左侧为主内容 |
-| bento_3col | 三要素并列 | 三列等宽卡片 |
-| hero_top_cards_bottom | 概述+细节 | 上方大卡片 + 下方 2-3 小卡片 |
-| cards_top_hero_bottom | 铺垫+结论 | 上方 2-3 小卡片 + 下方大卡片 |
-| mixed_grid | 复杂内容 | 自由组合大小卡片，填满画布 |
-| full_image | 全图展示 | 背景图+浮动文字卡片 |
-| timeline | 时间线、流程 | 横向时间轴 + 节点卡片 |
-| comparison | 正反对比 | 左右对比卡片，颜色区分 |
-
-### 画布分区（严格遵守）
-
-画布 1280x720 分为以下固定区域：
-
-```
-┌─────────────────────────────────────┐ y=0
-│  页面标题区 (y: 30-80)               │
-│  主标题 y=50, font-size=32, bold     │
-│  副标题 y=78, font-size=16           │
-├─────────────────────────────────────┤ y=90
-│                                     │
-│  卡片内容区 (y: 100-660)             │
-│  左边距 x=50, 右边距 x=1230          │
-│  可用宽度 = 1180                     │
-│  可用高度 = 560                      │
-│                                     │
-│  卡片内部：                          │
-│    标题 y_offset=30, font-size=20    │
-│    正文 y_offset=60, font-size=16    │
-│    行间距 dy=24                       │
-│                                     │
-├─────────────────────────────────────┤ y=670
-│  页脚区 (y: 680-710)                 │
-│  页码 x=1220, y=700, font-size=12   │
-└─────────────────────────────────────┘ y=720
-```
-
-**硬性坐标规则（违反会被自动裁切）：**
-- **x 最小值 = 50**：所有元素的 x 坐标 ≥ 50（标题、卡片、文字全部如此）
-- **x 最大值 = 1230**：所有元素的 x + width ≤ 1230
-- **y 最小值 = 0**：没有负数 y 坐标
-- **y 最大值 = 710**：所有元素在 y=710 以内
-- 页面标题：x=50, y=50, font-size=28-32
-- 副标题：x=50, y=90, font-size=14-16（必须在标题下方 ≥ 40px）
-- 卡片内容区：x ∈ [50, 1230], y ∈ [110, 660]
-- 页码：x=1220, y=700, font-size=12
-- 卡片间距 = 20px
-
-**常见错误（必须避免）：**
-- ❌ 标题 x=0 或 x 为负数 → 会被左边界裁切
-- ❌ 卡片宽度加 x 超过 1230 → 右边溢出
-- ❌ 卡片只有标题没有正文 → 信息密度不足，必须填入内容
-- ❌ 文字超过 20 个汉字没换行 → 必须用 <tspan> 分行
-- ❌ 多个 <text> 放在相同 y 坐标且 x 也重叠 → 文字堆叠不可读
-
-### 排版规范
-- 标题：28-32px，加粗，x ≥ 50
-- 正文：16-18px，行高 dy=24
-- 辅助文字：14px
-- 页码：12px，(1220, 700)
-- 要点：用 ● 或数字序号
-- 中文左对齐
-- 每行最多 18-20 个汉字，超出用 <tspan> 换行
-- 每个卡片必须有标题 + 至少 2 行正文内容
-"""
-
-SVG_CONSTRAINTS = """\
-## SVG 技术约束（PPT 兼容）
-
-生成的 SVG 必须符合以下约束，确保在 PowerPoint 和浏览器中正常显示：
-
-### 画布
-- viewBox="0 0 1280 720"（16:9 标准比例）
-- 不设置 width/height 属性，让容器控制缩放
-
-### 禁止使用
-- ❌ <foreignObject>（PPT 不支持）
-- ❌ CSS @keyframes / animation / transition
-- ❌ <style> 标签中的复杂选择器
-- ❌ JavaScript / <script>
-- ❌ CSS filter（用 SVG <filter> 替代）
-- ❌ clip-path 使用百分比（用绝对坐标）
-
-### 文字
-- 只用 <text> + <tspan> 渲染文字
-- 安全字体：font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif"（所有 <text> 元素都必须使用这个完整的 font-family 列表）
-- 用 dy 属性控制行间距（如 dy="1.4em"）
-- 长文本手动分行，每个 <tspan> 一行，约 20-25 个中文字符换行
-- 文字不能超出卡片边界
-
-### 图片
-- 用 <image href="URL"> 嵌入图片
-- 设置 preserveAspectRatio="xMidYMid slice" 防止变形
-- 用 <clipPath> + <rect rx="..."> 实现圆角图片
-
-### 渐变与装饰
-- 渐变定义在 <defs> 中
-- 使用 <linearGradient> 或 <radialGradient>
-- 装饰元素用低透明度（opacity 0.05-0.2）
-
-### 阴影
-- 使用 SVG <filter> 实现阴影效果
-- 定义在 <defs> 中，通过 filter="url(#shadow)" 引用
-- 示例：<feDropShadow dx="0" dy="2" stdDeviation="4" flood-opacity="0.1"/>
-"""
-
-
-def build_svg_system_prompt(style_guide: str, visual_plan=None) -> str:
-    """构建 SVG 生成的系统提示词。
-
-    Args:
-        style_guide: SVG 风格模板内容
-        visual_plan: VisualPlan 对象，提供统一配色（可选，优先于 style_guide 配色）
-    """
-    color_spec = ""
-    if visual_plan:
-        color_spec = f"""
+def _build_color_spec(vp: VisualPlan) -> str:
+    """Build color specification block from VisualPlan."""
+    return f"""
 ## 统一配色方案（必须严格遵守）
 
 本套幻灯片使用以下统一配色，所有页面必须一致：
 
-- **主色 (primary)**: {visual_plan.primary_color} — 用于标题栏、重要元素、页面顶部装饰条
-- **辅色 (secondary)**: {visual_plan.secondary_color} — 用于次级标题、图标、辅助装饰
-- **强调色 (accent)**: {visual_plan.accent_color} — 仅用于关键数据、重点标注（慎用）
-- **卡片背景**: {visual_plan.card_bg_color}
-- **正文色**: {visual_plan.text_color}
-- **标题色**: {visual_plan.heading_color}
+- **主色 (primary)**: {vp.primary_color} — 标题栏装饰条、重要元素
+- **辅色 (secondary)**: {vp.secondary_color} — 次级标题、图标填充
+- **强调色 (accent)**: {vp.accent_color} — 关键数据、重点标注（慎用）
+- **卡片背景**: {vp.card_bg_color}
+- **次背景**: {vp.secondary_bg_color} — 区域分隔、交替行背景
+- **正文色**: {vp.text_color}
+- **标题色**: {vp.heading_color}
 
 **严格要求**：
-- 所有 `<rect>` 卡片的 fill 使用 `{visual_plan.card_bg_color}`
-- 所有正文 `<text>` 的 fill 使用 `{visual_plan.text_color}`
-- 页面标题的 fill 使用 `{visual_plan.heading_color}`
-- 页面顶部装饰条使用 `{visual_plan.primary_color}`
-- 不要自行发明其他颜色，严格在以上色板范围内配色
+- 卡片 `<rect>` fill 使用 `{vp.card_bg_color}`
+- 交替行/引用区块 fill 使用 `{vp.secondary_bg_color}`
+- 正文 `<text>` fill 使用 `{vp.text_color}`
+- 页面标题 fill 使用 `{vp.heading_color}`
+- 装饰条/图标使用 `{vp.primary_color}` 或 `{vp.secondary_color}`
+- 不要自行发明其他颜色
 """
 
-    return f"""\
-你是一位专业的信息架构师和 SVG 视觉设计专家，专注于教育演示文稿的设计。
 
-## 你的职责
-将教育内容转化为视觉清晰、信息层次分明的 SVG 幻灯片。每一页都应该：
-1. **信息优先**：内容的视觉层次要准确反映其重要性
-2. **教学友好**：学生能快速抓住要点，教师能流畅讲解
-3. **视觉一致**：遵循给定的风格指南，保持全套幻灯片的视觉统一
+def _build_family_decoration_guidance(template_family: str) -> str:
+    family = (template_family or "").replace("\\", "/").strip("/")
+    if family == "低年级":
+        return (
+            "\n### 低年级装饰语言\n"
+            "- 即使参考模板中未显式绘制装饰元素，也允许主动补充轻装饰。\n"
+            "- 推荐装饰母题：浅色圆点、小星形、波浪线、胶囊贴纸、计数圆点、轻量几何小图形。\n"
+            "- 装饰数量建议每页 3-8 个，透明度建议 `opacity 0.08-0.18`。\n"
+            "- 装饰优先放在标题区四角、卡片外侧空白区、卡片角落和页脚附近，不得遮挡正文、图片、题目区和操作区。"
+        )
+    if family == "高年级":
+        return (
+            "\n### 高年级装饰语言\n"
+            "- 高年级页面允许保留少量轻装饰，但必须比低年级更克制。\n"
+            "- 推荐装饰母题：细分隔线、短下划线、角标、小面积点阵、简洁几何边界。\n"
+            "- 装饰数量建议每页 1-4 个，透明度建议 `opacity 0.06-0.14`。\n"
+            "- 装饰只用于层级提示和节奏控制，不得干扰正文、表格、对照区或长文本阅读。"
+        )
+    if family == "复用":
+        return (
+            "\n### 复用模板装饰语言\n"
+            "- 复用模板默认采用中性轻装饰，只在页面存在明确空白区时再补充。\n"
+            "- 推荐装饰母题：圆点、短线、柔和角标、轻量几何块。\n"
+            "- 装饰数量建议每页 1-3 个，优先保持版式中性，不覆盖主家族风格。"
+        )
+    return ""
 
-## 输出格式
-直接输出完整的 SVG 代码，不要包含任何解释文字。SVG 代码用 ```svg 和 ``` 包裹。
 
-{BENTO_GRID_SPEC}
+def build_svg_system_prompt(
+    style_guide: str,
+    visual_plan: VisualPlan | None = None,
+    content_density: Literal["lecture", "review"] = "lecture",
+) -> str:
+    """构建 SVG 生成的系统提示词。
 
-{SVG_CONSTRAINTS}
-{color_spec}
-## 风格指南
+    从 design/references/ 读取 markdown 文件并组装。
+    """
+    parts: list[str] = []
 
-以下是本套幻灯片的视觉风格参考。请严格遵循其中的配色方案、字体、装饰元素风格：
+    # 1. 公共设计规范
+    parts.append(_load_ref("design-base.md"))
 
-{style_guide}
+    # 2. SVG 技术约束
+    parts.append(_load_ref("shared-standards.md"))
 
-## 布局规则（强制遵守，违反会导致渲染错误）
+    # 3. 密度模式
+    if content_density == "review":
+        parts.append(_load_ref("executor-review.md"))
+    else:
+        parts.append(_load_ref("executor-lecture.md"))
 
-### 卡片结构模式
-每个卡片必须用 <g> 元素包裹，内含一个 <rect> 和若干 <text>。文字的 y 坐标必须在 rect 的 y ~ y+height 范围内。
+    # 4. 教育页面类型
+    parts.append(_load_ref("page-types.md"))
+    parts.append(_IMAGE_BOUNDARY_RULES)
 
-正确示例：
-```
-<g>
-  <rect x="50" y="100" width="550" height="200" rx="14" fill="#FFF"/>
-  <text x="74" y="132" font-size="20" font-weight="bold">标题</text>
-  <text x="74" y="164" font-size="16">
-    <tspan x="74" dy="0">第一行内容</tspan>
-    <tspan x="74" dy="24">第二行内容</tspan>
-  </text>
-</g>
-```
+    # 5. 配色方案
+    if visual_plan:
+        parts.append(_build_color_spec(visual_plan))
 
-错误示例（文字 y=320 超出了 rect y+height=300）：
-```
-<rect x="50" y="100" width="550" height="200"/>
-<text x="74" y="320">这行文字在卡片外面！</text>
-```
+    # 6. 风格模板
+    if style_guide:
+        parts.append(f"\n## 风格指南\n\n{style_guide}")
 
-### 坐标规则
-1. **文字必须在卡片内**：每个 <text> 的 y 坐标 ≥ 所属 rect 的 y + 24（上内边距），且 ≤ rect 的 y + height - 8（下内边距）
-2. **文字不能叠在一起**：相邻 <text> 的 y 坐标差 ≥ 上方文字的 font-size + 8
-3. **内容不够高度就减少**：如果卡片放不下所有文字，减少文字条目数而不是让文字溢出
-4. **页面标题固定位置**：y=50，副标题 y=78
-5. **所有元素在画布内**：x ∈ [0, 1280], y ∈ [0, 720]
-6. **页码固定**：(1220, 700)
-
-### 自检清单
-输出 SVG 前确认：
-- [ ] 每个 <text> 的 y 在其所属 <rect> 卡片的 y 到 y+height 范围内
-- [ ] 没有相邻文字的 y 坐标差小于 font-size
-- [ ] 没有元素的 x 或 y 为负数
-- [ ] 卡片不超出 1280x720 画布
-
-## 设计原则
-1. **留白充分**：不要填满每一寸空间，给内容呼吸感
-2. **配色克制**：主色 + 中性色，强调色只用于关键元素
-3. **层次清晰**：通过字号、字重、颜色深浅建立 3-4 个视觉层次
-4. **图文配合**：有图片时必须使用提供的 data URI 图片。合理分配图文空间，图片不小于 200x150
-5. **中文优化**：中文内容适当增大字号（比英文大 2-4px），行距更宽松
-6. **充实内容**：避免大片空白。封面页标题应居中偏上，章节页要有装饰图形或引导语填充空间
-"""
+    return "\n\n".join(p for p in parts if p.strip())
 
 
 def build_svg_user_prompt(
     page: PagePlan,
     assets: SlideAssets,
     total_pages: int,
+    reference_svg: str | None = None,
+    template_family: str = _DEFAULT_TEMPLATE_FAMILY,
     debug: bool = False,
 ) -> str:
     """构建单页 SVG 生成的用户提示词。
@@ -268,6 +273,7 @@ def build_svg_user_prompt(
     lines.append(f"- 标题：{page.title}")
     if page.subtitle:
         lines.append(f"- 副标题：{page.subtitle}")
+        lines.append("- 副标题必须保持单行，控制在 24 个汉字以内；如果信息过多，优先压缩表述，不要换行。")
     lines.append(f"- 建议布局：{page.layout_hint}")
 
     # 内容要点
@@ -285,6 +291,81 @@ def build_svg_user_prompt(
     if page.design_notes:
         lines.append(f"\n### 设计备注\n{page.design_notes}")
 
+    if not page.reveal_from_page:
+        lines.append(
+            "\n### 装饰元素自主生成规则\n"
+            "参考模板主要用于约束页面骨架、卡片关系、图片区位置、间距和视觉层级，"
+            "不要求逐项复刻模板里已经出现的装饰图形。\n"
+            "- 如果模板中缺少装饰元素，但风格指南或设计备注要求有轻装饰，则必须主动补充\n"
+            "- 装饰元素只允许放在安全空白区，不得遮挡标题、正文、图片、题目区或操作区\n"
+            "- 装饰优先使用 `circle`、`rect`、`line`、`path`、`polygon` 或简洁 `<use data-icon>`\n"
+            "- 装饰应使用主色、辅色或强调色的低透明度版本，体现节奏，不承担主要信息"
+        )
+        family_decoration_guidance = _build_family_decoration_guidance(template_family)
+        if family_decoration_guidance:
+            lines.append(family_decoration_guidance)
+
+    lines.append(
+        "\n### 行内高亮文本规则\n"
+        "如果一句正文里需要局部高亮，必须把整句话写在同一个 `<text>` 元素内，"
+        "只允许使用同层、连续的 `<tspan>` 来切分前文 / 高亮词 / 后文。\n"
+        "- 禁止把同一句话拆成多个独立 `<text>` 元素\n"
+        "- 禁止生成嵌套 `<tspan>`；只允许一层 sibling `<tspan>`\n"
+        "- 高亮词前后的正文必须完整保留，按阅读顺序连续输出，不能只剩高亮词\n"
+        "- 同一行内连续 `<tspan>` 默认不要重复设置 `x` 或 `dy`；只有真正换行时才设置新的 `x` 与 `dy`\n"
+        "推荐写法示例：\n"
+        "```svg\n"
+        '<text x="128" y="632" font-size="20" fill="{text_color}">\n'
+        '  <tspan x="128" dy="0">“脑袋”的“袋”读</tspan>\n'
+        '  <tspan fill="{accent_color}" font-weight="bold">轻声</tspan>\n'
+        '  <tspan>，“眼睛”的“睛”是</tspan>\n'
+        '  <tspan fill="{accent_color}" font-weight="bold">目字旁</tspan>\n'
+        "</text>\n"
+        "```"
+    )
+
+    if page.layout_hint in {"bento_2col_equal", "bento_2col_asymmetric", "bento_3col"}:
+        point_count = len(page.content_points or [])
+        if "stacked_subcards" in (page.design_notes or "") or 3 <= point_count <= 5:
+            lines.append(
+                "\n### 内部子卡片优先规则\n"
+                "如果某一张大卡片承载的是 3–5 个同级短要点，请优先使用内部子卡片模式（`stacked_subcards`），"
+                "不要直接输出成长编号列表或大段正文。\n"
+                "- 子卡片只允许上下纵向堆叠\n"
+                "- 每张子卡片承载“短标题 + 1–2 行说明”\n"
+                "- 子卡片数量优先与该卡片内的同级短要点数量一致（允许 2–5 个）\n"
+                "- 只有在均分后高度明显不足，或该大卡片本身是大面积图片区时，才回退为普通列表"
+            )
+
+    if page.layout_hint == "hero_with_microcards":
+        lines.append(
+            "\n### hero_with_microcards 布局提示\n"
+            "该布局必须保持“页面只有一张外层 hero 大卡片，再在大卡片内部组织微模块”的主结构。\n"
+            "- 外层大卡片是页面视觉主体，不要把微模块拆到大卡片外部\n"
+            "- 卡内微模块可组织为 2-6 个小单元，形态可以是小卡、分栏短句、强调块或提示条\n"
+            "- 同一页内部的微模块应共享统一节奏和样式，不要混用彼此冲突的结构\n"
+            "- 如果内容主要是卡内分区，就不要退化成 mixed_grid；如果内容只是单条结论，也不要硬凑很多微模块"
+        )
+
+    if page.reveal_from_page:
+        reveal_mode_text = {
+            "highlight_correct_option": "仅高亮正确选项或正确判断，不改动原选项卡位置与文字换行。",
+            "show_answer": "仅在原留白位置或答案区补充答案，不改动原题干与留白布局。",
+        }.get(page.reveal_mode, "仅新增答案揭晓层，不改动原布局。")
+        lines.append(
+            "\n### 伪动画答案揭晓页\n"
+            f"本页是第 {page.reveal_from_page} 页的答案揭晓页，必须复用上一页版式，不能重新布局。\n"
+            "- 保持原有题目卡、选项卡、文本块、图片、图标的 x/y/width/height、font-size、换行与对齐方式不变\n"
+            "- 只允许新增答案、高亮、勾选、角标、描边等叠加层，不允许移动、缩放、删除或重排原有元素\n"
+            f"- 揭晓方式：{reveal_mode_text}"
+        )
+        if reference_svg:
+            lines.append(
+                "\n### 上一页参考 SVG\n"
+                "以下是必须复用的上一页完整 SVG。请以它为基底保留全部现有元素，只添加答案揭晓层，并返回完整 SVG。\n"
+                f"```svg\n{reference_svg}\n```"
+            )
+
     # 图片处理：debug 模式用描述占位，正常模式用 __IMAGE__ token
     if debug:
         # Debug mode: describe image needs as visual placeholders
@@ -292,12 +373,15 @@ def build_svg_user_prompt(
         if image_needs:
             lines.append("\n### 图片占位（Debug 模式）")
             lines.append(
-                "以下位置需要插图。请用**虚线矩形 + 居中灰色描述文字**标注图片区域："
+                "以下位置需要插图。请用**虚线矩形 + 居中灰色描述文字**标注图片区域。\n"
+                "**重要**：占位框的宽高比必须使用以下预定比例之一：\n"
+                "1:1, 4:3, 3:4, 16:9, 9:16, 3:2, 2:3, 21:9\n"
             )
             for img in image_needs:
-                lines.append(f"- {img.role}: {img.query}")
+                ratio = img.aspect_ratio
+                lines.append(f"- {img.role} (比例 {ratio}): {img.query}")
             lines.append(
-                "\n占位示例：\n"
+                "\n占位示例（注意宽高比必须匹配预定比例）：\n"
                 "```svg\n"
                 '<rect x="50" y="120" width="300" height="200" rx="8" '
                 'fill="#F1F5F9" stroke="#94A3B8" stroke-width="1.5" stroke-dasharray="6,4"/>\n'
@@ -310,33 +394,107 @@ def build_svg_user_prompt(
     else:
         # Normal mode: use __IMAGE__ placeholders for post-processing injection
         image_lines: list[str] = []
-        for role, path in assets.image_paths.items():
-            image_lines.append(f'- **{role}** 图片可用，请用 `<image href="__IMAGE_{role.upper()}__" .../>` 作为占位')
+        # Build role→ratio mapping from page's image needs
+        for slot_key, img in iter_image_slot_keys(page.material_needs.images or []):
+            if slot_key not in assets.image_paths:
+                continue
+            slot_label = slot_key.upper()
+            role = slot_key
+            ratio = img.aspect_ratio
+            image_lines.append(
+                f'- **{role}** (比例 {ratio}) 图片可用，'
+                f'请用 `<image href="__IMAGE_{role.upper()}__" .../>` 作为占位'
+            )
         if image_lines:
             lines.append("\n### 可用图片资源")
             lines.extend(image_lines)
             lines.append(
                 "\n**必须** 在合适位置放置 `<image>` 元素。"
                 ' 使用 `href="__IMAGE_HERO__"` 或 `href="__IMAGE_ILLUSTRATION__"` 等占位符。'
-                " 系统会自动替换为真实图片。给 image 设置合理的 x, y, width, height 属性。"
+                " 系统会自动替换为真实图片。`<image>` 的宽高比**必须严格匹配**上面标注的比例。"
+                " 先按规划比例确定图片框，再填写 `x/y/width/height`；不要先随意画框，再拿图片去凑。"
+                " 如果规划比例是 `1:1`，图片框就必须满足 `width = height`；如果是 `4:3`，就必须满足 `width / height ≈ 1.333`；如果是 `16:9`，就必须满足 `width / height ≈ 1.778`。"
+                ' 每个真实图片元素默认写成 `<image ... preserveAspectRatio="xMidYMid slice"/>`，不要省略。'
             )
 
     # 可用图标
     if assets.icon_svgs:
         icon_names = ", ".join(assets.icon_svgs.keys())
-        lines.append(f"\n### 可用图标\n{icon_names}")
-        lines.append("将图标 SVG 内容直接嵌入为 <g> 元素，适当缩放。")
+        lines.append(f"\n### 可用图标\n可用图标名: {icon_names}")
+        lines.append(
+            "使用占位符语法嵌入图标（系统自动替换为实际图标 SVG）：\n"
+            "```svg\n"
+            '<use data-icon="图标名" x="100" y="200" width="48" height="48" fill="{primary_color}"/>\n'
+            "```\n"
+            "`data-icon` 的值必须是上面列出的图标名之一。"
+            "设置合理的 x, y, width, height 属性控制位置和大小。"
+        )
+    elif page.material_needs.icons:
+        # Debug mode: icons not fetched, but hint the LLM to use SVG decorations
+        lines.append("\n### 装饰元素提示")
+        lines.append(
+            "本页建议使用以下视觉元素（请用 SVG 图形替代，不要用 emoji）：\n"
+            f"图标关键词: {', '.join(page.material_needs.icons)}\n"
+            "实现方式：用主色圆形 `<circle>` 内放白色数字序号（1, 2, 3...），"
+            "或用辅色矩形做标签。不要使用 Unicode 特殊符号（如 ▭、◆、▶ 等），"
+            "这些符号跨平台渲染不一致。"
+        )
+
+    # 页面 SVG 参考模板（LLM 照着画，不是填充模板）
+    template_svgs = []
+    if page.template_variant:
+        template_svgs = _load_page_templates(
+            page.page_type,
+            template_family=template_family,
+            template_variant=page.template_variant,
+        )
+    if template_svgs:
+        loaded_families = ", ".join(sorted({name.split("/", 1)[0] for name, _ in template_svgs}))
+        if page.template_variant:
+            lines.append(f"\n### Preferred Template Variant\n{page.template_variant}")
+        lines.append(
+            "\n### 参考模板家族\n"
+            f"当前页面优先参考 `{template_family}` 模板目录。实际导入模板来源：{loaded_families}。"
+            "请综合下面所有同页型参考模板的布局结构和视觉风格生成新的 SVG，"
+            "但不要复制模板中的具体文字内容，也不要把模板里出现过的每一个装饰元素当成必须复刻的对象。"
+            "模板主要约束布局骨架与视觉节奏，轻装饰可以根据当前页面内容和风格指南自主补充。"
+        )
+        for template_name, template_svg in template_svgs:
+            lines.append(f"\n#### 参考模板：{template_name}\n```svg\n{template_svg}\n```")
+    else:
+        if page.template_variant:
+            lines.append(
+                "\n### 页面模板状态\n"
+                f"当前未命中模板变体 `{page.template_variant}`。不要强行套用其它 page_type 或无关模板。"
+                "请仅根据页面类型规则、建议布局、style guide、design notes 和可用图示参考自主设计本页。"
+            )
+        else:
+            lines.append(
+                "\n### 页面模板状态\n"
+                "当前没有可用的 page template 参考。不要强行回退到其它现有模板。"
+                "请仅根据页面类型规则、建议布局、style guide、design notes 和可用图示参考自主设计本页。"
+            )
+
+    chart_templates = _load_chart_templates(page.page_type, page.layout_hint)
+    if chart_templates:
+        lines.append(
+            "\n### 图示结构参考模板\n"
+            "以下模板用于约束图示结构本身。请优先复用其节点组织方式、连接关系和整体构图，"
+            "但必须替换成当前页面的真实内容。"
+        )
+        for template_name, template_svg in chart_templates:
+            lines.append(f"\n#### 图示参考：chart_templates/{template_name}\n```svg\n{template_svg}\n```")
 
     # 页面类型特殊说明
     type_hints = {
         "cover": (
             "这是封面页。设计要求：\n"
-            "1. 使用 center_hero 布局：一张大卡片（w≥900, h≥350）居中\n"
+            "1. 必须使用 center_hero 布局：一张大卡片（w≥900, h≥350）居中\n"
             "2. 主标题 font-size=56-72，加粗，居中\n"
             "3. 副标题在主标题下方 40px，font-size=20-24\n"
-            "4. 如有图片占位，放在标题上方或侧面，尺寸不小于 300x200\n"
-            "5. 用装饰圆形、渐变色块填充空白区域，体现主题氛围\n"
-            "6. 页面不能有大面积空白——标题区上下都要有视觉元素"
+            "4. 用装饰图形、渐变色块填充空白区域，体现主题氛围\n"
+            "5. 页面不能有大面积空白——标题区上下都要有视觉元素\n"     
+            "6. 不要绘制任何铺满整页的背景矩形、渐变矩形，或覆盖大部分画布的遮罩矩形。\n"
         ),
         "toc": (
             "这是目录页。设计要求：\n"
@@ -347,10 +505,11 @@ def build_svg_user_prompt(
         ),
         "section": (
             "这是章节分隔页。设计要求：\n"
-            "1. 章节标题要大（font-size=40-48），居中偏上\n"
+            "1. 章节标题要大（font-size=40-48），居中\n"
             "2. 下方配一句引导语或本章概述（font-size=18-20）\n"
             "3. 可用装饰图形（圆形、线条、色块）填充，体现视觉节奏\n"
-            "4. 如有图片占位，居中大尺寸展示"
+            "4. 必须使用 center_hero 布局"
+            "5. 不要绘制任何铺满整页的背景矩形、渐变矩形，或覆盖大部分画布的遮罩矩形。\n"
         ),
         "closing": (
             "这是结束页。设计要求：\n"
@@ -367,9 +526,104 @@ def build_svg_user_prompt(
             "4. 每个数据卡片要有标签+数值+简短说明"
         ),
         "case": "这是案例分析页。突出案例标题，清晰展示分析要点，可配图说明。",
+        "exercise": (
+            "这是练习题页面。设计要求：\n"
+            "1. 题目页优先保持清晰的题干区和答题留白区\n"
+            "2. 如果本页是答案揭晓页，只在原留白区或答案标注区补充答案，不重新布局\n"
+            "3. 答题区、下划线、留白框与题干文本的位置必须稳定，避免前后页切换错位"
+        ),
+        "quiz": (
+            "这是练习检测页。设计要求：\n"
+            "1. 题目大卡片在上方，选项卡片 2x2 在下方\n"
+            "2. 题号用主色圆形背景 + 白色数字\n"
+            "3. 选项标签 A/B/C/D 用辅色圆形\n"
+            "4. 参考 page-types.md 中 quiz 类型的布局定义"
+        ),
+        "formula": (
+            "这是公式推导页。设计要求：\n"
+            "1. 步骤卡片纵向排列，用箭头（<polygon>）连接\n"
+            "2. 每步有序号圆 + 公式 + 文字说明\n"
+            "3. 最后一步（结论）用强调色卡片高亮\n"
+            "4. 参考 page-types.md 中 formula 类型的布局定义\n"
+            '5. **公式必须使用 data-latex 属性标记**，例如：\n'
+            '   `<text data-latex="\\frac{a}{b}" fill="#1E293B">a/b</text>`\n'
+            "   系统会自动将 LaTeX 渲染为高质量图片"
+        ),
+        "experiment": (
+            "这是实验步骤页。设计要求：\n"
+            "1. 左窄右宽 (3:7) 布局\n"
+            "2. 左侧：器材列表卡片，每项配图标\n"
+            "3. 右侧：步骤编号列表 + 底部结论高亮卡片\n"
+            "4. 参考 page-types.md 中 experiment 类型的布局定义"
+        ),
+        "timeline": (
+            "这是时间线页。设计要求：\n"
+            "1. 时间线节点数量必须严格等于 content_points 数量，按从左到右顺序排列\n"
+            "2. 如果 material_needs.images 非空，则每个节点必须对应一张图片，图片数量、节点数量、content_points 数量三者必须一致\n"
+            "3. 图片槽位必须按顺序一一对应：第 1 个节点只能使用第 1 个图片槽位，第 2 个节点只能使用第 2 个图片槽位，不能跳号、复用或回退到前面的槽位\n"
+            "4. 所有节点圆心、图片框、下方文字卡都必须完整落在安全区 x=50..1230 内，最后一个节点不能越过右边界\n"
+            "5. 默认将节点圆心均匀分布在 x=140..1140 之间；箭头位于相邻节点中点；不要把 5 个以上节点继续按固定大间距硬排\n"
+            "6. 每个节点使用一个独立 <g> 包裹图片、圆点、说明卡和文字，便于后处理整体微调"
+        ),
+        "relation": (
+            "这是 content 页的 relation 关系图布局。设计要求：\n"
+            "1. 使用中心节点 + 分支节点 + 连接线/箭头的关系图结构，而不是普通列表或表格。\n"
+            "2. 将 content_points 解释为关系节点、分支节点或关系陈述，优先组织成 3-6 个短节点。\n"
+            "3. 若存在核心概念，放在中心或左侧主节点；其余节点按层级或因果关系分布在周围。\n"
+            "4. 每个节点使用独立 `<g>` 包裹节点框和文字，连接线必须指向明确，不要压到文本上。\n"
+            "5. 所有节点、箭头和连接线必须完整落在安全区内，不要越出 x=50..1230、y=110..660。\n"
+            "6. 优先参考图示结构模板，保持关系图的构图感，不要退化为普通竖排卡片。"
+        ),
+        "comparison": (
+            "这是对比表格页。设计要求：\n"
+            "1. 表头行用主色背景 + 白色文字\n"
+            "2. 数据行交替使用 card_bg 和 secondary_bg\n"
+            "3. 用 <rect> + <text> + <line> 构建表格\n"
+            "4. 参考 page-types.md 中 layout_hint=comparison 的布局定义"
+        ),
+        "summary": (
+            "这是知识归纳页。设计要求：\n"
+            "1. 分类卡片纵向排列，每个分类有标题栏（辅色背景）\n"
+            "2. 知识点用列表形式，配图标前缀\n"
+            "3. 可选：底部放「易错点」警示卡片（浅红/浅黄背景）\n"
+            "4. 参考 page-types.md 中 summary 类型的布局定义"
+        ),
     }
-    if page.page_type in type_hints:
-        lines.append(f"\n### 页面类型提示\n{type_hints[page.page_type]}")
+    
+    type_hints["toc"] = (
+        "这是一个使用纵向列表横向卡片的 TOC 页面。\n"
+        "1. 将 TOC 卡片视为固定高度的导航卡片，而不是可伸缩的内容容器。\n"
+        "2. 如果有 4 个 TOC 卡片，每张卡片高度必须至少为 104px；如果有 5 个 TOC 卡片，每张卡片高度必须至少为 96px。\n"
+        "3. 整个 TOC 卡片堆叠区域必须保持在 y=120..660 范围内。不要依赖 step6 去扩展卡片高度。\n"
+        "4. 每张 TOC 卡片最多只能包含一行简短标题加一行简短描述，或者总共最多两行简短文本。\n"
+        "5. 如果文本放不下，应缩短措辞，而不是把卡片压缩到低于最小高度。\n"
+        "6. 使用稳定的卡片间距：4 张卡片时为 14-16px，5 张卡片时为 10-12px。\n"
+    )
+    emitted_hint_keys: set[str] = set()
+    for hint_key in (page.page_type, page.layout_hint):
+        if hint_key in type_hints and hint_key not in emitted_hint_keys:
+            lines.append(f"\n### 页面类型提示\n{type_hints[hint_key]}")
+            emitted_hint_keys.add(hint_key)
 
-    lines.append(f"\n请生成第 {page.page_number} 页的完整 SVG 代码。")
+    lines.append(
+        f"\n请生成第 {page.page_number} 页的完整 SVG 代码。"
+        "\n\n**重要提醒**：绝对禁止使用任何 Emoji 表情符号（如 🔍📋💡🎯✨🕐 等），"
+        "改用 SVG 图形（圆形+数字、色块、箭头 polygon）或纯文字符号（●、→、①②③）。"
+    )
+    if page.material_needs.images:
+        lines.append(
+            "\n### 图片边界硬性规则\n"
+            "如果 `<image>` 放在卡片 `<rect>` 内部，图片框必须完全落在该卡片内部。"
+            "必须严格满足以下不等式："
+            "`image_x >= card_x`, "
+            "`image_y >= card_y`, "
+            "`image_x + image_width <= card_x + card_width`, "
+            "`image_y + image_height <= card_y + card_height`。"
+            "同时，图片框的宽高比必须与该图片在 `material_needs.images` 中声明的 `aspect_ratio` 严格一致。"
+            "不要把规划为横图的图片画成方图，也不要把规划为方图的图片画成长图。"
+            "如果图片框比例与规划比例冲突，优先修改图片框尺寸，绝不要通过拉伸图片来适配。"
+            '所有真实图片默认添加 `preserveAspectRatio="xMidYMid slice"`。'
+            "不要假设 `clipPath` 或遮罩能隐藏溢出。"
+            "如果安全尺寸不明确，就缩小图片，并至少保留 12px 内边距。"
+        )
     return "\n".join(lines)

@@ -1,0 +1,30 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <g font-family="Noto Sans SC,Microsoft YaHei,Arial,sans-serif">
+    <rect width="1280" height="6" fill="{primary_color}"/>
+    <text x="50" y="50" font-size="34" font-weight="800" fill="{heading_color}">{title}</text>
+    <text x="50" y="92" font-size="20" font-weight="500" fill="{text_color}">{subtitle}</text>
+
+    <rect x="60" y="128" width="320" height="492" rx="26" fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
+    <rect x="82" y="190" width="276" height="368" rx="18" fill="{secondary_bg_color}" stroke="{accent_color}" stroke-width="2.5"/>
+    <image x="82" y="190" width="276" height="368" href="" preserveAspectRatio="xMidYMid slice"/>
+
+    <rect x="410" y="128" width="820" height="108" rx="18" fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"/>
+    <rect x="432" y="146" width="8" height="72" rx="4" fill="{primary_color}"/>
+    <circle cx="486" cy="182" r="30" fill="{secondary_color}"/>
+    <text x="486" y="191" text-anchor="middle" font-size="28" font-weight="800" fill="{heading_color}">1</text>
+    <text x="548" y="187" font-size="22" font-weight="700" fill="{heading_color}">{item_1_title}</text>
+    <circle cx="1172" cy="182" r="28" fill="{primary_color}"/>
+    <text x="1172" y="189" text-anchor="middle" font-size="18" font-weight="700" fill="{primary_color}">字</text>
+    <circle cx="486" cy="310" r="30" fill="{secondary_color}"/>
+    <rect x="410" y="256" width="820" height="108" rx="18" fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
+    <rect x="432" y="274" width="8" height="72" rx="4" fill="{secondary_color}"/>
+    
+    <text x="486" y="319" text-anchor="middle" font-size="28" font-weight="800" fill="{heading_color}">2</text>
+    <text x="548" y="315" font-size="22" font-weight="700" fill="{heading_color}">{item_2_title}</text>
+    <circle cx="1172" cy="310" r="28" fill="{secondary_color}"/>
+    <text x="1172" y="317" text-anchor="middle" font-size="18" font-weight="700" fill="{secondary_color}">书</text>
+
+    <!-- 更多同类元素 -->
+    <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}">{page_number} / {total_pages}</text>
+  </g>
+</svg>

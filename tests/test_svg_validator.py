@@ -55,7 +55,11 @@ class TestFontFix:
 class TestTextWrapping:
     def test_long_text_wrapped(self):
         long_text = "这是一段很长的中文文本，" * 5  # ~55 chars
-        body = f'<text x="100" y="200" font-size="16">{long_text}</text>'
+        # The new validator needs a container rect to compute wrap width.
+        body = (
+            '<rect x="100" y="100" width="600" height="200" fill="#FFF"/>'
+            f'<text x="110" y="200" font-size="16">{long_text}</text>'
+        )
         svg = _make_svg(body)
         fixed, warnings = validate_and_fix(svg)
         assert any("Wrapped" in w for w in warnings)
@@ -127,3 +131,71 @@ class TestCSSAnimationRemoval:
         fixed, warnings = validate_and_fix(svg)
         assert any("animation" in w.lower() for w in warnings)
         assert "@keyframes" not in fixed
+
+
+class TestPPTBlacklist:
+    def test_removes_smil_animate(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><rect x="50" y="50" width="100" height="100"/><animate attributeName="x" from="0" to="100" dur="1s"/></svg>'
+        fixed, warnings = validate_and_fix(svg)
+        assert '<animate' not in fixed
+        assert any('animate' in w.lower() or 'SMIL' in w for w in warnings)
+
+    def test_removes_marker(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><defs><marker id="arrow"><path d="M0,0 L10,5 L0,10"/></marker></defs><line x1="50" y1="50" x2="200" y2="200" marker-end="url(#arrow)"/></svg>'
+        fixed, warnings = validate_and_fix(svg)
+        assert '<marker' not in fixed
+        assert 'marker-end' not in fixed
+
+    def test_fixes_rgba_color(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><rect x="50" y="50" width="100" height="100" fill="rgba(30,64,175,0.5)"/></svg>'
+        fixed, warnings = validate_and_fix(svg)
+        assert 'rgba' not in fixed
+        assert any('rgba' in w for w in warnings)
+
+    def test_warns_clippath(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><defs><clipPath id="c"><rect x="0" y="0" width="100" height="100"/></clipPath></defs><rect x="50" y="50" width="100" height="100"/></svg>'
+        _, warnings = validate_and_fix(svg)
+        assert any('clipPath' in w for w in warnings)
+
+    def test_warns_g_opacity(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><g opacity="0.5"><rect x="50" y="50" width="100" height="100"/></g></svg>'
+        _, warnings = validate_and_fix(svg)
+        assert any('opacity' in w for w in warnings)
+
+
+class TestCircleLabelAutoFix:
+    def test_adds_dominant_baseline_and_snaps(self):
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">'
+            '<circle cx="100" cy="200" r="18" fill="#2563EB"/>'
+            '<text x="100" y="210" text-anchor="middle" font-size="16" fill="white">1</text>'
+            '</svg>'
+        )
+        fixed, warnings = validate_and_fix(svg)
+        assert 'dominant-baseline="middle"' in fixed
+        assert 'y="200"' in fixed  # snapped to cy
+        assert any('Auto-fixed circle label' in w for w in warnings)
+
+    def test_skips_non_label_text(self):
+        svg = (
+            '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">'
+            '<circle cx="100" cy="200" r="18" fill="#2563EB"/>'
+            '<text x="300" y="400" font-size="16">This is a long paragraph text</text>'
+            '</svg>'
+        )
+        fixed, warnings = validate_and_fix(svg)
+        assert not any('Auto-fixed circle label' in w for w in warnings)
+
+
+class TestMathFontHandling:
+    def test_math_font_preserved_for_equations(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><text x="50" y="200" font-family="Courier New, Consolas, monospace">x² + 2x + 1 = 0</text></svg>'
+        fixed, warnings = validate_and_fix(svg)
+        assert 'Courier New' in fixed
+        assert not any('Replaced unsafe font' in w for w in warnings)
+
+    def test_math_font_replaced_for_chinese_text(self):
+        svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720"><text x="50" y="200" font-family="Courier New">这是普通中文文本</text></svg>'
+        fixed, warnings = validate_and_fix(svg)
+        assert 'Courier New' not in fixed
+        assert any('Replaced unsafe font' in w for w in warnings)

@@ -1,68 +1,88 @@
-"""SVG 生成编排器 —— 并行调用 LLM 为每页生成 SVG。"""
+"""Parallel SVG generation driven by template family + page template references."""
 
 from __future__ import annotations
 
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from pathlib import Path
+from collections.abc import Callable
 
 from loguru import logger
 
 from edupptx.config import Config
 from edupptx.design.prompts import build_svg_system_prompt, build_svg_user_prompt
+from edupptx.design.template_router import load_style_guide, resolve_template_family
 from edupptx.llm_client import create_llm_client
 from edupptx.models import GeneratedSlide, PlanningDraft, SlideAssets
 
 
-def _extract_style_guide(template_path: Path) -> str:
-    """从 SVG 模板中提取风格指南文本。
+def _load_style_guide_text(template_family: str, style_name: str, config: Config) -> str:
+    """Load `style_guide.md` from the selected template folder, with legacy fallback."""
 
-    读取模板 SVG 全文作为风格参考，LLM 会从中学习配色、字体、装饰风格。
-    """
-    if not template_path.exists():
-        logger.warning("样式模板不存在: {}", template_path)
+    content = load_style_guide(template_family)
+    if content:
+        return content
+
+    legacy_template_path = config.styles_dir / f"{style_name}.svg"
+    if not legacy_template_path.exists():
+        logger.warning("Style guide not found for template_family={} or style_name={}", template_family, style_name)
         return ""
-    content = template_path.read_text(encoding="utf-8")
-    # 截取合理长度，避免占用过多 token
+
+    content = legacy_template_path.read_text(encoding="utf-8")
     if len(content) > 8000:
-        content = content[:8000] + "\n<!-- ... 截断 ... -->"
+        content = content[:8000] + "\n<!-- ... truncated ... -->"
     return content
 
 
 def _extract_svg(response: str) -> str:
-    """从 LLM 响应中提取 SVG 内容。"""
-    # 优先匹配 ```svg ... ``` 代码块
-    m = re.search(r"```svg\s*\n(.*?)```", response, re.DOTALL)
-    if m:
-        return m.group(1).strip()
-    # 匹配 ```xml ... ```
-    m = re.search(r"```xml\s*\n(.*?)```", response, re.DOTALL)
-    if m:
-        return m.group(1).strip()
-    # 匹配裸 <svg> 标签
-    m = re.search(r"(<svg[\s\S]*?</svg>)", response)
-    if m:
-        return m.group(1).strip()
-    # 回退：返回原文
-    logger.warning("未能从 LLM 响应中提取 SVG，返回原始内容")
+    """Extract SVG markup from one LLM response."""
+
+    match = re.search(r"```svg\s*\n(.*?)```", response, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+
+    match = re.search(r"```xml\s*\n(.*?)```", response, re.DOTALL)
+    if match:
+        return match.group(1).strip()
+
+    match = re.search(r"(<svg[\s\S]*?</svg>)", response)
+    if match:
+        return match.group(1).strip()
+
+    logger.warning("Failed to extract SVG from model response; returning raw content")
     return response.strip()
 
 
+def _failure_svg(page_number: int) -> str:
+    return (
+        '<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">'
+        f'<text x="640" y="360" text-anchor="middle" font-size="24" fill="#999">'
+        f'Slide {page_number} generation failed'
+        "</text></svg>"
+    )
+
+
 def _generate_one(
-    client: LLMClient,
+    client,
     system_prompt: str,
-    page_plan: "PagePlan",
+    page_plan,
     assets: SlideAssets,
     total_pages: int,
+    reference_svg: str | None = None,
+    template_family: str = "复用",
     debug: bool = False,
 ) -> GeneratedSlide:
-    """为单页生成 SVG（同步，运行在线程中）。"""
-    from edupptx.models import PagePlan  # noqa: F811 — delayed for type hint
+    """Generate one SVG slide synchronously for thread-pool execution."""
 
-    user_prompt = build_svg_user_prompt(page_plan, assets, total_pages, debug=debug)
-    logger.info("正在生成第 {}/{} 页 SVG ...", page_plan.page_number, total_pages)
+    user_prompt = build_svg_user_prompt(
+        page_plan,
+        assets,
+        total_pages,
+        reference_svg=reference_svg,
+        template_family=template_family,
+        debug=debug,
+    )
+    logger.info("Generating slide {}/{} SVG", page_plan.page_number, total_pages)
 
-    # Try up to 2 times (retry once on timeout)
     last_err = None
     for attempt in range(2):
         try:
@@ -75,20 +95,16 @@ def _generate_one(
                 max_tokens=16384,
             )
             break
-        except Exception as e:
-            last_err = e
+        except Exception as exc:
+            last_err = exc
             if attempt == 0:
-                logger.warning("第 {} 页 SVG 生成失败，重试中: {}", page_plan.page_number, str(e)[:80])
+                logger.warning("Slide {} SVG generation failed, retrying: {}", page_plan.page_number, str(exc)[:80])
     else:
         raise last_err
 
-    svg_content = _extract_svg(response)
-    logger.info("第 {} 页 SVG 生成完成，长度 {} 字符", page_plan.page_number, len(svg_content))
-
-    return GeneratedSlide(
-        page_number=page_plan.page_number,
-        svg_content=svg_content,
-    )
+    svg_content = _extract_svg(str(response))
+    logger.info("Slide {} SVG generated, {} chars", page_plan.page_number, len(svg_content))
+    return GeneratedSlide(page_number=page_plan.page_number, svg_content=svg_content)
 
 
 async def generate_slide_svgs(
@@ -97,57 +113,103 @@ async def generate_slide_svgs(
     style_name: str,
     config: Config,
     debug: bool = False,
+    on_slide: Callable[[GeneratedSlide], None] | None = None,
 ) -> list[GeneratedSlide]:
-    """为所有页面并行生成 SVG。
+    """Generate SVG slides, sequentially for reveal pages and in parallel otherwise."""
 
-    使用 ThreadPoolExecutor 并行调用同步 LLM 客户端。
-    """
-    # 1. 加载风格模板
-    template_path = config.styles_dir / f"{style_name}.svg"
-    style_guide = _extract_style_guide(template_path)
-    if not style_guide:
-        logger.warning("未找到风格模板 '{}'，将使用默认风格", style_name)
-
-    # 2. 构建共享系统提示词（注入 VisualPlan 配色）
-    system_prompt = build_svg_system_prompt(style_guide, visual_plan=draft.visual)
-
-    # 3. 初始化 LLM 客户端
     client = create_llm_client(config, web_search=False)
+    template_family = draft.style_routing.template_family or resolve_template_family(draft, client)
+    style_guide = _load_style_guide_text(template_family, style_name, config)
+    if not style_guide:
+        logger.warning("No style guide loaded for template_family={} style_name={}", template_family, style_name)
+
+    system_prompt = build_svg_system_prompt(
+        style_guide,
+        visual_plan=draft.visual,
+        content_density=draft.visual.content_density,
+    )
+
+    logger.info(
+        "Style routing: style_name={}, template_family={}, palette_id={}",
+        draft.style_routing.style_name,
+        template_family,
+        draft.style_routing.palette_id,
+    )
+
     total_pages = len(draft.pages)
-
-    # 4. 并行生成
     results: list[GeneratedSlide] = []
-    max_workers = min(total_pages, config.llm_concurrency)
+    has_reveal_pages = any(getattr(page, "reveal_from_page", None) for page in draft.pages)
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        future_to_page = {}
-        for page in draft.pages:
-            page_assets = all_assets.get(
-                page.page_number,
-                SlideAssets(page_number=page.page_number),
-            )
-            future = executor.submit(
-                _generate_one, client, system_prompt, page, page_assets, total_pages,
-                debug=debug,
-            )
-            future_to_page[future] = page.page_number
-
-        for future in as_completed(future_to_page):
-            page_num = future_to_page[future]
+    if has_reveal_pages:
+        logger.info("Reveal pages detected; switching to sequential SVG generation")
+        generated_svgs: dict[int, str] = {}
+        for page in sorted(draft.pages, key=lambda item: item.page_number):
+            page_assets = all_assets.get(page.page_number, SlideAssets(page_number=page.page_number))
+            reference_svg = None
+            if page.reveal_from_page is not None:
+                reference_svg = generated_svgs.get(page.reveal_from_page)
+                if reference_svg is None:
+                    logger.warning(
+                        "Slide {} references reveal_from_page={} but source SVG is unavailable",
+                        page.page_number,
+                        page.reveal_from_page,
+                    )
             try:
-                slide = future.result()
+                slide = _generate_one(
+                    client,
+                    system_prompt,
+                    page,
+                    page_assets,
+                    total_pages,
+                    reference_svg=reference_svg,
+                    template_family=template_family,
+                    debug=debug,
+                )
                 results.append(slide)
+                generated_svgs[page.page_number] = slide.svg_content
+                if on_slide is not None:
+                    on_slide(slide)
             except Exception:
-                logger.exception("第 {} 页 SVG 生成失败", page_num)
-                # 生成失败时插入空白占位
-                results.append(GeneratedSlide(
-                    page_number=page_num,
-                    svg_content=f'<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">'
-                    f'<text x="640" y="360" text-anchor="middle" font-size="24" '
-                    f'fill="#999">第 {page_num} 页生成失败</text></svg>',
-                ))
+                logger.exception("Slide {} SVG generation failed", page.page_number)
+                fallback_svg = _failure_svg(page.page_number)
+                slide = GeneratedSlide(page_number=page.page_number, svg_content=fallback_svg)
+                results.append(slide)
+                generated_svgs[page.page_number] = fallback_svg
+                if on_slide is not None:
+                    on_slide(slide)
+    else:
+        max_workers = min(total_pages, config.llm_concurrency)
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_page = {}
+            for page in draft.pages:
+                page_assets = all_assets.get(page.page_number, SlideAssets(page_number=page.page_number))
+                future = executor.submit(
+                    _generate_one,
+                    client,
+                    system_prompt,
+                    page,
+                    page_assets,
+                    total_pages,
+                    reference_svg=None,
+                    template_family=template_family,
+                    debug=debug,
+                )
+                future_to_page[future] = page.page_number
 
-    # 5. 按页码排序
-    results.sort(key=lambda s: s.page_number)
-    logger.info("SVG 生成完成，共 {} 页", len(results))
+            for future in as_completed(future_to_page):
+                page_num = future_to_page[future]
+                try:
+                    slide = future.result()
+                    results.append(slide)
+                    if on_slide is not None:
+                        on_slide(slide)
+                except Exception:
+                    logger.exception("Slide {} SVG generation failed", page_num)
+                    slide = GeneratedSlide(page_number=page_num, svg_content=_failure_svg(page_num))
+                    results.append(slide)
+                    if on_slide is not None:
+                        on_slide(slide)
+
+    results.sort(key=lambda slide: slide.page_number)
+    logger.info("SVG generation completed: {} slides", len(results))
     return results

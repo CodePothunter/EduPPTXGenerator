@@ -1,0 +1,249 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+  <identity>
+    <name>shared_reusable_core</name>
+    <label>复用 · 通用结构库</label>
+    <category>shared_reusable</category>
+    <!-- 复用库由运行时自动合并，不通过 tags 参与主家族命中。 -->
+    <intro>
+      适用于所有年级与学科的通用模板库。主要承载目录页、章节页、关系页、练习页、
+      总结页、收尾页，以及若干可跨学科复用的内容页结构。
+    </intro>
+  </identity>
+
+  <routing>
+    <!-- 复用库不参与低年级/高年级主家族竞争，routing 关键词故意留空。 -->
+  </routing>
+
+  <planner>
+    <summary>
+      本目录是共享模板底座。运行时不会优先把它当成主家族参与低年级/高年级竞争，
+      而是在主家族确定后自动合并进来，补齐通用页型与通用内容版式。routing 关键词保持为空，
+      避免共享库被误当成需要命中的主模板族。
+    </summary>
+
+    <page type="toc" variant="toc_1">
+      <title_max_chars>16</title_max_chars>
+      <subtitle_max_chars>24</subtitle_max_chars>
+      <toc_items_max>8</toc_items_max>
+      <preferred_layout_hints>vertical_list</preferred_layout_hints>
+      <design_notes_hint>
+        目录页按条目数在单列和双列之间切换；少量条目可带辅助插画，条目较多时优先保证清晰导航。
+      </design_notes_hint>
+      <image_slots>
+        <slot id="toc_cover" required="false" role="illustration" aspect_ratio="3:4" query_from="topic" query_suffix="toc illustration" source="search">
+          <notes>单列目录页的辅助插画槽位。</notes>
+        </slot>
+      </image_slots>
+    </page>
+
+    <page type="section" variant="section">
+      <title_max_chars>18</title_max_chars>
+      <subtitle_max_chars>26</subtitle_max_chars>
+      <preferred_layout_hints>center_hero</preferred_layout_hints>
+      <design_notes_hint>
+        章节页用于节奏切换，重点是标题主导、留白稳定和轻量装饰。
+      </design_notes_hint>
+    </page>
+
+    <page type="content" variant="content_mixed_grid">
+      <title_max_chars>22</title_max_chars>
+      <subtitle_max_chars>30</subtitle_max_chars>
+      <preferred_layout_hints>
+        mixed_grid, bento_2col_equal, bento_2col_asymmetric, bento_3col,
+        cards_top_hero_bottom, hero_top_cards_bottom, hero_with_microcards, relation
+      </preferred_layout_hints>
+      <design_notes_hint>
+        通用内容页优先服务于结构稳定和信息清晰，不机械复刻示例卡数；与主家族内容模板同池选择，按当前页面内容和布局匹配度决定。
+      </design_notes_hint>
+    </page>
+
+    <page type="exercise" variant="exercise">
+      <title_max_chars>22</title_max_chars>
+      <subtitle_max_chars>30</subtitle_max_chars>
+      <preferred_layout_hints>mixed_grid</preferred_layout_hints>
+      <design_notes_hint>
+        练习页需要稳定保留题目区、操作区和提示区，便于题目页与答案页共版式切换。
+      </design_notes_hint>
+      <image_slots>
+        <slot id="exercise_right_tip" required="false" role="illustration" aspect_ratio="32:15" query_from="topic+title" query_suffix="exercise hint illustration" source="search">
+          <notes>提示卡顶部横图。</notes>
+        </slot>
+      </image_slots>
+    </page>
+
+    <page type="quiz" variant="quiz">
+      <title_max_chars>22</title_max_chars>
+      <subtitle_max_chars>30</subtitle_max_chars>
+      <preferred_layout_hints>mixed_grid</preferred_layout_hints>
+      <design_notes_hint>
+        测验页强调题型区分、答题节奏和留白稳定，不额外依赖图片。
+      </design_notes_hint>
+    </page>
+
+    <page type="summary" variant="summary">
+      <title_max_chars>20</title_max_chars>
+      <subtitle_max_chars>28</subtitle_max_chars>
+      <preferred_layout_hints>mixed_grid</preferred_layout_hints>
+      <design_notes_hint>
+        总结页强调归纳、回顾和重点重现，卡片数量以结构清晰为先。
+      </design_notes_hint>
+    </page>
+
+    <page type="closing" variant="closing">
+      <title_max_chars>18</title_max_chars>
+      <subtitle_max_chars>26</subtitle_max_chars>
+      <preferred_layout_hints>center_hero</preferred_layout_hints>
+      <design_notes_hint>
+        收尾页以结束语和回顾感为主，整体宜简洁收束。
+      </design_notes_hint>
+    </page>
+
+    <variant_catalog>
+      <variant stem="toc_1" page_type="toc">
+        <layout_hint>vertical_list</layout_hint>
+        <hit_keywords>目录, 学习任务, 学习内容, 本课安排, 单列目录</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="3" max="5"/>
+        <page_features>左图右目录，适合条目较少的目录页。</page_features>
+        <reference_rule>条目数在 5 条及以下时优先使用。</reference_rule>
+      </variant>
+
+      <variant stem="toc_2" page_type="toc">
+        <layout_hint>vertical_list</layout_hint>
+        <hit_keywords>目录, 学习任务, 学习内容, 双列目录, 目录概览</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="6" max="8"/>
+        <page_features>双列目录并列排布，适合条目较多的目录概览页。</page_features>
+        <reference_rule>条目数超过 5 条时优先使用。</reference_rule>
+      </variant>
+
+      <variant stem="section" page_type="section">
+        <layout_hint>center_hero</layout_hint>
+        <hit_keywords>章节过渡, 新任务开始, 过渡页, 节奏切换</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="1" max="1"/>
+        <page_features>章节标题卡居中，作为教学节奏切换页。</page_features>
+        <reference_rule>保持呼吸感，不增加无意义的信息块。</reference_rule>
+      </variant>
+
+      <variant stem="content_mixed_grid" page_type="content">
+        <layout_hint>mixed_grid</layout_hint>
+        <hit_keywords>主图, 讲解, 观察, 知识点, 任务</hit_keywords>
+        <image_range min="1" max="3"/>
+        <card_range min="3" max="5"/>
+        <page_features>左主图、右知识卡和右下表达卡的通用讲解结构。</page_features>
+        <reference_rule>适合一张主图带动讲解的常规内容页。</reference_rule>
+      </variant>
+
+      <variant stem="content_mixed_grid_2" page_type="content">
+        <layout_hint>mixed_grid</layout_hint>
+        <hit_keywords>图文联读, 图旁讲解, 图文解析, 讲解型图文页</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="2" max="4"/>
+        <page_features>主图与文字区更均衡，适合图旁解释或图文联读。</page_features>
+        <reference_rule>适合文本比普通 mixed_grid 略多的说明型内容。</reference_rule>
+      </variant>
+
+      <variant stem="content_bento_2col_equal" page_type="content">
+        <layout_hint>bento_2col_equal</layout_hint>
+        <hit_keywords>左右对照, 并列比较, 双栏, 两组信息</hit_keywords>
+        <image_range min="2" max="2"/>
+        <card_range min="2" max="2"/>
+        <page_features>双列等宽，上图下文，适合两组并列信息。</page_features>
+        <reference_rule>保持两栏节奏，不扩成多列。</reference_rule>
+      </variant>
+
+      <variant stem="content_bento_2col_asymmetric" page_type="content">
+        <layout_hint>bento_2col_asymmetric</layout_hint>
+        <hit_keywords>一主一辅, 主图配讲解, 重点解析, 图文解读</hit_keywords>
+        <image_range min="1" max="1"/>
+        <card_range min="2" max="2"/>
+        <page_features>左侧主图，右侧 hero 讲解卡，右下可补短卡。</page_features>
+        <reference_rule>优先突出主图和主讲解卡的主次关系。</reference_rule>
+      </variant>
+
+      <variant stem="content_bento_3col" page_type="content">
+        <layout_hint>bento_3col</layout_hint>
+        <hit_keywords>三部分, 三点归纳, 三栏</hit_keywords>
+        <image_range min="3" max="3"/>
+        <card_range min="3" max="3"/>
+        <page_features>三列等宽结构，适合三点归纳和三对象并列。</page_features>
+        <reference_rule>保持三栏阅读节奏。</reference_rule>
+      </variant>
+
+      <variant stem="content_cards_top_hero_bottom" page_type="content">
+        <layout_hint>cards_top_hero_bottom</layout_hint>
+        <hit_keywords>先归纳后看图, 上卡下图, 先说要点，或者下总结概述，上多张图片</hit_keywords>
+        <image_range min="1" max="3"/>
+        <card_range min="2" max="4"/>
+        <page_features>上方短卡预告要点，下方大图承接情境，或者上方图片引入，下方打卡总结要点</page_features>
+        <reference_rule>适合先布置观察任务再进入主图。</reference_rule>
+      </variant>
+
+      <variant stem="content_hero_top_cards_bottom" page_type="content">
+        <layout_hint>hero_top_cards_bottom</layout_hint>
+        <hit_keywords>先看图再归纳, 上图下卡, 情境导入，或者上文字引入，下多张图片展示文字内容</hit_keywords>
+        <image_range min="1" max="3"/>
+        <card_range min="2" max="4"/>
+        <page_features>上方大图导入，下方短卡整理要点，或者上方文字引入，下方多图展示文字内容。</page_features>
+        <reference_rule>适合先建立场景再分点整理。</reference_rule>
+      </variant>
+
+      <variant stem="content_hero_with_microcards_2" page_type="content">
+        <layout_hint>hero_with_microcards</layout_hint>
+        <hit_keywords>连续文本展示, 正文展示, 诵读展示, 单列正文, 双列正文</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="1" max="1"/>
+        <subcard_range min="0" max="2"/>
+        <page_features>单一大卡承载标题和连续正文，支持单列或双列组织。</page_features>
+        <reference_rule>保持主卡内的连续文本结构，不再拆成外层小卡。</reference_rule>
+      </variant>
+
+      <variant stem="content_relation_1" page_type="content">
+        <layout_hint>relation</layout_hint>
+        <hit_keywords>关系图, 结构关系, 分类关系, 因果关系</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="3" max="8"/>
+        <page_features>中心节点加多个分支节点的关系图结构。</page_features>
+        <reference_rule>保持图式关系，不要退化成符号列表。</reference_rule>
+      </variant>
+
+      <variant stem="exercise" page_type="exercise">
+        <layout_hint>mixed_grid</layout_hint>
+        <hit_keywords>练习, 操作区, 提示卡, 圈一圈, 连一连, 选一选</hit_keywords>
+        <image_range min="0" max="1"/>
+        <card_range min="2" max="4"/>
+        <page_features>题目区、操作区和提示卡构成稳定练习版式。</page_features>
+        <reference_rule>题目页和答案页必须共用版式。</reference_rule>
+      </variant>
+
+      <variant stem="quiz" page_type="quiz">
+        <layout_hint>mixed_grid</layout_hint>
+        <hit_keywords>选择题, 填空题, 判断题, 小测</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="1" max="6"/>
+        <page_features>题型卡横向排布，适合小测和答题提示。</page_features>
+        <reference_rule>强调题型区分和答题节奏，不依赖图片。</reference_rule>
+      </variant>
+
+      <variant stem="summary" page_type="summary">
+        <layout_hint>mixed_grid</layout_hint>
+        <hit_keywords>总结, 回顾, 收获, 小结</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="2" max="4"/>
+        <page_features>归纳总结卡结构，适合重点回顾。</page_features>
+        <reference_rule>优先保持归纳感和结构清晰。</reference_rule>
+      </variant>
+
+      <variant stem="closing" page_type="closing">
+        <layout_hint>center_hero</layout_hint>
+        <hit_keywords>收尾, 再见, 结束语, 课后任务</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="2" max="4"/>
+        <page_features>收尾卡和回顾区构成结束页。</page_features>
+        <reference_rule>保持简洁收束，不添加无关大图。</reference_rule>
+      </variant>
+    </variant_catalog>
+  </planner>
+</template>

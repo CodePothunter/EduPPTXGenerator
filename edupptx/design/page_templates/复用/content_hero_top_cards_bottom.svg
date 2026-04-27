@@ -1,0 +1,87 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <defs>
+    <clipPath id="img">
+      <rect x="363" y="130" width="555" height="312" rx="34"/>
+    </clipPath>
+  </defs>
+
+  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}"/>
+
+  <g font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    <path
+      d="M 50 104 Q 60 98 70 104 T 90 104 T 110 104 T 130 104 T 150 104 T 170 104 T 190 104 T 210 104"
+      fill="none"
+      stroke="{accent_color}"
+      stroke-width="3"
+      stroke-linecap="round"
+    />
+
+    <text x="50" y="50" font-size="32" font-weight="800" fill="{heading_color}">
+      {title}
+    </text>
+    <text x="50" y="92" font-size="19" fill="{text_color}">
+      {subtitle}
+    </text>
+
+    <!-- 上方 hero 区 -->
+    <rect
+      x="363"
+      y="130"
+      width="555"
+      height="312"
+      rx="34"
+      fill="{secondary_bg_color}"
+      stroke="{secondary_color}"
+      stroke-width="2.2"
+    />
+    <image
+      x="363"
+      y="130"
+      width="555"
+      height="312"
+      href="{image_href}"
+      preserveAspectRatio="xMidYMid slice"
+      clip-path="url(#img)"
+    />
+
+    <!-- 下方示例小卡 -->
+    <rect
+      x="70"
+      y="472"
+      width="330"
+      height="166"
+      rx="26"
+      fill="{card_bg_color}"
+      stroke="{primary_color}"
+      stroke-width="2.2"
+    />
+
+
+    <!-- 小卡简洁 icon -->
+    <circle
+      cx="112"
+      cy="514"
+      r="18"
+      fill="{secondary_bg_color}"
+      stroke="{primary_color}"
+      stroke-width="1.8"
+    />
+    <polygon
+      points="112,500 115,509 124,509 117,515 120,524 112,518 104,524 107,515 100,509 109,509"
+      fill="{accent_color}"
+    />
+    <text x="146" y="522" font-size="23" font-weight="800" fill="{heading_color}">
+      {card_title}
+    </text>
+    <text x="98" y="550" font-size="17" fill="{text_color}">
+      <tspan x="98" dy="0">{card_l1}</tspan>
+      <tspan x="98" dy="24">{card_l2}</tspan>
+    </text>
+
+    <!-- 底部 support cards：重复 2–3 个，等宽排列，宽度根据card数量自行调整，gap=20 -->
+
+    <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}">
+      {page_number} / {total_pages}
+    </text>
+  </g>
+</svg>

@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720" font-family="Noto Sans SC,Microsoft YaHei,Arial,Helvetica,sans-serif">
+  <rect width="1280" height="6" fill="{primary_color}"/>
+  <!-- 标题区：主标题 + 副标题 -->
+  <text x="50" y="50" font-size="32" font-weight="800" fill="{heading_color}">{title}</text>
+  <text x="50" y="92" font-size="20" fill="{text_color}">{subtitle}</text>
+  <!-- 主内容卡：承载本页核心信息 -->
+  <rect x="50" y="118" width="1180" height="522" rx="24" fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"/>
+  <!-- 顶部导语条：一句话提示或分类标题 -->
+  <rect x="78" y="142" width="1124" height="58" rx="14" fill="{secondary_bg_color}"/>
+  <text x="102" y="178" font-size="20" font-weight="700" fill="{heading_color}">{frame_title}</text>
+  <!-- 微卡示例 A：图示 + 标题 + 两行提示 -->
+  <rect x="78" y="226" width="356" height="174" rx="20" fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
+  <rect x="96" y="244" width="100" height="138" rx="16" fill="{secondary_bg_color}"/>
+  <text x="146" y="320" text-anchor="middle" font-size="34" font-weight="700" fill="{secondary_color}">{item_visual}</text>
+  <text x="212" y="276" font-size="24" font-weight="800" fill="{heading_color}">{item_title}</text>
+  <text x="267" y="276" font-size="16" fill="{text_color}">{item_pinyin}</text>
+  <text x="212" y="308" font-size="14" fill="{text_color}">{item_words}</text>
+  <rect x="212" y="334" width="196" height="42" rx="10" fill="{secondary_bg_color}"/>
+  <text x="224" y="352" font-size="12" fill="{text_color}"><tspan x="224" dy="0">{item_hint_1}</tspan><tspan x="224" dy="16">{item_hint_2}</tspan></text>
+  <!-- 微卡示例 B：生字 + 拼音 + 组词 + 提示 -->
+  <rect x="78" y="420" width="356" height="174" rx="20" fill="{card_bg_color}" stroke="{secondary_color}" stroke-width="2"/>
+  <text x="108" y="484" font-size="48" font-weight="800" fill="{accent_color}">{char_main}</text>
+  <text x="188" y="480" font-size="16" fill="{text_color}">{char_pinyin}</text>
+  <rect x="96" y="502" width="320" height="30" rx="10" fill="{secondary_bg_color}" fill-opacity="0.75"/>
+  <text x="256" y="522" text-anchor="middle" font-size="13" font-weight="600" fill="{text_color}">{char_group_words}</text>
+  <rect x="96" y="544" width="320" height="34" rx="10" fill="{secondary_bg_color}" fill-opacity="0.45"/>
+  <text x="256" y="558" text-anchor="middle" font-size="12" fill="{text_color}"><tspan x="256" dy="0">{char_hint_1}</tspan><tspan x="256" dy="14">{char_hint_2}</tspan></text>
+  <!-- 更多同类元素 -->
+  <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}">{page_number} / {total_pages}</text>
+</svg>

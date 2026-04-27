@@ -5,6 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
+python-version
 
 # Virtual environments
 .venv
@@ -17,4 +18,10 @@ backgrounds_cache/
 materials_library/
 output/
 *.pptx
+
 assets/fonts/
+*_resource.md
+
+# Local logs / sandbox
+tools/
+*.log

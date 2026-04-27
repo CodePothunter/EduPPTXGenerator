@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 600 400" font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+
+  <!-- Background -->
+  <rect width="600" height="400" fill="#FFFFFF"/>
+
+  <!-- Title -->
+  <text x="300" y="30" text-anchor="middle" font-size="16" font-weight="bold" fill="#333333">市场份额分布</text>
+
+  <!--
+    Donut chart centered at (220, 200), outer R=140, inner R=65
+    Segments (clockwise from top, -90deg = angle 0):
+      A: 35%  → 0.35*360=126° → from -90° to 36°
+      B: 25%  → 0.25*360=90°  → from 36° to 126°
+      C: 20%  → 0.20*360=72°  → from 126° to 198°
+      D: 12%  → 0.12*360=43.2°→ from 198° to 241.2°
+      E: 8%   → 0.08*360=28.8°→ from 241.2° to 270°
+
+    arc coords: x=cx+R*cos(angle_rad), y=cy+R*sin(angle_rad)
+    angle_rad from -90° = -PI/2
+
+    Precomputed outer R=140, inner r=65, cx=220, cy=200:
+      angle offsets (degrees from 0=right, so subtract 90):
+        start=-90°
+      A: -90°→36°   outer:(220+140*cos(-90°),200+140*sin(-90°))=(220,60)
+                         →(220+140*cos(36°),200+140*sin(36°))=(220+113.3,200+82.2)=(333.3,282.2)
+         inner:(220+65*cos(36°),200+65*sin(36°))=(220+52.6,200+38.2)=(272.6,238.2)
+               →(220+65*cos(-90°),200+65*sin(-90°))=(220,135)
+      B: 36°→126°   outer:(333.3,282.2)→(220+140*cos(126°),200+140*sin(126°))=(220-82.2,200+113.3)=(137.8,313.3)
+         inner:(137.8-65/140*82.2... let me recalc)
+
+    I'll use precise values:
+    cos(-90°)=0, sin(-90°)=-1
+    cos(36°)=0.809, sin(36°)=0.588
+    cos(126°)=-0.588, sin(126°)=0.809
+    cos(198°)=-0.951, sin(198°)=-0.309
+    cos(241.2°)=-0.483, sin(241.2°)=-0.876
+    cos(270°)=0, sin(270°)=-1
+
+    Outer R=140:
+    P0: (220+0,200-140)=(220,60)
+    P1: (220+113.3,200+82.3)=(333.3,282.3)
+    P2: (220-82.3,200+113.3)=(137.7,313.3)
+    P3: (220-133.1,200-43.3)=(86.9,156.7)
+    P4: (220-67.6,200-122.6)=(152.4,77.4)
+    P5=P0: (220,60)
+
+    Inner r=65:
+    Q0: (220+0,200-65)=(220,135)
+    Q1: (220+52.6,200+38.2)=(272.6,238.2)
+    Q2: (220-38.2,200+52.6)=(181.8,252.6)
+    Q3: (220-61.8,200-20.1)=(158.2,179.9)
+    Q4: (220-31.4,200-56.9)=(188.6,143.1)
+    Q5=Q0: (220,135)
+  -->
+
+  <!-- Segment A: 35% #4A90D9 -->
+  <path d="M 220,60
+           A 140,140 0 0,1 333.3,282.3
+           L 272.6,238.2
+           A 65,65 0 0,0 220,135
+           Z"
+        fill="#4A90D9"/>
+
+  <!-- Segment B: 25% #50C878 -->
+  <path d="M 333.3,282.3
+           A 140,140 0 0,1 137.7,313.3
+           L 181.8,252.6
+           A 65,65 0 0,0 272.6,238.2
+           Z"
+        fill="#50C878"/>
+
+  <!-- Segment C: 20% #FF6B6B -->
+  <path d="M 137.7,313.3
+           A 140,140 0 0,1 86.9,156.7
+           L 158.2,179.9
+           A 65,65 0 0,0 181.8,252.6
+           Z"
+        fill="#FF6B6B"/>
+
+  <!-- Segment D: 12% #FFD93D -->
+  <path d="M 86.9,156.7
+           A 140,140 0 0,1 152.4,77.4
+           L 188.6,143.1
+           A 65,65 0 0,0 158.2,179.9
+           Z"
+        fill="#FFD93D"/>
+
+  <!-- Segment E: 8% #6C5CE7 -->
+  <path d="M 152.4,77.4
+           A 140,140 0 0,1 220,60
+           L 220,135
+           A 65,65 0 0,0 188.6,143.1
+           Z"
+        fill="#6C5CE7"/>
+
+  <!-- Inner white circle for donut -->
+  <circle cx="220" cy="200" r="60" fill="#FFFFFF"/>
+
+  <!-- Center label -->
+  <text x="220" y="196" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">市场</text>
+  <text x="220" y="213" text-anchor="middle" font-size="13" font-weight="bold" fill="#333333">份额</text>
+
+  <!-- Percentage labels on segments (midpoint angles) -->
+  <!-- A midpoint: -90+63=-27° → R=105: (220+105*cos(-27°),200+105*sin(-27°))=(220+93.5,200-47.7)=(313.5,152.3) -->
+  <text x="313.5" y="152.3" text-anchor="middle" font-size="12" font-weight="bold" fill="#FFFFFF">35%</text>
+  <!-- B midpoint: 81° → R=105: (220+105*cos(81°),200+105*sin(81°))=(220+16.4,200+103.7)=(236.4,303.7) -->
+  <text x="236.4" y="303.7" text-anchor="middle" font-size="12" font-weight="bold" fill="#FFFFFF">25%</text>
+  <!-- C midpoint: 162° → R=105: (220+105*cos(162°),200+105*sin(162°))=(220-99.9,200+32.4)=(120.1,232.4) -->
+  <text x="112" y="240" text-anchor="middle" font-size="12" font-weight="bold" fill="#FFFFFF">20%</text>
+  <!-- D midpoint: 219.6° → R=105: (220+105*cos(219.6°),200+105*sin(219.6°))=(220-81.0,200-67.1)=(139,132.9) -->
+  <text x="136" y="128" text-anchor="middle" font-size="12" font-weight="bold" fill="#555555">12%</text>
+  <!-- E midpoint: 255.6° → R=105: (220+105*cos(255.6°),200+105*sin(255.6°))=(220-25.9,200-101.7)=(194.1,98.3) -->
+  <text x="188" y="95" text-anchor="middle" font-size="12" font-weight="bold" fill="#555555">8%</text>
+
+  <!-- Legend (right side) -->
+  <rect x="390" y="110" width="14" height="14" fill="#4A90D9" rx="3"/>
+  <text x="412" y="122" font-size="13" fill="#444444">产品A — 35%</text>
+
+  <rect x="390" y="140" width="14" height="14" fill="#50C878" rx="3"/>
+  <text x="412" y="152" font-size="13" fill="#444444">产品B — 25%</text>
+
+  <rect x="390" y="170" width="14" height="14" fill="#FF6B6B" rx="3"/>
+  <text x="412" y="182" font-size="13" fill="#444444">产品C — 20%</text>
+
+  <rect x="390" y="200" width="14" height="14" fill="#FFD93D" rx="3"/>
+  <text x="412" y="212" font-size="13" fill="#444444">产品D — 12%</text>
+
+  <rect x="390" y="230" width="14" height="14" fill="#6C5CE7" rx="3"/>
+  <text x="412" y="242" font-size="13" fill="#444444">产品E — 8%</text>
+
+  <!-- Total label -->
+  <text x="390" y="290" font-size="12" fill="#888888">合计: 100%</text>
+
+</svg>
