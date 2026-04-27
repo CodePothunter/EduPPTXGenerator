@@ -30,6 +30,8 @@ class Config:
 
     # Provider selection
     llm_provider: str = "chat"  # "chat" (Chat Completions) | "responses" (Responses API)
+    llm_thinking: str = ""      # Provider-specific thinking mode, e.g. enabled/disabled
+    llm_reasoning_effort: str = ""  # Provider-specific reasoning effort, e.g. low/medium/high
     web_search: bool = False    # 联网搜索 (仅 responses provider 有效)
     llm_concurrency: int = 4    # LLM 并行请求数 (SVG 生成 + Review)
 
@@ -62,6 +64,8 @@ class Config:
             llm_model=os.getenv("GEN_MODEL", "").split("#")[0].strip(),
             llm_base_url=llm_base,
             llm_provider=os.getenv("LLM_PROVIDER", "chat"),
+            llm_thinking=os.getenv("GEN_THINKING", "").strip(),
+            llm_reasoning_effort=os.getenv("GEN_REASONING_EFFORT", "").strip(),
             llm_concurrency=int(os.getenv("LLM_CONCURRENCY", "4")),
             image_api_key=os.getenv("VISION_GEN_APIKEY", ""),
             image_model=os.getenv("VISION_GEN_MODEL", "").split("#")[0].strip(),

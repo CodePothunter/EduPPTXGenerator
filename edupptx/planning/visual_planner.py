@@ -1,4 +1,4 @@
-"""Phase 1b: LLM-driven visual planning — theme colors, background style."""
+"""Phase 1b: visual planning with optional template palette guidance."""
 
 from __future__ import annotations
 
@@ -11,69 +11,89 @@ from edupptx.config import Config
 from edupptx.llm_client import create_llm_client
 from edupptx.models import PlanningDraft, VisualPlan
 
-_SYSTEM_PROMPT = """\
-你是一位教育演示文稿的视觉设计顾问。根据 PPT 的主题和内容结构，推荐一套统一的视觉方案。
+_SYSTEM_PROMPT = """你是一位教育演示文稿的视觉设计顾问。
+
+请根据 PPT 主题、页面结构和可能给定的模板调色板，输出一份统一视觉方案 JSON。
 
 ## 输出要求
-
-输出一个 JSON 对象（用 ```json 包裹），包含以下字段：
-
+只输出一个 JSON 对象，字段包括：
 ```json
 {
-  "primary_color": "#hex — 主色，用于标题栏装饰条、重要元素",
-  "secondary_color": "#hex — 辅色，用于次级标题、图标填充",
-  "accent_color": "#hex — 强调色，仅用于关键数据（全局≤3处）",
-  "background_prompt": "英文，用于 AI 生图的背景描述，抽象纹理/渐变，16:9，淡色调",
-  "card_bg_color": "#hex — 卡片背景色",
-  "secondary_bg_color": "#hex — 次背景色，用于区域分隔、交替行、引用区块",
-  "text_color": "#hex — 正文文字颜色",
-  "heading_color": "#hex — 标题文字颜色",
-  "content_density": "lecture 或 review"
+  "primary_color": "#hex",
+  "secondary_color": "#hex",
+  "accent_color": "#hex",
+  "background_prompt": "中文背景描述",
+  "card_bg_color": "#hex",
+  "secondary_bg_color": "#hex",
+  "text_color": "#hex",
+  "heading_color": "#hex",
+  "content_density": "lecture"
 }
 ```
 
-## 配色原则
-
-1. **教育场景优先**：颜色清晰易读，不要花哨
-2. **主色决定气质**：理科偏蓝绿，文科偏暖色，综合偏灰蓝
-3. **对比度充足**：text_color 和 card_bg_color 的对比度 ≥ 4.5:1
-4. **背景要淡**：background_prompt 生成的图应是淡色抽象纹理，不抢内容焦点
-5. **强调色慎用**：accent_color 只用于关键数据/按钮，与主色有明显区分
-6. **次背景色**：secondary_bg_color 应比 card_bg_color 略深一点（如 #F8FAFC vs #FFFFFF），用于区域分隔
-7. **色彩比例**：主色 60% / 辅色 30% / 强调色 10%
-
-## 内容密度判断
-
-根据用户需求和主题特点选择：
-- **lecture**（课堂讲授）：大字、宽松留白、适合投影，正文 24px 基准
-- **review**（复习归纳）：信息密集、小字紧凑、适合打印/平板，正文 18px 基准
-- 如果用户提到"课件""课堂""讲课""教学" → lecture
-- 如果用户提到"复习""总结""归纳""打印""知识点" → review
-- 默认 → lecture
-
-## background_prompt 示例
-
-- "Subtle abstract geometric pattern, soft blue gradient, minimalist, light background, 16:9 aspect ratio"
-- "Elegant soft green watercolor texture, gentle flowing shapes, light and airy, presentation background"
-- "Clean minimal tech grid pattern, very light gray and blue, professional, 1920x1080"
-"""
+## 原则
+- 教育场景优先：可读、克制、清晰
+- 如果用户或模板已经给出调色参考，可以参考其色相与气质，但不要机械照抄
+- `background_prompt` 必须使用中文，描述淡雅、低干扰、适合承载文字的背景
+- `content_density` 只能是 `lecture` 或 `review`
+- `accent_color` 只用于重点，不要做大面积背景色"""
 
 
-def generate_visual_plan(draft: PlanningDraft, config: Config) -> VisualPlan:
+def _apply_palette_hint(visual_plan: VisualPlan, palette_hint) -> VisualPlan:
+    if palette_hint is None:
+        return visual_plan
+    visual_plan.primary_color = palette_hint.primary_color
+    visual_plan.secondary_color = palette_hint.secondary_color
+    visual_plan.accent_color = palette_hint.accent_color
+    visual_plan.card_bg_color = palette_hint.card_bg_color
+    visual_plan.secondary_bg_color = palette_hint.secondary_bg_color
+    visual_plan.text_color = palette_hint.text_color
+    visual_plan.heading_color = palette_hint.heading_color
+    if getattr(palette_hint, "background_color_bias", "") and not visual_plan.background_color_bias:
+        visual_plan.background_color_bias = palette_hint.background_color_bias
+    return visual_plan
+
+
+def generate_visual_plan(
+    draft: PlanningDraft,
+    config: Config,
+    palette_hint=None,
+    template_label: str = "",
+) -> VisualPlan:
     """Call LLM to generate a visual plan based on content planning."""
-    client = create_llm_client(config)
+    try:
+        client = create_llm_client(config)
+    except Exception as exc:
+        logger.warning("Visual planning client unavailable, using defaults: {}", exc)
+        return _apply_palette_hint(VisualPlan(), palette_hint)
 
     page_types = [f"{p.page_number}. {p.page_type}: {p.title}" for p in draft.pages]
     user_prompt = (
-        f"## PPT 信息\n"
+        "## PPT 信息\n"
         f"- 主题：{draft.meta.topic}\n"
         f"- 受众：{draft.meta.audience or '通用'}\n"
         f"- 目的：{draft.meta.purpose or '教学演示'}\n"
         f"- 风格方向：{draft.meta.style_direction or '专业教育'}\n"
         f"- 页数：{len(draft.pages)}\n\n"
-        f"## 页面结构\n" + "\n".join(page_types) + "\n\n"
-        f"请根据以上信息，推荐一套视觉方案。"
+        "## 页面结构\n"
+        + "\n".join(page_types)
     )
+
+    if palette_hint is not None:
+        user_prompt += (
+            "\n\n## 已选模板调色参考（仅供参考，不要机械照抄）\n"
+            f"- template: {template_label or draft.style_routing.style_name or 'selected'}\n"
+            f"- primary: {palette_hint.primary_color}\n"
+            f"- secondary: {palette_hint.secondary_color}\n"
+            f"- accent: {palette_hint.accent_color}\n"
+            f"- card_bg: {palette_hint.card_bg_color}\n"
+            f"- secondary_bg: {palette_hint.secondary_bg_color}\n"
+            f"- text: {palette_hint.text_color}\n"
+            f"- heading: {palette_hint.heading_color}\n"
+            f"- background_color_bias: {getattr(palette_hint, 'background_color_bias', '') or 'none'}\n"
+            "请结合主题内容、背景气质和页面结构自行决定最终配色；"
+            "可以参考这组颜色的明度、纯度和亲和感，但不要被它锁死。"
+        )
 
     try:
         response = client.chat(
@@ -81,29 +101,29 @@ def generate_visual_plan(draft: PlanningDraft, config: Config) -> VisualPlan:
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_prompt},
             ],
-            temperature=0.5,
+            temperature=0.3,
             max_tokens=1024,
         )
-        return _parse_visual_plan(response)
-    except Exception as e:
-        logger.warning("Visual planning failed, using defaults: {}", e)
-        return VisualPlan()
+        visual_plan = _parse_visual_plan(response)
+        return _apply_palette_hint(visual_plan, palette_hint)
+    except Exception as exc:
+        logger.warning("Visual planning failed, using defaults: {}", exc)
+        return _apply_palette_hint(VisualPlan(), palette_hint)
 
 
 def _parse_visual_plan(response: str) -> VisualPlan:
-    """Extract VisualPlan JSON from LLM response."""
-    # Try ```json fence
-    m = re.search(r"```json\s*\n(.*?)```", response, re.DOTALL)
-    if m:
-        text = m.group(1).strip()
+    """Extract `VisualPlan` JSON from LLM response."""
+
+    match = re.search(r"```json\s*\n(.*?)```", response, re.DOTALL)
+    if match:
+        text = match.group(1).strip()
     else:
-        # Try bare JSON object
-        m = re.search(r"\{[^{}]*\}", response, re.DOTALL)
-        text = m.group(0) if m else "{}"
+        match = re.search(r"\{[\s\S]*\}", response)
+        text = match.group(0) if match else "{}"
 
     try:
         data = json.loads(text)
         return VisualPlan.model_validate(data)
-    except Exception as e:
-        logger.warning("Failed to parse visual plan JSON: {}", e)
+    except Exception as exc:
+        logger.warning("Failed to parse visual plan JSON: {}", exc)
         return VisualPlan()

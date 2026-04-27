@@ -10,6 +10,45 @@ from edupptx.materials.icons import get_icon_svg
 SVG_NS = "http://www.w3.org/2000/svg"
 _SAFE_PARSER = etree.XMLParser(resolve_entities=False, no_network=True)
 
+_PRESENTATION_ATTRS = (
+    "fill",
+    "stroke",
+    "opacity",
+    "fill-opacity",
+    "stroke-opacity",
+    "stroke-width",
+    "stroke-linecap",
+    "stroke-linejoin",
+    "stroke-dasharray",
+)
+
+
+def _copy_presentation_attrs(source: etree._Element, target: etree._Element) -> None:
+    """Copy SVG presentation attributes so icon styling survives <svg> -> <g> embedding."""
+    for attr in _PRESENTATION_ATTRS:
+        value = source.get(attr)
+        if value is not None:
+            target.set(attr, value)
+
+
+def _propagate_presentation_attrs_to_descendants(
+    source: etree._Element,
+    target: etree._Element,
+) -> None:
+    """Copy icon root presentation attrs onto descendant shapes as a direct-SVG fallback.
+
+    Some downstream SVG consumers do not reliably inherit stroke/fill from the wrapper
+    <g>. Writing the same attrs onto descendant elements keeps the icon visible even if
+    group-level inheritance is lost.
+    """
+    for descendant in target.iterdescendants():
+        for attr in _PRESENTATION_ATTRS:
+            if descendant.get(attr) is not None:
+                continue
+            value = source.get(attr)
+            if value is not None:
+                descendant.set(attr, value)
+
 
 def embed_icon_placeholders(svg_content: str, icon_color: str = "#333") -> tuple[str, int]:
     """Replace <use data-icon="xxx"/> with actual Lucide SVG content.
@@ -65,10 +104,15 @@ def embed_icon_placeholders(svg_content: str, icon_color: str = "#333") -> tuple
         # Create a <g> wrapper with transform
         g = etree.Element(f"{{{SVG_NS}}}g")
         g.set("transform", f"translate({x},{y}) scale({sx},{sy})")
+        _copy_presentation_attrs(icon_root, g)
 
         # Copy all child elements from icon SVG into the group
         for child in icon_root:
             g.append(child)
+
+        # Also stamp the same presentation attrs onto concrete child shapes so
+        # the direct SVG output remains visible even without <g> inheritance.
+        _propagate_presentation_attrs_to_descendants(icon_root, g)
 
         # Replace the <use> with the <g>
         parent = use_el.getparent()

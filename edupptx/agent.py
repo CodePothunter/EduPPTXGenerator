@@ -12,19 +12,43 @@ from edupptx.config import Config
 from edupptx.models import (
     GeneratedSlide,
     InputContext,
+    PagePlan,
     PlanningDraft,
     SlideAssets,
+    iter_image_slot_keys,
 )
 from edupptx.session import Session
 
 
-def _needs_llm_review(warnings: list[str]) -> bool:
+def _uses_structured_table(page: PagePlan | None) -> bool:
+    if page is None:
+        return False
+    return page.layout_hint == "comparison"
+
+
+def _needs_llm_review(page: PagePlan | None, warnings: list[str]) -> bool:
     """Check if warnings are serious enough to warrant LLM review."""
+    if not warnings:
+        return False
+
+    if _uses_structured_table(page):
+        severe_patterns = (
+            "SVG parse error",
+            "Recovered by wrapping",
+        )
+        return any(
+            w.startswith(pattern)
+            for w in warnings
+            for pattern in severe_patterns
+        )
     # Minor warnings that validator already auto-fixed — skip review
     minor_patterns = (
         "Wrapped long text",
         "Fixed text overlap",
         "Expanded card height",
+        "Adjusted image to fit card bounds",
+        "PPT 对 SVG clipPath",
+        "Trimmed subtitle",
         "Replaced unsafe font",
         "Clamped",
         "viewBox fixed",
@@ -77,13 +101,45 @@ class PPTXAgent:
                      ctx.topic, ctx.source_text is not None, ctx.research_summary is not None)
 
         # ── Phase 1a: Content Planning ──────────────────────
-        session.log_step("planning", "Generating content plan")
-        draft = self._phase1_planning(ctx)
-        logger.info("Content plan: {} pages", len(draft.pages))
+        session.log_step("planning_stage1", "Generating stage-1 content outline without template constraints")
+        draft = self._phase1_outline_planning(ctx)
+        logger.info("Stage-1 outline: {} pages", len(draft.pages))
 
-        # ── Phase 1b: Visual Planning ───────────────────────
-        session.log_step("visual_planning", "Generating visual plan (colors, background)")
-        draft.visual = self._phase1b_visual_planning(draft)
+        session.log_step("template_routing", "Selecting template family and palette from outline")
+        routing, manifest, palette = self._phase1a_template_routing(draft)
+        draft.style_routing = routing
+        logger.info(
+            "Template routing: style_name={}, template_family={}, palette_id={}, resolved_by={}",
+            routing.style_name,
+            routing.template_family,
+            routing.palette_id,
+            routing.resolved_by,
+        )
+
+        session.log_step("page_variant_assignment", "Matching template variants to outline pages")
+        draft = self._phase1b_page_variant_assignment(draft, manifest)
+
+        session.log_step("planning_stage2", "Refining outline with matched template references")
+        draft = self._phase1c_planning_refinement(draft, manifest)
+        draft.style_routing = routing
+        logger.info("Stage-2 refined draft: {} pages before reveal expansion", len(draft.pages))
+
+        session.log_step("reveal_expansion", "Expanding pseudo-animation reveal pages")
+        draft = self._phase1d_finalize_reveals(draft)
+        draft.style_routing = routing
+
+        session.log_step("page_variant_assignment", "Re-assigning template variants after refinement")
+        draft = self._phase1b_page_variant_assignment(draft, manifest)
+
+        # ── Phase 1e: Visual Planning ───────────────────────
+        session.log_step("visual_planning", "Generating visual plan with palette reference")
+        draft.visual = self._phase1e_visual_planning(
+            draft,
+            palette_hint=palette,
+            template_label=manifest.label,
+        )
+        session.log_step("template_alignment", "Aligning plan to selected template contracts")
+        draft = self._phase1f_template_alignment(draft, manifest)
         session.save_plan(draft.model_dump())
         self._save_design_spec(draft, session)
         logger.info("Visual plan: primary={}, bg_prompt={}...",
@@ -119,7 +175,13 @@ class PPTXAgent:
 
         # ── Phase 3: SVG Design ─────────────────────────────
         session.log_step("design", f"Generating SVG for {len(draft.pages)} pages")
-        slides = await self._phase3_design(draft, all_assets, style, debug=debug)
+        slides = await self._phase3_design(
+            draft,
+            all_assets,
+            draft.style_routing.style_name or style,
+            session,
+            debug=debug,
+        )
         logger.info("Generated {} SVG slides", len(slides))
 
         # ── Phase 4: Validation + LLM Review ────────────────
@@ -132,7 +194,12 @@ class PPTXAgent:
 
         # ── Phase 5: Output ─────────────────────────────────
         session.log_step("output", "Assembling PPTX")
-        self._phase5_output(svg_paths, session, bg_path=bg_path)
+        speaker_notes = [
+            page.notes for page in sorted(draft.pages, key=lambda p: p.page_number)
+        ]
+        self._phase5_output(
+            svg_paths, session, bg_path=bg_path, speaker_notes=speaker_notes,
+        )
         session.log_step("done", f"Saved {len(svg_paths)} slides to {session.output_path}")
         logger.info("Done! {} slides, output: {}", len(svg_paths), session.output_path)
 
@@ -146,6 +213,7 @@ class PPTXAgent:
         with open(plan_path, encoding="utf-8") as f:
             data = json.load(f)
         draft = PlanningDraft.model_validate(data)
+        draft = self._ensure_template_state(draft)
 
         session = Session.from_existing(plan_path.parent)
         session_dir = session.dir
@@ -163,9 +231,20 @@ class PPTXAgent:
                 for p in draft.pages
             }
 
-        slides = await self._phase3_design(draft, all_assets, style, debug=debug)
+        slides = await self._phase3_design(
+            draft,
+            all_assets,
+            draft.style_routing.style_name or style,
+            session,
+            debug=debug,
+        )
         svg_paths = self._phase4_postprocess(slides, session, all_assets, draft=draft, do_review=True)
-        self._phase5_output(svg_paths, session, bg_path=bg_path)
+        speaker_notes = [
+            page.notes for page in sorted(draft.pages, key=lambda p: p.page_number)
+        ]
+        self._phase5_output(
+            svg_paths, session, bg_path=bg_path, speaker_notes=speaker_notes,
+        )
         logger.info("Rendered {} slides from plan", len(svg_paths))
         return session_dir
 
@@ -195,18 +274,97 @@ class PPTXAgent:
             requirements=requirements,
         )
 
-    def _phase1_planning(self, ctx: InputContext) -> PlanningDraft:
-        from edupptx.planning.content_planner import generate_planning_draft
-        return generate_planning_draft(ctx, self.config)
+    def _build_llm_client(self):
+        from edupptx.llm_client import create_llm_client
 
-    def _phase1b_visual_planning(self, draft: PlanningDraft):
+        if not self.config.llm_api_key or not self.config.llm_model:
+            return None
+        try:
+            return create_llm_client(self.config, web_search=False)
+        except Exception as exc:
+            logger.warning("LLM client unavailable: {}", str(exc)[:120])
+            return None
+
+    def _phase1a_template_routing(self, draft: PlanningDraft):
+        from edupptx.design.template_router import resolve_style_routing
+
+        client = self._build_llm_client()
+        return resolve_style_routing(draft, client=client)
+
+    def _phase1_outline_planning(self, ctx: InputContext) -> PlanningDraft:
+        from edupptx.planning.content_planner import generate_planning_outline
+
+        return generate_planning_outline(ctx, self.config)
+
+    def _phase1b_page_variant_assignment(self, draft: PlanningDraft, manifest) -> PlanningDraft:
+        from edupptx.design.template_router import assign_page_template_variants
+
+        client = self._build_llm_client()
+        return assign_page_template_variants(draft, manifest, client=client)
+
+    def _phase1c_planning_refinement(self, draft: PlanningDraft, manifest) -> PlanningDraft:
+        from edupptx.planning.content_planner import refine_planning_draft
+
+        return refine_planning_draft(draft, manifest, self.config)
+
+    def _phase1d_finalize_reveals(self, draft: PlanningDraft) -> PlanningDraft:
+        from edupptx.planning.content_planner import finalize_reveal_pages
+
+        return finalize_reveal_pages(draft)
+
+    def _phase1e_visual_planning(self, draft: PlanningDraft, palette_hint=None, template_label: str = ""):
         from edupptx.planning.visual_planner import generate_visual_plan
-        return generate_visual_plan(draft, self.config)
+        return generate_visual_plan(
+            draft,
+            self.config,
+            palette_hint=palette_hint,
+            template_label=template_label,
+        )
+
+    def _phase1f_template_alignment(self, draft: PlanningDraft, manifest) -> PlanningDraft:
+        from edupptx.design.template_router import align_draft_to_template
+
+        return align_draft_to_template(draft, manifest)
+
+    def _ensure_template_state(self, draft: PlanningDraft) -> PlanningDraft:
+        from edupptx.design.template_router import (
+            assign_page_template_variants,
+            load_style_manifest,
+            resolve_style_routing,
+            resolve_palette_preset,
+            align_draft_to_template,
+        )
+
+        client = self._build_llm_client()
+        manifest = None
+        palette = None
+        if draft.style_routing.template_family:
+            manifest = load_style_manifest(draft.style_routing.template_family)
+            if manifest is not None:
+                palette = resolve_palette_preset(
+                    manifest,
+                    routing_text=self._collect_template_routing_text(draft),
+                    preferred_palette_id=draft.style_routing.palette_id,
+                )
+
+        if manifest is None:
+            routing, manifest, palette = resolve_style_routing(draft, client=client)
+            draft.style_routing = routing
+
+        assign_page_template_variants(draft, manifest, client=client)
+        align_draft_to_template(draft, manifest)
+        return draft
+
+    def _collect_template_routing_text(self, draft: PlanningDraft) -> str:
+        from edupptx.design.template_router import collect_template_routing_text
+
+        return collect_template_routing_text(draft)
 
     def _save_design_spec(self, draft: PlanningDraft, session: Session) -> None:
         """Save human-readable design specification for audit and debugging."""
         v = draft.visual
         m = draft.meta
+        r = draft.style_routing
         lines = [
             "# Design Specification",
             "",
@@ -252,6 +410,7 @@ class PPTXAgent:
         self, draft: PlanningDraft, session: Session,
     ) -> dict[int, SlideAssets]:
         from edupptx.materials.image_provider import fetch_images
+        from edupptx.materials.image_prompt_router import build_routed_image_needs
 
         all_assets: dict[int, SlideAssets] = {}
         materials_dir = session.dir / "materials"
@@ -262,12 +421,14 @@ class PPTXAgent:
 
             # Fetch images if needed
             if page.material_needs.images:
-                fetched = await fetch_images(page.material_needs.images, self.config)
-                for role, result in fetched.items():
+                routed_image_needs = build_routed_image_needs(draft, page)
+                fetched = await fetch_images(routed_image_needs, self.config)
+                for (slot_key, _need), result in zip(iter_image_slot_keys(routed_image_needs), fetched):
                     if result and result.local_path and result.local_path.exists():
-                        dest = materials_dir / result.local_path.name
+                        suffix = result.local_path.suffix.lower() or ".img"
+                        dest = materials_dir / f"page_{page.page_number:02d}_{slot_key}{suffix}"
                         shutil.copy2(result.local_path, dest)
-                        assets.image_paths[role] = dest
+                        assets.image_paths[slot_key] = dest
 
             # Collect icon SVGs
             if page.material_needs.icons:
@@ -287,11 +448,26 @@ class PPTXAgent:
         self, draft: PlanningDraft,
         all_assets: dict[int, SlideAssets],
         style: str,
+        session: Session,
         debug: bool = False,
     ) -> list[GeneratedSlide]:
         from edupptx.design.svg_generator import generate_slide_svgs
+
+        slides_raw_dir = session.dir / "slides_raw"
+        slides_raw_dir.mkdir(exist_ok=True)
+
+        def _save_raw_slide(slide: GeneratedSlide) -> None:
+            raw_path = slides_raw_dir / f"slide_{slide.page_number:02d}.svg"
+            raw_path.write_text(slide.svg_content, encoding="utf-8")
+            logger.info("Slide {} raw SVG saved: {}", slide.page_number, raw_path)
+
         return await generate_slide_svgs(
-            draft, all_assets, style, self.config, debug=debug,
+            draft,
+            all_assets,
+            style,
+            self.config,
+            debug=debug,
+            on_slide=_save_raw_slide,
         )
 
     def _phase4_postprocess(
@@ -321,16 +497,17 @@ class PPTXAgent:
             raw_path.write_text(slide.svg_content, encoding="utf-8")
 
             # Step 1: Validate and fix
-            fixed_svg, warnings = validate_and_fix(slide.svg_content)
+            page = page_lookup.get(slide.page_number)
+            fixed_svg, warnings = validate_and_fix(slide.svg_content, page=page)
             for w in warnings:
                 logger.warning("Slide {}: {}", slide.page_number, w)
 
             # Step 2: LLM Review (only if meaningful warnings exist)
-            if do_review and draft and slide.page_number in page_lookup and _needs_llm_review(warnings):
+            if do_review and draft and page is not None and _needs_llm_review(page, warnings):
                 from edupptx.postprocess.svg_reviewer import review_and_fix_svg
                 fixed_svg = review_and_fix_svg(
                     fixed_svg, warnings,
-                    page_lookup[slide.page_number],
+                    page,
                     draft.visual,
                     self.config,
                 )
@@ -385,11 +562,11 @@ class PPTXAgent:
 
     @staticmethod
     def _inject_images(svg_content: str, assets: SlideAssets) -> str:
-        """Replace __IMAGE_XXX__ placeholders with base64 data URIs."""
+        """Replace per-slot __IMAGE_XXX__ placeholders with base64 data URIs."""
         import base64
         import io
-        for role, path in assets.image_paths.items():
-            placeholder = f"__IMAGE_{role.upper()}__"
+        for slot_key, path in assets.image_paths.items():
+            placeholder = f"__IMAGE_{slot_key.upper()}__"
             if placeholder not in svg_content:
                 continue
             try:
@@ -404,14 +581,19 @@ class PPTXAgent:
                     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
                     data_uri = f"data:image/jpeg;base64,{b64}"
                     svg_content = svg_content.replace(placeholder, data_uri)
-                    logger.debug("Injected image for {} ({}KB)", role, len(b64) // 1024)
+                    logger.debug("Injected image for {} ({}KB)", slot_key, len(b64) // 1024)
             except Exception as e:
-                logger.warning("Failed to inject image {}: {}", role, e)
+                logger.warning("Failed to inject image {}: {}", slot_key, e)
         return svg_content
 
     def _phase5_output(
         self, svg_paths: list[Path], session: Session,
         bg_path: Path | None = None,
+        speaker_notes: list[str] | None = None,
     ) -> None:
         from edupptx.output.pptx_assembler import assemble_pptx
-        assemble_pptx(svg_paths, session.output_path, bg_path=bg_path)
+        assemble_pptx(
+            svg_paths, session.output_path,
+            bg_path=bg_path,
+            speaker_notes=speaker_notes,
+        )

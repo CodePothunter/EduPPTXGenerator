@@ -47,8 +47,12 @@ class ImageProvider(Protocol):
     async def generate(self, prompt: str, size: str = "1280x720") -> list[ImageResult]: ...
 
 
-async def fetch_images(needs: list[ImageNeed], config: Config) -> dict[str, ImageResult]:
-    """Fetch all needed images. Returns {role: ImageResult}."""
+async def fetch_images(needs: list[ImageNeed], config: Config) -> list[ImageResult | None]:
+    """Fetch all needed images in input order.
+
+    Returns one entry per ``ImageNeed`` so multiple images with the same role do not
+    overwrite each other.
+    """
     from edupptx.materials.pixabay import PixabayProvider
     from edupptx.materials.unsplash import UnsplashProvider
     from edupptx.materials.seedream import SeedreamProvider
@@ -61,17 +65,15 @@ async def fetch_images(needs: list[ImageNeed], config: Config) -> dict[str, Imag
 
     gen_provider = SeedreamProvider(config) if config.image_api_key else None
 
-    results: dict[str, ImageResult] = {}
-
-    async def _fetch_one(need: ImageNeed) -> tuple[str, ImageResult | None]:
+    async def _fetch_one(need: ImageNeed) -> ImageResult | None:
         if need.source == "ai_generate":
             if gen_provider is None:
                 logger.warning("No AI image provider configured, skipping: {}", need.query)
-                return need.role, None
+                return None
             size = IMAGE_RATIO_SIZES.get(need.aspect_ratio, "2848x1600")
             logger.info("Generating image [{}] ratio={} size={}", need.role, need.aspect_ratio, size)
             imgs = await gen_provider.generate(need.query, size=size)
-            return need.role, imgs[0] if imgs else None
+            return imgs[0] if imgs else None
 
         # search — try original query first, then simplified English keywords
         query = need.query
@@ -79,24 +81,24 @@ async def fetch_images(needs: list[ImageNeed], config: Config) -> dict[str, Imag
             for provider in search_providers:
                 imgs = await provider.search(query)
                 if imgs:
-                    return need.role, imgs[0]
+                    return imgs[0]
             if attempt == 0:
                 # Simplify: extract key nouns, try English keywords
                 query = _simplify_query(need.query)
                 if query == need.query:
                     break  # no simplification possible
         logger.warning("No search results for: {}", need.query)
-        return need.role, None
+        return None
 
     tasks = [_fetch_one(need) for need in needs]
     fetched = await asyncio.gather(*tasks, return_exceptions=True)
 
+    results: list[ImageResult | None] = []
     for item in fetched:
         if isinstance(item, Exception):
             logger.warning("Image fetch failed: {}", item)
+            results.append(None)
             continue
-        role, result = item
-        if result is not None:
-            results[role] = result
+        results.append(item)
 
     return results

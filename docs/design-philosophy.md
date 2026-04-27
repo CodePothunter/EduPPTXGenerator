@@ -67,7 +67,7 @@ SVG 元素和 DrawingML 有 1:1 对应关系：
 - **统一间距**: 所有卡片间保持 20px 间距
 - **圆角一致**: 所有卡片使用相同圆角 (12-16px)
 
-11 种布局组合覆盖从封面到数据页的所有教育场景。LLM 在内容规划阶段为每页选择最合适的 `layout_hint`。
+13 种布局组合覆盖从封面到数据页的所有教育场景。LLM 在内容规划阶段为每页选择最合适的 `layout_hint`。
 
 ## 4. 页面模板系统
 
@@ -166,6 +166,14 @@ Step 4: 图片注入
 3. 在 `edupptx/design/prompts.py` 的 `type_hints` 中添加设计指引
 4. (可选) 在 `edupptx/design/page_templates/` 创建对应 SVG 模板
 5. (可选) 在 `edupptx/design/references/page-types.md` 中添加布局定义
+
+### 添加新布局提示
+
+1. 在 `edupptx/models.py` 的 `LayoutHint` Literal 中注册新布局名
+2. 在 `edupptx/planning/content_planner.py` 与 `edupptx/planning/prompts.py` 中补齐合法值和规划描述
+3. 在 `edupptx/design/references/design-base.md`、`docs/layout-system.md`、`docs/svg-pipeline.md` 中补齐布局说明
+4. 在具体模板族的 `metadata.xml` 里把新布局写入 `preferred_layout_hints`，并在 `variant_catalog` 中声明可命中的 SVG 变体
+5. 在对应模板族的 `style_guide.md` 中补齐模板用途说明；如布局依赖关系图等特殊结构，再补 `chart_templates/` 或额外生成提示
 
 ### 添加新图表模板
 

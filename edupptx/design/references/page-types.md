@@ -87,6 +87,16 @@ LLM 生成对应类型幻灯片时，应参照此文件的坐标和结构。
       font-size="19" fill="{text_color}">暗反应不需要光能</text>
 ```
 
+### 伪动画答案揭晓规则
+
+适用于同一道题拆成“题目页 + 答案揭晓页”的 `quiz` / `exercise` 页面：
+
+- 第二页必须完整复用第一页的题目卡、选项卡、留白区、题号圆、选项字母圆和所有文字块的位置与尺寸
+- 不允许重新估算题目卡或选项卡坐标；如果系统提供上一页 SVG，必须直接沿用其中已有元素的 `x`、`y`、`width`、`height`、`font-size`、换行与对齐方式
+- 选择题 / 判断题：只允许新增正确选项的高亮描边、答案角标、勾选标记或浅色遮罩，不允许移动 A/B/C/D 卡片，也不允许重排选项文字
+- 填空题 / 简答题：保留原题干、空格、下划线、答题区位置，只在原空位附近补答案，或在不遮挡原内容的位置新增“答案”小标注
+- 答案揭晓页新增的是“叠加层”，不是“重做一页”；原有布局元素必须保持不动，避免前后页切换时错位
+
 ---
 
 ## 2. formula — 公式推导页
@@ -288,7 +298,7 @@ LLM 生成对应类型幻灯片时，应参照此文件的坐标和结构。
 
 ---
 
-## 4. comparison — 对比表格页
+## 4. layout_hint=comparison — content 对比表格布局
 
 **适用场景**：多概念/多方案横向对比、性质参数列表、知识点异同分析。
 
@@ -315,7 +325,7 @@ LLM 生成对应类型幻灯片时，应参照此文件的坐标和结构。
 ### SVG 示例
 
 ```xml
-<!-- comparison: 对比表格页 -->
+<!-- layout_hint=comparison: content 对比表格布局 -->
 <!-- 表格外框 -->
 <rect x="50" y="100" width="1180" height="560" rx="14" fill="{card_bg_color}"/>
 
@@ -494,3 +504,62 @@ LLM 生成对应类型幻灯片时，应参照此文件的坐标和结构。
 | `{secondary_bg_color}`| 次背景色（表格交替行、图标底色）    |
 | `{text_color}`       | 正文字色                        |
 | `{heading_color}`    | 标题字色（比正文更深/更突出）       |
+
+---
+
+## toc
+
+- Use this layout for TOC / learning navigation pages rendered as a single vertical list of horizontal cards.
+- Treat TOC cards as fixed-height navigation cards rather than flexible content blocks.
+- Card stack safe region: `x=430..1230`, `y=120..660`.
+- For 4 cards:
+  - card height `>= 104`
+  - vertical gap `14-16`
+- For 5 cards:
+  - card height `>= 96`
+  - vertical gap `10-12`
+- Do not make TOC cards shorter than the minimum height just to fit longer text.
+- Each TOC card may contain at most:
+  - one short title line plus one short description line, or
+  - two short text lines total.
+- If copy does not fit, shorten the wording instead of shrinking card height.
+- Bottom edge of the final TOC card must stay within `y <= 650`.
+
+### Recommended geometry
+
+#### 4-card toc
+
+| Item | x   | y   | w   | h   |
+|------|-----|-----|-----|-----|
+| Card 1 | 430 | 110 | 800 | 112 |
+| Card 2 | 430 | 238 | 800 | 112 |
+| Card 3 | 430 | 366 | 800 | 112 |
+| Card 4 | 430 | 494 | 800 | 112 |
+
+#### 5-card toc
+
+| Item | x   | y   | w   | h   |
+|------|-----|-----|-----|-----|
+| Card 1 | 430 | 110 | 800 | 96 |
+| Card 2 | 430 | 218 | 800 | 96 |
+| Card 3 | 430 | 326 | 800 | 96 |
+| Card 4 | 430 | 434 | 800 | 96 |
+| Card 5 | 430 | 542 | 800 | 96 |
+
+## layout_hint=relation
+
+- Use this content layout for concept relation, causal relation, structure relation, or classification relation layouts.
+- Preferred composition:
+  - one center or anchor node
+  - 3-6 branch nodes
+  - explicit connectors using `<line>` / `<path>` / arrows
+- Keep the whole relation graph inside:
+  - `x=50..1230`
+  - `y=110..660`
+- Recommended geometry:
+  - center node: `x=450..830`, `y=250..430`, `w=220..360`, `h=90..150`
+  - branch nodes: `w=140..260`, `h=64..120`
+  - minimum node gap: `24`
+  - keep connector lines outside text whenever possible
+- Prefer one `<g>` per node so postprocess can keep node text and node box together.
+- Do not degrade a content page with `layout_hint=relation` into a plain bullet list if the content is mainly node-to-node relations.

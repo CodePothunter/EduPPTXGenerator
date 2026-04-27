@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<template>
+  <identity>
+    <name>lower_grade_playful_core</name>
+    <label>低年级 · 启蒙与短信息页</label>
+    <category>primary_lower_grade</category>
+    <tags>
+      低年级, 一年级, 二年级, 三年级, 启蒙, 童趣, 短句, 图文引导, 微卡, 观察, 操作
+    </tags>
+    <intro>
+      适用于一到三年级的启蒙型页面家族。当前目录只提供低年级专属的封面页和
+      hero_with_microcards 微卡展开页，其余通用页型和通用内容版式由复用目录补齐。
+    </intro>
+  </identity>
+
+  <routing>
+    <subjects>
+      低年级, 一年级, 二年级, 三年级, 启蒙, 入门
+    </subjects>
+    <scenes>
+      识字启蒙, 拼音启蒙, 观察提示, 操作引导, 课堂导入, 短信息展开
+    </scenes>
+    <priority_keywords>
+      一年级, 二年级, 三年级, 低年级, 启蒙, 入门, 观察, 操作, 练习提示, 微卡, 短句, 童趣
+    </priority_keywords>
+    <negative_keywords>
+      长文本, 多维对照, 深度分析, 大段正文, 复杂表格, 学术论文
+    </negative_keywords>
+  </routing>
+
+  <planner>
+    <summary>
+      规划提示：低年级优先少字多图、短句强引导；每页聚焦 1 个核心任务，内容点尽量拆成 2-4 个可扫读短点。
+      本目录只提供低年级专属模板，不承载本地配色与背景提示。运行时会先确定低年级主家族作为整体风格方向，
+      页面级模板选择会把本目录与复用目录中的通用页型和通用版式同池打分。规划阶段优先保持短句、低信息密度和强引导感。
+    </summary>
+
+    <page type="cover" variant="cover">
+      <title_max_chars>18</title_max_chars>
+      <subtitle_max_chars>26</subtitle_max_chars>
+      <preferred_layout_hints>center_hero</preferred_layout_hints>
+      <design_notes_hint>
+        封面页以居中标题、大留白和低年级友好的轻装饰为主，允许保留明显的童趣节奏与轻快感。
+      </design_notes_hint>
+    </page>
+
+    <page type="content" variant="content_hero_with_microcards_1">
+      <title_max_chars>18</title_max_chars>
+      <subtitle_max_chars>24</subtitle_max_chars>
+      <preferred_layout_hints>hero_with_microcards</preferred_layout_hints>
+      <design_notes_hint>
+        一张外层大卡承载总述或任务，卡内再展开 2 到 6 个短信息微卡；适合低年级的观察提示、
+        生字词提示、步骤引导和短任务拆分，不适合长段正文或复杂对照分析。
+      </design_notes_hint>
+    </page>
+
+    <variant_catalog>
+      <variant stem="cover" page_type="cover">
+        <layout_hint>center_hero</layout_hint>
+        <hit_keywords>封面, 导入, 开场, 课程标题, 课题, 单元首页</hit_keywords>
+        <image_range min="2" max="2"/>
+        <card_range min="1" max="1"/>
+        <page_features>
+          居中标题卡和低年级轻装饰构成封面主体，强调一眼建立课程主题。
+        </page_features>
+        <reference_rule>
+          保持标题主导和留白，不要硬塞复杂信息块。
+        </reference_rule>
+      </variant>
+
+      <variant stem="content_hero_with_microcards_1" page_type="content">
+        <layout_hint>hero_with_microcards</layout_hint>
+        <hit_keywords>并列短信息模块, 微卡, 短任务, 观察提示, 练习项, 生字, 拼音, 组词, 启蒙</hit_keywords>
+        <image_range min="0" max="0"/>
+        <card_range min="1" max="1"/>
+        <subcard_range min="2" max="8"/>
+        <page_features>
+          一张大卡包裹 2 到 6 个统一节奏的微卡片，适合总述加并列短信息展开。
+        </page_features>
+        <reference_rule>
+          保持外层大卡和内部统一微卡的结构，不要拆成并列大栏或长段正文。
+        </reference_rule>
+      </variant>
+    </variant_catalog>
+  </planner>
+</template>

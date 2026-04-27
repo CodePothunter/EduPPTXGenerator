@@ -32,7 +32,8 @@ IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relation
 
 
 def assemble_pptx(svg_paths: list[Path], output_path: Path,
-                   embed: bool = False, bg_path: Path | None = None) -> Path:
+                   embed: bool = False, bg_path: Path | None = None,
+                   speaker_notes: list[str] | None = None) -> Path:
     """Create a PPTX from SVG files.
 
     Args:
@@ -40,10 +41,48 @@ def assemble_pptx(svg_paths: list[Path], output_path: Path,
         output_path: Where to save the PPTX
         embed: If True, embed SVG+PNG as images (old default).
         bg_path: Optional background image to place behind every slide.
+        speaker_notes: Speaker notes aligned to slide order.
     """
     if embed:
-        return _assemble_svg_embed(svg_paths, output_path)
-    return _assemble_native_shapes(svg_paths, output_path, bg_path=bg_path)
+        result = _assemble_svg_embed(svg_paths, output_path)
+    else:
+        result = _assemble_native_shapes(svg_paths, output_path, bg_path=bg_path)
+    _apply_speaker_notes(result, speaker_notes)
+    return result
+
+
+def _apply_speaker_notes(pptx_path: Path, speaker_notes: list[str] | None) -> None:
+    """Write per-slide speaker notes into the generated PPTX."""
+    if not speaker_notes or not any(note and note.strip() for note in speaker_notes):
+        return
+
+    prs = Presentation(str(pptx_path))
+    slide_count = len(prs.slides)
+    if slide_count != len(speaker_notes):
+        logger.warning(
+            "Speaker notes count ({}) does not match slide count ({})",
+            len(speaker_notes), slide_count,
+        )
+
+    for idx, slide in enumerate(prs.slides):
+        note = speaker_notes[idx] if idx < len(speaker_notes) else ""
+        if not note or not note.strip():
+            continue
+        _set_text_frame_text(slide.notes_slide.notes_text_frame, note)
+
+    prs.save(str(pptx_path))
+
+
+def _set_text_frame_text(text_frame, text: str) -> None:
+    """Replace a pptx text frame with paragraph-preserving plain text."""
+    lines = text.splitlines() or [text]
+    text_frame.clear()
+
+    first_paragraph = text_frame.paragraphs[0]
+    first_paragraph.text = lines[0]
+    for line in lines[1:]:
+        paragraph = text_frame.add_paragraph()
+        paragraph.text = line
 
 
 # ── Native Shapes Mode (Default) ──────────────────────

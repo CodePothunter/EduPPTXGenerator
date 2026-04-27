@@ -12,6 +12,24 @@ from edupptx.models import VisualPlan
 from edupptx.session import Session
 
 
+def build_background_prompt(visual: VisualPlan) -> str:
+    """Compose final background prompt from the original prompt plus an optional color-bias sentence."""
+
+    prompt = visual.background_prompt.strip()
+    if not prompt:
+        prompt = (
+            f"淡雅抽象渐变背景，轻微偏向 {visual.primary_color} 色调，"
+            "简洁几何纹理，画面干净明亮，适合教学演示承载文字，"
+            "16:9 横版，高分辨率"
+        )
+
+    color_bias = visual.background_color_bias.strip()
+    if not color_bias:
+        return prompt
+
+    return f"{prompt} 配色偏向：{color_bias}".strip()
+
+
 async def generate_background(
     visual: VisualPlan,
     config: Config,
@@ -25,14 +43,7 @@ async def generate_background(
         logger.warning("Seedream API not configured, skipping background generation")
         return None
 
-    prompt = visual.background_prompt
-    if not prompt:
-        # Fallback prompt based on primary color
-        prompt = (
-            f"Subtle abstract gradient background, soft {visual.primary_color} tones, "
-            "minimalist geometric pattern, light and clean, professional presentation "
-            "background, 16:9 aspect ratio, high resolution"
-        )
+    prompt = build_background_prompt(visual)
 
     logger.info("Generating background image: {}...", prompt[:60])
 

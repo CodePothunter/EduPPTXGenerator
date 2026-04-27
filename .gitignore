@@ -5,7 +5,7 @@ build/
 dist/
 wheels/
 *.egg-info
-
+python-version
 # Virtual environments
 .venv
 
@@ -16,6 +16,20 @@ wheels/
 backgrounds_cache/
 materials_library/
 output/
-*.pptx
+
 assets/fonts/
 *_resource.md
+2026年美伊战争深度分析报告_slide_01.svg
+小蝌蚪找妈妈.md
+三角形的概念.md
+乘法的初步认识.md
+秋天的怀念.md
+认识声现象.md
+# step test
+tools/
+test.log
+test_1.log
+test_2.log
+test_3.log
+test_new.log
+test.log

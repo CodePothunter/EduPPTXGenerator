@@ -1,0 +1,52 @@
+<svg viewBox="0 0 1280 720" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="8" stdDeviation="10" flood-color="#9DB7A3" flood-opacity="0.16"></feDropShadow>
+    </filter>
+
+    <marker id="arrowThin" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto">
+      <path d="M0,1 L9,5 L0,9" fill="none" stroke="#A7B97A" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"></path>
+    </marker>
+  </defs>
+
+  <!-- left title card -->
+  <g filter="url(#softShadow)">
+    <rect x="96" y="255" width="300" height="150" rx="24" fill="#FFFFFF"></rect>
+    <text x="246" y="325" text-anchor="middle" font-size="44" font-weight="800" fill="#2F4F3A" font-family="Noto Sans SC,Source Han Sans SC,Microsoft YaHei,PingFang SC,Heiti SC,Arial,sans-serif">直角三角形的</text>
+    <text x="246" y="375" text-anchor="middle" font-size="44" font-weight="800" fill="#2F4F3A" font-family="Noto Sans SC,Source Han Sans SC,Microsoft YaHei,PingFang SC,Heiti SC,Arial,sans-serif">性质与判定</text>
+  </g>
+
+  <!-- bracket -->
+  <path d="M468 212
+           q-10 0 -10 10
+           v82
+           q0 10 -10 10
+           q10 0 10 10
+           v82
+           q0 10 10 10" fill="none" stroke="#7B8E7F" stroke-width="4" stroke-linecap="round"></path>
+
+  <!-- middle labels -->
+  <g filter="url(#softShadow)">
+    <rect x="502" y="172" width="148" height="72" rx="18" fill="#E7F3E2"></rect>
+    <text x="576" y="218" text-anchor="middle" font-size="34" font-weight="800" fill="#2F4F3A" font-family="Noto Sans SC,Source Han Sans SC,Microsoft YaHei,PingFang SC,Heiti SC,Arial,sans-serif">性　质</text>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="502" y="432" width="148" height="72" rx="18" fill="#E7F3E2"></rect>
+    <text x="576" y="478" text-anchor="middle" font-size="34" font-weight="800" fill="#2F4F3A" font-family="Noto Sans SC,Source Han Sans SC,Microsoft YaHei,PingFang SC,Heiti SC,Arial,sans-serif">判　定</text>
+  </g>
+
+  <!-- arrows -->
+  <line x1="650" y1="208" x2="708" y2="208" stroke="#A7B97A" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrowThin)"></line>
+  <line x1="650" y1="468" x2="708" y2="468" stroke="#A7B97A" stroke-width="2.5" stroke-linecap="round" marker-end="url(#arrowThin)"></line>
+
+  <!-- right statements -->
+  <g filter="url(#softShadow)">
+    <rect x="724" y="148" width="450" height="118" rx="22" fill="#FFFFFF"></rect>
+    <text x="949" y="214" text-anchor="middle" font-size="28" font-weight="700" fill="#C64B3C" font-family="Noto Sans SC,Source Han Sans SC,Microsoft YaHei,PingFang SC,Heiti SC,Arial,sans-serif">直角三角形的两个锐角互余</text>
+  </g>
+
+  <g filter="url(#softShadow)">
+    <rect x="724" y="408" width="510" height="128" rx="22" fill="#FFFFFF"></rect>
+    <text x="979" y="470" text-anchor="middle" font-size="28" font-weight="700" fill="#C64B3C" font-family="Noto Sans SC,Source Han Sans SC,Microsoft YaHei,PingFang SC,Heiti SC,Arial,sans-serif">有两个角互余的三角形是直角</text>
+    <text x="979" y="508" text-anchor="middle" font-size="28" font-weight="700" fill="#C64B3C" font-family="Noto Sans SC,Source Han Sans SC,Microsoft YaHei,PingFang SC,Heiti SC,Arial,sans-serif"></text></g></svg>

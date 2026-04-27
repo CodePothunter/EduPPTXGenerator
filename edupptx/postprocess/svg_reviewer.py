@@ -10,12 +10,17 @@ from edupptx.config import Config
 from edupptx.llm_client import create_llm_client
 from edupptx.models import PagePlan, VisualPlan
 
+_IMAGE_HREF_PLACEHOLDER_RE = re.compile(
+    r"<image\b[^>]*(?:href|xlink:href)\s*=\s*['\"](__IMAGE_[A-Z0-9_]+__)['\"]",
+    re.IGNORECASE,
+)
+
 _REVIEW_SYSTEM_PROMPT = """\
 你是 SVG 质量审核专家。你的任务是审查一个 PPT 页面的 SVG 代码，结合自动检测到的问题列表，输出修正后的完整 SVG。
 
 ## 审查重点
 
-1. **页面标题位置**：页面标题必须在 x=50, y=50 附近（font-size=28-36），副标题在 y=78-90。如果标题 y > 100 或被其他元素遮挡，必须修正到标准位置
+1. **页面标题位置**：对除 `center_hero` 和 'full_image' 布局之外的页面，页面标题必须在 x=50, y=50 附近（font-size=28-36），副标题在 y=90-100。如果标题 y > 100 或被其他元素遮挡，必须修正到标准位置。'cover' 和 `section`页允许保留居中标题、居中副标题和居中分隔装饰，不要强制挪到顶部标题区",
 2. **文字溢出/重叠**：检查 <text> 的 y 坐标是否在其所属 <rect> 的 y~y+height 范围内。特别注意 <tspan dy="..."> 会让实际渲染位置下移，最后一个 tspan 的累加 y 不能超出卡片底部
 3. **圆形编号对齐**：<circle> + <text> 组成的序号组件，text 的 y 必须等于 circle 的 cy，text 的 x 必须等于 circle 的 cx。如果发现 text y 比 circle cy 大 20px 以上，修正 text y = circle cy
 4. **卡片边界**：所有卡片和内容元素 x ≥ 50，x+width ≤ 1230，不超出画布。唯一例外是顶部装饰条（height≤8 的全宽 rect）允许 x=0
@@ -28,6 +33,8 @@ _REVIEW_SYSTEM_PROMPT = """\
 11. **对比层次 (Contrast)**：检查字号是否形成层次——标题 ≥28px，正文 16-24px，标注 ≤14px。如层次不清，调整关键字号。确保主色和强调色有足够的视觉区分。
 12. **重复统一 (Repetition)**：检查同类元素的视觉一致性——所有卡片的 rx 值是否相同？颜色是否遵循配色方案？间距是否统一？如有不一致，统一为出现次数最多的值。
 13. **邻近分组 (Proximity)**：检查相关内容是否在空间上靠近——标题与正文的间距应 < 卡片之间的间距。不同内容分组之间应有明确的间距分隔（≥20px）。
+14. **表格结构保护**：对于 `layout_hint=comparison` 布局，必须保留原始表格的行数、列数、表头行、列分隔线、行高顺序和单元格内容顺序。不要把表格重写成普通卡片布局；只允许在单元格内部微调文字位置、字号和换行。
+15. **行内高亮保护**：如果一句正文使用同一个 `<text>` 内的连续 `<tspan>` 做局部高亮，必须保留前文、高亮词和后文的连续关系。不要把同一句话拆成多个独立 `<text>`，不要生成嵌套 `<tspan>`，不要丢失高亮词前后的正文。
 
 ## 输出要求
 
@@ -35,6 +42,51 @@ _REVIEW_SYSTEM_PROMPT = """\
 如果没有需要修改的地方，也要输出原始 SVG 代码（保持不变）。
 不要输出任何解释文字，只要 SVG 代码。
 """
+
+
+_REVIEW_SYSTEM_PROMPT += """
+
+## 图片边界硬性规则
+
+- 如果某个 `<image>` 属于卡片或其他有边界的面板，图片框本身必须完全落在该容器内部。
+- 必须满足以下不等式：
+  `image_x >= card_x`
+  `image_y >= card_y`
+  `image_x + image_width <= card_x + card_width`
+  `image_y + image_height <= card_y + card_height`
+- 不要假设 `clipPath`、`mask` 或 overflow hidden 能挽救错误的图片框。
+- 如果图片对卡片来说过大，就缩小图片，或把它向内移动。
+- 与其溢出，不如使用更小但安全的图片框。
+"""
+
+_REVIEW_SYSTEM_PROMPT += """
+
+## Image placeholder hard rules
+
+- All `__IMAGE_...__` tokens are reserved placeholders for later image injection and must be preserved exactly.
+- Do not remove `<image>` nodes that contain `__IMAGE_...__`; do not replace them with `<rect>`, `<text>`, or labels such as "插图1".
+- You may adjust image x/y/width/height, but `href="__IMAGE_...__"` or `xlink:href="__IMAGE_...__"` must remain unchanged.
+"""
+
+
+def _image_href_placeholder_counts(svg_content: str) -> dict[str, int]:
+    """Count image injection placeholders that are still attached to image hrefs."""
+    counts: dict[str, int] = {}
+    for placeholder in _IMAGE_HREF_PLACEHOLDER_RE.findall(svg_content):
+        counts[placeholder] = counts.get(placeholder, 0) + 1
+    return counts
+
+
+def _missing_image_href_placeholders(original_svg: str, reviewed_svg: str) -> dict[str, int]:
+    """Return image href placeholders that disappeared during LLM review."""
+    original = _image_href_placeholder_counts(original_svg)
+    reviewed = _image_href_placeholder_counts(reviewed_svg)
+    missing: dict[str, int] = {}
+    for placeholder, count in original.items():
+        reviewed_count = reviewed.get(placeholder, 0)
+        if reviewed_count < count:
+            missing[placeholder] = count - reviewed_count
+    return missing
 
 
 def review_and_fix_svg(
@@ -68,6 +120,20 @@ def review_and_fix_svg(
         f"## SVG 代码\n```svg\n{svg_content}\n```\n\n"
         f"请审查以上 SVG，修正所有问题后输出完整 SVG。"
     )
+    if page.layout_hint == "comparison":
+        user_prompt += (
+            "\n\n## layout_hint=comparison 额外要求\n"
+            "- 保留原始表格结构：表头、列分隔线、各数据行、单元格顺序都不能改\n"
+            "- 不要新增或删除行列，不要改成普通卡片布局\n"
+            "- 只允许在单元格内部微调文本位置和换行"
+        )
+    if "<tspan" in svg_content:
+        user_prompt += (
+            "\n\n## 行内高亮额外要求\n"
+            "- 如果原始 SVG 已经用同一个 `<text>` 内的连续 `<tspan>` 表示局部高亮，保持这种结构，不要拆成多个 `<text>`\n"
+            "- 不要生成嵌套 `<tspan>`\n"
+            "- 修正时必须同时保留高亮词前文和后文，不能只留下高亮片段"
+        )
 
     try:
         response = client.chat(
@@ -80,6 +146,15 @@ def review_and_fix_svg(
         )
         reviewed = _extract_svg(response)
         if reviewed and "<svg" in reviewed:
+            missing_placeholders = _missing_image_href_placeholders(svg_content, reviewed)
+            if missing_placeholders:
+                missing_text = ", ".join(sorted(missing_placeholders))
+                logger.warning(
+                    "Slide {} LLM review removed image placeholder(s): {}; keeping pre-review SVG",
+                    page.page_number,
+                    missing_text,
+                )
+                return svg_content
             logger.info("Slide {} reviewed by LLM ({} chars)", page.page_number, len(reviewed))
             return reviewed
         logger.warning("Slide {} LLM review returned invalid SVG, keeping original", page.page_number)

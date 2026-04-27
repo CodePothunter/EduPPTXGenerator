@@ -1,0 +1,81 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">
+  <rect x="0" y="0" width="1280" height="6" fill="{primary_color}"/>
+
+  <g font-family="Noto Sans SC, 微软雅黑, Microsoft YaHei, Arial, Helvetica, sans-serif">
+    <!-- 页面标题 -->
+    <text x="50" y="50" font-size="32" font-weight="800" fill="{heading_color}">
+      {title}
+    </text>
+    <text x="50" y="92" font-size="20" fill="{text_color}">
+      {subtitle}
+    </text>
+
+    <!-- 连线 -->
+    <line x1="640" y1="330" x2="230" y2="180" stroke="{secondary_color}" stroke-width="3"/>
+    <line x1="640" y1="330" x2="1050" y2="180" stroke="{secondary_color}" stroke-width="3"/>
+    <line x1="640" y1="330" x2="220" y2="530" stroke="{secondary_color}" stroke-width="3"/>
+    <line x1="640" y1="330" x2="1060" y2="530" stroke="{secondary_color}" stroke-width="3"/>
+
+    <!-- 中心主卡 -->
+    <g>
+      <rect x="510" y="270" width="260" height="120" rx="14"
+            fill="{card_bg_color}" stroke="{primary_color}" stroke-width="2"/>
+      <rect x="510" y="270" width="8" height="120" rx="4" fill="{primary_color}"/>
+      <text x="542" y="318" font-size="22" font-weight="700" fill="{heading_color}">
+        {center_title}
+      </text>
+      <text x="542" y="350" font-size="17" fill="{text_color}">
+        {center_desc}
+      </text>
+    </g>
+
+    <!-- 左上卡 -->
+    <g>
+      <rect x="90" y="130" width="280" height="100" rx="14" fill="{card_bg_color}"/>
+      <text x="118" y="172" font-size="20" font-weight="700" fill="{heading_color}">
+        {node_1_title}
+      </text>
+      <text x="118" y="202" font-size="16" fill="{text_color}">
+        {node_1_desc}
+      </text>
+    </g>
+
+    <!-- 右上卡 -->
+    <g>
+      <rect x="910" y="130" width="280" height="100" rx="14" fill="{card_bg_color}"/>
+      <text x="938" y="172" font-size="20" font-weight="700" fill="{heading_color}">
+        {node_2_title}
+      </text>
+      <text x="938" y="202" font-size="16" fill="{text_color}">
+        {node_2_desc}
+      </text>
+    </g>
+
+    <!-- 左下卡 -->
+    <g>
+      <rect x="90" y="480" width="280" height="100" rx="14" fill="{card_bg_color}"/>
+      <text x="118" y="522" font-size="20" font-weight="700" fill="{heading_color}">
+        {node_3_title}
+      </text>
+      <text x="118" y="552" font-size="16" fill="{text_color}">
+        {node_3_desc}
+      </text>
+    </g>
+
+    <!-- 右下卡 -->
+    <g>
+      <rect x="910" y="480" width="280" height="100" rx="14" fill="{card_bg_color}"/>
+      <text x="938" y="522" font-size="20" font-weight="700" fill="{heading_color}">
+        {node_4_title}
+      </text>
+      <text x="938" y="552" font-size="16" fill="{text_color}">
+        {node_4_desc}
+      </text>
+    </g>
+
+    <!-- 页码 -->
+    <text x="1220" y="700" text-anchor="end" font-size="13" fill="{text_color}">
+      {page_number} / {total_pages}
+    </text>
+  </g>
+</svg>

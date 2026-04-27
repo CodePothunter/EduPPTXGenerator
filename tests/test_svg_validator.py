@@ -55,7 +55,11 @@ class TestFontFix:
 class TestTextWrapping:
     def test_long_text_wrapped(self):
         long_text = "这是一段很长的中文文本，" * 5  # ~55 chars
-        body = f'<text x="100" y="200" font-size="16">{long_text}</text>'
+        # The new validator needs a container rect to compute wrap width.
+        body = (
+            '<rect x="100" y="100" width="600" height="200" fill="#FFF"/>'
+            f'<text x="110" y="200" font-size="16">{long_text}</text>'
+        )
         svg = _make_svg(body)
         fixed, warnings = validate_and_fix(svg)
         assert any("Wrapped" in w for w in warnings)
