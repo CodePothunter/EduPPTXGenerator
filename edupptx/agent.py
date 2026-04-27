@@ -147,10 +147,8 @@ class PPTXAgent:
             data = json.load(f)
         draft = PlanningDraft.model_validate(data)
 
-        session_dir = plan_path.parent
-        session = Session.__new__(Session)
-        session.dir = session_dir
-        session.output_path = session_dir / "output.pptx"
+        session = Session.from_existing(plan_path.parent)
+        session_dir = session.dir
 
         bg_path = await self._phase2_background(draft.visual, session)
 
@@ -400,7 +398,7 @@ class PPTXAgent:
                     # Compress for SVG embedding: max 800px wide, JPEG quality 70
                     if img.width > 800:
                         ratio = 800 / img.width
-                        img = img.resize((800, int(img.height * ratio)), Image.LANCZOS)
+                        img = img.resize((800, int(img.height * ratio)), Image.Resampling.LANCZOS)
                     buf = io.BytesIO()
                     img.convert("RGB").save(buf, "JPEG", quality=70, optimize=True)
                     b64 = base64.b64encode(buf.getvalue()).decode("ascii")

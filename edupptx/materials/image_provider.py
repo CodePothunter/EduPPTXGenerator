@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import re
 from typing import Protocol, runtime_checkable
 
 from loguru import logger
 
 from edupptx.config import Config
+from edupptx.models import IMAGE_RATIO_SIZES, ImageNeed, ImageResult
 
 
 # Common Chinese→English keyword mappings for image search
@@ -39,7 +39,6 @@ def _simplify_query(query: str) -> str:
         return " ".join(english_parts[:3])  # max 3 keywords
     # Fallback: keep original
     return query
-from edupptx.models import IMAGE_RATIO_SIZES, ImageNeed, ImageResult
 
 
 @runtime_checkable

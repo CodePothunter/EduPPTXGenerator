@@ -8,7 +8,8 @@ from pathlib import Path
 import cairosvg
 from loguru import logger
 
-_ASSETS_DIR = Path(__file__).resolve().parent.parent.parent / "assets" / "icons"
+_ASSETS_DIR = (Path(__file__).resolve().parent.parent.parent / "assets" / "icons").resolve()
+_ICON_NAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9_-]{0,63}$")
 
 # Default fallback: a simple filled circle
 _FALLBACK_SVG = (
@@ -35,8 +36,12 @@ def get_icon_svg(name: str, color: str = "currentColor") -> str:
     Returns:
         SVG string with stroke/fill colors replaced.
     """
-    path = _ASSETS_DIR / f"{name}.svg"
-    if not path.exists():
+    if not _ICON_NAME_RE.fullmatch(name or ""):
+        logger.warning("Icon name '{}' rejected (invalid format), using fallback circle", name)
+        return _FALLBACK_SVG.format(color=color)
+
+    path = (_ASSETS_DIR / f"{name}.svg").resolve()
+    if not path.is_relative_to(_ASSETS_DIR) or not path.exists():
         logger.warning("Icon '{}' not found in assets, using fallback circle", name)
         return _FALLBACK_SVG.format(color=color)
 

@@ -15,6 +15,7 @@ from PIL import Image
 SVG_NS = "http://www.w3.org/2000/svg"
 _DPI = 200
 _SCALE = 1.5  # matplotlib fontsize multiplier for clarity at _DPI
+_SAFE_PARSER = etree.XMLParser(resolve_entities=False, no_network=True)
 
 
 def render_latex_formulas(
@@ -28,7 +29,7 @@ def render_latex_formulas(
         return svg_content, 0
 
     try:
-        root = etree.fromstring(svg_content.encode("utf-8"))
+        root = etree.fromstring(svg_content.encode("utf-8"), parser=_SAFE_PARSER)
     except etree.XMLSyntaxError:
         return svg_content, 0
 

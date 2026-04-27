@@ -6,6 +6,9 @@ from lxml import etree
 SVG_NS = "http://www.w3.org/2000/svg"
 NSMAP = {"svg": SVG_NS}
 
+# Hardened parser: blocks XXE / external DTDs / network fetches.
+_SAFE_PARSER = etree.XMLParser(resolve_entities=False, no_network=True)
+
 EXPECTED_VIEWBOX = "0 0 1280 720"
 MAX_X = 1280
 MAX_Y = 720
@@ -26,19 +29,18 @@ def validate_and_fix(svg_content: str) -> tuple[str, list[str]]:
     warnings: list[str] = []
 
     # Pre-clean XML-unsafe characters (common LLM artifacts)
-    import re
     svg_content = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#)", "&amp;", svg_content)
     # Escape bare < not part of XML tags (e.g., "k < 0" in math formulas)
     svg_content = re.sub(r"<(?![a-zA-Z/!?])", "&lt;", svg_content)
 
     try:
-        root = etree.fromstring(svg_content.encode("utf-8"))
+        root = etree.fromstring(svg_content.encode("utf-8"), parser=_SAFE_PARSER)
     except etree.XMLSyntaxError as e:
         warnings = [f"SVG parse error: {e}"]
         # Try recovery: wrap in minimal SVG if missing root
         try:
             wrapped = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 720">{svg_content}</svg>'
-            root = etree.fromstring(wrapped.encode("utf-8"))
+            root = etree.fromstring(wrapped.encode("utf-8"), parser=_SAFE_PARSER)
             warnings.append("Recovered by wrapping in <svg> root")
         except etree.XMLSyntaxError:
             return svg_content, warnings

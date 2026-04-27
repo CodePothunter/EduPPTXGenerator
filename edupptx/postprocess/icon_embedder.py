@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import re
 from lxml import etree
 from loguru import logger
 
 from edupptx.materials.icons import get_icon_svg
 
 SVG_NS = "http://www.w3.org/2000/svg"
+_SAFE_PARSER = etree.XMLParser(resolve_entities=False, no_network=True)
 
 
 def embed_icon_placeholders(svg_content: str, icon_color: str = "#333") -> tuple[str, int]:
@@ -26,7 +26,7 @@ def embed_icon_placeholders(svg_content: str, icon_color: str = "#333") -> tuple
         return svg_content, 0
 
     try:
-        root = etree.fromstring(svg_content.encode("utf-8"))
+        root = etree.fromstring(svg_content.encode("utf-8"), parser=_SAFE_PARSER)
     except etree.XMLSyntaxError:
         return svg_content, 0
 
@@ -38,10 +38,14 @@ def embed_icon_placeholders(svg_content: str, icon_color: str = "#333") -> tuple
             continue
 
         # Get position and size from the <use> element
-        x = float(use_el.get("x", "0"))
-        y = float(use_el.get("y", "0"))
-        w = float(use_el.get("width", "48"))
-        h = float(use_el.get("height", "48"))
+        try:
+            x = float(use_el.get("x", "0"))
+            y = float(use_el.get("y", "0"))
+            w = float(use_el.get("width", "48"))
+            h = float(use_el.get("height", "48"))
+        except (ValueError, TypeError):
+            logger.warning("Icon '{}' has non-numeric position/size, skipping", icon_name)
+            continue
         color = use_el.get("fill", icon_color)
 
         # Load the icon SVG
@@ -49,7 +53,7 @@ def embed_icon_placeholders(svg_content: str, icon_color: str = "#333") -> tuple
 
         # Parse the icon SVG to extract child elements
         try:
-            icon_root = etree.fromstring(icon_svg_str.encode("utf-8"))
+            icon_root = etree.fromstring(icon_svg_str.encode("utf-8"), parser=_SAFE_PARSER)
         except etree.XMLSyntaxError:
             logger.warning("Failed to parse icon SVG for '{}'", icon_name)
             continue
