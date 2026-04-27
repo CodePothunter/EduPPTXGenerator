@@ -41,6 +41,12 @@ GEN_APIKEY=your-api-key
 # API 模式: "chat" = Chat Completions | "responses" = Responses API
 LLM_PROVIDER=responses
 
+# Provider-specific 推理控制（可选）
+# DeepSeek: GEN_THINKING=enabled / GEN_REASONING_EFFORT=high
+# OpenAI o-series: GEN_REASONING_EFFORT=low|medium|high
+# GEN_THINKING=
+# GEN_REASONING_EFFORT=
+
 # 图片生成 (Seedream / DALL-E 兼容)
 VISION_GEN_MODEL=your-image-model
 VISION_GEN_APIKEY=your-image-key
