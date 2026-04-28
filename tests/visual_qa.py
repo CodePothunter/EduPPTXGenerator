@@ -14,12 +14,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from pptx import Presentation
 from pptx.util import Emu
+
+# Decorative atmospheric shapes (large opacity ≤ 0.25 circles or rects) are
+# intentionally allowed to bleed off-canvas and overlap content, so the QA
+# checker excludes them from the bounds and overlap signals.
+_DECORATIVE_ALPHA_THRESHOLD = 0.25
+_ALPHA_RE = re.compile(r'<a:alpha\s+val="(\d+)"')
 
 
 @dataclass
@@ -89,6 +96,27 @@ def _is_background(sh) -> bool:
     return w > Emu(9_000_000) and h > Emu(5_000_000)
 
 
+def _shape_min_alpha(sh) -> float:
+    """Return the smallest fill/stroke alpha (0..1). 1.0 if no alpha set."""
+    try:
+        xml = sh._element.xml
+    except Exception:
+        return 1.0
+    matches = _ALPHA_RE.findall(xml)
+    if not matches:
+        return 1.0
+    try:
+        return min(int(m) / 100_000 for m in matches)
+    except ValueError:
+        return 1.0
+
+
+def _is_decorative(sh) -> bool:
+    """Low-opacity atmospheric shapes (decorative blobs) are intentionally
+    allowed to bleed off-canvas — exclude them from QA signals."""
+    return _shape_min_alpha(sh) <= _DECORATIVE_ALPHA_THRESHOLD
+
+
 def _estimate_text_overflow(sh) -> bool:
     """Crude estimate: total chars * avg char height vs shape height."""
     if not sh.has_text_frame or sh.height in (None, 0):
@@ -122,15 +150,16 @@ def analyze_pptx(pptx_path: Path, *, overlap_threshold: float = 0.10) -> dict:
                 continue
             name = sh.name or type(sh).__name__
             x, y, w, h = box
+            decorative = _is_decorative(sh)
 
-            if x + w > slide_w or y + h > slide_h or x < 0 or y < 0:
+            if (x + w > slide_w or y + h > slide_h or x < 0 or y < 0) and not decorative:
                 rep.issues.append(Issue(
                     "out_of_bounds", "high",
                     f"Shape '{name}' extends outside slide bounds",
                     [name],
                 ))
 
-            if _is_background(sh):
+            if _is_background(sh) or decorative:
                 continue
 
             non_bg_area += w * h

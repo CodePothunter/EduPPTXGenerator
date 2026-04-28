@@ -718,6 +718,86 @@ def _clamp_boundaries(root: etree._Element, warnings: list[str]) -> None:
                             f"Clamped <{tag_name}> {attr}={val} to {new_val}"
                         )
 
+    # Hard bottom-edge cap: rect/image with y + height > MAX_Y get height clipped
+    # so they sit fully inside the canvas. This is a deterministic safety net for
+    # the high-frequency LLM mistake of placing footer cards / images at y=670+
+    # with height that extends past 720.
+    for tag in (f"{{{SVG_NS}}}rect", f"{{{SVG_NS}}}image"):
+        for el in root.iter(tag):
+            if _has_translated_group_ancestor(el):
+                continue
+            box = _rect_box(el)
+            if box is None:
+                continue
+            x, y, w, h = box
+            if h <= 8 and y <= 2:
+                continue  # decoration bar
+            if _is_full_slide_background_box(box):
+                continue
+            bottom = y + h
+            if bottom > MAX_Y:
+                # Clip height so y + height == MAX_Y - 4 (4px safety inset)
+                new_h = max(8.0, MAX_Y - 4 - y)
+                if new_h < h:
+                    el.set("height", str(int(new_h)))
+                    tag_name = etree.QName(el.tag).localname
+                    warnings.append(
+                        f"Clipped <{tag_name}> height {int(h)}→{int(new_h)} "
+                        f"(was extending to y={int(bottom)} > {MAX_Y})"
+                    )
+
+    # Circle: clamp cy + r ≤ MAX_Y (skip decorative low-opacity blobs that
+    # intentionally bleed off-canvas)
+    for el in root.iter(f"{{{SVG_NS}}}circle"):
+        if _has_translated_group_ancestor(el):
+            continue
+        opacity_str = el.get("opacity") or el.get("fill-opacity")
+        try:
+            opacity = float(opacity_str) if opacity_str else 1.0
+        except (ValueError, TypeError):
+            opacity = 1.0
+        if opacity <= 0.25:
+            continue  # decorative atmospheric blob
+        cy_str = el.get("cy")
+        r_str = el.get("r")
+        if cy_str is None or r_str is None:
+            continue
+        try:
+            cy = float(cy_str)
+            r = float(r_str)
+        except (ValueError, TypeError):
+            continue
+        if cy + r > MAX_Y:
+            new_cy = MAX_Y - r - 2
+            if new_cy < r:  # would push center off the top
+                continue
+            el.set("cy", str(int(new_cy)))
+            warnings.append(
+                f"Clamped <circle> cy {int(cy)}→{int(new_cy)} (cy+r was > {MAX_Y})"
+            )
+
+    # Text: clamp y so that the alphabetic-baseline text bbox stays in canvas
+    for el in root.iter(f"{{{SVG_NS}}}text"):
+        if _has_translated_group_ancestor(el):
+            continue
+        y_str = el.get("y")
+        fs_str = el.get("font-size", "16")
+        if y_str is None:
+            continue
+        try:
+            y = float(y_str)
+            fs = float(str(fs_str).replace("px", ""))
+        except (ValueError, TypeError):
+            continue
+        # Compensate for text drop below baseline (~0.25 * font_size)
+        max_y = MAX_Y - fs * 0.3
+        if y > max_y:
+            new_y = max_y
+            el.set("y", str(int(new_y)))
+            warnings.append(
+                f"Clamped <text> y {int(y)}→{int(new_y)} (text bottom > {MAX_Y})"
+            )
+
 
 def _fix_text_overlaps(root: etree._Element, warnings: list[str]) -> None:
     """Detect and fix overlapping <text> elements in the same horizontal column."""

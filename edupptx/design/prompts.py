@@ -607,8 +607,13 @@ def build_svg_user_prompt(
 
     lines.append(
         f"\n请生成第 {page.page_number} 页的完整 SVG 代码。"
-        "\n\n**重要提醒**：绝对禁止使用任何 Emoji 表情符号（如 🔍📋💡🎯✨🕐 等），"
-        "改用 SVG 图形（圆形+数字、色块、箭头 polygon）或纯文字符号（●、→、①②③）。"
+        "\n\n**输出前最后自检（每条都不能违反）**："
+        "\n- 所有卡片 `<rect>` / `<image>` 满足 `y + height ≤ 660`；任何元素的 `y` 与 `y + height` 都不超过 720"
+        "\n- 所有元素 `x ≥ 50` 且 `x + width ≤ 1230`；circle 满足 `cx ± r ∈ [50, 1230]` 且 `cy + r ≤ 660`"
+        "\n- 多列文字布局必须为每列画独立 `<rect>`，**或** 全部改用 `text-anchor=\"middle\"` + 列中心 x 坐标"
+        "\n- 化学方程式、平衡常数、分数、根号、上下标必须用 `data-latex` 标记，回退文本只能用 ASCII（禁止 Unicode 下标 `₂` `³` `⁻`）"
+        "\n- 页面标题严格在 `(x=50, y=50)` 位置；页码严格在 `(x=1220, y=700)`"
+        "\n- 绝对禁止 Emoji（🔍📋💡🎯✨🕐 等），改用 SVG 图形（圆形+数字、色块、箭头 polygon）或纯文字符号（●、→、①②③）"
     )
     if page.material_needs.images:
         lines.append(

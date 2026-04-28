@@ -1169,6 +1169,53 @@ def _infer_single_line_rich_text_width(
     return max(estimated_width * 1.02, available_width + padding)
 
 
+def _find_right_text_neighbor_x(
+    elem: ET.Element,
+    ctx: ConvertContext,
+    text_x: float,
+    text_y: float,
+    vertical_tolerance: float = 60.0,
+) -> float | None:
+    """Find the smallest x among <text> elements (anywhere in the same ancestor
+    subtree as `elem`) that sit to the right of `elem` at a similar y. Used to
+    bound text-box width when the LLM laid out implicit columns inside a single
+    container rect without drawing per-column rects.
+    """
+    best_x: float | None = None
+    # Walk up to find ancestors. For each ancestor, scan ALL descendant <text>
+    # elements (cousins/grand-cousins via different <g> blocks count too).
+    # We skip elem itself.
+    elem_id = id(elem)
+    parent = ctx.parent_map.get(elem_id)
+    while parent is not None:
+        for descendant in parent.iter():
+            if descendant is elem:
+                continue
+            if descendant.tag != f"{{{SVG_NS}}}text" and descendant.tag != "text":
+                continue
+            sib_x_str = descendant.get("x")
+            sib_y_str = descendant.get("y")
+            if sib_x_str is None or sib_y_str is None:
+                continue
+            try:
+                sib_x = ctx_x(float(str(sib_x_str).replace("px", "")), ctx)
+                sib_y = ctx_y(float(str(sib_y_str).replace("px", "")), ctx)
+            except (ValueError, TypeError):
+                continue
+            if abs(sib_y - text_y) > vertical_tolerance:
+                continue
+            if sib_x <= text_x + 16:  # need clearly to the right
+                continue
+            if best_x is None or sib_x < best_x:
+                best_x = sib_x
+        # Once we've found at least one candidate at the closest ancestor level
+        # that contains other text columns, we can stop walking up.
+        if best_x is not None:
+            break
+        parent = ctx.parent_map.get(id(parent))
+    return best_x
+
+
 def _infer_text_container_width(
     elem: ET.Element,
     ctx: ConvertContext,
@@ -1186,6 +1233,16 @@ def _infer_text_container_width(
     rect_w = ctx_w(_f(rect.get("width")), ctx)
     rect_right = rect_x + rect_w
     side_padding = max(padding, 12.0 * ctx.scale_x)
+
+    # Column-aware: if a sibling <text> sits to the right at a similar y, treat
+    # its x as the effective right boundary. This fixes the high-frequency case
+    # where the LLM puts multiple columns of text inside a single outer rect
+    # without drawing per-column sub-rects, which would otherwise cause each
+    # text-box to span the full outer rect width and overlap its neighbors.
+    if text_anchor == "start":
+        neighbor_x = _find_right_text_neighbor_x(elem, ctx, text_x, text_y)
+        if neighbor_x is not None and neighbor_x < rect_right:
+            rect_right = neighbor_x
 
     if text_anchor == "middle":
         half_width = min(text_x - rect_x, rect_right - text_x) - side_padding

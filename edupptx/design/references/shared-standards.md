@@ -57,27 +57,38 @@
 </text>
 ```
 
-### 公式标记（数学公式和化学方程式）
+### 公式标记（数学公式和化学方程式）— **强制使用 data-latex**
 
-数学公式和化学方程式使用 `data-latex` 属性标记，系统自动渲染为高质量图片：
+只要文字里出现化学方程式、平衡常数表达式、分数、根号、上下标、Σ/∫/lim 等数学符号，**必须使用 `data-latex` 属性**，系统会自动把 LaTeX 渲染为高质量图片。直接在 `<tspan>` 里堆 Unicode 上下标（`CO₃`、`H₂`、`x²`、`aᵢ` 等）会触发以下问题：
+
+- 字符宽度估算失效 → 文本框越过卡片右边界
+- `<tspan dy>` 多行环绕 + Unicode 下标会撑破卡片高度
+- 不同字体 fallback 后下标渲染丢失
 
 ```svg
 <!-- 数学公式 -->
-<text x="100" y="200" font-size="24" data-latex="x^2 + 2x + 1 = 0" fill="#1E293B">x²+2x+1=0</text>
+<text x="100" y="200" font-size="24" data-latex="x^2 + 2x + 1 = 0" fill="#1E293B">x^2 + 2x + 1 = 0</text>
 
 <!-- 分数/根号 -->
-<text x="100" y="300" font-size="24" data-latex="\frac{-b \pm \sqrt{b^2-4ac}}{2a}" fill="#1E293B">(-b±√(b²-4ac))/2a</text>
+<text x="100" y="300" font-size="24" data-latex="\frac{-b \pm \sqrt{b^2-4ac}}{2a}" fill="#1E293B">(-b +/- sqrt(b^2 - 4ac)) / (2a)</text>
 
 <!-- 化学方程式 -->
-<text x="100" y="400" font-size="24" data-latex="\mathrm{CaCO_3 \rightarrow CaO + CO_2}" fill="#1E293B">CaCO₃→CaO+CO₂</text>
+<text x="100" y="400" font-size="24" data-latex="\mathrm{CaCO_3 \rightarrow CaO + CO_2}" fill="#1E293B">CaCO3 -> CaO + CO2</text>
+
+<!-- 平衡常数表达式（典型场景） -->
+<text x="200" y="300" font-size="22" text-anchor="middle"
+      data-latex="K = \frac{[\mathrm{CH_3COO^-}][\mathrm{H^+}]}{[\mathrm{CH_3COOH}]}"
+      fill="#E53E3E">K = [CH3COO-][H+] / [CH3COOH]</text>
 ```
 
 **规则**：
 - `data-latex` 值为 LaTeX 数学语法（不含 `$` 符号）
-- `<text>` 内容为 Unicode 回退文本（渲染失败时显示）
+- `<text>` 回退内容只允许 **纯 ASCII**（`^`、`_`、`/`、`->`、`<=`），**禁止 Unicode 上下标**（如 `₂` `³` `⁻`），否则会撑爆字符宽度估算
 - 化学元素用 `\mathrm{}` 包裹使其正体
-- 化学箭头用 `\rightarrow`，上下标用 `_` 和 `^`
+- 化学箭头用 `\rightarrow`、可逆反应用 `\rightleftharpoons`，上下标用 `_` 和 `^`
 - 分数用 `\frac{分子}{分母}`，根号用 `\sqrt{}`
+- 公式 `<text>` **严禁拆成多个 `<tspan dy>`**：要么单行 `data-latex` 表达全式，要么把多个公式拆成多个独立 `<text>` 元素并显式分行 y 坐标
+- 公式 `<text>` 推荐使用 `text-anchor="middle"` 配合卡片中心 x 坐标，由 LaTeX 渲染图自动占据正确宽度
 
 ---
 
