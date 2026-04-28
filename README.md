@@ -78,6 +78,34 @@ uv run edupptx render output/session_xxx/plan.json
 uv run edupptx styles
 ```
 
+### 作为 Agent 工具调用
+
+EduPPTX CLI 设计为可被 LLM Agent 直接调用，提供机器可读输出。
+
+```bash
+# 静默 + JSON 输出 (适合 agent 解析)
+uv run edupptx --quiet gen "牛顿三大定律" --debug --json
+# → {"ok": true, "mode": "full", "session_dir": "...", "pptx_path": "...", ...}
+
+# 失败时也返回 JSON 错误
+uv run edupptx --quiet gen "x" --style invalid --json
+# → {"ok": false, "error": "未知风格 'invalid'。可用: ...", "kind": "UnknownStyle"}
+
+# styles 查询带描述
+uv run edupptx --quiet styles --json
+# → {"ok": true, "styles": [{"name": "edu_emerald", "description": "..."}, ...]}
+
+# 生成后立即跑视觉 QA
+uv run edupptx --quiet gen "电磁感应" --debug --json --qa
+# 结果 payload 中追加 "qa": {...} 字段
+```
+
+**Agent 调用要点**
+- `--quiet` 抑制日志，stderr 安静；`--json` 让 stdout 只输出一行 JSON
+- 退出码：0=成功，1=运行时错误（JSON 模式 stdout 含详情），2=参数错误（Click 标准）
+- 风格在生成前校验，无效风格立即失败而不会浪费 LLM 调用
+- 失败时 LLM 原始响应保存到 `output/_debug/llm_parse_fail_*.txt`
+
 ## 架构
 
 ```

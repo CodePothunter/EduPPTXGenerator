@@ -4,8 +4,12 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import re
+import time
+from pathlib import Path
 
+import json_repair
 from loguru import logger
 
 from edupptx.config import Config
@@ -125,9 +129,40 @@ def _load_json_with_repair(raw: str) -> dict:
     try:
         return json.loads(cleaned)
     except json.JSONDecodeError:
-        # Some LLMs emit literal line breaks inside JSON strings. Keep this
-        # fallback narrow: only after normal parsing and trailing-comma repair fail.
+        pass
+
+    # Some LLMs emit literal line breaks inside JSON strings. Keep this
+    # fallback narrow: only after normal parsing and trailing-comma repair fail.
+    try:
         return json.loads(cleaned, strict=False)
+    except json.JSONDecodeError:
+        pass
+
+    # Final fallback: aggressive LLM-aware repair (handles unescaped quotes,
+    # missing commas, truncated output, Python literals, comments, etc.).
+    try:
+        repaired = json_repair.loads(raw)
+        if isinstance(repaired, dict):
+            logger.warning("JSON parsed via json-repair fallback")
+            return repaired
+    except Exception as exc:
+        logger.error("json-repair also failed: {}", exc)
+
+    # Persist raw response for post-mortem before raising.
+    _dump_failed_response(raw)
+    raise json.JSONDecodeError("Could not parse LLM JSON after all repair attempts", raw, 0)
+
+
+def _dump_failed_response(raw: str) -> None:
+    """Save raw LLM response on parse failure so an agent can debug."""
+    debug_dir = Path(os.environ.get("EDUPPTX_DEBUG_DIR", "output/_debug"))
+    try:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        path = debug_dir / f"llm_parse_fail_{int(time.time())}.txt"
+        path.write_text(raw, encoding="utf-8")
+        logger.error("Failed LLM response saved to {}", path)
+    except Exception as exc:
+        logger.error("Could not save failed response: {}", exc)
 
 
 def _normalize_draft_dict(data: dict) -> None:
