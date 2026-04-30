@@ -179,7 +179,7 @@ VISION_GEN_APIKEY=image-api-key
 - 设计理念: `docs/design-philosophy.md`
 - 布局系统: `docs/layout-system.md`
 - SVG 管线: `docs/svg-pipeline.md`
-- V2 设计规格: `docs/superpowers/specs/2026-04-13-v2-svg-pipeline-design.md`
+- 历史设计规格: `docs/_archive/`（v1 迁移、v2 SVG pipeline、v3 design upgrade、DESIGN.md 集成等）
 
 ## Git 约定
 
