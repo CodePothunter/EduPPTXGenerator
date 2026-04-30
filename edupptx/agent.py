@@ -232,8 +232,9 @@ class PPTXAgent:
         # Phase 3 prefer-existing-DESIGN.md hook (informational; full consumption pending).
         design_md_path = plan_path.parent / "DESIGN.md"
         if design_md_path.exists():
-            logger.info(
-                "Found DESIGN.md at {} (informational; full consumption pending)",
+            logger.warning(
+                "Found DESIGN.md at {} — note: render does not yet apply DESIGN.md edits "
+                "(consume path is experimental and pending). Re-run `edupptx gen` for full effect.",
                 design_md_path,
             )
 

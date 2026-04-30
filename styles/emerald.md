@@ -47,6 +47,12 @@ pptx-extensions:
   background:
     type: diagonal_gradient
     seed_extra: ''
+  semantic:
+    subtitle_size_pt: 20
+    footer_size_pt: 13
+    formula_size_pt: 18
+    card_corner_radius: 8000
+    bg_overlay_alpha: 0.55
 ---
 
 ## Overview

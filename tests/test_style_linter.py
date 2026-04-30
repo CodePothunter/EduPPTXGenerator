@@ -84,6 +84,24 @@ def test_broken_ref_triggers_error():
     assert "nonexistent" in broken[0].message
 
 
+# ── 4b. I4: broken-ref for semantic.heading_color when palette lacks "text" ──
+
+
+def test_broken_ref_heading_color_when_palette_missing_text():
+    """I4 regression: default heading_color='palette.text' must be flagged when palette lacks 'text'."""
+    schema = StyleSchema()  # all defaults — palette is empty {}
+    findings = lint_style_schema(schema)
+    broken = [f for f in findings if f.rule == "broken-ref"]
+    paths = {f.path for f in broken}
+    # All 7 semantic color refs + card_shadow.color resolve to broken-ref
+    # The critical check: heading_color must be among them
+    assert "semantic.heading_color" in paths
+    # Severity is error
+    heading_finding = next(f for f in broken if f.path == "semantic.heading_color")
+    assert heading_finding.severity == "error"
+    assert "palette.text" in heading_finding.message
+
+
 # ── 5. [critical] None / rgba never raises ─────────────────
 
 

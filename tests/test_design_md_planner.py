@@ -308,6 +308,22 @@ def test_compose_design_md_uses_hint_palette():
     assert schema.global_tokens.palette["primary"] == expected["primary"]
     assert "情绪基调" in out
 
+    # I1 regression: pptx-extensions block must be present so decorations / shadow /
+    # background / semantic roundtrip cleanly through parse_design_md (rather than
+    # silently falling back to Pydantic defaults).
+    assert "pptx-extensions:" in out
+    # Schema-level: parsed values match the defaults emitted by _compose_design_md
+    assert schema.decorations.title_underline is True
+    assert schema.decorations.panel_alpha_pct == 35
+    assert schema.semantic.card_shadow.blur_pt == 30
+    assert schema.semantic.card_shadow.color == "palette.shadow"
+    assert schema.global_tokens.background["type"] == "diagonal_gradient"
+    assert schema.semantic.subtitle_size_pt == 20
+    assert schema.semantic.footer_size_pt == 13
+    assert schema.semantic.formula_size_pt == 18
+    assert schema.semantic.card_corner_radius == 8000
+    assert schema.semantic.bg_overlay_alpha == 0.55
+
 
 def test_fallback_roundtrips_through_parser():
     draft = _make_draft()

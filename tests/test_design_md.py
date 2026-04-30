@@ -269,3 +269,53 @@ def test_serialize_produces_8_section_placeholders_by_default():
     out = serialize_style(schema)  # no prose_sections passed
     for heading in PROSE_HEADINGS:
         assert f"## {heading}" in out
+
+
+def test_semantic_extensions_roundtrip():
+    """C1 regression: non-default semantic values must roundtrip via pptx-extensions.semantic."""
+    from edupptx.style_schema import (
+        DecorationTokens,
+        GlobalTokens,
+        LayoutTokens,
+        SchemaMeta,
+        SemanticTokens,
+        ShadowSpec,
+        StyleSchema,
+    )
+
+    schema = StyleSchema(
+        meta=SchemaMeta(schema_version="1.0", name="custom-semantic"),
+        global_tokens=GlobalTokens(palette={"primary": "#000000", "accent": "#FF0000"}),
+        semantic=SemanticTokens(
+            title_size_pt=42,
+            subtitle_size_pt=24,        # non-default (default 20)
+            body_size_pt=14,
+            card_title_size_pt=18,
+            footer_size_pt=15,           # non-default (default 13)
+            formula_size_pt=24,          # non-default (default 18)
+            card_corner_radius=10000,    # non-default (default 8000)
+            bg_overlay_alpha=0.78,       # non-default (default 0.55)
+            card_shadow=ShadowSpec(blur_pt=20, dist_pt=4, color="palette.accent", alpha_pct=20),
+        ),
+        layout=LayoutTokens(),
+        decorations=DecorationTokens(),
+    )
+
+    md_text = serialize_style(schema)
+    parsed = parse_design_md(md_text)
+
+    # All non-default semantic fields preserved
+    assert parsed.semantic.subtitle_size_pt == 24
+    assert parsed.semantic.footer_size_pt == 15
+    assert parsed.semantic.formula_size_pt == 24
+    assert parsed.semantic.card_corner_radius == 10000
+    assert parsed.semantic.bg_overlay_alpha == pytest.approx(0.78)
+    # Sanity: typography sizes also roundtrip
+    assert parsed.semantic.title_size_pt == 42
+    assert parsed.semantic.body_size_pt == 14
+    assert parsed.semantic.card_title_size_pt == 18
+    # Shadow spec roundtrips
+    assert parsed.semantic.card_shadow.blur_pt == 20
+    assert parsed.semantic.card_shadow.dist_pt == 4
+    assert parsed.semantic.card_shadow.color == "palette.accent"
+    assert parsed.semantic.card_shadow.alpha_pct == 20

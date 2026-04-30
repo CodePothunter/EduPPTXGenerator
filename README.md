@@ -167,6 +167,10 @@ Layer 3b 引入 DESIGN.md 作为人机共读的视觉风格中间产物：
 
 风格文件加载器 `load_style()` 同时支持 `.json`（旧路径）与 `.md`（DESIGN.md 解析后 → StyleSchema）。
 
+> **注意**：当前 `session_dir/DESIGN.md` 是**只读**产物——Phase 3 SVG 生成尚未消费用户对 DESIGN.md 的编辑。该工件主要用于审阅与未来迭代；如需让风格修改生效，请重新运行 `edupptx gen`。`edupptx render` 检测到 DESIGN.md 时会发出 warning 提醒此限制。
+>
+> TODO: Phase 3 完整消费 DESIGN.md 编辑（单独跟踪）。
+
 ### 调色板：`styles/<name>.md`（DESIGN.md 格式）
 
 `styles/` 目录下的调色板文件可以是 `.json`（紧凑、机器可读）或 `.md`（YAML frontmatter + 8 段中文 prose，人机共读）。两种格式经 `load_style()` 解析后产出**严格等价**的 `ResolvedStyle`，由 `tests/test_style_migration_regression.py` 守护。

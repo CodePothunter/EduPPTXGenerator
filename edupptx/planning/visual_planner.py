@@ -374,6 +374,33 @@ def _compose_design_md(palette_hint: Any, prose_md: str, draft: PlanningDraft) -
         },
         "spacing": {"margin": "comfortable", "card_gap": "normal"},
         "rounded": {"sm": "4px", "md": "8px", "lg": "16px"},
+        "pptx-extensions": {
+            # Mirrors DecorationTokens defaults — keeps roundtrip stable.
+            "decorations": {
+                "title_underline": True,
+                "content_panel": True,
+                "panel_alpha_pct": 35,
+                "footer_separator": True,
+                "quote_bar": True,
+                "section_diamond": True,
+                "closing_circle": True,
+            },
+            "card_shadow": {
+                "blur_pt": 30,
+                "dist_pt": 8,
+                "color": "palette.shadow",
+                "alpha_pct": 14,
+            },
+            "background": {"type": "diagonal_gradient", "seed_extra": ""},
+            # Mirrors SemanticTokens defaults — full roundtrip.
+            "semantic": {
+                "subtitle_size_pt": 20,
+                "footer_size_pt": 13,
+                "formula_size_pt": 18,
+                "card_corner_radius": 8000,
+                "bg_overlay_alpha": 0.55,
+            },
+        },
     }
     fm = yaml.safe_dump(yaml_data, allow_unicode=True, sort_keys=False)
     return f"---\n{fm}---\n\n{prose_md.strip()}\n"

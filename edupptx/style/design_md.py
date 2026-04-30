@@ -63,6 +63,7 @@ def parse_design_md(text: str) -> StyleSchema:
     bg_cfg = ext.get("background") or {"type": "diagonal_gradient", "seed_extra": ""}
     decorations_cfg = ext.get("decorations", {}) or {}
     shadow_cfg = ext.get("card_shadow", {}) or {}
+    semantic_ext_cfg = ext.get("semantic", {}) or {}
 
     return StyleSchema(
         meta=SchemaMeta(
@@ -75,7 +76,9 @@ def parse_design_md(text: str) -> StyleSchema:
             fonts=_parse_fonts(yaml_data.get("typography", {}) or {}),
             background=_normalize_bg(bg_cfg),
         ),
-        semantic=_build_semantic(yaml_data.get("typography", {}) or {}, shadow_cfg),
+        semantic=_build_semantic(
+            yaml_data.get("typography", {}) or {}, shadow_cfg, semantic_ext_cfg,
+        ),
         layout=LayoutTokens(
             margin=margin,
             card_spacing=card_gap,
@@ -110,6 +113,13 @@ def serialize_style(
                 "alpha_pct": schema.semantic.card_shadow.alpha_pct,
             },
             "background": dict(schema.global_tokens.background),
+            "semantic": {
+                "subtitle_size_pt": schema.semantic.subtitle_size_pt,
+                "footer_size_pt": schema.semantic.footer_size_pt,
+                "formula_size_pt": schema.semantic.formula_size_pt,
+                "card_corner_radius": schema.semantic.card_corner_radius,
+                "bg_overlay_alpha": schema.semantic.bg_overlay_alpha,
+            },
         },
     }
     fm = yaml.safe_dump(yaml_data, allow_unicode=True, sort_keys=False)
@@ -208,10 +218,16 @@ def _parse_pt(value: Any, default: int) -> int:
         return default
 
 
-def _build_semantic(typography: dict[str, Any], shadow_cfg: dict[str, Any]) -> SemanticTokens:
+def _build_semantic(
+    typography: dict[str, Any],
+    shadow_cfg: dict[str, Any],
+    semantic_ext_cfg: dict[str, Any] | None = None,
+) -> SemanticTokens:
     title_cfg = typography.get("title", {}) or {}
     card_title_cfg = typography.get("card-title", {}) or {}
     body_cfg = typography.get("body", {}) or {}
+    ext = semantic_ext_cfg or {}
+    defaults = SemanticTokens()
 
     shadow = ShadowSpec(
         blur_pt=int(shadow_cfg.get("blur_pt", 30)),
@@ -221,9 +237,14 @@ def _build_semantic(typography: dict[str, Any], shadow_cfg: dict[str, Any]) -> S
     )
 
     return SemanticTokens(
-        title_size_pt=_parse_pt(title_cfg.get("fontSize"), 38),
-        card_title_size_pt=_parse_pt(card_title_cfg.get("fontSize"), 16),
-        body_size_pt=_parse_pt(body_cfg.get("fontSize"), 12),
+        title_size_pt=_parse_pt(title_cfg.get("fontSize"), defaults.title_size_pt),
+        card_title_size_pt=_parse_pt(card_title_cfg.get("fontSize"), defaults.card_title_size_pt),
+        body_size_pt=_parse_pt(body_cfg.get("fontSize"), defaults.body_size_pt),
+        subtitle_size_pt=int(ext.get("subtitle_size_pt", defaults.subtitle_size_pt)),
+        footer_size_pt=int(ext.get("footer_size_pt", defaults.footer_size_pt)),
+        formula_size_pt=int(ext.get("formula_size_pt", defaults.formula_size_pt)),
+        card_corner_radius=int(ext.get("card_corner_radius", defaults.card_corner_radius)),
+        bg_overlay_alpha=float(ext.get("bg_overlay_alpha", defaults.bg_overlay_alpha)),
         card_shadow=shadow,
     )
 
