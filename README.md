@@ -156,6 +156,17 @@ output/session_xxx/
 
 Responses API 额外支持 `--web-search` CLI 参数，让 LLM 在规划阶段自动联网搜索补充内容。
 
+## DESIGN.md 视觉规划（实验性）
+
+Layer 3b 引入 DESIGN.md 作为人机共读的视觉风格中间产物：
+
+| 环境变量 | 值 | 说明 |
+|---------|---|------|
+| `EDUPPTX_VISUAL_PLANNER_FORMAT` | `json` (默认) / `design_md` | 设为 `design_md` 时，规划阶段额外写出 `session_dir/DESIGN.md`（YAML frontmatter + 8 段中文 prose），供后续迭代或人工编辑。Phase 2/3 仍消费旧的 `VisualPlan`，不影响行为 |
+| `EDUPPTX_LINT_STRICT` | `0` (默认) / `1` | 设为 `1` 时把 style linter 的对比度告警升级为错误 |
+
+风格文件加载器 `load_style()` 同时支持 `.json`（旧路径）与 `.md`（DESIGN.md 解析后 → StyleSchema）。
+
 ## 风格模板
 
 | 模板 | 适用场景 |

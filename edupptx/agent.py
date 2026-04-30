@@ -138,6 +138,17 @@ class PPTXAgent:
             palette_hint=palette,
             template_label=manifest.label,
         )
+
+        # ── Phase 1e+: optional DESIGN.md artifact (gated by env) ──
+        design_md_str = self._phase1e_design_md(
+            draft,
+            palette_hint=palette,
+            template_label=manifest.label,
+        )
+        if design_md_str:
+            (session.dir / "DESIGN.md").write_text(design_md_str, encoding="utf-8")
+            logger.info("DESIGN.md written: {}", session.dir / "DESIGN.md")
+
         session.log_step("template_alignment", "Aligning plan to selected template contracts")
         draft = self._phase1f_template_alignment(draft, manifest)
         session.save_plan(draft.model_dump())
@@ -217,6 +228,14 @@ class PPTXAgent:
 
         session = Session.from_existing(plan_path.parent)
         session_dir = session.dir
+
+        # Phase 3 prefer-existing-DESIGN.md hook (informational; full consumption pending).
+        design_md_path = plan_path.parent / "DESIGN.md"
+        if design_md_path.exists():
+            logger.info(
+                "Found DESIGN.md at {} (informational; full consumption pending)",
+                design_md_path,
+            )
 
         bg_path = await self._phase2_background(draft.visual, session)
 
@@ -320,6 +339,33 @@ class PPTXAgent:
             palette_hint=palette_hint,
             template_label=template_label,
         )
+
+    def _phase1e_design_md(
+        self,
+        draft: PlanningDraft,
+        palette_hint=None,
+        template_label: str = "",
+    ) -> str | None:
+        """Generate a DESIGN.md artifact for this session. Returns None on full failure
+        or when the env opt-in flag is unset. Strictly additive — never blocks Phase 2/3.
+        """
+        import os
+        if os.environ.get("EDUPPTX_VISUAL_PLANNER_FORMAT", "json") != "design_md":
+            return None
+        try:
+            from edupptx.planning.visual_planner import generate_design_md
+            return generate_design_md(
+                draft,
+                self.config,
+                palette_hint=palette_hint,
+                template_label=template_label,
+            )
+        except Exception as exc:
+            logger.warning(
+                "Failed to generate DESIGN.md, falling back to JSON-only flow: {}",
+                str(exc)[:120],
+            )
+            return None
 
     def _phase1f_template_alignment(self, draft: PlanningDraft, manifest) -> PlanningDraft:
         from edupptx.design.template_router import align_draft_to_template
