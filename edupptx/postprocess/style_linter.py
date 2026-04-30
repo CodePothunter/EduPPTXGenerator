@@ -39,7 +39,7 @@ def wcag_relative_luminance(hex_color: str) -> float:
     if len(h) == 3:
         h = "".join(c * 2 for c in h)
     rgb = [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
-    rgb = [c / 12.92 if c <= 0.03928 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb]
+    rgb = [c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in rgb]
     return 0.2126 * rgb[0] + 0.7152 * rgb[1] + 0.0722 * rgb[2]
 
 
@@ -75,11 +75,6 @@ WCAG_AA_LARGE_OR_GRAPHIC = 3.0
 def _build_contrast_pairs(
     style: ResolvedStyle,
 ) -> list[tuple[str, str, str, float]]:
-    """Enumerate (pair_name, fg, bg, threshold) tuples.
-
-    Generated automatically from ResolvedStyle attributes — adding a new color
-    field above and listing it here is the only change needed.
-    """
     bg_candidates = {
         "card_fill": style.card_fill_color,
         "bg_overlay": style.bg_overlay_color,

@@ -189,7 +189,30 @@ def test_contrast_ratio_extremes():
     assert contrast_ratio("#FFFFFF", "#FFFFFF") == pytest.approx(1.0, abs=0.01)
 
 
-def test_finding_dataclass_fields():
-    f = Finding(severity="warning", rule="contrast-ratio", path="x", message="y")
-    assert f.severity == "warning"
-    assert f.rule == "contrast-ratio"
+def test_style_validation_error_str_format():
+    err_finding = Finding(
+        severity="error",
+        rule="broken-ref",
+        path="semantic.body_color",
+        message="reference 'palette.nope' not in palette: ['accent']",
+    )
+    warn_finding = Finding(
+        severity="warning",
+        rule="contrast-ratio",
+        path="contrast.body_on_card_fill",
+        message="#888888 on #FFFFFF = 3.54:1 (< WCAG AA 4.5:1)",
+    )
+    exc = StyleValidationError([err_finding, warn_finding])
+    text = str(exc)
+    # Header + both findings rendered with severity, rule, path, message
+    assert "Style validation failed:" in text
+    assert "[error]" in text
+    assert "[warning]" in text
+    assert "broken-ref" in text
+    assert "contrast-ratio" in text
+    assert "semantic.body_color" in text
+    assert "contrast.body_on_card_fill" in text
+    assert "palette.nope" in text
+    assert "3.54:1" in text
+    # Each finding on its own line — readable separator
+    assert text.count("\n") >= 2

@@ -152,7 +152,12 @@ def resolve_style(schema: StyleSchema) -> ResolvedStyle:
 
 
 def _run_style_lint(schema: StyleSchema, resolved: ResolvedStyle) -> None:
-    """Run lint rules. Errors always raise; warnings raise only in strict mode."""
+    """Run lint rules. Errors always raise; warnings raise only in strict mode.
+
+    `StyleValidationError.findings` is always the concatenation `errors + warnings`
+    regardless of which condition triggered the raise — callers can assume a
+    stable shape.
+    """
     strict = os.environ.get("EDUPPTX_LINT_STRICT") == "1"
     schema_findings = lint_style_schema(schema)
     resolved_findings = lint_resolved_style(resolved)
@@ -164,7 +169,8 @@ def _run_style_lint(schema: StyleSchema, resolved: ResolvedStyle) -> None:
     for w in warnings:
         logger.warning("[style-lint] {} @ {}: {}", w.rule, w.path, w.message)
 
-    if strict and warnings:
-        raise StyleValidationError(errors + warnings)
+    combined = errors + warnings
     if errors:
-        raise StyleValidationError(errors)
+        raise StyleValidationError(combined)
+    if warnings and strict:
+        raise StyleValidationError(combined)
