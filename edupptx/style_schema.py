@@ -145,7 +145,11 @@ class StyleSchema(BaseModel):
 
 
 def load_style(path: Path) -> StyleSchema:
-    """Load a StyleSchema from a JSON file."""
+    """Load a StyleSchema from a JSON or DESIGN.md file (dispatched by suffix)."""
+    if path.suffix == ".md":
+        # Lazy import to avoid circular import (design_md imports style_schema).
+        from edupptx.style.design_md import parse_design_md
+        return parse_design_md(path.read_text(encoding="utf-8"))
     with open(path, "r", encoding="utf-8") as f:
         data = json.load(f)
     return StyleSchema.model_validate(data)

@@ -5,8 +5,16 @@ Pure function: StyleSchema -> ResolvedStyle (all concrete values).
 
 from __future__ import annotations
 
+import os
+
 from loguru import logger
 
+from edupptx.postprocess.style_linter import (
+    Finding,
+    StyleValidationError,
+    lint_resolved_style,
+    lint_style_schema,
+)
 from edupptx.style_schema import (
     CARD_SPACING_PRESETS,
     CONTENT_DENSITY_PRESETS,
@@ -93,7 +101,7 @@ def resolve_style(schema: StyleSchema) -> ResolvedStyle:
     bg_type = bg.get("type", "diagonal_gradient")
     bg_seed = bg.get("seed_extra", "")
 
-    return ResolvedStyle(
+    resolved = ResolvedStyle(
         heading_color=heading_color,
         body_color=body_color,
         accent_color=accent_color,
@@ -138,3 +146,31 @@ def resolve_style(schema: StyleSchema) -> ResolvedStyle:
 
         palette=palette,
     )
+
+    _run_style_lint(schema, resolved)
+    return resolved
+
+
+def _run_style_lint(schema: StyleSchema, resolved: ResolvedStyle) -> None:
+    """Run lint rules. Errors always raise; warnings raise only in strict mode.
+
+    `StyleValidationError.findings` is always the concatenation `errors + warnings`
+    regardless of which condition triggered the raise — callers can assume a
+    stable shape.
+    """
+    strict = os.environ.get("EDUPPTX_LINT_STRICT") == "1"
+    schema_findings = lint_style_schema(schema)
+    resolved_findings = lint_resolved_style(resolved)
+    all_findings: list[Finding] = schema_findings + resolved_findings
+
+    errors = [f for f in all_findings if f.severity == "error"]
+    warnings = [f for f in all_findings if f.severity == "warning"]
+
+    for w in warnings:
+        logger.warning("[style-lint] {} @ {}: {}", w.rule, w.path, w.message)
+
+    combined = errors + warnings
+    if errors:
+        raise StyleValidationError(combined)
+    if warnings and strict:
+        raise StyleValidationError(combined)

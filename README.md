@@ -156,6 +156,40 @@ output/session_xxx/
 
 Responses API 额外支持 `--web-search` CLI 参数，让 LLM 在规划阶段自动联网搜索补充内容。
 
+## DESIGN.md 视觉规划（实验性）
+
+Layer 3b 引入 DESIGN.md 作为人机共读的视觉风格中间产物：
+
+| 环境变量 | 值 | 说明 |
+|---------|---|------|
+| `EDUPPTX_VISUAL_PLANNER_FORMAT` | `json` (默认) / `design_md` | 设为 `design_md` 时，规划阶段额外写出 `session_dir/DESIGN.md`（YAML frontmatter + 8 段中文 prose），供后续迭代或人工编辑。Phase 2/3 仍消费旧的 `VisualPlan`，不影响行为 |
+| `EDUPPTX_LINT_STRICT` | `0` (默认) / `1` | 设为 `1` 时把 style linter 的对比度告警升级为错误 |
+
+风格文件加载器 `load_style()` 同时支持 `.json`（旧路径）与 `.md`（DESIGN.md 解析后 → StyleSchema）。
+
+> **注意**：当前 `session_dir/DESIGN.md` 是**只读**产物——Phase 3 SVG 生成尚未消费用户对 DESIGN.md 的编辑。该工件主要用于审阅与未来迭代；如需让风格修改生效，请重新运行 `edupptx gen`。`edupptx render` 检测到 DESIGN.md 时会发出 warning 提醒此限制。
+>
+> TODO: Phase 3 完整消费 DESIGN.md 编辑（单独跟踪）。
+
+### 调色板：`styles/<name>.md`（DESIGN.md 格式）
+
+`styles/` 目录下的调色板文件可以是 `.json`（紧凑、机器可读）或 `.md`（YAML frontmatter + 8 段中文 prose，人机共读）。两种格式经 `load_style()` 解析后产出**严格等价**的 `ResolvedStyle`，由 `tests/test_style_migration_regression.py` 守护。
+
+- `styles/blue.md` — 科技蓝主题，理工科课程
+- `styles/emerald.md` — 翠绿主题，自然科学 / 生命科学
+- `styles/blue.json` / `styles/emerald.json` — 等价 JSON 版本
+
+prose 8 段固定为：`Overview`、`Colors`、`Typography`、`Layout`、`Elevation`、`Shapes`、`Components`、`Do's and Don'ts`，用 `{colors.xxx}` token 引用调色板字段，确保切换调色板时文档自动跟随。
+
+需要把已有的 JSON 调色板转换为 .md 脚手架时：
+
+```bash
+uv run edupptx styles convert <name>      # 把 styles/<name>.json → styles/<name>.md（脚手架）
+uv run edupptx styles convert blue --force # 强制覆盖（注意：会清空手写 prose）
+```
+
+转换后编辑 8 段 prose，再用 `uv run pytest tests/test_style_migration_regression.py -v` 验证 .md ↔ .json 等价。
+
 ## 风格模板
 
 | 模板 | 适用场景 |

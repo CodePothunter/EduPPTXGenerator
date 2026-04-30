@@ -270,10 +270,14 @@ _STYLE_DESCRIPTIONS = {
 }
 
 
-@main.command()
+@main.group(invoke_without_command=True)
 @click.option("--json", "as_json", is_flag=True, help="以 JSON 格式输出（含描述）")
-def styles(as_json: bool):
-    """列出可用的风格模板及其适用场景。"""
+@click.pass_context
+def styles(ctx: click.Context, as_json: bool):
+    """列出可用的风格模板，或转换调色板 JSON ↔ DESIGN.md。"""
+    if ctx.invoked_subcommand is not None:
+        return  # subcommand will run; don't list templates
+
     styles_dir = Path(__file__).parent / "design" / "style_templates"
     if not styles_dir.exists():
         if as_json:
@@ -293,6 +297,80 @@ def styles(as_json: bool):
         for item in items:
             desc = f" — {item['description']}" if item["description"] else ""
             click.echo(f"  {item['name']}{desc}")
+
+
+@styles.command("convert")
+@click.argument("name")
+@click.option("--styles-dir", "styles_dir_opt", default=None, type=click.Path(),
+              help="自定义 styles 目录 (默认: 项目根目录的 styles/)")
+@click.option("--force", is_flag=True, help="覆盖已存在的 .md 文件")
+@click.option("--json", "as_json", is_flag=True, help="以 JSON 格式输出结果")
+def styles_convert(name: str, styles_dir_opt: str | None, force: bool, as_json: bool):
+    """将 styles/<name>.json 调色板转换为 styles/<name>.md 脚手架。
+
+    \b
+    生成的 .md 含 YAML frontmatter（与 JSON 完全等价）+ 8 段占位 prose；
+    用户编辑 prose 后运行 `pytest tests/test_style_migration_regression.py` 验证等价。
+    """
+    try:
+        from edupptx.style.design_md import (
+            PROSE_HEADINGS,
+            parse_design_md,
+            serialize_style,
+        )
+        from edupptx.style_schema import load_style
+
+        if styles_dir_opt is not None:
+            base_dir = Path(styles_dir_opt)
+        else:
+            base_dir = Path(__file__).resolve().parent.parent / "styles"
+
+        json_path = base_dir / f"{name}.json"
+        md_path = base_dir / f"{name}.md"
+
+        if not json_path.exists():
+            _emit_error(
+                f"未找到 {json_path}",
+                as_json=as_json,
+                kind="StyleNotFound",
+                path=str(json_path),
+            )
+        if md_path.exists() and not force:
+            _emit_error(
+                f"{md_path} 已存在；使用 --force 覆盖（注意会丢失手写 prose）",
+                as_json=as_json,
+                kind="MdExists",
+                path=str(md_path),
+            )
+
+        schema = load_style(json_path)
+        # Roundtrip via Layer 3a serializer to ensure YAML matches parser expectations.
+        scaffold_text = serialize_style(
+            schema,
+            prose_sections={h: f"TODO: 描述 {h}" for h in PROSE_HEADINGS},
+        )
+        # Sanity-check: re-parse to guarantee the scaffold is valid Layer 3a input.
+        parse_design_md(scaffold_text)
+
+        md_path.write_text(scaffold_text, encoding="utf-8")
+        next_steps = [
+            f"已写入 {md_path}",
+            f"下一步：编辑 {md_path} 中的 8 段 prose",
+            "然后运行：uv run pytest tests/test_style_migration_regression.py -v",
+        ]
+        payload = {
+            "ok": True,
+            "name": name,
+            "json_path": str(json_path),
+            "md_path": str(md_path),
+            "next_steps": next_steps,
+        }
+        _emit_result(payload, as_json=as_json, human_lines=next_steps)
+    except click.ClickException:
+        raise
+    except Exception as e:
+        logger.error("Convert failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
 
 
 if __name__ == "__main__":
