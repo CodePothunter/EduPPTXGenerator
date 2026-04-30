@@ -31,7 +31,8 @@ def test_resolve_emerald_colors():
     resolved = resolve_style(schema)
     assert resolved.accent_color == "#059669"
     assert resolved.heading_color == "#1F2937"
-    assert resolved.icon_color == "#10B981"
+    # emerald icon bumped to #059669 (was #10B981, 2.54:1 fails WCAG AA)
+    assert resolved.icon_color == "#059669"
 
 
 def test_resolve_blue_colors():
