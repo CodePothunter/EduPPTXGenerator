@@ -188,6 +188,8 @@ class PPTXAgent:
                 for assets in all_assets.values():
                     assets.background_path = bg_path
             logger.info("Materials ready for {} pages", len(all_assets))
+            session.log_step("asset_library", "Updating reusable AI image asset library")
+            self._phase2c_asset_library(session)
         else:
             logger.info("Debug mode: skipping material fetch")
             all_assets = {
@@ -269,6 +271,8 @@ class PPTXAgent:
             if bg_path:
                 for assets in all_assets.values():
                     assets.background_path = bg_path
+            session.log_step("asset_library", "Updating reusable AI image asset library")
+            self._phase2c_asset_library(session)
         else:
             all_assets = {
                 p.page_number: SlideAssets(page_number=p.page_number, background_path=bg_path)
@@ -515,6 +519,28 @@ class PPTXAgent:
             all_assets[page.page_number] = assets
 
         return all_assets
+
+    def _phase2c_asset_library(self, session: Session) -> None:
+        """Ingest this session's newly generated AI images into the reusable library."""
+
+        try:
+            from edupptx.materials.ai_image_asset_db import update_ai_image_asset_library
+
+            keyword_client = self._build_llm_client()
+            db, target = update_ai_image_asset_library(
+                session.dir,
+                self.config.library_dir,
+                keyword_client=keyword_client,
+            )
+            logger.info(
+                "AI image asset library updated: {} ({} assets)",
+                target,
+                db.get("asset_count", 0),
+            )
+            if db.get("warnings"):
+                logger.warning("AI image asset library warnings: {}", len(db["warnings"]))
+        except Exception as exc:
+            logger.warning("AI image asset library update skipped: {}", str(exc)[:160])
 
     async def _phase3_design(
         self, draft: PlanningDraft,

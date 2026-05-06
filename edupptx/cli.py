@@ -261,6 +261,66 @@ def plan(topic: str, requirements: str, file_path: str | None, research: bool,
         _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
 
 
+@main.command("asset-db")
+@click.option("--output-root", default="./output", type=click.Path(file_okay=False), help="Output root containing session_* dirs")
+@click.option("--db-path", default=None, type=click.Path(dir_okay=False), help="Where to write the asset DB JSON")
+@click.option("--keywords", is_flag=True, help="Use the configured LLM to build offline matching keywords")
+@click.option("--keyword-batch-size", default=12, show_default=True, type=click.IntRange(1, 50), help="Assets per LLM keyword batch")
+@click.option("--env-file", default=".env", help=".env file path used by --keywords")
+@click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
+def asset_db(
+    output_root: str,
+    db_path: str | None,
+    keywords: bool,
+    keyword_batch_size: int,
+    env_file: str,
+    as_json: bool,
+):
+    """Build the offline AI-generated image asset database from output sessions."""
+    try:
+        from edupptx.materials.ai_image_asset_db import write_ai_image_asset_db
+
+        keyword_client = None
+        if keywords:
+            config = Config.from_env(env_file)
+            if not config.llm_api_key or not config.llm_model:
+                _emit_error(
+                    "--keywords 需要在 .env 中配置 GEN_APIKEY 和 GEN_MODEL",
+                    as_json=as_json,
+                    kind="MissingLLMConfig",
+                )
+            from edupptx.llm_client import create_llm_client
+
+            keyword_client = create_llm_client(config, web_search=False)
+
+        db, target = write_ai_image_asset_db(
+            output_root,
+            db_path,
+            keyword_client=keyword_client,
+            keyword_batch_size=keyword_batch_size,
+        )
+        payload = {
+            "ok": True,
+            "db_path": str(target),
+            "output_root": db["output_root"],
+            "asset_count": db["asset_count"],
+            "warning_count": len(db.get("warnings", [])),
+            "keywords": keywords,
+        }
+        human = [
+            f"Asset DB: {target}",
+            f"Assets: {db['asset_count']}",
+        ]
+        if keywords:
+            human.append("Keywords: LLM enriched")
+        if db.get("warnings"):
+            human.append(f"Warnings: {len(db['warnings'])}")
+        _emit_result(payload, as_json=as_json, human_lines=human)
+    except Exception as e:
+        logger.error("Asset DB build failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
 _STYLE_DESCRIPTIONS = {
     "edu_emerald": "翠绿主调，自然/生命科学/语文人文",
     "edu_academic": "深蓝学术，物理/数学/严谨理科",
