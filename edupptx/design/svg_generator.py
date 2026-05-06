@@ -114,6 +114,7 @@ async def generate_slide_svgs(
     config: Config,
     debug: bool = False,
     on_slide: Callable[[GeneratedSlide], None] | None = None,
+    design_md: str | None = None,
 ) -> list[GeneratedSlide]:
     """Generate SVG slides, sequentially for reveal pages and in parallel otherwise."""
 
@@ -127,6 +128,7 @@ async def generate_slide_svgs(
         style_guide,
         visual_plan=draft.visual,
         content_density=draft.visual.content_density,
+        design_md=design_md,
     )
 
     logger.info(

@@ -7,6 +7,7 @@ plus 8 H2 prose sections for tone/intent. PPT-specific fields live under
 
 from __future__ import annotations
 
+import re
 from typing import Any
 
 import frontmatter
@@ -88,6 +89,84 @@ def parse_design_md(text: str) -> StyleSchema:
         ),
         decorations=_build_decorations(decorations_cfg),
     )
+
+
+_COLOR_TOKEN_RE = re.compile(r"\{colors\.([a-zA-Z_][a-zA-Z0-9_]*)\}")
+# Section headers consumed by Phase 3 SVG generation as executable constraints.
+_PHASE3_PROSE_SECTIONS: tuple[str, ...] = (
+    "Components",
+    "Elevation",
+    "Shapes",
+    "Do's and Don'ts",
+)
+
+
+def build_phase3_constraints(
+    text: str, *, resolved_palette: dict[str, str] | None = None,
+) -> str:
+    """Extract DESIGN.md sections that Phase 3 SVG generation must obey.
+
+    Returns a Markdown block to be appended to the SVG system prompt. Includes:
+    - Typography hard constraints (font family + size + weight)
+    - Components / Elevation / Shapes / Do's and Don'ts prose
+    - All `{colors.xxx}` token refs resolved to concrete hex via the palette
+
+    Skipped: Overview / Colors / Layout — covered elsewhere in the prompt or
+    redundant with the visual plan's color spec block.
+    """
+    post = frontmatter.loads(text)
+    yaml_data: dict[str, Any] = dict(post.metadata or {})
+    body = post.content or ""
+    palette = dict(resolved_palette or yaml_data.get("colors", {}) or {})
+    sections = _parse_h2_sections(body)
+
+    parts: list[str] = ["## DESIGN.md 视觉契约（必须遵守）", ""]
+
+    typography = yaml_data.get("typography", {}) or {}
+    typo_lines: list[str] = []
+    for role, cfg in typography.items():
+        cfg = cfg or {}
+        font = cfg.get("fontFamily", "Noto Sans SC")
+        size = cfg.get("fontSize", "")
+        weight = cfg.get("fontWeight", "")
+        line = f"- **{role}**: {font}"
+        if size:
+            line += f", {size}"
+        if weight != "" and weight is not None:
+            line += f", weight {weight}"
+        typo_lines.append(line)
+    if typo_lines:
+        parts.append("### 字体与字号（硬约束）")
+        parts.extend(typo_lines)
+        parts.append("")
+
+    appended_section = False
+    for header in _PHASE3_PROSE_SECTIONS:
+        body_text = sections.get(header, "").strip()
+        if not body_text:
+            continue
+        resolved = _resolve_color_tokens(body_text, palette)
+        parts.append(f"### {header}")
+        parts.append(resolved)
+        parts.append("")
+        appended_section = True
+
+    if not typo_lines and not appended_section:
+        return ""
+
+    return "\n".join(parts).strip()
+
+
+def _resolve_color_tokens(text: str, palette: dict[str, str]) -> str:
+    """Replace `{colors.xxx}` token refs with concrete hex from palette.
+
+    Unresolved tokens are left untouched so the caller can spot them.
+    """
+    def _sub(match: re.Match[str]) -> str:
+        key = match.group(1)
+        return palette.get(key, match.group(0))
+
+    return _COLOR_TOKEN_RE.sub(_sub, text)
 
 
 def serialize_style(

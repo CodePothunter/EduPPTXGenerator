@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from edupptx.style import parse_design_md, serialize_style
-from edupptx.style.design_md import PROSE_HEADINGS, _parse_h2_sections
+from edupptx.style.design_md import (
+    PROSE_HEADINGS,
+    _parse_h2_sections,
+    _resolve_color_tokens,
+    build_phase3_constraints,
+)
 
 
 # ── Fixtures ──────────────────────────────────────────────
@@ -319,3 +324,152 @@ def test_semantic_extensions_roundtrip():
     assert parsed.semantic.card_shadow.dist_pt == 4
     assert parsed.semantic.card_shadow.color == "palette.accent"
     assert parsed.semantic.card_shadow.alpha_pct == 20
+
+
+# ── build_phase3_constraints (v3.2) ───────────────────────
+
+
+PHASE3_FULL_DESIGN_MD = """\
+---
+schema_version: "1.0"
+name: 光合作用
+colors:
+  primary: "#69B578"
+  accent: "#3D5A40"
+  bg: "#F5FBEE"
+  card_fill: "#FFFFFF"
+  text: "#1A2E1F"
+typography:
+  title:      { fontFamily: "Noto Sans SC", fontSize: 38pt, fontWeight: 700 }
+  card-title: { fontFamily: "Noto Sans SC", fontSize: 16pt, fontWeight: 600 }
+  body:       { fontFamily: "Noto Sans SC", fontSize: 12pt }
+---
+
+## Overview
+应被跳过的段。
+
+## Colors
+应被跳过的段。
+
+## Typography
+应被跳过——typography 走 frontmatter 路径。
+
+## Layout
+应被跳过的段。
+
+## Elevation
+卡片使用 {colors.primary}10 的柔和阴影；正文区域避免阴影叠加。
+
+## Shapes
+卡片使用 8px 圆角；图标采用 {colors.accent} 描边。
+
+## Components
+- card-knowledge: 背景 {colors.card_fill}，标题用 {colors.primary}。
+- card-formula: 公式居中，背景 {colors.bg}。
+
+## Do's and Don'ts
+- Do 保持 ≤3 核心知识点/页。
+- Don't 在小卡片里塞超过 2 行正文。
+"""
+
+
+def test_build_phase3_constraints_full_md():
+    out = build_phase3_constraints(PHASE3_FULL_DESIGN_MD)
+
+    # Header banner present
+    assert "DESIGN.md 视觉契约" in out
+
+    # Typography hard constraints injected (3 roles)
+    assert "字体与字号" in out
+    assert "title" in out and "38pt" in out
+    assert "card-title" in out and "16pt" in out
+    assert "body" in out and "12pt" in out
+
+    # The four executable prose sections present
+    assert "### Components" in out
+    assert "### Elevation" in out
+    assert "### Shapes" in out
+    assert "### Do's and Don'ts" in out
+
+    # Skipped sections must NOT bleed in
+    assert "### Overview" not in out
+    assert "### Colors" not in out
+    assert "### Layout" not in out
+    assert "### Typography" not in out
+
+    # Color tokens resolved to actual hex
+    assert "{colors.primary}" not in out
+    assert "{colors.accent}" not in out
+    assert "{colors.card_fill}" not in out
+    assert "{colors.bg}" not in out
+    assert "#69B578" in out  # primary
+    assert "#3D5A40" in out  # accent
+    assert "#FFFFFF" in out  # card_fill
+    assert "#F5FBEE" in out  # bg
+
+
+def test_build_phase3_constraints_empty_palette():
+    """No palette in frontmatter, no override → tokens stay as raw text, no crash."""
+    src = """\
+---
+schema_version: "1.0"
+name: 无配色
+---
+
+## Components
+card uses {colors.primary} fill.
+
+## Do's and Don'ts
+- Do something.
+"""
+    out = build_phase3_constraints(src)
+    assert "{colors.primary}" in out  # left intact
+    assert "### Components" in out
+
+
+def test_build_phase3_constraints_unresolved_token():
+    """Token referencing a key not in palette stays raw — no KeyError."""
+    src = """\
+---
+schema_version: "1.0"
+name: 部分配色
+colors:
+  primary: "#112233"
+---
+
+## Components
+- a uses {colors.primary}, b uses {colors.nonexistent}.
+"""
+    out = build_phase3_constraints(src)
+    assert "#112233" in out
+    assert "{colors.nonexistent}" in out  # unresolved, raw
+
+
+def test_build_phase3_constraints_missing_sections():
+    """Missing prose sections must not raise; output skips them silently."""
+    src = """\
+---
+schema_version: "1.0"
+name: 仅 typography
+typography:
+  title: { fontFamily: "Noto Sans SC", fontSize: 38pt }
+---
+
+## Overview
+仅有 Overview，无 Components / Elevation / Shapes / Do's。
+"""
+    out = build_phase3_constraints(src)
+    assert "字体与字号" in out
+    assert "title" in out
+    # No prose section headers should be emitted when bodies are missing
+    assert "### Components" not in out
+    assert "### Elevation" not in out
+    assert "### Shapes" not in out
+    assert "### Do's and Don'ts" not in out
+
+
+def test_resolve_color_tokens_multiple_refs():
+    palette = {"primary": "#AABBCC", "accent": "#112233"}
+    text = "use {colors.primary} and {colors.accent}, also {colors.primary} again."
+    out = _resolve_color_tokens(text, palette)
+    assert out == "use #AABBCC and #112233, also #AABBCC again."

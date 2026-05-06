@@ -156,20 +156,18 @@ output/session_xxx/
 
 Responses API 额外支持 `--web-search` CLI 参数，让 LLM 在规划阶段自动联网搜索补充内容。
 
-## DESIGN.md 视觉规划（实验性）
+## DESIGN.md 视觉规划
 
-Layer 3b 引入 DESIGN.md 作为人机共读的视觉风格中间产物：
+Layer 3b 引入 DESIGN.md 作为人机共读的视觉风格中间产物，启用后驱动 Phase 3 SVG 输出：
 
 | 环境变量 | 值 | 说明 |
 |---------|---|------|
-| `EDUPPTX_VISUAL_PLANNER_FORMAT` | `json` (默认) / `design_md` | 设为 `design_md` 时，规划阶段额外写出 `session_dir/DESIGN.md`（YAML frontmatter + 8 段中文 prose），供后续迭代或人工编辑。Phase 2/3 仍消费旧的 `VisualPlan`，不影响行为 |
+| `EDUPPTX_VISUAL_PLANNER_FORMAT` | `json` (默认) / `design_md` | 设为 `design_md` 时，规划阶段额外写出 `session_dir/DESIGN.md`（YAML frontmatter + 8 段中文 prose）。其中 typography（硬字号/字体）+ Components / Elevation / Shapes / Do's-and-Don'ts 四段 prose 会被注入 Phase 3 SVG system prompt，`{colors.xxx}` token 自动解析为 hex |
 | `EDUPPTX_LINT_STRICT` | `0` (默认) / `1` | 设为 `1` 时把 style linter 的对比度告警升级为错误 |
 
 风格文件加载器 `load_style()` 同时支持 `.json`（旧路径）与 `.md`（DESIGN.md 解析后 → StyleSchema）。
 
-> **注意**：当前 `session_dir/DESIGN.md` 是**只读**产物——Phase 3 SVG 生成尚未消费用户对 DESIGN.md 的编辑。该工件主要用于审阅与未来迭代；如需让风格修改生效，请重新运行 `edupptx gen`。`edupptx render` 检测到 DESIGN.md 时会发出 warning 提醒此限制。
->
-> TODO: Phase 3 完整消费 DESIGN.md 编辑（单独跟踪）。
+> **用户编辑流程**：`edupptx gen` 写出 DESIGN.md 后，可手工编辑 `session_dir/DESIGN.md` 再跑 `edupptx render <plan.json>`，编辑会真实生效。DESIGN.md 加载时立即过 `resolve_style` lint，broken-ref 等错误会被捕获并降级（不注入但不阻塞生成）。
 
 ### 调色板：`styles/<name>.md`（DESIGN.md 格式）
 
