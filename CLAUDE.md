@@ -168,6 +168,7 @@ VISION_GEN_APIKEY=image-api-key
 - **解析**：`mistune` AST 切 H2，避开 fenced code 内的 `## ` 误识别
 - **来源**：Phase 1b `generate_design_md` LLM 输出（双路径：`palette_hint` 锁定颜色仅生成 prose / 无 hint 全自由生成）；LLM 全失败时 `_fallback_design_md` 兜底
 - **加载**：`load_style(path)` 按 suffix 分发，`.md` 走 `parse_design_md`，`.json` 兼容回退（迁移期 6 个月）
+- **Phase 3 真消费 (v3.2)**：`build_phase3_constraints` 从 DESIGN.md 抽出 typography（硬约束）+ Components / Elevation / Shapes / Do's-and-Don'ts 四段 prose，`{colors.xxx}` 解析为 hex 后注入 SVG system prompt 末段。Phase 1b 末尾 + `render` 入口对 DESIGN.md 跑 `resolve_style` lint，broken-ref 时降级为 `design_md=None` 不阻塞生成。
 
 ## 测试
 

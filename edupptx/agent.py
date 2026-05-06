@@ -148,6 +148,20 @@ class PPTXAgent:
         if design_md_str:
             (session.dir / "DESIGN.md").write_text(design_md_str, encoding="utf-8")
             logger.info("DESIGN.md written: {}", session.dir / "DESIGN.md")
+            # v3.2: lint immediately so broken-ref / contrast errors surface here.
+            # On failure, drop design_md so Phase 3 falls back to the legacy path
+            # rather than aborting the whole run.
+            try:
+                from edupptx.style.design_md import parse_design_md
+                from edupptx.style_resolver import resolve_style
+                resolve_style(parse_design_md(design_md_str))
+                logger.info("DESIGN.md lint passed")
+            except Exception as exc:
+                logger.warning(
+                    "DESIGN.md lint failed, Phase 3 will skip DESIGN.md injection: {}",
+                    str(exc)[:160],
+                )
+                design_md_str = None
 
         session.log_step("template_alignment", "Aligning plan to selected template contracts")
         draft = self._phase1f_template_alignment(draft, manifest)
@@ -192,6 +206,7 @@ class PPTXAgent:
             draft.style_routing.style_name or style,
             session,
             debug=debug,
+            design_md=design_md_str,
         )
         logger.info("Generated {} SVG slides", len(slides))
 
@@ -229,14 +244,23 @@ class PPTXAgent:
         session = Session.from_existing(plan_path.parent)
         session_dir = session.dir
 
-        # Phase 3 prefer-existing-DESIGN.md hook (informational; full consumption pending).
+        # v3.2: pick up an existing DESIGN.md so user edits flow into Phase 3.
+        # Lint-fail downgrades to legacy path rather than aborting the render.
+        design_md_str: str | None = None
         design_md_path = plan_path.parent / "DESIGN.md"
         if design_md_path.exists():
-            logger.warning(
-                "Found DESIGN.md at {} — note: render does not yet apply DESIGN.md edits "
-                "(consume path is experimental and pending). Re-run `edupptx gen` for full effect.",
-                design_md_path,
-            )
+            design_md_str = design_md_path.read_text(encoding="utf-8")
+            try:
+                from edupptx.style.design_md import parse_design_md
+                from edupptx.style_resolver import resolve_style
+                resolve_style(parse_design_md(design_md_str))
+                logger.info("DESIGN.md found and lint-passed: {}", design_md_path)
+            except Exception as exc:
+                logger.warning(
+                    "DESIGN.md at {} failed lint, Phase 3 will skip injection: {}",
+                    design_md_path, str(exc)[:160],
+                )
+                design_md_str = None
 
         bg_path = await self._phase2_background(draft.visual, session)
 
@@ -257,6 +281,7 @@ class PPTXAgent:
             draft.style_routing.style_name or style,
             session,
             debug=debug,
+            design_md=design_md_str,
         )
         svg_paths = self._phase4_postprocess(slides, session, all_assets, draft=draft, do_review=True)
         speaker_notes = [
@@ -497,6 +522,7 @@ class PPTXAgent:
         style: str,
         session: Session,
         debug: bool = False,
+        design_md: str | None = None,
     ) -> list[GeneratedSlide]:
         from edupptx.design.svg_generator import generate_slide_svgs
 
@@ -515,6 +541,7 @@ class PPTXAgent:
             self.config,
             debug=debug,
             on_slide=_save_raw_slide,
+            design_md=design_md,
         )
 
     def _phase4_postprocess(

@@ -218,10 +218,13 @@ def build_svg_system_prompt(
     style_guide: str,
     visual_plan: VisualPlan | None = None,
     content_density: Literal["lecture", "review"] = "lecture",
+    design_md: str | None = None,
 ) -> str:
     """构建 SVG 生成的系统提示词。
 
     从 design/references/ 读取 markdown 文件并组装。
+    传入 design_md 时（v3.2），从中提取 typography / components / elevation /
+    shapes / do's-and-don'ts 注入为最后一段视觉契约。
     """
     parts: list[str] = []
 
@@ -248,6 +251,13 @@ def build_svg_system_prompt(
     # 6. 风格模板
     if style_guide:
         parts.append(f"\n## 风格指南\n\n{style_guide}")
+
+    # 7. DESIGN.md 视觉契约（v3.2，置末以强化 LLM 注意力）
+    if design_md:
+        from edupptx.style.design_md import build_phase3_constraints
+        constraints = build_phase3_constraints(design_md)
+        if constraints:
+            parts.append(constraints)
 
     return "\n\n".join(p for p in parts if p.strip())
 
