@@ -3,6 +3,14 @@
 `material_needs.images` 是数组，不是字典，也不是去重集合。允许出现多条 `role: "illustration"`。
 
 
+## 0. source field
+
+- `material_needs.images[].source` must be exactly `ai_generate` or `search`.
+- Use `ai_generate` for generated teaching illustrations, scenes, diagrams, and reusable visual assets.
+- Use `search` only when a real public web image is explicitly needed.
+- Do not output aliases such as `public_domain`, `web`, `stock`, `seedream`, or `generated`.
+
+
 ## 1. 按图片区数量列图
 
 - 如果版面中有 2 个独立图片区，就必须输出 2 条 `images`。

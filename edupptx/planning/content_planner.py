@@ -15,7 +15,7 @@ from loguru import logger
 from edupptx.config import Config
 from edupptx.design.template_router import TemplateManifest, build_page_variant_briefs
 from edupptx.llm_client import create_llm_client
-from edupptx.models import InputContext, PlanningDraft
+from edupptx.models import InputContext, PlanningDraft, normalize_image_source
 from edupptx.planning.prompts import (
     build_outline_planning_system_prompt,
     build_outline_planning_user_prompt,
@@ -227,6 +227,7 @@ def _normalize_draft_dict(data: dict) -> None:
                 for image in images:
                     if isinstance(image, dict):
                         image["role"] = _normalize_image_role(image.get("role"))
+                        image["source"] = normalize_image_source(image.get("source"))
 
     meta = data.get("meta")
     if isinstance(meta, dict) and isinstance(data.get("pages"), list):

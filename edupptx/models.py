@@ -76,6 +76,61 @@ _RATIO_VALUES: dict[str, float] = {
 }
 
 
+def normalize_image_source(value: object) -> Literal["search", "ai_generate"]:
+    """Normalize LLM image source aliases into the supported schema values."""
+    text = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    if not text:
+        return "search"
+
+    if text in {
+        "ai",
+        "ai_generate",
+        "ai_generated",
+        "generate",
+        "generated",
+        "image_generate",
+        "seedream",
+        "text_to_image",
+        "text2image",
+        "t2i",
+    }:
+        return "ai_generate"
+
+    if text in {
+        "search",
+        "public",
+        "public_domain",
+        "publicdomain",
+        "web",
+        "web_search",
+        "image_search",
+        "search_image",
+        "online",
+        "internet",
+        "unsplash",
+        "pixabay",
+        "free",
+        "free_image",
+        "stock",
+        "stock_image",
+        "photo",
+        "url",
+    }:
+        return "search"
+
+    if "generate" in text or text.startswith("ai_"):
+        return "ai_generate"
+    if (
+        "search" in text
+        or "public" in text
+        or "web" in text
+        or "stock" in text
+        or "photo" in text
+    ):
+        return "search"
+    return "search"
+
+
 def match_aspect_ratio(width: float, height: float) -> str:
     """Find the closest predefined aspect ratio for given dimensions.
 
@@ -104,6 +159,15 @@ class ImageNeed(BaseModel):
         default="16:9",
         description="Aspect ratio from predefined set: 1:1, 3:4, 4:3, 16:9, 9:16, 3:2, 2:3, 21:9",
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_source_aliases(cls, data):
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        normalized["source"] = normalize_image_source(normalized.get("source"))
+        return normalized
 
 
 def build_image_slot_key(role: str, occurrence: int) -> str:

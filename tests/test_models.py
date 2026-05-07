@@ -17,6 +17,12 @@ from edupptx.models import (
 )
 
 
+class TestImageNeed:
+    def test_normalizes_source_aliases(self):
+        assert ImageNeed(query="old photo", source="public_domain").source == "search"
+        assert ImageNeed(query="new illustration", source="seedream").source == "ai_generate"
+
+
 class TestInputContext:
     def test_defaults(self):
         ctx = InputContext(topic="勾股定理")

@@ -221,6 +221,101 @@ def render(plan_path: str, style: str, debug: bool, env_file: str, as_json: bool
         _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
 
 
+@main.command("images")
+@click.argument("topic")
+@click.option("--requirements", "-r", default="", help="附加要求")
+@click.option("--file", "file_path", default=None, type=click.Path(exists=True), help="输入文档 (PDF/Word/MD/TXT)")
+@click.option("--research", is_flag=True, help="启用联网搜索充实内容")
+@click.option("--style", "-s", default="edu_emerald", help="风格模板名称")
+@click.option("--web-search", is_flag=True, help="启用 LLM 联网搜索 (仅 Responses API provider)")
+@click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
+@click.option("--env-file", default=".env", help=".env 文件路径")
+@click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
+def images(topic: str, requirements: str, file_path: str | None, research: bool,
+           style: str, web_search: bool, output: str, env_file: str, as_json: bool):
+    """Run planning and image/material phases, then stop after asset-library update."""
+    try:
+        config = Config.from_env(env_file)
+        config.output_dir = Path(output)
+        config.web_search = web_search
+        agent = PPTXAgent(config)
+        session_dir = agent.run(
+            topic,
+            requirements,
+            file_path=file_path,
+            research=research,
+            style=style,
+            review=False,
+            debug=False,
+            stop_after_asset_library=True,
+        )
+        plan_path = session_dir / "plan.json"
+        materials_dir = session_dir / "materials"
+        image_suffixes = {".png", ".jpg", ".jpeg", ".webp"}
+        image_count = (
+            sum(1 for path in materials_dir.iterdir() if path.suffix.lower() in image_suffixes)
+            if materials_dir.exists()
+            else 0
+        )
+        db_path = Path(config.library_dir) / "ai_image_asset_db.json"
+        payload = {
+            "ok": True,
+            "mode": "images",
+            "session_dir": str(session_dir),
+            "plan_path": str(plan_path),
+            "materials_dir": str(materials_dir),
+            "image_count": image_count,
+            "asset_db_path": str(db_path),
+        }
+        human = [
+            f"Materials: {materials_dir}",
+            f"Images: {image_count}",
+            f"Asset DB: {db_path}",
+        ]
+        _emit_result(payload, as_json=as_json, human_lines=human)
+    except Exception as e:
+        logger.error("Image/material generation failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
+@main.command("images-from-plan")
+@click.argument("plan_path", type=click.Path(exists=True))
+@click.option("--env-file", default=".env", help=".env file path")
+@click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
+def images_from_plan(plan_path: str, env_file: str, as_json: bool):
+    """Run image/material phases from an existing plan and stop after asset-library update."""
+    try:
+        config = Config.from_env(env_file)
+        agent = PPTXAgent(config)
+        session_dir = asyncio.run(agent.run_images_from_plan(Path(plan_path)))
+        materials_dir = session_dir / "materials"
+        image_suffixes = {".png", ".jpg", ".jpeg", ".webp"}
+        image_count = (
+            sum(1 for path in materials_dir.iterdir() if path.suffix.lower() in image_suffixes)
+            if materials_dir.exists()
+            else 0
+        )
+        db_path = Path(config.library_dir) / "ai_image_asset_db.json"
+        payload = {
+            "ok": True,
+            "mode": "images-from-plan",
+            "session_dir": str(session_dir),
+            "plan_path": str(Path(plan_path)),
+            "materials_dir": str(materials_dir),
+            "image_count": image_count,
+            "asset_db_path": str(db_path),
+        }
+        human = [
+            f"Materials: {materials_dir}",
+            f"Images: {image_count}",
+            f"Asset DB: {db_path}",
+        ]
+        _emit_result(payload, as_json=as_json, human_lines=human)
+    except Exception as e:
+        logger.error("Image/material generation from plan failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
 @main.command()
 @click.argument("topic")
 @click.option("--requirements", "-r", default="", help="附加要求")

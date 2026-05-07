@@ -3,8 +3,11 @@ import json
 from edupptx.materials.ai_image_asset_db import (
     build_ai_image_asset_db,
     enrich_ai_image_asset_db_keywords,
+    find_reusable_ai_image_asset,
     infer_grade,
+    infer_grade_band,
     infer_subject,
+    record_reused_ai_image_asset,
     update_ai_image_asset_library,
     write_ai_image_asset_db,
 )
@@ -13,6 +16,9 @@ from edupptx.materials.ai_image_asset_db import (
 def test_infers_grade_and_subject_from_plan_context():
     assert infer_grade("七年级语文《秋天的怀念》课文教学", "七年级学生、初中语文教师") == "七年级"
     assert infer_subject("七年级语文《秋天的怀念》课文教学", "七年级学生、初中语文教师") == "语文"
+    assert infer_grade_band("三年级") == "低年级"
+    assert infer_grade_band("四年级") == "高年级"
+    assert infer_grade_band("七年级") == "高年级"
 
 
 def test_builds_ai_image_asset_db_from_output_sessions(tmp_path):
@@ -104,6 +110,7 @@ def test_enriches_asset_db_keywords_with_llm_payload():
                     {
                         "asset_id": "aiimg_author",
                         "normalized_prompt": "史铁生肖像",
+                        "context_summary": "作者背景页的史铁生肖像素材",
                         "reuse_scope": "course_specific",
                         "specificity_score": 5,
                         "core_keywords": ["史铁生", "肖像", "插画"],
@@ -113,6 +120,7 @@ def test_enriches_asset_db_keywords_with_llm_payload():
                     {
                         "asset_id": "aiimg_pinyin",
                         "normalized_prompt": "汉字拼音标注教学示意",
+                        "context_summary": "生字词正音页的汉字拼音教学示意",
                         "reuse_scope": "subject_generic",
                         "specificity_score": 2,
                         "core_keywords": ["汉字", "拼音标注", "教学示意"],
@@ -157,6 +165,7 @@ def test_enriches_asset_db_keywords_with_llm_payload():
     assert db["keyword_builder"]["method"] == "llm_reuse_scope_keyword_extraction"
     assert db["keyword_builder"]["model"] == "fake-keyword-model"
     assert author["reuse_scope"] == "course_specific"
+    assert author["context_summary"] == "作者背景页的史铁生肖像素材"
     assert author["specificity_score"] == 5
     assert author["core_keywords"] == ["史铁生", "肖像"]
     assert author["context_keywords"] == ["秋天的怀念", "作者介绍"]
@@ -164,6 +173,7 @@ def test_enriches_asset_db_keywords_with_llm_payload():
     assert author["match_key"] == "史铁生|肖像|秋天的怀念|作者介绍|语文|七年级"
 
     assert pinyin["reuse_scope"] == "subject_generic"
+    assert pinyin["context_summary"] == "生字词正音页的汉字拼音教学示意"
     assert pinyin["context_keywords"] == []
     assert pinyin["match_key"] == "汉字|拼音标注|教学示意|语文"
     assert "秋天的怀念" not in pinyin["match_key"]
@@ -183,6 +193,7 @@ def test_updates_reusable_asset_library_by_copying_images_and_merging_db(tmp_pat
                         {
                             "asset_id": item["asset_id"],
                             "normalized_prompt": "淡雅秋日课堂背景",
+                            "context_summary": "整套课件使用的低干扰秋日背景",
                             "reuse_scope": "visual_generic",
                             "specificity_score": 1,
                             "core_keywords": ["秋日", "背景"],
@@ -195,6 +206,7 @@ def test_updates_reusable_asset_library_by_copying_images_and_merging_db(tmp_pat
                         {
                             "asset_id": item["asset_id"],
                             "normalized_prompt": "史铁生肖像",
+                            "context_summary": "作者介绍页使用的史铁生肖像素材",
                             "reuse_scope": "course_specific",
                             "specificity_score": 5,
                             "core_keywords": ["史铁生", "肖像"],
@@ -259,3 +271,125 @@ def test_updates_reusable_asset_library_by_copying_images_and_merging_db(tmp_pat
     persisted = json.loads(db_path.read_text(encoding="utf-8"))
     assert persisted["asset_count"] == 2
     assert {asset["asset_id"] for asset in persisted["assets"]} == {asset["asset_id"] for asset in db["assets"]}
+
+
+def test_finds_reusable_asset_with_weighted_bm25_score(tmp_path):
+    class FakeReuseClient:
+        _model = "fake-reuse-model"
+
+        def chat_json(self, messages, **kwargs):
+            raw = messages[1]["content"]
+            request = json.loads(raw[raw.index("{"):])
+            asset_id = request["assets"][0]["asset_id"]
+            return {
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "normalized_prompt": "史铁生肖像",
+                        "context_summary": "作者介绍页使用的史铁生肖像素材",
+                        "reuse_scope": "course_specific",
+                        "specificity_score": 5,
+                        "core_keywords": ["史铁生", "肖像"],
+                        "context_keywords": ["秋天的怀念"],
+                        "style_keywords": ["线条简洁"],
+                    }
+                ]
+            }
+
+    library_dir = tmp_path / "materials_library"
+    image_dir = library_dir / "ai_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "asset_author.png").write_bytes(b"author")
+    db = {
+        "schema_version": 3,
+        "output_root": str(library_dir),
+        "asset_count": 1,
+        "assets": [
+            {
+                "asset_id": "asset_author",
+                "asset_kind": "page_image",
+                "image_path": "ai_images/asset_author.png",
+                "role": "illustration",
+                "aspect_ratio": "1:1",
+                "prompt": "史铁生肖像插画，编辑感风格，线条简洁",
+                "context_summary": "作者介绍页使用的史铁生肖像素材",
+                "theme": "七年级语文《秋天的怀念》课文教学",
+                "grade": "七年级",
+                "subject": "语文",
+                "reuse_scope": "course_specific",
+                "specificity_score": 5,
+                "core_keywords": ["史铁生", "肖像"],
+                "context_keywords": ["秋天的怀念"],
+                "style_keywords": ["线条简洁"],
+                "match_key": "史铁生|肖像|秋天的怀念|语文|七年级",
+                "source": {},
+            }
+        ],
+        "warnings": [],
+    }
+    (library_dir / "ai_image_asset_db.json").write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
+
+    match = find_reusable_ai_image_asset(
+        library_dir=library_dir,
+        asset_kind="page_image",
+        prompt="史铁生肖像插画，编辑感风格，线条简洁",
+        theme="七年级语文《秋天的怀念》课文教学",
+        grade="七年级",
+        subject="语文",
+        page_title="作者与背景介绍",
+        role="illustration",
+        aspect_ratio="1:1",
+        keyword_client=FakeReuseClient(),
+        debug_path=library_dir / "reuse_debug.json",
+        debug_context={"page_number": 4, "slot_key": "illustration_1"},
+    )
+
+    assert match is not None
+    assert match["asset"]["asset_id"] == "asset_author"
+    assert match["keyword_score"] >= 0.7
+
+    debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
+    assert debug["queries"][0]["context"]["page_number"] == 4
+    assert debug["queries"][0]["decision"]["reused"] is True
+    assert debug["queries"][0]["decision"]["reason"] == "reused_by_weighted_bm25_score"
+    assert debug["queries"][0]["ranked_candidates"][0]["score_details"]["core_score"] == 1.0
+
+
+def test_reuse_manifest_causes_library_ingest_to_skip_reused_images(tmp_path):
+    session_dir = tmp_path / "output" / "session_20260506_111550"
+    materials_dir = session_dir / "materials"
+    library_dir = tmp_path / "materials_library"
+    materials_dir.mkdir(parents=True)
+    (materials_dir / "page_04_illustration_1.png").write_bytes(b"reused")
+    plan = {
+        "meta": {"topic": "七年级语文《秋天的怀念》课文教学", "audience": "七年级学生"},
+        "pages": [
+            {
+                "page_number": 4,
+                "title": "作者与背景介绍",
+                "material_needs": {
+                    "images": [
+                        {
+                            "query": "史铁生肖像插画，编辑感风格，线条简洁",
+                            "source": "ai_generate",
+                            "role": "illustration",
+                            "aspect_ratio": "1:1",
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    (session_dir / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+    record_reused_ai_image_asset(
+        session_dir=session_dir,
+        session_image_path=materials_dir / "page_04_illustration_1.png",
+        match={
+            "asset": {"asset_id": "asset_author", "image_path": "ai_images/asset_author.png"},
+            "keyword_score": 1.0,
+        },
+    )
+
+    db, _target = update_ai_image_asset_library(session_dir, library_dir)
+
+    assert db["asset_count"] == 0
