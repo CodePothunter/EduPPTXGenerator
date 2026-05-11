@@ -152,12 +152,20 @@ def match_aspect_ratio(width: float, height: float) -> str:
 class ImageNeed(BaseModel):
     """A single image request within a page's material_needs."""
 
-    query: str = Field(description="Search keyword or generation prompt")
+    query: str = Field(description="Semantic image content query without routed style or quality terms")
     source: Literal["search", "ai_generate"] = "search"
     role: Literal["hero", "illustration", "icon", "background"] = "illustration"
     aspect_ratio: str = Field(
         default="16:9",
         description="Aspect ratio from predefined set: 1:1, 3:4, 4:3, 16:9, 9:16, 3:2, 2:3, 21:9",
+    )
+    generation_prompt: str = Field(
+        default="",
+        description="Final routed AI-generation prompt. Empty means use query for backward compatibility.",
+    )
+    prompt_route: dict = Field(
+        default_factory=dict,
+        description="Structured prompt-routing metadata used to build generation_prompt.",
     )
 
     @model_validator(mode="before")

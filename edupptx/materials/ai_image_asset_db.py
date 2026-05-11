@@ -16,7 +16,7 @@ SCHEMA_VERSION = 1
 KEYWORD_SCHEMA_VERSION = 5
 DEFAULT_DB_FILENAME = "ai_image_asset_db.json"
 DEFAULT_MATCH_INDEX_FILENAME = "ai_image_match_index.json"
-MATCH_INDEX_SCHEMA_VERSION = 2
+MATCH_INDEX_SCHEMA_VERSION = 5
 DEFAULT_KEYWORD_BATCH_SIZE = 12
 DEFAULT_LIBRARY_IMAGE_DIR = "ai_images"
 REUSE_MANIFEST_FILENAME = "ai_image_reuse_manifest.json"
@@ -24,26 +24,56 @@ REUSE_DEBUG_FILENAME = "ai_image_reuse_debug.json"
 DEFAULT_REUSE_CANDIDATE_LIMIT = 5
 DEFAULT_MIN_REUSE_KEYWORD_SCORE: float | None = None
 
-SEMANTIC_REUSE_WEIGHT = 0.45
-KEYWORD_REUSE_WEIGHT = 0.35
-PROMPT_REUSE_WEIGHT = 0.12
-CONTEXT_REUSE_WEIGHT = 0.08
-CORE_KEYWORD_WEIGHT = 0.80
-SCOPE_KEYWORD_WEIGHT = 0.10
-ROLE_ASPECT_KEYWORD_WEIGHT = 0.05
-STYLE_KEYWORD_WEIGHT = 0.05
-BACKGROUND_SEMANTIC_WEIGHT = 0.55
-BACKGROUND_KEYWORD_WEIGHT = 0.20
-BACKGROUND_PROMPT_WEIGHT = 0.15
-BACKGROUND_CONTEXT_WEIGHT = 0.10
+CONTENT_PROMPT_REUSE_WEIGHT = 0.75
+ROUTE_REUSE_WEIGHT = 0.10
+ROLE_ASPECT_REUSE_WEIGHT = 0.10
+LIGHT_CONTEXT_REUSE_WEIGHT = 0.05
 
-COURSE_SPECIFIC_REUSE_THRESHOLD = 0.42
-SUBJECT_GENERIC_REUSE_THRESHOLD = 0.32
 VISUAL_GENERIC_REUSE_THRESHOLD = 0.28
 BACKGROUND_REUSE_THRESHOLD = 0.25
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
-_REUSE_SCOPES = {"course_specific", "subject_generic", "visual_generic"}
+_LIBRARY_REMOVED_KEYWORD_FIELDS = {
+    "role",
+    "page_title",
+    "reuse_scope",
+    "specificity_score",
+    "context_keywords",
+    "style_keywords",
+    "main_entities",
+    "visual_actions",
+    "scene_elements",
+    "emotion_tone",
+    "visual_motifs",
+    "color_palette",
+    "texture_style",
+    "layout_function",
+    "mood",
+}
+_BACKGROUND_ROUTE_FIELDS = (
+    "template_family",
+    "style_name",
+    "palette_id",
+    "primary_color",
+    "secondary_color",
+    "accent_color",
+    "card_bg_color",
+    "secondary_bg_color",
+    "background_color_bias",
+)
+_BACKGROUND_ROUTE_MATCH_FIELDS = (
+    "template_family",
+    "style_name",
+    "palette_id",
+)
+_PAGE_TYPE_CONTEXT_SUMMARIES = {
+    "cover": "作为封面主视觉，建立课程主题和导入氛围",
+    "toc": "作为目录页辅助导览插图，引导学生理解本节课学习路径",
+    "content": "作为内容页辅助说明插图，帮助学生理解本页知识点",
+    "exercise": "作为练习页辅助插图，帮助学生理解互动任务",
+    "summary": "作为总结页辅助记忆插图，帮助学生回顾核心内容",
+    "closing": "作为结束页辅助插图，形成课程收束氛围",
+}
 _GENERIC_CORE_NOISE = {
     "插画",
     "教学插画",
@@ -187,9 +217,9 @@ _SUBJECT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
 def build_ai_image_asset_db(output_root: str | Path) -> dict[str, Any]:
     """Scan rendered sessions and return the generated-image asset database.
 
-    The semantic fields intentionally stay minimal for the first reuse pass:
-    prompt, theme, grade, and subject. Source fields are retained only so the
-    asset can be found and traced back to its plan slot.
+    The persisted fields stay focused on reusable image content and traceability:
+    content prompt, generation prompt, route metadata, normalized prompt,
+    context summary, teaching intent, grade/subject, and source location.
     """
 
     root = Path(output_root).expanduser().resolve()
@@ -453,10 +483,13 @@ def find_reusable_ai_image_asset(
     library_dir: str | Path,
     asset_kind: str,
     prompt: str,
+    prompt_route: dict[str, Any] | None = None,
+    background_route: dict[str, Any] | None = None,
     theme: str = "",
     grade: str = "",
     subject: str = "",
     page_title: str = "",
+    page_type: str = "",
     role: str = "",
     aspect_ratio: str = "",
     keyword_client: Any | None = None,
@@ -467,10 +500,10 @@ def find_reusable_ai_image_asset(
 ) -> dict[str, Any] | None:
     """Find a reusable AI image asset from the central library.
 
-    The final reuse decision is deterministic: structured semantic coverage,
-    BM25 keyword, prompt, and context scores are weighted, then the best
-    candidate above the typed threshold wins. The LLM is used only to build
-    target keywords/context when a client exists.
+    The final reuse decision is deterministic: BM25 over the content prompt is
+    dominant, while prompt-route, aspect ratio, and context scores are low-weight
+    references. The LLM is used only to build target keywords/context when a
+    client exists.
     """
 
     library_root = Path(library_dir).expanduser().resolve()
@@ -482,10 +515,13 @@ def find_reusable_ai_image_asset(
     target = _build_reuse_target_asset(
         asset_kind=asset_kind,
         prompt=prompt,
+        prompt_route=prompt_route,
+        background_route=background_route,
         theme=theme,
         grade=grade,
         subject=subject,
         page_title=page_title,
+        page_type=page_type,
         role=role,
         aspect_ratio=aspect_ratio,
     )
@@ -518,7 +554,12 @@ def find_reusable_ai_image_asset(
 
     if keyword_client is not None:
         target_db = {"schema_version": SCHEMA_VERSION, "assets": [target], "warnings": []}
-        enrich_ai_image_asset_db_keywords(target_db, keyword_client, batch_size=1)
+        enrich_ai_image_asset_db_keywords(
+            target_db,
+            keyword_client,
+            batch_size=1,
+            include_match_keywords=True,
+        )
         target = target_db["assets"][0]
     target = _normalize_asset_for_match(target, for_target=True) or target
     threshold = _reuse_threshold_for_target(target, min_keyword_score)
@@ -542,7 +583,7 @@ def find_reusable_ai_image_asset(
     if not candidates:
         return finish("no_candidate_above_reuse_threshold")
 
-    return finish("reused_by_semantic_bm25_score", candidates[0])
+    return finish("reused_by_content_bm25_score", candidates[0])
 
 
 def record_reused_ai_image_asset(
@@ -633,34 +674,26 @@ def _append_reuse_debug_record(path: str | Path | None, record: dict[str, Any]) 
 
 
 def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
-    source = _dict(asset.get("source"))
     grade = _clean_text(asset.get("grade"))
     return {
         "asset_id": asset.get("asset_id"),
         "asset_kind": asset.get("asset_kind"),
         "image_path": asset.get("image_path"),
-        "prompt": asset.get("prompt"),
+        "content_prompt": _asset_content_prompt(asset),
+        "generation_prompt": _asset_generation_prompt(asset),
+        "style_prompt": _asset_style_prompt(asset),
+        "prompt_route": _clean_prompt_route(asset.get("prompt_route")),
+        "background_route": _clean_background_route(asset.get("background_route")),
         "core_keywords": _keyword_list(asset.get("core_keywords"), max_items=16),
-        "main_entities": _keyword_list(asset.get("main_entities"), max_items=12),
-        "visual_actions": _keyword_list(asset.get("visual_actions"), max_items=10),
-        "scene_elements": _keyword_list(asset.get("scene_elements"), max_items=12),
-        "emotion_tone": _keyword_list(asset.get("emotion_tone"), max_items=8),
+        "semantic_aliases": _clean_semantic_aliases(asset.get("semantic_aliases")),
+        "context_summary_keywords": _keyword_list(asset.get("context_summary_keywords"), max_items=10),
         "teaching_intent": asset.get("teaching_intent"),
-        "visual_motifs": _keyword_list(asset.get("visual_motifs"), max_items=10),
-        "color_palette": _keyword_list(asset.get("color_palette"), max_items=8),
-        "texture_style": _keyword_list(asset.get("texture_style"), max_items=8),
-        "layout_function": _keyword_list(asset.get("layout_function"), max_items=8),
-        "mood": _keyword_list(asset.get("mood"), max_items=8),
-        "style_keywords": _keyword_list(asset.get("style_keywords"), max_items=12),
-        "page_title": asset.get("page_title") or source.get("page_title"),
         "subject": asset.get("subject"),
         "grade": grade,
         "grade_norm": asset.get("grade_norm"),
         "grade_number": asset.get("grade_number"),
         "grade_band": asset.get("grade_band") or infer_grade_band(grade),
-        "role": _asset_role(asset),
         "aspect_ratio": asset.get("aspect_ratio"),
-        "reuse_scope": asset.get("reuse_scope"),
         "context_summary": asset.get("context_summary"),
     }
 
@@ -713,6 +746,7 @@ def enrich_ai_image_asset_db_keywords(
     client: Any,
     *,
     batch_size: int = DEFAULT_KEYWORD_BATCH_SIZE,
+    include_match_keywords: bool = False,
 ) -> dict[str, Any]:
     """Add LLM-built keyword fields to an already scanned asset DB.
 
@@ -730,7 +764,7 @@ def enrich_ai_image_asset_db_keywords(
     db["schema_version"] = max(int(db.get("schema_version") or 0), KEYWORD_SCHEMA_VERSION)
     db["keyword_built_at"] = datetime.now(timezone.utc).isoformat()
     db["keyword_builder"] = {
-        "method": "llm_reuse_scope_keyword_extraction",
+        "method": "llm_reuse_target_keyword_extraction" if include_match_keywords else "llm_reuse_metadata_extraction",
         "batch_size": batch_size,
         "model": _client_model_name(client),
     }
@@ -740,7 +774,7 @@ def enrich_ai_image_asset_db_keywords(
         if not batch:
             continue
         try:
-            response = _call_keyword_llm(client, batch)
+            response = _call_keyword_llm(client, batch, include_match_keywords=include_match_keywords)
             by_id = _keyword_payload_by_asset_id(response)
         except Exception as exc:
             warnings.append(f"keyword batch {start // batch_size + 1} failed: {exc}")
@@ -752,13 +786,18 @@ def enrich_ai_image_asset_db_keywords(
             if payload is None:
                 warnings.append(f"keyword payload missing for {asset_id}")
                 continue
-            _apply_keyword_payload(asset, payload)
+            _apply_keyword_payload(asset, payload, include_match_keywords=include_match_keywords)
 
     return db
 
 
-def _call_keyword_llm(client: Any, batch: list[dict[str, Any]]) -> dict[str, Any] | list[Any]:
-    messages = _build_keyword_messages(batch)
+def _call_keyword_llm(
+    client: Any,
+    batch: list[dict[str, Any]],
+    *,
+    include_match_keywords: bool,
+) -> dict[str, Any] | list[Any]:
+    messages = _build_keyword_messages(batch, include_match_keywords=include_match_keywords)
     max_tokens = max(2048, min(16384, 900 * len(batch) + 1200))
     chat_json = getattr(client, "chat_json", None)
     if callable(chat_json):
@@ -779,7 +818,11 @@ def _call_keyword_llm(client: Any, batch: list[dict[str, Any]]) -> dict[str, Any
     return _load_json_response(raw)
 
 
-def _build_keyword_messages(batch: list[dict[str, Any]]) -> list[dict[str, str]]:
+def _build_keyword_messages(
+    batch: list[dict[str, Any]],
+    *,
+    include_match_keywords: bool = False,
+) -> list[dict[str, str]]:
     items: list[dict[str, Any]] = []
     for asset in batch:
         source = _dict(asset.get("source"))
@@ -787,8 +830,10 @@ def _build_keyword_messages(batch: list[dict[str, Any]]) -> list[dict[str, str]]
             {
                 "asset_id": asset.get("asset_id"),
                 "asset_kind": asset.get("asset_kind"),
-                "prompt": asset.get("prompt"),
-                "theme": asset.get("theme"),
+                "content_prompt": _asset_content_prompt(asset),
+                "current_context_summary": _clean_text(asset.get("context_summary")),
+                "prompt_route": _match_prompt_route(asset.get("prompt_route")),
+                "background_route": _match_background_route(asset.get("background_route")),
                 "grade": asset.get("grade"),
                 "subject": asset.get("subject"),
                 "page_title": source.get("page_title"),
@@ -798,68 +843,38 @@ def _build_keyword_messages(batch: list[dict[str, Any]]) -> list[dict[str, str]]
             }
         )
 
+    required_fields = (
+        "asset_id, normalized_prompt, context_summary, teaching_intent, "
+        "core_keywords, semantic_aliases, context_summary_keywords"
+    )
+    purpose = (
+        "Extract the same reusable metadata schema for both stored assets and target reuse queries. "
+        "core_keywords and semantic_aliases expand the content query against stored content prompts. "
+        "context_summary_keywords are keywords from context_summary only."
+    )
+
     system = (
-        "你是教育 PPT 的 AI 图片素材复用关键词构建器。"
-        "你的任务是根据图片生成 prompt 和 plan 中的课程上下文判断素材复用范围，"
-        "抽取可用于素材复用匹配的关键词，并生成上下文总结。"
-        "只输出 JSON，不要输出 Markdown 或解释。\n\n"
-        "要求：\n"
-        "1. reuse_scope 必须是 course_specific、subject_generic、visual_generic 三者之一。\n"
-        "2. course_specific：素材依赖具体作品、作者、人物关系、课文情节或课程专属概念，"
-        "例如史铁生肖像、三次看花、母亲病床前与儿子对话。\n"
-        "3. subject_generic：素材是学科内通用教学图，不依赖具体课文，"
-        "例如汉字拼音标注、词语释义教学示意、易错读音标注。\n"
-        "4. visual_generic：素材主要是通用视觉主体或氛围，可跨学科复用，"
-        "例如秋日菊花特写、银杏叶纹理背景。\n"
-        "5. specificity_score 是 1-5 的整数，越高越专属；course_specific 通常为 4-5，"
-        "subject_generic 通常为 2-3，visual_generic 通常为 1-2。\n"
-        "6. core_keywords 只允许放画面里可以直接看见、并且能区分素材的内容："
-        "人物、动物、植物、物体、地点、具体动作、具体画面概念。"
-        "禁止放学科、年级、教学插图、教学配图、风格、画风、构图、色调、清晰度、"
-        "水印、logo、无文字、背景简洁、氛围阅读感、课堂氛围、用途说明。"
-        "如果一个词不能在画面中被直接指出来，就不要放入 core_keywords。\n"
-        "7. context_keywords 只在素材确实依赖课程时放课题、作品名、作者、章节线索；"
-        "通用教学图和通用视觉图必须尽量为空。不要把“七年级”“语文”“七年级语文”放入 context_keywords。\n"
-        "8. style_keywords 只放低权重的画风、色调、构图、氛围词。"
-        "不要输出“插画、编辑感、风格、简洁、清晰、高清、背景”等没有区分度的单独词。\n"
-        "9. normalized_prompt 是去掉通用风格噪声后的短语化描述，最多 80 个中文字符。\n"
-        "10. context_summary 必须根据 theme、page_title、page_type、content_points 和 prompt 总结图片在课程中的用途，"
-        "最多 80 个中文字符；通用素材也要说明其通用教学用途。\n"
-        "11. 每个关键词应是短词或短语，优先中文，保留专名；数组内按匹配重要性从高到低排序。\n\n"
-        "输出格式严格为：\n"
-        "12. 还要输出用于通用匹配的结构化语义字段，不要写成针对特定课文或特定案例的硬编码："
-        "main_entities、visual_actions、scene_elements、emotion_tone、teaching_intent。"
-        "main_entities 表示画面主体；visual_actions 表示可见动作或状态；"
-        "scene_elements 表示重要地点或物体；emotion_tone 表示情绪氛围；teaching_intent 表示教学用途。\n"
-        "字段契约：各字段语义必须互斥。core_keywords 只放可见主体、关键物体、关键动作、地点或具体画面概念。"
-        "画风、年级标签、学科标签、构图、颜色、清晰度、生成约束等不要放入 core_keywords，"
-        "应放入 style_keywords 或其他结构化字段。生成约束类词语，如“无文字、无水印、无 logo、高清、"
-        "背景简洁、风格统一”，不要输出到任何匹配关键词字段；必要时只可体现在 normalized_prompt 中。"
-        "非 course_specific 素材的 context_keywords 应为空，除非图片确实依赖某篇课文、某位作者或某个课程专属内容。\n"
-        "13. 如果是背景素材，还要输出 visual_motifs、color_palette、texture_style、layout_function、mood；"
-        "非背景素材这些数组可以为空。\n"
-        "14. 可以输出 semantic_aliases，格式为对象，键是抽取出的术语，值是等价短词数组。"
-        "同义词只能根据素材本身推断，不要依赖硬编码课程示例。\n\n"
-        "{\"assets\":[{\"asset_id\":\"...\",\"normalized_prompt\":\"...\","
-        "\"context_summary\":\"...\","
-        "\"reuse_scope\":\"subject_generic\",\"specificity_score\":2,"
-        "\"core_keywords\":[\"...\"],\"context_keywords\":[\"...\"],"
-        "\"style_keywords\":[\"...\"],\"main_entities\":[\"...\"],"
-        "\"visual_actions\":[\"...\"],\"scene_elements\":[\"...\"],"
-        "\"emotion_tone\":[\"...\"],\"teaching_intent\":\"...\","
-        "\"visual_motifs\":[\"...\"],\"color_palette\":[\"...\"],"
-        "\"texture_style\":[\"...\"],\"layout_function\":[\"...\"],"
-        "\"mood\":[\"...\"],\"semantic_aliases\":{\"术语\":[\"同义词\"]}}]}"
+        "You are normalizing AI image reuse metadata for an education PPT generator. "
+        + purpose
+        + " Return strict JSON only, with an assets array. "
+        + f"Each item must contain: {required_fields}. "
+        "normalized_prompt is a concise visual content description without style or quality words. "
+        "context_summary describes the image's slide function or teaching use in one short sentence; "
+        "do not merely repeat content_prompt or visible object names. "
+        "teaching_intent describes why the image is used in the slide. "
+        "core_keywords must contain only visible, discriminative content terms. "
+        "semantic_aliases maps a core keyword to equivalent short phrases. "
+        "Use page_title, page_type, layout_hint, and content_points only to infer context_summary, "
+        "teaching_intent, and context_summary_keywords; never treat them as visible core_keywords. "
+        "Do not output role, theme, page_title, reuse_scope, specificity_score, "
+        "context_keywords, style_keywords, main_entities, visual_actions, scene_elements, "
+        "emotion_tone, visual_motifs, color_palette, texture_style, layout_function, or mood."
     )
-    user = (
-        "请为以下素材构建复用匹配关键词：\n"
-        + json.dumps({"assets": items}, ensure_ascii=False, indent=2)
-    )
+    user = "Normalize these assets:\n" + json.dumps({"assets": items}, ensure_ascii=False, indent=2)
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
     ]
-
 
 def _load_json_response(raw: Any) -> dict[str, Any] | list[Any]:
     text = _strip_fences(str(raw or ""))
@@ -909,108 +924,110 @@ def _keyword_payload_by_asset_id(response: dict[str, Any] | list[Any]) -> dict[s
     return by_id
 
 
-def _apply_keyword_payload(asset: dict[str, Any], payload: dict[str, Any]) -> None:
-    normalized_prompt = _clean_text(payload.get("normalized_prompt")) or _clean_text(asset.get("prompt"))
-    context_summary = _clean_text(payload.get("context_summary")) or _fallback_context_summary(asset)
-    reuse_scope = _clean_reuse_scope(payload.get("reuse_scope"))
-    specificity_score = _specificity_score(payload.get("specificity_score"))
+def _apply_keyword_payload(
+    asset: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    include_match_keywords: bool = False,
+) -> None:
+    asset["normalized_prompt"] = _clean_text(payload.get("normalized_prompt")) or _default_normalized_prompt(asset)
+    asset["context_summary"] = _clean_text(payload.get("context_summary")) or _fallback_context_summary(asset)
+    asset["teaching_intent"] = _clean_text(payload.get("teaching_intent")) or _default_teaching_intent(asset)
     context_exclusions = _context_exclusions(asset)
-    core_keywords = _keyword_list(
-        payload.get("core_keywords", payload.get("prompt_keywords", payload.get("content_keywords"))),
-        max_items=12,
-        exclude=context_exclusions | _GENERIC_CORE_NOISE,
+    asset["core_keywords"] = _dedupe_terms(
+        [
+            *_keyword_list(asset.get("core_keywords"), max_items=12, exclude=context_exclusions | _GENERIC_CORE_NOISE),
+            *_keyword_list(
+                payload.get("core_keywords", payload.get("prompt_keywords", payload.get("content_keywords"))),
+                max_items=12,
+                exclude=context_exclusions | _GENERIC_CORE_NOISE,
+            ),
+        ]
     )
-    context_keywords = _keyword_list(
-        payload.get("context_keywords", payload.get("theme_keywords")),
-        max_items=8,
-        exclude=context_exclusions,
-    )
-    if reuse_scope != "course_specific":
-        context_keywords = []
-    style_keywords = _keyword_list(
-        payload.get("style_keywords"),
-        max_items=10,
-        exclude=context_exclusions | _GENERIC_STYLE_NOISE,
-    )
-    main_entities = _keyword_list(
-        payload.get("main_entities"),
-        max_items=10,
-        exclude=context_exclusions | _GENERIC_CORE_NOISE,
-    )
-    visual_actions = _keyword_list(
-        payload.get("visual_actions"),
-        max_items=8,
-        exclude=context_exclusions | _GENERIC_CORE_NOISE,
-    )
-    scene_elements = _keyword_list(
-        payload.get("scene_elements"),
-        max_items=10,
-        exclude=context_exclusions | _GENERIC_CORE_NOISE,
-    )
-    emotion_tone = _keyword_list(
-        payload.get("emotion_tone"),
-        max_items=8,
-        exclude=context_exclusions | _GENERIC_STYLE_NOISE,
-    )
-    teaching_intent = _clean_text(payload.get("teaching_intent"))[:120]
-    visual_motifs = _keyword_list(
-        payload.get("visual_motifs"),
-        max_items=10,
-        exclude=context_exclusions | _GENERIC_CORE_NOISE,
-    )
-    color_palette = _keyword_list(
-        payload.get("color_palette"),
-        max_items=8,
-        exclude=context_exclusions | _GENERIC_STYLE_NOISE,
-    )
-    texture_style = _keyword_list(
-        payload.get("texture_style"),
-        max_items=8,
-        exclude=context_exclusions | _GENERIC_STYLE_NOISE,
-    )
-    layout_function = _keyword_list(
-        payload.get("layout_function"),
-        max_items=8,
-        exclude=context_exclusions | _GENERIC_STYLE_NOISE,
-    )
-    mood = _keyword_list(
-        payload.get("mood"),
-        max_items=8,
-        exclude=context_exclusions | _GENERIC_STYLE_NOISE,
+    asset["semantic_aliases"] = _merge_semantic_aliases(
+        _clean_semantic_aliases(asset.get("semantic_aliases")),
+        _clean_semantic_aliases(payload.get("semantic_aliases")),
     )
 
-    asset["normalized_prompt"] = normalized_prompt
-    asset["context_summary"] = context_summary
-    asset["reuse_scope"] = reuse_scope
-    asset["specificity_score"] = specificity_score
-    asset["core_keywords"] = core_keywords
-    asset["context_keywords"] = context_keywords
-    asset["style_keywords"] = style_keywords
-    asset["main_entities"] = main_entities
-    asset["visual_actions"] = visual_actions
-    asset["scene_elements"] = scene_elements
-    asset["emotion_tone"] = emotion_tone
-    asset["teaching_intent"] = teaching_intent
-    asset["visual_motifs"] = visual_motifs
-    asset["color_palette"] = color_palette
-    asset["texture_style"] = texture_style
-    asset["layout_function"] = layout_function
-    asset["mood"] = mood
-    asset["semantic_aliases"] = _clean_semantic_aliases(payload.get("semantic_aliases"))
-    _normalize_rich_asset_fields(asset)
-    asset["match_text"] = _build_match_text(asset)
-    asset["match_key"] = _build_match_key(asset)
+    asset["context_summary_keywords"] = _dedupe_terms(
+        [
+            *_keyword_list(
+                asset.get("context_summary_keywords"),
+                max_items=10,
+                exclude=context_exclusions | _GENERIC_CORE_NOISE,
+            ),
+            *_keyword_list(
+                payload.get("context_summary_keywords"),
+                max_items=10,
+                exclude=context_exclusions | _GENERIC_CORE_NOISE,
+            ),
+        ]
+    )[:10]
+
+    if not include_match_keywords:
+        _strip_library_keyword_fields(asset)
+
+    _normalize_rich_asset_fields(asset, keep_match_keywords=include_match_keywords)
+    if include_match_keywords:
+        asset["match_text"] = _build_match_text(asset)
+        asset["match_key"] = _build_match_key(asset)
 
 
 def _fallback_context_summary(asset: dict[str, Any]) -> str:
     source = _dict(asset.get("source"))
-    summary = _join_texts(
-        asset.get("theme"),
-        source.get("page_title"),
-        source.get("page_type"),
-        asset.get("prompt"),
+    return _default_context_summary(
+        asset_kind=_clean_text(asset.get("asset_kind")),
+        content_prompt=_asset_content_prompt(asset),
+        theme=_clean_text(asset.get("theme")),
+        page_title=_clean_text(source.get("page_title")),
+        page_type=_clean_text(source.get("page_type")),
     )
-    return summary[:120]
+
+
+def _strip_library_keyword_fields(asset: dict[str, Any]) -> None:
+    for field in _LIBRARY_REMOVED_KEYWORD_FIELDS:
+        asset.pop(field, None)
+
+
+def _default_normalized_prompt(asset: dict[str, Any]) -> str:
+    return (_clean_text(asset.get("normalized_prompt")) or _asset_content_prompt(asset))[:80]
+
+
+def _default_context_summary(
+    *,
+    asset_kind: str,
+    content_prompt: str,
+    theme: str,
+    page_title: str = "",
+    page_type: str = "",
+) -> str:
+    if asset_kind == "background":
+        return "作为课件统一背景，提供低干扰视觉氛围并承载页面文字"[:120]
+
+    usage = _PAGE_TYPE_CONTEXT_SUMMARIES.get(
+        page_type,
+        "作为页面辅助插图，支持本页教学内容呈现",
+    )
+    title = _clean_text(page_title)
+    if title:
+        return f"{title}：{usage}"[:120]
+    return usage[:120]
+
+
+def _default_teaching_intent(asset: dict[str, Any] | None = None, *, asset_kind: str = "", page_type: str = "") -> str:
+    if asset is not None:
+        asset_kind = _clean_text(asset.get("asset_kind"))
+        source = _dict(asset.get("source"))
+        page_type = _clean_text(source.get("page_type"))
+    if asset_kind == "background":
+        return "作为整套课件的低干扰视觉背景，承载页面文字和主要内容"
+    if page_type == "cover":
+        return "作为页面主视觉，建立课程主题和导入氛围"
+    if page_type == "exercise":
+        return "辅助练习或互动任务呈现，降低阅读负担"
+    if page_type == "summary":
+        return "辅助总结页面形成视觉记忆点"
+    return "辅助解释页面知识点，帮助学生理解和记忆"
 
 
 def _clean_semantic_aliases(value: Any) -> dict[str, list[str]]:
@@ -1027,17 +1044,15 @@ def _clean_semantic_aliases(value: Any) -> dict[str, list[str]]:
     return aliases
 
 
-def _clean_reuse_scope(value: Any) -> str:
-    scope = _clean_text(value)
-    return scope if scope in _REUSE_SCOPES else "visual_generic"
-
-
-def _specificity_score(value: Any) -> int:
-    try:
-        score = int(value)
-    except (TypeError, ValueError):
-        return 1
-    return max(1, min(5, score))
+def _merge_semantic_aliases(*items: dict[str, list[str]]) -> dict[str, list[str]]:
+    merged: dict[str, list[str]] = {}
+    for aliases in items:
+        for key, values in aliases.items():
+            clean_key = _clean_keyword(key)
+            if not clean_key:
+                continue
+            merged[clean_key] = _dedupe_terms([*merged.get(clean_key, []), *values])[:8]
+    return merged
 
 
 def _context_exclusions(asset: dict[str, Any]) -> set[str]:
@@ -1106,41 +1121,25 @@ def _build_match_text(asset: dict[str, Any]) -> str:
     terms = _dedupe_terms(
         [
             *_keyword_list(asset.get("core_keywords"), max_items=16),
-            *_keyword_list(asset.get("main_entities"), max_items=12),
-            *_keyword_list(asset.get("visual_actions"), max_items=10),
-            *_keyword_list(asset.get("scene_elements"), max_items=12),
-            *_keyword_list(asset.get("emotion_tone"), max_items=8),
-            *_keyword_list(asset.get("visual_motifs"), max_items=10),
-            *_keyword_list(asset.get("color_palette"), max_items=8),
-            *_keyword_list(asset.get("texture_style"), max_items=8),
-            *_keyword_list(asset.get("layout_function"), max_items=8),
-            *_keyword_list(asset.get("mood"), max_items=8),
-            *_keyword_list(asset.get("context_keywords"), max_items=12),
-            *_keyword_list(asset.get("style_keywords"), max_items=12),
             *_semantic_alias_terms(asset),
-            _clean_text(asset.get("subject")),
-            _clean_text(asset.get("grade")),
+            _asset_content_prompt(asset),
+            _clean_text(asset.get("normalized_prompt")),
+            _clean_text(asset.get("context_summary")),
+            _route_match_text(asset),
         ]
     )
     return " ".join(terms)
 
 
 def _build_match_key(asset: dict[str, Any]) -> str:
-    reuse_scope = _clean_reuse_scope(asset.get("reuse_scope"))
-    core_keywords = _keyword_list(asset.get("core_keywords"), max_items=10)
-    context_keywords = _keyword_list(asset.get("context_keywords"), max_items=6)
-    subject = _clean_text(asset.get("subject"))
-    grade = _clean_text(asset.get("grade"))
-
-    values: list[str]
-    if reuse_scope == "course_specific":
-        values = [*core_keywords, *context_keywords, subject, grade]
-    elif reuse_scope == "subject_generic":
-        values = [*core_keywords, subject]
-    else:
-        values = core_keywords
-
-    terms = _dedupe_terms(values)
+    terms = _dedupe_terms(
+        [
+            *_keyword_list(asset.get("core_keywords"), max_items=10),
+            *_semantic_alias_terms(asset),
+            _clean_text(asset.get("normalized_prompt")),
+            _asset_content_prompt(asset),
+        ]
+    )
     return "|".join(terms[:12])
 
 
@@ -1151,7 +1150,7 @@ def _normalize_asset_for_match(
     for_target: bool = False,
 ) -> dict[str, Any] | None:
     item = deepcopy(asset)
-    _normalize_rich_asset_fields(item)
+    _normalize_rich_asset_fields(item, keep_match_keywords=for_target)
 
     asset_id = _clean_text(item.get("asset_id"))
     asset_kind = _clean_text(item.get("asset_kind"))
@@ -1161,50 +1160,34 @@ def _normalize_asset_for_match(
     if not for_target and not image_path:
         return None
 
-    source = _dict(item.get("source"))
     grade_info = normalize_grade_info(item.get("grade"), item.get("theme"))
-    role = _asset_role(item)
+    content_prompt = _asset_content_prompt(item)
+    prompt_route = _match_prompt_route(item.get("prompt_route"))
     match_asset: dict[str, Any] = {
         "asset_id": asset_id,
         "asset_kind": asset_kind,
         "image_path": image_path,
-        "role": role,
         "aspect_ratio": _clean_text(item.get("aspect_ratio")),
         "subject": _clean_text(item.get("subject")),
         "grade": _clean_text(item.get("grade")),
         "grade_norm": grade_info["grade_norm"],
         "grade_number": grade_info["grade_number"],
         "grade_band": grade_info["grade_band"],
-        "reuse_scope": _clean_reuse_scope(item.get("reuse_scope")),
-        "specificity_score": _specificity_score(item.get("specificity_score")),
-        "prompt": _clean_text(item.get("prompt")),
-        "normalized_prompt": _clean_text(item.get("normalized_prompt")) or _clean_text(item.get("prompt")),
+        "content_prompt": content_prompt,
+        "prompt_route": prompt_route,
+        "background_route": _match_background_route(item.get("background_route")),
+        "normalized_prompt": _clean_text(item.get("normalized_prompt")) or content_prompt,
         "context_summary": _clean_text(item.get("context_summary")),
         "teaching_intent": _clean_text(item.get("teaching_intent")),
-        "page_title": _clean_text(item.get("page_title")) or _clean_text(source.get("page_title")),
         "core_keywords": _keyword_list(item.get("core_keywords"), max_items=12),
-        "context_keywords": _keyword_list(item.get("context_keywords"), max_items=8),
-        "style_keywords": _keyword_list(item.get("style_keywords"), max_items=10),
-        "main_entities": _keyword_list(item.get("main_entities"), max_items=10),
-        "visual_actions": _keyword_list(item.get("visual_actions"), max_items=8),
-        "scene_elements": _keyword_list(item.get("scene_elements"), max_items=10),
-        "emotion_tone": _keyword_list(item.get("emotion_tone"), max_items=8),
         "semantic_aliases": _clean_semantic_aliases(item.get("semantic_aliases")),
+        "context_summary_keywords": _keyword_list(
+            item.get("context_summary_keywords"),
+            max_items=10,
+            exclude=_context_exclusions(item) | _GENERIC_CORE_NOISE,
+        ),
         "duplicate_asset_ids": [],
     }
-    if match_asset["reuse_scope"] != "course_specific":
-        match_asset["context_keywords"] = []
-
-    if asset_kind == "background" or role == "background":
-        match_asset.update(
-            {
-                "visual_motifs": _keyword_list(item.get("visual_motifs"), max_items=10),
-                "color_palette": _keyword_list(item.get("color_palette"), max_items=8),
-                "texture_style": _keyword_list(item.get("texture_style"), max_items=8),
-                "layout_function": _keyword_list(item.get("layout_function"), max_items=8),
-                "mood": _keyword_list(item.get("mood"), max_items=8),
-            }
-        )
 
     if library_root is not None and image_path:
         image_file = _resolve_asset_image_path(library_root, image_path)
@@ -1215,7 +1198,37 @@ def _normalize_asset_for_match(
     return _strip_empty_match_fields(match_asset)
 
 
-def _normalize_rich_asset_fields(asset: dict[str, Any]) -> None:
+def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: bool = False) -> None:
+    content_prompt = _asset_content_prompt(asset)
+    generation_prompt = _asset_generation_prompt(asset)
+    prompt_route = _clean_prompt_route(asset.get("prompt_route"))
+    asset["content_prompt"] = content_prompt
+    asset.pop("prompt", None)
+    if generation_prompt:
+        asset["generation_prompt"] = generation_prompt
+    else:
+        asset.pop("generation_prompt", None)
+    asset["normalized_prompt"] = _default_normalized_prompt(asset)
+    if not _clean_text(asset.get("context_summary")):
+        asset["context_summary"] = _fallback_context_summary(asset)
+    if not _clean_text(asset.get("teaching_intent")):
+        asset["teaching_intent"] = _default_teaching_intent(asset)
+    if prompt_route:
+        asset["prompt_route"] = prompt_route
+        style_prompt = _route_style_prompt(prompt_route)
+        if style_prompt:
+            asset["style_prompt"] = style_prompt
+    else:
+        asset.pop("prompt_route", None)
+        if not _clean_text(asset.get("style_prompt")):
+            asset.pop("style_prompt", None)
+
+    background_route = _clean_background_route(asset.get("background_route"))
+    if background_route:
+        asset["background_route"] = background_route
+    else:
+        asset.pop("background_route", None)
+
     grade_info = normalize_grade_info(asset.get("grade"), asset.get("theme"))
     if grade_info["grade_norm"]:
         asset["grade_norm"] = grade_info["grade_norm"]
@@ -1224,35 +1237,33 @@ def _normalize_rich_asset_fields(asset: dict[str, Any]) -> None:
     if grade_info["grade_band"]:
         asset["grade_band"] = grade_info["grade_band"]
 
-    context_exclusions = _context_exclusions(asset)
-    style_keywords = _keyword_list(
-        asset.get("style_keywords"),
-        max_items=16,
-        exclude=context_exclusions | _GENERIC_STYLE_NOISE,
-    )
-    core_keywords, moved_style = _clean_core_keyword_terms(
+    core_keywords, _moved_style = _clean_core_keyword_terms(
         _keyword_list(
             asset.get("core_keywords"),
             max_items=20,
-            exclude=context_exclusions | _GENERIC_CORE_NOISE,
+            exclude=_context_exclusions(asset) | _GENERIC_CORE_NOISE,
         )
     )
-    style_keywords = _dedupe_terms([*style_keywords, *moved_style])[:10]
-
     asset["core_keywords"] = core_keywords[:12]
-    asset["style_keywords"] = style_keywords
+    asset["semantic_aliases"] = _clean_semantic_aliases(asset.get("semantic_aliases"))
+    if keep_match_keywords:
+        asset["context_summary_keywords"] = _keyword_list(
+            asset.get("context_summary_keywords"),
+            max_items=10,
+            exclude=_context_exclusions(asset) | _GENERIC_CORE_NOISE,
+        )
+    else:
+        asset["context_summary_keywords"] = _keyword_list(
+            asset.get("context_summary_keywords"),
+            max_items=10,
+            exclude=_context_exclusions(asset) | _GENERIC_CORE_NOISE,
+        )
+    _strip_library_keyword_fields(asset)
+    source = _dict(asset.get("source"))
+    source.pop("page_title", None)
     asset.pop("must_match", None)
     asset.pop("must_not_conflict", None)
     asset.pop("avoid_keywords", None)
-
-    if _clean_reuse_scope(asset.get("reuse_scope")) != "course_specific":
-        asset["context_keywords"] = []
-    else:
-        asset["context_keywords"] = _keyword_list(
-            asset.get("context_keywords"),
-            max_items=8,
-            exclude=context_exclusions,
-        )
 
 
 def _clean_core_keyword_terms(terms: list[str]) -> tuple[list[str], list[str]]:
@@ -1313,7 +1324,6 @@ def _strip_empty_match_fields(asset: dict[str, Any]) -> dict[str, Any]:
         "asset_id",
         "asset_kind",
         "image_path",
-        "role",
         "aspect_ratio",
         "duplicate_asset_ids",
         "_image_sha256",
@@ -1343,6 +1353,79 @@ def _semantic_alias_terms(asset: dict[str, Any]) -> list[str]:
     return _dedupe_terms(terms)
 
 
+def _semantic_alias_groups(asset: dict[str, Any], core_keywords: list[str] | None = None) -> list[dict[str, Any]]:
+    core_terms = core_keywords if core_keywords is not None else _keyword_list(asset.get("core_keywords"), max_items=16)
+    aliases = _clean_semantic_aliases(asset.get("semantic_aliases"))
+    groups: list[dict[str, Any]] = []
+    consumed_alias_keys: set[str] = set()
+
+    for core in core_terms:
+        group_terms = [core]
+        for alias_key, alias_values in aliases.items():
+            alias_terms = _dedupe_terms([alias_key, *alias_values])
+            if _terms_match(alias_key, core) or any(_terms_match(core, alias_term) for alias_term in alias_terms):
+                group_terms.extend(alias_terms)
+                consumed_alias_keys.add(alias_key)
+        terms = _dedupe_terms(group_terms)
+        if terms:
+            groups.append({"concept": core, "terms": terms})
+
+    for alias_key, alias_values in aliases.items():
+        if alias_key in consumed_alias_keys:
+            continue
+        terms = _dedupe_terms([alias_key, *alias_values])
+        if not terms:
+            continue
+        overlaps_existing = any(
+            _terms_match(term, existing_term)
+            for term in terms
+            for group in groups
+            for existing_term in group.get("terms", [])
+        )
+        if not overlaps_existing:
+            groups.append({"concept": alias_key, "terms": terms})
+
+    return groups[:16]
+
+
+def _grouped_core_similarity_with_hits(
+    groups: list[dict[str, Any]],
+    doc_tokens: list[str],
+) -> tuple[float, list[dict[str, Any]], list[str]]:
+    if not groups or not doc_tokens:
+        return 0.0, [], [_clean_text(group.get("concept")) for group in groups if _clean_text(group.get("concept"))]
+
+    total = 0.0
+    hits: list[dict[str, Any]] = []
+    missing: list[str] = []
+    for group in groups:
+        concept = _clean_text(group.get("concept"))
+        terms = _dedupe_terms([str(term) for term in group.get("terms", [])])
+        best_score = 0.0
+        best_term = ""
+        best_hits: list[dict[str, str]] = []
+        for term in terms:
+            score, term_hits = _bm25_similarity_with_hits(_bm25_tokens_from_values([term]), doc_tokens)
+            if score > best_score:
+                best_score = score
+                best_term = term
+                best_hits = term_hits
+        total += best_score
+        if best_score > 0:
+            hits.append(
+                {
+                    "concept": concept,
+                    "matched_term": best_term,
+                    "group_score": round(best_score, 4),
+                    "aliases": [term for term in terms if term != concept],
+                    "token_hits": best_hits,
+                }
+            )
+        else:
+            missing.append(concept)
+    return max(0.0, min(1.0, total / len(groups))), hits, missing
+
+
 def _dedupe_terms(values: list[str]) -> list[str]:
     seen: set[str] = set()
     terms: list[str] = []
@@ -1359,36 +1442,203 @@ def _client_model_name(client: Any) -> str:
     return _clean_text(getattr(client, "_model", "")) or _clean_text(getattr(client, "model", ""))
 
 
+_PROMPT_ROUTE_LIST_FIELDS = (
+    "profile_ids",
+    "profile_prompt_terms",
+    "role_prompt_terms",
+    "page_type_prompt_terms",
+    "aspect_ratio_prompt_terms",
+    "quality_terms",
+    "negative_terms",
+)
+
+
+def _clean_prompt_route(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+
+    route: dict[str, Any] = {}
+    template_family = _clean_text(value.get("template_family"))
+    if template_family:
+        route["template_family"] = template_family
+
+    profiles: list[dict[str, Any]] = []
+    raw_profiles = value.get("profiles")
+    if isinstance(raw_profiles, list):
+        for profile in raw_profiles:
+            if not isinstance(profile, dict):
+                continue
+            item: dict[str, Any] = {}
+            profile_id = _clean_text(profile.get("id"))
+            if profile_id:
+                item["id"] = profile_id
+            try:
+                item["priority"] = int(profile.get("priority", 0))
+            except (TypeError, ValueError):
+                pass
+            prompt_terms = _as_string_list(profile.get("prompt_terms"))
+            negative_terms = _as_string_list(profile.get("negative_terms"))
+            if prompt_terms:
+                item["prompt_terms"] = prompt_terms
+            if negative_terms:
+                item["negative_terms"] = negative_terms
+            if item:
+                profiles.append(item)
+    if profiles:
+        route["profiles"] = profiles
+
+    for key in _PROMPT_ROUTE_LIST_FIELDS:
+        terms = _as_string_list(value.get(key))
+        if terms:
+            route[key] = _dedupe_terms(terms)
+
+    style_prompt = _clean_text(value.get("style_prompt"))
+    if style_prompt:
+        route["style_prompt"] = style_prompt
+
+    return route
+
+
+def _clean_background_route(value: Any) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        return {}
+    route: dict[str, Any] = {}
+    for key in _BACKGROUND_ROUTE_FIELDS:
+        text = _clean_text(value.get(key))
+        if text:
+            route[key] = text
+    color_terms = _as_string_list(value.get("color_terms"))
+    if color_terms:
+        route["color_terms"] = _dedupe_terms(color_terms)
+    return route
+
+
+def _route_style_prompt(route: dict[str, Any]) -> str:
+    explicit = _clean_text(route.get("style_prompt"))
+    if explicit:
+        return explicit
+
+    terms: list[str] = []
+    for key in (
+        "profile_prompt_terms",
+        "role_prompt_terms",
+        "page_type_prompt_terms",
+        "aspect_ratio_prompt_terms",
+        "quality_terms",
+        "negative_terms",
+    ):
+        terms.extend(_as_string_list(route.get(key)))
+    return " ".join(_dedupe_terms(terms))
+
+
+def _route_match_text(asset: dict[str, Any]) -> str:
+    route = _match_prompt_route(asset.get("prompt_route"))
+    terms: list[str] = [
+        _clean_text(route.get("template_family")),
+        *_as_string_list(route.get("profile_ids")),
+        *_background_route_match_terms(asset),
+    ]
+    return _join_texts(_dedupe_terms(terms))
+
+
+def _match_prompt_route(value: Any) -> dict[str, Any]:
+    route = _clean_prompt_route(value)
+    match_route: dict[str, Any] = {}
+    template_family = _clean_text(route.get("template_family"))
+    if template_family:
+        match_route["template_family"] = template_family
+    profile_ids = _as_string_list(route.get("profile_ids"))
+    if profile_ids:
+        match_route["profile_ids"] = _dedupe_terms(profile_ids)
+    return match_route
+
+
+def _background_route_match_terms(asset: dict[str, Any]) -> list[str]:
+    route = _match_background_route(asset.get("background_route"))
+    return [_clean_text(route.get(key)) for key in _BACKGROUND_ROUTE_MATCH_FIELDS]
+
+
+def _match_background_route(value: Any) -> dict[str, Any]:
+    route = _clean_background_route(value)
+    match_route: dict[str, Any] = {}
+    for key in _BACKGROUND_ROUTE_MATCH_FIELDS:
+        text = _clean_text(route.get(key))
+        if text:
+            match_route[key] = text
+    return match_route
+
+
+def _background_route_terms(asset: dict[str, Any]) -> list[str]:
+    route = _clean_background_route(asset.get("background_route"))
+    terms: list[str] = []
+    for key in _BACKGROUND_ROUTE_FIELDS:
+        terms.append(_clean_text(route.get(key)))
+    terms.extend(_as_string_list(route.get("color_terms")))
+    return terms
+
+
+def _asset_content_prompt(asset: dict[str, Any]) -> str:
+    return _clean_text(asset.get("content_prompt")) or _clean_text(asset.get("prompt"))
+
+
+def _asset_generation_prompt(asset: dict[str, Any]) -> str:
+    return _clean_text(asset.get("generation_prompt")) or _asset_content_prompt(asset)
+
+
+def _asset_style_prompt(asset: dict[str, Any]) -> str:
+    return _clean_text(asset.get("style_prompt")) or _route_style_prompt(_clean_prompt_route(asset.get("prompt_route")))
+
+
 def _build_reuse_target_asset(
     *,
     asset_kind: str,
     prompt: str,
+    prompt_route: dict[str, Any] | None,
     theme: str,
     grade: str,
     subject: str,
     page_title: str,
+    page_type: str,
     role: str,
     aspect_ratio: str,
+    background_route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    asset_key = "|".join([asset_kind, prompt, theme, grade, subject, page_title, role, aspect_ratio])
+    route = _clean_prompt_route(prompt_route)
+    bg_route = _clean_background_route(background_route)
+    content_prompt = _clean_text(prompt)
+    asset_key = "|".join([asset_kind, content_prompt, grade, subject, aspect_ratio])
+    source = {
+        "session_id": "",
+        "plan_path": "",
+        "prompt_path": "",
+        "page_number": None,
+        "image_index": None,
+    }
+    if page_title:
+        source["page_title"] = page_title
+    if page_type:
+        source["page_type"] = page_type
     return {
         "asset_id": "target_" + hashlib.sha256(asset_key.encode("utf-8")).hexdigest()[:16],
         "asset_kind": asset_kind,
         "image_path": "",
-        "role": role,
         "aspect_ratio": aspect_ratio,
-        "prompt": _clean_text(prompt),
-        "theme": _clean_text(theme),
+        "content_prompt": content_prompt,
+        "style_prompt": _route_style_prompt(route),
+        "prompt_route": route,
+        "background_route": bg_route,
+        "normalized_prompt": content_prompt[:80],
+        "context_summary": _default_context_summary(
+            asset_kind=asset_kind,
+            content_prompt=content_prompt,
+            theme=theme,
+            page_title=page_title,
+            page_type=page_type,
+        ),
+        "teaching_intent": _default_teaching_intent(asset_kind=asset_kind),
         "grade": _clean_text(grade),
         "subject": _clean_text(subject),
-        "source": {
-            "session_id": "",
-            "plan_path": "",
-            "prompt_path": "",
-            "page_number": None,
-            "page_title": _clean_text(page_title),
-            "image_index": None,
-        },
+        "source": source,
     }
 
 
@@ -1430,193 +1680,101 @@ def _score_reuse_candidate_details(target: dict[str, Any], candidate: dict[str, 
     if _clean_text(target.get("asset_kind")) != _clean_text(candidate.get("asset_kind")):
         return {"score": 0.0, "reject_reason": "asset_kind_mismatch"}
 
-    target_scope = _clean_reuse_scope(target.get("reuse_scope"))
-    candidate_scope = _clean_reuse_scope(candidate.get("reuse_scope"))
-    target_subject = _clean_text(target.get("subject"))
-    candidate_subject = _clean_text(candidate.get("subject"))
-
-    if candidate_scope == "subject_generic" and target_subject and candidate_subject and target_subject != candidate_subject:
-        return {"score": 0.0, "reject_reason": "subject_generic_subject_mismatch"}
-
     target_core = _keyword_list(target.get("core_keywords"), max_items=16)
-    candidate_core = _keyword_list(candidate.get("core_keywords"), max_items=16)
-    target_style = _keyword_list(target.get("style_keywords"), max_items=12)
-    candidate_style = _keyword_list(candidate.get("style_keywords"), max_items=12)
+    target_alias_terms = _semantic_alias_terms(target)
+    target_alias_groups = _semantic_alias_groups(target, target_core)
     semantic_details = _semantic_structure_score_details(target, candidate)
-
-    core_score, core_hits = _bm25_similarity_with_hits(
-        _bm25_tokens_from_values(target_core),
-        _bm25_tokens_from_values(candidate_core),
-    )
-
-    scope_score = _reuse_scope_score(target_scope, candidate_scope)
-    role_aspect_score = (_role_score(target, candidate) + _aspect_ratio_score(target, candidate)) / 2
-    style_score, style_hits = _bm25_similarity_with_hits(
-        _bm25_tokens_from_values(target_style),
-        _bm25_tokens_from_values(candidate_style),
-    )
-    prompt_score, prompt_hits = _bm25_similarity_with_hits(
-        _bm25_tokens_from_values([target.get("prompt"), target.get("normalized_prompt")]),
-        _bm25_tokens_from_values([candidate.get("prompt"), candidate.get("normalized_prompt")]),
-    )
-    context_score, context_hits = _bm25_similarity_with_hits(
-        _bm25_tokens_from_values([_asset_context_text(target)]),
-        _bm25_tokens_from_values([_asset_context_text(candidate)]),
-    )
-
-    keyword_score = (
-        CORE_KEYWORD_WEIGHT * core_score
-        + SCOPE_KEYWORD_WEIGHT * scope_score
-        + ROLE_ASPECT_KEYWORD_WEIGHT * role_aspect_score
-        + STYLE_KEYWORD_WEIGHT * style_score
-    )
     semantic_score = float(semantic_details.get("semantic_structure_score") or 0.0)
-    if core_score <= 0 and semantic_score <= 0:
+
+    candidate_content_tokens = _bm25_tokens_from_values(
+        [_asset_content_prompt(candidate), candidate.get("normalized_prompt")]
+    )
+    core_score, core_hits, missing_core_groups = _grouped_core_similarity_with_hits(
+        target_alias_groups,
+        candidate_content_tokens,
+    )
+
+    role_aspect_score = _aspect_ratio_score(target, candidate)
+    content_score, content_hits = _bm25_similarity_with_hits(
+        _bm25_tokens_from_values([target_core, target_alias_terms]),
+        _bm25_tokens_from_values(
+            [
+                _asset_content_prompt(candidate),
+                candidate.get("normalized_prompt"),
+            ]
+        ),
+    )
+    route_score, route_hits = _bm25_similarity_with_hits(
+        _bm25_tokens_from_values([_route_match_text(target)]),
+        _bm25_tokens_from_values([_route_match_text(candidate)]),
+    )
+    style_score, style_hits = 0.0, []
+    context_score, context_hits = _bm25_similarity_with_hits(
+        _bm25_tokens_from_values([_target_context_summary_terms(target)]),
+        _bm25_tokens_from_values([_candidate_context_summary_terms(candidate)]),
+    )
+
+    content_match_score = max(content_score, core_score * 0.9, semantic_score * 0.75)
+    if content_match_score <= 0:
         return {
             "score": 0.0,
-            "reject_reason": "no_core_or_semantic_match",
+            "reject_reason": "no_content_match",
+            "content_score": content_score,
+            "content_hits": content_hits,
             "target_core_keywords": target_core,
-            "candidate_core_keywords": candidate_core,
+            "target_semantic_aliases": target_alias_terms,
+            "target_semantic_alias_groups": target_alias_groups,
+            "missing_core_groups": missing_core_groups,
+            "target_context_summary_keywords": _target_context_summary_terms(target),
             **semantic_details,
         }
 
-    if _clean_text(target.get("asset_kind")) == "background":
-        score = (
-            BACKGROUND_SEMANTIC_WEIGHT * semantic_score
-            + BACKGROUND_KEYWORD_WEIGHT * keyword_score
-            + BACKGROUND_PROMPT_WEIGHT * prompt_score
-            + BACKGROUND_CONTEXT_WEIGHT * context_score
-        )
-    else:
-        score = (
-            SEMANTIC_REUSE_WEIGHT * semantic_score
-            + KEYWORD_REUSE_WEIGHT * keyword_score
-            + PROMPT_REUSE_WEIGHT * prompt_score
-            + CONTEXT_REUSE_WEIGHT * context_score
-        )
+    score = (
+        CONTENT_PROMPT_REUSE_WEIGHT * content_match_score
+        + ROUTE_REUSE_WEIGHT * route_score
+        + ROLE_ASPECT_REUSE_WEIGHT * role_aspect_score
+        + LIGHT_CONTEXT_REUSE_WEIGHT * context_score
+    )
     return {
         "score": max(0.0, min(1.0, score)),
         "reject_reason": "",
-        "keyword_score": max(0.0, min(1.0, keyword_score)),
+        "content_match_score": max(0.0, min(1.0, content_match_score)),
+        "content_score": content_score,
+        "content_hits": content_hits,
+        "route_score": route_score,
+        "route_hits": route_hits,
         **semantic_details,
         "core_score": core_score,
         "core_hits": core_hits,
-        "scope_score": scope_score,
+        "missing_core_groups": missing_core_groups,
+        "scope_score": 0.0,
         "role_aspect_score": role_aspect_score,
         "style_score": style_score,
         "style_hits": style_hits,
-        "prompt_score": prompt_score,
-        "prompt_hits": prompt_hits,
         "context_score": context_score,
         "context_hits": context_hits,
         "target_core_keywords": target_core,
-        "candidate_core_keywords": candidate_core,
-        "target_style_keywords": target_style,
-        "candidate_style_keywords": candidate_style,
+        "target_semantic_aliases": target_alias_terms,
+        "target_semantic_alias_groups": target_alias_groups,
+        "target_context_summary_keywords": _target_context_summary_terms(target),
+        "candidate_core_keywords": [],
     }
 
 
 def _semantic_structure_score_details(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    if _clean_text(target.get("asset_kind")) == "background":
-        return _background_semantic_score_details(target, candidate)
     return _common_semantic_score_details(target, candidate)
 
 
 def _common_semantic_score_details(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    target_main = _semantic_terms(target, "main_entities", fallback_fields=("core_keywords",))
-    candidate_main = _semantic_terms(candidate, "main_entities", fallback_fields=("core_keywords",))
-    target_actions = _semantic_terms(target, "visual_actions")
-    candidate_actions = _semantic_terms(candidate, "visual_actions", fallback_fields=("core_keywords",))
-    target_scene = _semantic_terms(target, "scene_elements")
-    candidate_scene = _semantic_terms(candidate, "scene_elements", fallback_fields=("core_keywords",))
-    target_emotion = _semantic_terms(target, "emotion_tone")
-    candidate_emotion = _semantic_terms(candidate, "emotion_tone", fallback_fields=("style_keywords", "core_keywords"))
-
-    main_score, main_hits, missing_main = _semantic_coverage(target_main, candidate_main, neutral=0.5)
-    action_score, action_hits, missing_actions = _semantic_coverage(target_actions, candidate_actions, neutral=1.0)
-    scene_score, scene_hits, missing_scene = _semantic_coverage(target_scene, candidate_scene, neutral=1.0)
-    emotion_score, emotion_hits, missing_emotion = _semantic_coverage(target_emotion, candidate_emotion, neutral=1.0)
-    intent_score, intent_hits = _semantic_intent_score(target, candidate)
-
-    raw_score = (
-        0.40 * main_score
-        + 0.20 * action_score
-        + 0.15 * scene_score
-        + 0.10 * emotion_score
-        + 0.15 * intent_score
-    )
-    semantic_score = max(0.0, min(1.0, raw_score))
     return {
-        "semantic_structure_score": semantic_score,
-        "main_entity_score": main_score,
-        "action_score": action_score,
-        "scene_score": scene_score,
-        "emotion_score": emotion_score,
-        "intent_score": intent_score,
-        "matched_main_entities": main_hits,
-        "missing_main_entities": missing_main,
-        "matched_actions": action_hits,
-        "missing_actions": missing_actions,
-        "matched_scene_elements": scene_hits,
-        "missing_scene_elements": missing_scene,
-        "matched_emotion_tone": emotion_hits,
-        "missing_emotion_tone": missing_emotion,
-        "intent_hits": intent_hits,
+        "semantic_structure_score": 0.0,
+        "intent_score": 0.0,
+        "intent_hits": [],
     }
 
 
 def _background_semantic_score_details(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    target_motifs = _semantic_terms(target, "visual_motifs", fallback_fields=("core_keywords",))
-    candidate_motifs = _semantic_terms(candidate, "visual_motifs", fallback_fields=("core_keywords",))
-    target_color = _semantic_terms(target, "color_palette", fallback_fields=("style_keywords",))
-    candidate_color = _semantic_terms(candidate, "color_palette", fallback_fields=("style_keywords",))
-    target_texture = _semantic_terms(target, "texture_style", fallback_fields=("style_keywords", "core_keywords"))
-    candidate_texture = _semantic_terms(candidate, "texture_style", fallback_fields=("style_keywords", "core_keywords"))
-    target_layout = _semantic_terms(target, "layout_function")
-    candidate_layout = _semantic_terms(candidate, "layout_function")
-    target_mood = _semantic_terms(target, "mood", fallback_fields=("style_keywords",))
-    candidate_mood = _semantic_terms(candidate, "mood", fallback_fields=("style_keywords",))
-
-    motif_score, motif_hits, missing_motifs = _semantic_coverage(target_motifs, candidate_motifs, neutral=0.5)
-    color_score, color_hits, missing_colors = _semantic_coverage(target_color, candidate_color, neutral=1.0)
-    texture_score, texture_hits, missing_textures = _semantic_coverage(target_texture, candidate_texture, neutral=1.0)
-    layout_score, layout_hits, missing_layout = _semantic_coverage(target_layout, candidate_layout, neutral=1.0)
-    mood_score, mood_hits, missing_mood = _semantic_coverage(target_mood, candidate_mood, neutral=1.0)
-    intent_score, intent_hits = _semantic_intent_score(target, candidate)
-
-    raw_score = (
-        0.25 * motif_score
-        + 0.20 * color_score
-        + 0.20 * texture_score
-        + 0.20 * layout_score
-        + 0.10 * mood_score
-        + 0.05 * intent_score
-    )
-    semantic_score = max(0.0, min(1.0, raw_score))
-    return {
-        "semantic_structure_score": semantic_score,
-        "main_entity_score": motif_score,
-        "action_score": 1.0,
-        "scene_score": layout_score,
-        "emotion_score": mood_score,
-        "intent_score": intent_score,
-        "motif_score": motif_score,
-        "color_score": color_score,
-        "texture_score": texture_score,
-        "layout_function_score": layout_score,
-        "mood_score": mood_score,
-        "matched_main_entities": motif_hits,
-        "missing_main_entities": missing_motifs,
-        "matched_color_palette": color_hits,
-        "missing_color_palette": missing_colors,
-        "matched_texture_style": texture_hits,
-        "missing_texture_style": missing_textures,
-        "matched_layout_function": layout_hits,
-        "missing_layout_function": missing_layout,
-        "matched_emotion_tone": mood_hits,
-        "missing_emotion_tone": missing_mood,
-        "intent_hits": intent_hits,
-    }
+    return _common_semantic_score_details(target, candidate)
 
 
 def _semantic_terms(
@@ -1632,8 +1790,6 @@ def _semantic_terms(
             terms.extend(_keyword_list(asset.get(fallback), max_items=max_items))
             if terms:
                 break
-    if field in {"main_entities", "visual_motifs"}:
-        terms.extend(_semantic_alias_terms(asset))
     return _dedupe_terms(terms)[:max_items]
 
 
@@ -1672,60 +1828,41 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
         "score": round(score, 4),
         "reject_reason": _clean_text(details.get("reject_reason")),
         "keyword_score": round(float(details.get("keyword_score") or 0.0), 4),
+        "content_match_score": round(float(details.get("content_match_score") or 0.0), 4),
+        "content_score": round(float(details.get("content_score") or 0.0), 4),
+        "content_hits": details.get("content_hits") or [],
+        "route_score": round(float(details.get("route_score") or 0.0), 4),
+        "route_hits": details.get("route_hits") or [],
         "semantic_structure_score": round(float(details.get("semantic_structure_score") or 0.0), 4),
-        "main_entity_score": round(float(details.get("main_entity_score") or 0.0), 4),
-        "action_score": round(float(details.get("action_score") or 0.0), 4),
-        "scene_score": round(float(details.get("scene_score") or 0.0), 4),
-        "emotion_score": round(float(details.get("emotion_score") or 0.0), 4),
         "intent_score": round(float(details.get("intent_score") or 0.0), 4),
-        "motif_score": round(float(details.get("motif_score") or 0.0), 4),
-        "color_score": round(float(details.get("color_score") or 0.0), 4),
-        "texture_score": round(float(details.get("texture_score") or 0.0), 4),
-        "layout_function_score": round(float(details.get("layout_function_score") or 0.0), 4),
-        "mood_score": round(float(details.get("mood_score") or 0.0), 4),
-        "matched_main_entities": details.get("matched_main_entities") or [],
-        "missing_main_entities": details.get("missing_main_entities") or [],
-        "matched_actions": details.get("matched_actions") or [],
-        "missing_actions": details.get("missing_actions") or [],
-        "matched_scene_elements": details.get("matched_scene_elements") or [],
-        "missing_scene_elements": details.get("missing_scene_elements") or [],
-        "matched_emotion_tone": details.get("matched_emotion_tone") or [],
-        "missing_emotion_tone": details.get("missing_emotion_tone") or [],
-        "matched_color_palette": details.get("matched_color_palette") or [],
-        "missing_color_palette": details.get("missing_color_palette") or [],
-        "matched_texture_style": details.get("matched_texture_style") or [],
-        "missing_texture_style": details.get("missing_texture_style") or [],
-        "matched_layout_function": details.get("matched_layout_function") or [],
-        "missing_layout_function": details.get("missing_layout_function") or [],
         "intent_hits": details.get("intent_hits") or [],
         "core_score": round(float(details.get("core_score") or 0.0), 4),
         "core_hits": details.get("core_hits") or [],
+        "missing_core_groups": details.get("missing_core_groups") or [],
         "scope_score": round(float(details.get("scope_score") or 0.0), 4),
         "role_aspect_score": round(float(details.get("role_aspect_score") or 0.0), 4),
         "style_score": round(float(details.get("style_score") or 0.0), 4),
         "style_hits": details.get("style_hits") or [],
-        "prompt_score": round(float(details.get("prompt_score") or 0.0), 4),
-        "prompt_hits": details.get("prompt_hits") or [],
         "context_score": round(float(details.get("context_score") or 0.0), 4),
         "context_hits": details.get("context_hits") or [],
         "target_core_keywords": details.get("target_core_keywords") or [],
         "candidate_core_keywords": details.get("candidate_core_keywords") or [],
-        "target_style_keywords": details.get("target_style_keywords") or [],
-        "candidate_style_keywords": details.get("candidate_style_keywords") or [],
+        "target_semantic_aliases": details.get("target_semantic_aliases") or [],
+        "target_semantic_alias_groups": details.get("target_semantic_alias_groups") or [],
+        "target_context_summary_keywords": details.get("target_context_summary_keywords") or [],
     }
 
 
 def _asset_context_text(asset: dict[str, Any]) -> str:
-    source = _dict(asset.get("source"))
-    return _join_texts(
-        asset.get("context_summary"),
-        asset.get("context_keywords"),
-        asset.get("page_title"),
-        source.get("page_title"),
-        source.get("page_type"),
-        source.get("content_points"),
-        asset.get("theme"),
-    )
+    return _clean_text(asset.get("context_summary"))
+
+
+def _target_context_summary_terms(asset: dict[str, Any]) -> list[str]:
+    return _keyword_list(asset.get("context_summary_keywords"), max_items=10)
+
+
+def _candidate_context_summary_terms(asset: dict[str, Any]) -> list[str]:
+    return [_clean_text(asset.get("context_summary"))]
 
 
 def _bm25_tokens_from_values(values: list[Any]) -> list[str]:
@@ -1818,20 +1955,6 @@ def _terms_match(left: str, right: str) -> bool:
     return min(len(left), len(right)) >= 2 and (left in right or right in left)
 
 
-def _reuse_scope_score(target_scope: str, candidate_scope: str) -> float:
-    if target_scope == candidate_scope:
-        return 1.0
-    if target_scope == "course_specific" and candidate_scope == "visual_generic":
-        return 0.65
-    if target_scope == "course_specific" and candidate_scope == "subject_generic":
-        return 0.45
-    if target_scope == "subject_generic" and candidate_scope == "visual_generic":
-        return 0.25
-    if target_scope == "visual_generic" and candidate_scope == "subject_generic":
-        return 0.25
-    return 0.0
-
-
 def _reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: float | None) -> float:
     if explicit_threshold is not None:
         try:
@@ -1840,24 +1963,7 @@ def _reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: floa
             pass
     if _clean_text(target.get("asset_kind")) == "background":
         return BACKGROUND_REUSE_THRESHOLD
-    scope = _clean_reuse_scope(target.get("reuse_scope"))
-    if scope == "course_specific":
-        return COURSE_SPECIFIC_REUSE_THRESHOLD
-    if scope == "subject_generic":
-        return SUBJECT_GENERIC_REUSE_THRESHOLD
     return VISUAL_GENERIC_REUSE_THRESHOLD
-
-
-def _role_score(target: dict[str, Any], candidate: dict[str, Any]) -> float:
-    target_role = _asset_role(target)
-    candidate_role = _asset_role(candidate)
-    if not target_role or not candidate_role:
-        return 0.5
-    if target_role == candidate_role:
-        return 1.0
-    if {target_role, candidate_role} <= {"hero", "illustration"}:
-        return 0.6
-    return 0.0
 
 
 def _aspect_ratio_score(target: dict[str, Any], candidate: dict[str, Any]) -> float:
@@ -1884,20 +1990,6 @@ def _ratio_orientation(value: str) -> str:
     if width == height:
         return "square"
     return "landscape" if width > height else "portrait"
-
-
-def _asset_role(asset: dict[str, Any]) -> str:
-    role = _clean_text(asset.get("role"))
-    if role:
-        return role
-    image_path = _clean_text(asset.get("image_path"))
-    if "background" in image_path:
-        return "background"
-    if "_hero_" in image_path:
-        return "hero"
-    if "_illustration_" in image_path:
-        return "illustration"
-    return ""
 
 
 def _copy_db_assets_to_library(
@@ -2030,11 +2122,9 @@ def _dedupe_match_assets(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def _dedupe_bucket_key(asset: dict[str, Any]) -> tuple[str, ...]:
     return (
         _clean_text(asset.get("asset_kind")),
-        _asset_role(asset),
         _ratio_orientation(_clean_text(asset.get("aspect_ratio"))),
         _clean_text(asset.get("subject")),
         _clean_text(asset.get("grade_band")),
-        _clean_reuse_scope(asset.get("reuse_scope")),
     )
 
 
@@ -2047,71 +2137,28 @@ def _are_match_assets_duplicates(left: dict[str, Any], right: dict[str, Any]) ->
 
 
 def _match_asset_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
-    core = _jaccard_terms(left.get("core_keywords"), right.get("core_keywords"))
-    main = _jaccard_terms(left.get("main_entities"), right.get("main_entities"))
-    structure = _jaccard_terms(_match_structure_terms(left), _match_structure_terms(right))
-    context = _jaccard_terms(left.get("context_keywords"), right.get("context_keywords"))
     prompt, _hits = _bm25_similarity_with_hits(
-        _bm25_tokens_from_values([left.get("normalized_prompt"), left.get("prompt")]),
-        _bm25_tokens_from_values([right.get("normalized_prompt"), right.get("prompt")]),
+        _bm25_tokens_from_values([left.get("normalized_prompt"), _asset_content_prompt(left)]),
+        _bm25_tokens_from_values([right.get("normalized_prompt"), _asset_content_prompt(right)]),
     )
-    return (
-        0.35 * core
-        + 0.20 * main
-        + 0.20 * prompt
-        + 0.15 * structure
-        + 0.10 * context
+    route, _route_hits = _bm25_similarity_with_hits(
+        _bm25_tokens_from_values([_route_match_text(left)]),
+        _bm25_tokens_from_values([_route_match_text(right)]),
     )
-
-
-def _match_structure_terms(asset: dict[str, Any]) -> list[str]:
-    terms: list[str] = []
-    for field in (
-        "visual_actions",
-        "scene_elements",
-        "emotion_tone",
-        "visual_motifs",
-        "color_palette",
-        "texture_style",
-        "layout_function",
-        "mood",
-    ):
-        terms.extend(_keyword_list(asset.get(field), max_items=12))
-    return _dedupe_terms(terms)
-
-
-def _jaccard_terms(left: Any, right: Any) -> float:
-    left_terms = {_clean_keyword(item) for item in _keyword_list(left, max_items=24)}
-    right_terms = {_clean_keyword(item) for item in _keyword_list(right, max_items=24)}
-    left_terms.discard("")
-    right_terms.discard("")
-    if not left_terms and not right_terms:
-        return 1.0
-    if not left_terms or not right_terms:
-        return 0.0
-    return len(left_terms & right_terms) / len(left_terms | right_terms)
+    return 0.75 * prompt + 0.25 * route
 
 
 def _match_asset_quality_score(asset: dict[str, Any]) -> float:
     score = 0.0
     if asset.get("_image_sha256"):
         score += 2.0
-    for field, weight in (
-        ("core_keywords", 1.2),
-        ("main_entities", 1.0),
-        ("visual_actions", 0.6),
-        ("scene_elements", 0.5),
-        ("context_keywords", 0.5),
-        ("style_keywords", 0.3),
-        ("visual_motifs", 0.8),
-        ("color_palette", 0.4),
-        ("texture_style", 0.4),
-        ("layout_function", 0.4),
-    ):
-        score += min(len(_keyword_list(asset.get(field), max_items=12)), 4) * weight
+    if _clean_text(asset.get("content_prompt")):
+        score += 1.0
     if _clean_text(asset.get("normalized_prompt")):
         score += 0.8
     if _clean_text(asset.get("context_summary")):
+        score += 0.6
+    if _background_route_terms(asset):
         score += 0.6
     return score
 
@@ -2448,7 +2495,35 @@ def _build_background_asset(
         image_index=None,
         role="background",
         aspect_ratio="16:9",
+        background_route=_build_background_route(plan),
     )
+
+
+def _build_background_route(plan: dict[str, Any]) -> dict[str, Any]:
+    visual = _dict(plan.get("visual"))
+    routing = _dict(plan.get("style_routing"))
+    route = {
+        "template_family": routing.get("template_family"),
+        "style_name": routing.get("style_name"),
+        "palette_id": routing.get("palette_id"),
+        "primary_color": visual.get("primary_color"),
+        "secondary_color": visual.get("secondary_color"),
+        "accent_color": visual.get("accent_color"),
+        "card_bg_color": visual.get("card_bg_color"),
+        "secondary_bg_color": visual.get("secondary_bg_color"),
+        "background_color_bias": visual.get("background_color_bias"),
+    }
+    color_terms = [
+        visual.get("primary_color"),
+        visual.get("secondary_color"),
+        visual.get("accent_color"),
+        visual.get("background_color_bias"),
+    ]
+    cleaned = _clean_background_route(route)
+    terms = _dedupe_terms([_clean_text(item) for item in color_terms if _clean_text(item)])
+    if terms:
+        cleaned["color_terms"] = terms
+    return cleaned
 
 
 def _iter_page_image_assets(
@@ -2483,6 +2558,8 @@ def _iter_page_image_assets(
         prompt = _clean_text(image_need.get("query"))
         if not prompt:
             continue
+        prompt_route = _clean_prompt_route(image_need.get("prompt_route"))
+        generation_prompt = _clean_text(image_need.get("generation_prompt")) or prompt
 
         image_path = _find_page_image_path(materials_dir, page_number, role, role_counts[role])
         if image_path is None:
@@ -2496,6 +2573,8 @@ def _iter_page_image_assets(
             plan_path=plan_path,
             image_path=image_path,
             prompt=prompt,
+            generation_prompt=generation_prompt,
+            prompt_route=prompt_route,
             context=context,
             asset_kind="page_image",
             prompt_path=f"pages[{page_index}].material_needs.images[{image_index}].query",
@@ -2538,15 +2617,21 @@ def _make_asset(
     page_type: str = "",
     layout_hint: str = "",
     content_points: Any = None,
+    generation_prompt: str = "",
+    prompt_route: dict[str, Any] | None = None,
+    background_route: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     rel_image_path = _relative_path(image_path, root)
     rel_plan_path = _relative_path(plan_path, root)
+    route = _clean_prompt_route(prompt_route)
+    bg_route = _clean_background_route(background_route)
+    content_prompt = _clean_text(prompt)
+    generation_prompt = _clean_text(generation_prompt) or content_prompt
     source = {
         "session_id": session_dir.name,
         "plan_path": rel_plan_path,
         "prompt_path": prompt_path,
         "page_number": page_number,
-        "page_title": page_title,
         "image_index": image_index,
     }
     if page_type:
@@ -2560,24 +2645,41 @@ def _make_asset(
             session_dir.name,
             asset_kind,
             rel_image_path,
-            prompt,
+            content_prompt,
+            generation_prompt,
             context.get("theme", ""),
             context.get("grade", ""),
             context.get("subject", ""),
         ]
     )
-    return {
+    asset = {
         "asset_id": "aiimg_" + hashlib.sha256(asset_key.encode("utf-8")).hexdigest()[:20],
         "asset_kind": asset_kind,
         "image_path": rel_image_path,
-        "role": role,
         "aspect_ratio": aspect_ratio,
-        "prompt": prompt,
+        "content_prompt": content_prompt,
+        "generation_prompt": generation_prompt,
+        "style_prompt": _route_style_prompt(route),
+        "prompt_route": route,
+        "normalized_prompt": content_prompt[:80],
+        "context_summary": _default_context_summary(
+            asset_kind=asset_kind,
+            content_prompt=content_prompt,
+            theme=context.get("theme", ""),
+            page_title=page_title,
+            page_type=page_type,
+        ),
+        "teaching_intent": _default_teaching_intent(asset_kind=asset_kind, page_type=page_type),
+        "core_keywords": [],
+        "semantic_aliases": {},
         "theme": context.get("theme", ""),
         "grade": context.get("grade", ""),
         "subject": context.get("subject", ""),
         "source": source,
     }
+    if bg_route:
+        asset["background_route"] = bg_route
+    return asset
 
 
 def _relative_path(path: Path, root: Path) -> str:

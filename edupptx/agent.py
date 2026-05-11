@@ -168,6 +168,7 @@ class PPTXAgent:
 
         session.log_step("template_alignment", "Aligning plan to selected template contracts")
         draft = self._phase1f_template_alignment(draft, manifest)
+        draft = self._route_ai_image_prompts(draft)
         session.save_plan(draft.model_dump())
         self._save_design_spec(draft, session)
         logger.info("Visual plan: primary={}, bg_prompt={}...",
@@ -249,9 +250,11 @@ class PPTXAgent:
             data = json.load(f)
         draft = PlanningDraft.model_validate(data)
         draft = self._ensure_template_state(draft)
+        draft = self._route_ai_image_prompts(draft)
 
         session = Session.from_existing(plan_path.parent)
         session_dir = session.dir
+        session.save_plan(draft.model_dump())
 
         # v3.2: pick up an existing DESIGN.md so user edits flow into Phase 3.
         # Lint-fail downgrades to legacy path rather than aborting the render.
@@ -312,6 +315,7 @@ class PPTXAgent:
             data = json.load(f)
         draft = PlanningDraft.model_validate(data)
         draft = self._ensure_template_state(draft)
+        draft = self._route_ai_image_prompts(draft)
 
         session = Session.from_existing(plan_path.parent)
         session.save_plan(draft.model_dump())
@@ -436,6 +440,16 @@ class PPTXAgent:
 
         return align_draft_to_template(draft, manifest)
 
+    def _route_ai_image_prompts(self, draft: PlanningDraft) -> PlanningDraft:
+        """Attach routed generation prompts while preserving semantic image queries."""
+
+        from edupptx.materials.image_prompt_router import build_routed_image_needs
+
+        for page in draft.pages:
+            if page.material_needs.images:
+                page.material_needs.images = build_routed_image_needs(draft, page)
+        return draft
+
     def _ensure_template_state(self, draft: PlanningDraft) -> PlanningDraft:
         from edupptx.design.template_router import (
             assign_page_template_variants,
@@ -521,20 +535,16 @@ class PPTXAgent:
         match = self._find_reusable_ai_image(
             asset_kind="background",
             prompt=prompt,
-            theme=reuse_context["theme"],
+            background_route=self._background_reuse_route(draft),
             grade=reuse_context["grade"],
             subject=reuse_context["subject"],
-            page_title="",
-            role="background",
             aspect_ratio="16:9",
             keyword_client=keyword_client,
             debug_path=session.dir / "materials" / "ai_image_reuse_debug.json",
             debug_context={
                 "asset_kind": "background",
                 "page_number": None,
-                "page_title": "",
                 "slot_key": "background",
-                "role": "background",
             },
         )
         if match:
@@ -573,20 +583,18 @@ class PPTXAgent:
                         match = self._find_reusable_ai_image(
                             asset_kind="page_image",
                             prompt=need.query,
-                            theme=reuse_context["theme"],
+                            prompt_route=need.prompt_route,
                             grade=reuse_context["grade"],
                             subject=reuse_context["subject"],
                             page_title=page.title,
-                            role=need.role,
+                            page_type=page.page_type,
                             aspect_ratio=need.aspect_ratio,
                             keyword_client=keyword_client,
                             debug_path=session.dir / "materials" / "ai_image_reuse_debug.json",
                             debug_context={
                                 "asset_kind": "page_image",
                                 "page_number": page.page_number,
-                                "page_title": page.title,
                                 "slot_key": slot_key,
-                                "role": need.role,
                                 "aspect_ratio": need.aspect_ratio,
                             },
                         )
@@ -632,13 +640,14 @@ class PPTXAgent:
         *,
         asset_kind: str,
         prompt: str,
-        theme: str,
         grade: str,
         subject: str,
-        page_title: str,
-        role: str,
         aspect_ratio: str,
         keyword_client,
+        page_title: str = "",
+        page_type: str = "",
+        prompt_route: dict[str, Any] | None = None,
+        background_route: dict[str, Any] | None = None,
         debug_path: Path | None = None,
         debug_context: dict[str, Any] | None = None,
     ):
@@ -649,11 +658,12 @@ class PPTXAgent:
                 library_dir=self.config.library_dir,
                 asset_kind=asset_kind,
                 prompt=prompt,
-                theme=theme,
+                prompt_route=prompt_route,
+                background_route=background_route,
                 grade=grade,
                 subject=subject,
                 page_title=page_title,
-                role=role,
+                page_type=page_type,
                 aspect_ratio=aspect_ratio,
                 keyword_client=keyword_client,
                 debug_path=debug_path,
@@ -684,6 +694,23 @@ class PPTXAgent:
             "grade": grade,
             "subject": subject,
         }
+
+    @staticmethod
+    def _background_reuse_route(draft: PlanningDraft) -> dict[str, str]:
+        visual = draft.visual
+        routing = draft.style_routing
+        values = {
+            "template_family": getattr(routing, "template_family", ""),
+            "style_name": getattr(routing, "style_name", ""),
+            "palette_id": getattr(routing, "palette_id", ""),
+            "primary_color": getattr(visual, "primary_color", ""),
+            "secondary_color": getattr(visual, "secondary_color", ""),
+            "accent_color": getattr(visual, "accent_color", ""),
+            "card_bg_color": getattr(visual, "card_bg_color", ""),
+            "secondary_bg_color": getattr(visual, "secondary_bg_color", ""),
+            "background_color_bias": getattr(visual, "background_color_bias", ""),
+        }
+        return {key: str(value).strip() for key, value in values.items() if str(value or "").strip()}
 
     @staticmethod
     def _copy_reusable_ai_image(match, dest: Path, session: Session) -> None:

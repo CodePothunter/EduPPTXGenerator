@@ -67,12 +67,13 @@ async def fetch_images(needs: list[ImageNeed], config: Config) -> list[ImageResu
 
     async def _fetch_one(need: ImageNeed) -> ImageResult | None:
         if need.source == "ai_generate":
+            prompt = (need.generation_prompt or need.query).strip()
             if gen_provider is None:
-                logger.warning("No AI image provider configured, skipping: {}", need.query)
+                logger.warning("No AI image provider configured, skipping: {}", prompt)
                 return None
             size = IMAGE_RATIO_SIZES.get(need.aspect_ratio, "2848x1600")
             logger.info("Generating image [{}] ratio={} size={}", need.role, need.aspect_ratio, size)
-            imgs = await gen_provider.generate(need.query, size=size)
+            imgs = await gen_provider.generate(prompt, size=size)
             return imgs[0] if imgs else None
 
         # search — try original query first, then simplified English keywords

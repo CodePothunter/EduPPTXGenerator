@@ -53,6 +53,16 @@ def _emit_error(message: str, *, as_json: bool, **extra) -> None:
     raise click.ClickException(message)
 
 
+def _optional_keyword_client(config: Config, *, enabled: bool):
+    if not enabled:
+        return None, "disabled"
+    if not config.llm_api_key or not config.llm_model:
+        return None, "missing_config"
+    from edupptx.llm_client import create_llm_client
+
+    return create_llm_client(config, web_search=False), "enabled"
+
+
 @click.group()
 @click.version_option(_VERSION, prog_name="edupptx")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
@@ -359,7 +369,7 @@ def plan(topic: str, requirements: str, file_path: str | None, research: bool,
 @main.command("asset-db")
 @click.option("--output-root", default="./output", type=click.Path(file_okay=False), help="Output root containing session_* dirs")
 @click.option("--db-path", default=None, type=click.Path(dir_okay=False), help="Where to write the asset DB JSON")
-@click.option("--keywords", is_flag=True, help="Use the configured LLM to build offline matching keywords")
+@click.option("--keywords/--no-keywords", default=True, show_default=True, help="Use the configured LLM to build offline matching keywords")
 @click.option("--keyword-batch-size", default=12, show_default=True, type=click.IntRange(1, 50), help="Assets per LLM keyword batch")
 @click.option("--env-file", default=".env", help=".env file path used by --keywords")
 @click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
@@ -375,18 +385,8 @@ def asset_db(
     try:
         from edupptx.materials.ai_image_asset_db import DEFAULT_MATCH_INDEX_FILENAME, write_ai_image_asset_db
 
-        keyword_client = None
-        if keywords:
-            config = Config.from_env(env_file)
-            if not config.llm_api_key or not config.llm_model:
-                _emit_error(
-                    "--keywords 需要在 .env 中配置 GEN_APIKEY 和 GEN_MODEL",
-                    as_json=as_json,
-                    kind="MissingLLMConfig",
-                )
-            from edupptx.llm_client import create_llm_client
-
-            keyword_client = create_llm_client(config, web_search=False)
+        config = Config.from_env(env_file)
+        keyword_client, keyword_status = _optional_keyword_client(config, enabled=keywords)
 
         db, target = write_ai_image_asset_db(
             output_root,
@@ -401,15 +401,18 @@ def asset_db(
             "output_root": db["output_root"],
             "asset_count": db["asset_count"],
             "warning_count": len(db.get("warnings", [])),
-            "keywords": keywords,
+            "keywords": keyword_status == "enabled",
+            "keyword_status": keyword_status,
         }
         human = [
             f"Asset DB: {target}",
             f"Match index: {target.with_name(DEFAULT_MATCH_INDEX_FILENAME)}",
             f"Assets: {db['asset_count']}",
         ]
-        if keywords:
+        if keyword_status == "enabled":
             human.append("Keywords: LLM enriched")
+        elif keyword_status == "missing_config":
+            human.append("Keywords: skipped (GEN_APIKEY/GEN_MODEL not configured)")
         if db.get("warnings"):
             human.append(f"Warnings: {len(db['warnings'])}")
         _emit_result(payload, as_json=as_json, human_lines=human)
@@ -421,7 +424,7 @@ def asset_db(
 @main.command("asset-ingest")
 @click.option("--output-root", default="./output", type=click.Path(file_okay=False), help="Output root containing session_* dirs")
 @click.option("--library-dir", default=None, type=click.Path(file_okay=False), help="Reusable material library directory")
-@click.option("--keywords", is_flag=True, help="Use the configured LLM to build matching keywords while ingesting")
+@click.option("--keywords/--no-keywords", default=True, show_default=True, help="Use the configured LLM to build matching keywords while ingesting")
 @click.option("--keyword-batch-size", default=3, show_default=True, type=click.IntRange(1, 50), help="Assets per LLM keyword batch")
 @click.option("--env-file", default=".env", help=".env file path used by --keywords and LIBRARY_DIR")
 @click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
@@ -443,17 +446,7 @@ def asset_ingest(
         config = Config.from_env(env_file)
         target_library = Path(library_dir) if library_dir else config.library_dir
 
-        keyword_client = None
-        if keywords:
-            if not config.llm_api_key or not config.llm_model:
-                _emit_error(
-                    "--keywords 需要在 .env 中配置 GEN_APIKEY 和 GEN_MODEL",
-                    as_json=as_json,
-                    kind="MissingLLMConfig",
-                )
-            from edupptx.llm_client import create_llm_client
-
-            keyword_client = create_llm_client(config, web_search=False)
+        keyword_client, keyword_status = _optional_keyword_client(config, enabled=keywords)
 
         db, target, report = ingest_ai_image_asset_library_from_output(
             output_root,
@@ -472,7 +465,8 @@ def asset_ingest(
             "failed_session_count": len(report["failed_sessions"]),
             "asset_count": db.get("asset_count", 0),
             "warning_count": report["warning_count"],
-            "keywords": keywords,
+            "keywords": keyword_status == "enabled",
+            "keyword_status": keyword_status,
         }
         human = [
             f"Asset library: {report['library_dir']}",
@@ -481,8 +475,10 @@ def asset_ingest(
             f"Sessions: {len(report['processed_sessions'])}/{report['session_count']}",
             f"Assets: {db.get('asset_count', 0)}",
         ]
-        if keywords:
+        if keyword_status == "enabled":
             human.append("Keywords: LLM enriched")
+        elif keyword_status == "missing_config":
+            human.append("Keywords: skipped (GEN_APIKEY/GEN_MODEL not configured)")
         if report["failed_sessions"]:
             human.append(f"Failed sessions: {len(report['failed_sessions'])}")
         if report["warning_count"]:

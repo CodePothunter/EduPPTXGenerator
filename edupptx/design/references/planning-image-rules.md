@@ -30,8 +30,9 @@
 
 ## 4. query 的写法
 
-- 每条 query 聚焦单一主体，再补充风格、场景、视角或用途。
-- 如果需要风格统一，应把“风格统一 / 同色调 / 同一插画风格”分别写进每条 query，而不是把多个主体塞进一条 query。
+- 每条 query 只负责“画什么”：聚焦单一主体、必要场景、可见动作或教学内容。
+- 不要在 query 中写年级画风、编辑感、绘本感、统一风格、高清、无文字、无水印、构图约束等生成风格词；这些由图片 prompt 路由在生成阶段补全。
+- 如果多张图需要风格统一，也不要把“风格统一 / 同色调 / 同一插画风格”写进 query；系统会按模板家族、role、page_type 和 aspect_ratio 统一补充。
 - 左右分栏、双图对比、三图并列，优先使用 `4:3`、`3:4` 或 `1:1`，不要默认都写成 `16:9`。
 
 ## 5. timeline注意事项
@@ -50,7 +51,7 @@
   "material_needs": {
     "images": [
       {
-        "query": "卡通小蝌蚪和大青蛙对比插画 左边小蝌蚪右边青蛙 风格统一",
+        "query": "小蝌蚪和大青蛙左右对比场景",
         "source": "ai_generate",
         "role": "illustration",
         "aspect_ratio": "16:9"
@@ -68,13 +69,13 @@
   "material_needs": {
     "images": [
       {
-        "query": "卡通小蝌蚪 科普插画 风格统一",
+        "query": "小蝌蚪",
         "source": "ai_generate",
         "role": "illustration",
         "aspect_ratio": "4:3"
       },
       {
-        "query": "卡通青蛙 科普插画 风格统一",
+        "query": "青蛙",
         "source": "ai_generate",
         "role": "illustration",
         "aspect_ratio": "4:3"
