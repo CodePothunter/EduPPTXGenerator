@@ -205,12 +205,6 @@ _SUBJECT_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("生物", ("生物", "细胞", "生态", "光合作用", "遗传", "生命科学")),
     ("历史", ("历史", "朝代", "战争", "革命", "文明史")),
     ("地理", ("地理", "地图", "气候", "地形", "经纬", "区域")),
-    ("道德与法治", ("道德与法治", "政治", "法治", "思想品德")),
-    ("科学", ("科学", "自然科学", "科学课")),
-    ("信息技术", ("信息技术", "编程", "计算机", "人工智能", "算法")),
-    ("美术", ("美术", "绘画", "色彩", "艺术")),
-    ("音乐", ("音乐", "乐理", "节奏", "旋律")),
-    ("体育", ("体育", "运动", "体能")),
 )
 
 
@@ -831,7 +825,6 @@ def _build_keyword_messages(
                 "asset_id": asset.get("asset_id"),
                 "asset_kind": asset.get("asset_kind"),
                 "content_prompt": _asset_content_prompt(asset),
-                "current_context_summary": _clean_text(asset.get("context_summary")),
                 "prompt_route": _match_prompt_route(asset.get("prompt_route")),
                 "background_route": _match_background_route(asset.get("background_route")),
                 "grade": asset.get("grade"),
@@ -848,29 +841,40 @@ def _build_keyword_messages(
         "core_keywords, semantic_aliases, context_summary_keywords"
     )
     purpose = (
-        "Extract the same reusable metadata schema for both stored assets and target reuse queries. "
-        "core_keywords and semantic_aliases expand the content query against stored content prompts. "
-        "context_summary_keywords are keywords from context_summary only."
+        "你需要为已入库素材和待匹配目标提取同一套可复用元数据。"
+        "core_keywords 和 semantic_aliases 用于扩展内容查询，并与候选素材的内容描述匹配。"
+        "context_summary_keywords 只能从 context_summary 的用途语义中提取。"
     )
 
     system = (
-        "You are normalizing AI image reuse metadata for an education PPT generator. "
+        "你正在为教育 PPT 生成器规范化 AI 图片复用元数据。"
         + purpose
-        + " Return strict JSON only, with an assets array. "
-        + f"Each item must contain: {required_fields}. "
-        "normalized_prompt is a concise visual content description without style or quality words. "
-        "context_summary describes the image's slide function or teaching use in one short sentence; "
-        "do not merely repeat content_prompt or visible object names. "
-        "teaching_intent describes why the image is used in the slide. "
-        "core_keywords must contain only visible, discriminative content terms. "
-        "semantic_aliases maps a core keyword to equivalent short phrases. "
-        "Use page_title, page_type, layout_hint, and content_points only to infer context_summary, "
-        "teaching_intent, and context_summary_keywords; never treat them as visible core_keywords. "
-        "Do not output role, theme, page_title, reuse_scope, specificity_score, "
-        "context_keywords, style_keywords, main_entities, visual_actions, scene_elements, "
-        "emotion_tone, visual_motifs, color_palette, texture_style, layout_function, or mood."
+        + "只返回严格 JSON，顶层包含 assets 数组。"
+        + f"每个条目必须包含这些字段：{required_fields}。"
+        "normalized_prompt、context_summary、teaching_intent、core_keywords、"
+        "semantic_aliases、context_summary_keywords 的值必须默认使用简体中文。"
+        "不要把中文内容翻译成英文。"
+        "只有专有名词、英文缩写、品牌名或必须保留英文的术语才允许使用英文。"
+        "normalized_prompt 是简洁的视觉内容描述，不要包含风格词或质量词。"
+        "context_summary 用一句短句描述图片在幻灯片中的作用或教学用途；"
+        "不要只是重复 content_prompt 或可见物体名称。"
+        "输入中不会提供已有的 context_summary 或 page_type 兜底模板；"
+        "LLM 生效时必须根据 content_prompt、page_title、page_type、layout_hint、content_points 生成具体用途总结，"
+        "不要套用通用页面类型模板。"
+        "teaching_intent 描述为什么这张图要用于当前页面。"
+        "core_keywords 只能包含可见且有区分度的内容词，并且必须是原子级关键词。"
+        "提取 core_keywords 时，先在语义上拆解 content_prompt，把主实体、关键物体、动作、状态分别作为独立词。"
+        "实体、物体、动作、状态要分开写；不要输出形容词加名词、风格词加主体、整句式短语。"
+        "不要输出包含“的”的组合短语；不要输出风格、画法、用途、页面功能、课堂属性或质量描述。"
+        "例如：卡通小蝌蚪 -> 小蝌蚪；举着小旗子 -> 举着、小旗子；发脾气的儿子 -> 发脾气、儿子。"
+        "semantic_aliases 的 key 必须来自 core_keywords，并映射到等价短语。"
+        "page_title、page_type、layout_hint、content_points 只能用于推断 context_summary、"
+        "teaching_intent 和 context_summary_keywords；不要把它们当作可见 core_keywords。"
+        "不要输出 role、theme、page_title、reuse_scope、specificity_score、"
+        "context_keywords、style_keywords、main_entities、visual_actions、scene_elements、"
+        "emotion_tone、visual_motifs、color_palette、texture_style、layout_function 或 mood。"
     )
-    user = "Normalize these assets:\n" + json.dumps({"assets": items}, ensure_ascii=False, indent=2)
+    user = "请规范化以下素材：\n" + json.dumps({"assets": items}, ensure_ascii=False, indent=2)
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},

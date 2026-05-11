@@ -422,6 +422,15 @@ def test_keyword_enrichment_uses_same_schema_and_unions_terms():
 
         def chat_json(self, messages, **kwargs):
             assert "context_summary_keywords" in messages[0]["content"]
+            assert "必须默认使用简体中文" in messages[0]["content"]
+            assert "不要把中文内容翻译成英文" in messages[0]["content"]
+            assert "原子级关键词" in messages[0]["content"]
+            assert "发脾气的儿子" in messages[0]["content"]
+            assert "不要套用通用页面类型模板" in messages[0]["content"]
+            assert "You are normalizing" not in messages[0]["content"]
+            assert messages[1]["content"].startswith("请规范化以下素材")
+            assert "current_context_summary" not in messages[1]["content"]
+            assert "fallback summary should not be sent to llm" not in messages[1]["content"]
             assert "generation_prompt" not in messages[1]["content"]
             return {
                 "assets": [
@@ -445,6 +454,7 @@ def test_keyword_enrichment_uses_same_schema_and_unions_terms():
                 "asset_kind": "page_image",
                 "image_path": "session/materials/page_01_illustration_1.png",
                 "content_prompt": "author portrait",
+                "context_summary": "fallback summary should not be sent to llm",
                 "core_keywords": ["author"],
                 "semantic_aliases": {"author": ["writer"]},
                 "context_summary_keywords": ["lesson"],
