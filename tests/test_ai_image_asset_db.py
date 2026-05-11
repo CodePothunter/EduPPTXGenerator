@@ -4,6 +4,7 @@ from edupptx.materials.ai_image_asset_db import (
     build_ai_image_asset_db,
     enrich_ai_image_asset_db_keywords,
     find_reusable_ai_image_asset,
+    ingest_ai_image_asset_library_from_output,
     infer_grade,
     infer_grade_band,
     infer_subject,
@@ -161,7 +162,7 @@ def test_enriches_asset_db_keywords_with_llm_payload():
 
     author = db["assets"][0]
     pinyin = db["assets"][1]
-    assert db["schema_version"] == 3
+    assert db["schema_version"] == 5
     assert db["keyword_builder"]["method"] == "llm_reuse_scope_keyword_extraction"
     assert db["keyword_builder"]["model"] == "fake-keyword-model"
     assert author["reuse_scope"] == "course_specific"
@@ -260,7 +261,7 @@ def test_updates_reusable_asset_library_by_copying_images_and_merging_db(tmp_pat
     assert db_path.exists()
     assert db["output_root"] == str(library_dir.resolve())
     assert db["asset_count"] == 2
-    assert db["schema_version"] == 3
+    assert db["schema_version"] == 5
     for asset in db["assets"]:
         copied_path = library_dir / asset["image_path"]
         assert copied_path.exists()
@@ -273,7 +274,59 @@ def test_updates_reusable_asset_library_by_copying_images_and_merging_db(tmp_pat
     assert {asset["asset_id"] for asset in persisted["assets"]} == {asset["asset_id"] for asset in db["assets"]}
 
 
-def test_finds_reusable_asset_with_weighted_bm25_score(tmp_path):
+def test_ingests_output_sessions_into_reusable_asset_library(tmp_path):
+    output_root = tmp_path / "output"
+    library_dir = tmp_path / "materials_library"
+
+    for index in (1, 2):
+        session_dir = output_root / f"session_20260507_14000{index}"
+        materials_dir = session_dir / "materials"
+        materials_dir.mkdir(parents=True)
+        (materials_dir / "page_01_illustration_1.png").write_bytes(f"image-{index}".encode("ascii"))
+        plan = {
+            "meta": {"topic": "topic", "audience": "grade"},
+            "pages": [
+                {
+                    "page_number": 1,
+                    "title": f"Page {index}",
+                    "material_needs": {
+                        "images": [
+                            {
+                                "query": f"image prompt {index}",
+                                "source": "ai_generate",
+                                "role": "illustration",
+                                "aspect_ratio": "1:1",
+                            }
+                        ]
+                    },
+                }
+            ],
+        }
+        (session_dir / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+
+    db, db_path, report = ingest_ai_image_asset_library_from_output(output_root, library_dir)
+
+    assert db_path == library_dir.resolve() / "ai_image_asset_db.json"
+    assert report["session_count"] == 2
+    assert len(report["processed_sessions"]) == 2
+    assert report["failed_sessions"] == []
+    assert db["asset_count"] == 2
+    index_path = library_dir / "ai_image_match_index.json"
+    assert index_path.exists()
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert index["source_asset_count"] == 2
+    assert index["asset_count"] == 2
+    for asset in db["assets"]:
+        copied_path = library_dir / asset["image_path"]
+        assert copied_path.exists()
+        assert asset["image_path"].startswith("ai_images/")
+
+    db_again, _db_path, report_again = ingest_ai_image_asset_library_from_output(output_root, library_dir)
+    assert report_again["session_count"] == 2
+    assert db_again["asset_count"] == 2
+
+
+def test_finds_reusable_asset_with_semantic_bm25_score(tmp_path):
     class FakeReuseClient:
         _model = "fake-reuse-model"
 
@@ -301,7 +354,7 @@ def test_finds_reusable_asset_with_weighted_bm25_score(tmp_path):
     image_dir.mkdir(parents=True)
     (image_dir / "asset_author.png").write_bytes(b"author")
     db = {
-        "schema_version": 3,
+        "schema_version": 4,
         "output_root": str(library_dir),
         "asset_count": 1,
         "assets": [
@@ -351,7 +404,7 @@ def test_finds_reusable_asset_with_weighted_bm25_score(tmp_path):
     debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
     assert debug["queries"][0]["context"]["page_number"] == 4
     assert debug["queries"][0]["decision"]["reused"] is True
-    assert debug["queries"][0]["decision"]["reason"] == "reused_by_weighted_bm25_score"
+    assert debug["queries"][0]["decision"]["reason"] == "reused_by_semantic_bm25_score"
     assert debug["queries"][0]["ranked_candidates"][0]["score_details"]["core_score"] == 1.0
 
 
@@ -393,3 +446,193 @@ def test_reuse_manifest_causes_library_ingest_to_skip_reused_images(tmp_path):
     db, _target = update_ai_image_asset_library(session_dir, library_dir)
 
     assert db["asset_count"] == 0
+
+
+def test_match_index_omits_deprecated_constraints_and_normalizes_grade(tmp_path):
+    from edupptx.materials.ai_image_asset_db import build_ai_image_match_index
+
+    db = {
+        "schema_version": 4,
+        "assets": [
+            {
+                "asset_id": "asset_author",
+                "asset_kind": "page_image",
+                "image_path": "ai_images/asset_author.png",
+                "role": "illustration",
+                "aspect_ratio": "4:3",
+                "prompt": "author portrait",
+                "grade": "7年级",
+                "subject": "语文",
+                "reuse_scope": "course_specific",
+                "specificity_score": 5,
+                "core_keywords": [
+                    "史铁生",
+                    "肖像",
+                    "高年级编辑感",
+                    "教学插画",
+                    "无文字水印",
+                ],
+                "style_keywords": [],
+                "must_match": [],
+                "must_not_conflict": [
+                    "无多余文字",
+                    "场景为秋日",
+                    "其他作家肖像",
+                    "非秋日场景",
+                    "写实风格",
+                ],
+            }
+        ],
+    }
+
+    index = build_ai_image_match_index(db, library_root=tmp_path)
+
+    asset = index["assets"][0]
+    assert asset["grade_norm"] == "七年级"
+    assert asset["grade_number"] == 7
+    assert asset["grade_band"] == "高年级"
+    assert asset["core_keywords"] == ["史铁生", "肖像"]
+    assert "must_match" not in asset
+    assert "must_not_conflict" not in asset
+    assert "avoid_keywords" not in asset
+
+
+def test_update_library_writes_slim_match_index(tmp_path):
+    library_dir = tmp_path / "materials_library"
+    session_dir = tmp_path / "output" / "session_20260507_150001"
+    materials_dir = session_dir / "materials"
+    materials_dir.mkdir(parents=True)
+    (materials_dir / "page_01_illustration_1.png").write_bytes(b"image")
+    plan = {
+        "meta": {"topic": "topic", "audience": "grade"},
+        "pages": [
+            {
+                "page_number": 1,
+                "title": "Page",
+                "material_needs": {
+                    "images": [
+                        {
+                            "query": "simple image prompt",
+                            "source": "ai_generate",
+                            "role": "illustration",
+                            "aspect_ratio": "1:1",
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    (session_dir / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+
+    db, _db_path = update_ai_image_asset_library(session_dir, library_dir)
+
+    index_path = library_dir / "ai_image_match_index.json"
+    assert db["asset_count"] == 1
+    assert index_path.exists()
+    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert index["source_asset_count"] == 1
+    assert index["asset_count"] == 1
+    assert "source" not in index["assets"][0]
+    assert "library" not in index["assets"][0]
+
+
+def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
+    class FakeReuseClient:
+        _model = "fake-reuse-model"
+
+        def chat_json(self, messages, **kwargs):
+            raw = messages[1]["content"]
+            request = json.loads(raw[raw.index("{"):])
+            asset_id = request["assets"][0]["asset_id"]
+            return {
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "normalized_prompt": "author portrait",
+                        "context_summary": "author profile image",
+                        "reuse_scope": "course_specific",
+                        "specificity_score": 5,
+                        "core_keywords": ["author", "portrait"],
+                        "context_keywords": ["lesson"],
+                        "style_keywords": [],
+                        "main_entities": ["author"],
+                        "visual_actions": [],
+                        "scene_elements": [],
+                        "emotion_tone": [],
+                        "teaching_intent": "author profile image",
+                    }
+                ]
+            }
+
+    library_dir = tmp_path / "materials_library"
+    image_dir = library_dir / "ai_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "asset_author.png").write_bytes(b"author")
+    rich_db = {
+        "schema_version": 4,
+        "output_root": str(library_dir),
+        "asset_count": 1,
+        "assets": [
+            {
+                "asset_id": "asset_author",
+                "asset_kind": "page_image",
+                "image_path": "ai_images/asset_author.png",
+                "role": "illustration",
+                "aspect_ratio": "1:1",
+                "prompt": "unrelated",
+                "subject": "lang",
+                "grade": "7",
+                "reuse_scope": "course_specific",
+                "core_keywords": ["unrelated"],
+                "source": {},
+            }
+        ],
+    }
+    match_index = {
+        "schema_version": 2,
+        "source_asset_count": 1,
+        "asset_count": 1,
+        "assets": [
+            {
+                "asset_id": "asset_author",
+                "asset_kind": "page_image",
+                "image_path": "ai_images/asset_author.png",
+                "role": "illustration",
+                "aspect_ratio": "1:1",
+                "subject": "lang",
+                "grade_norm": "7",
+                "grade_band": "high",
+                "reuse_scope": "course_specific",
+                "specificity_score": 5,
+                "prompt": "author portrait",
+                "normalized_prompt": "author portrait",
+                "context_summary": "author profile image",
+                "teaching_intent": "author profile image",
+                "core_keywords": ["author", "portrait"],
+                "context_keywords": ["lesson"],
+                "main_entities": ["author"],
+                "duplicate_asset_ids": [],
+            }
+        ],
+    }
+    (library_dir / "ai_image_asset_db.json").write_text(json.dumps(rich_db, ensure_ascii=False), encoding="utf-8")
+    (library_dir / "ai_image_match_index.json").write_text(json.dumps(match_index, ensure_ascii=False), encoding="utf-8")
+
+    match = find_reusable_ai_image_asset(
+        library_dir=library_dir,
+        asset_kind="page_image",
+        prompt="author portrait",
+        theme="lesson",
+        grade="7",
+        subject="lang",
+        page_title="Author",
+        role="illustration",
+        aspect_ratio="1:1",
+        keyword_client=FakeReuseClient(),
+        debug_path=library_dir / "reuse_debug.json",
+    )
+
+    assert match is not None
+    assert match["asset"]["asset_id"] == "asset_author"
+    debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
+    assert debug["queries"][0]["match_index_path"].endswith("ai_image_match_index.json")

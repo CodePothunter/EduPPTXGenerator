@@ -373,7 +373,7 @@ def asset_db(
 ):
     """Build the offline AI-generated image asset database from output sessions."""
     try:
-        from edupptx.materials.ai_image_asset_db import write_ai_image_asset_db
+        from edupptx.materials.ai_image_asset_db import DEFAULT_MATCH_INDEX_FILENAME, write_ai_image_asset_db
 
         keyword_client = None
         if keywords:
@@ -397,6 +397,7 @@ def asset_db(
         payload = {
             "ok": True,
             "db_path": str(target),
+            "match_index_path": str(target.with_name(DEFAULT_MATCH_INDEX_FILENAME)),
             "output_root": db["output_root"],
             "asset_count": db["asset_count"],
             "warning_count": len(db.get("warnings", [])),
@@ -404,6 +405,7 @@ def asset_db(
         }
         human = [
             f"Asset DB: {target}",
+            f"Match index: {target.with_name(DEFAULT_MATCH_INDEX_FILENAME)}",
             f"Assets: {db['asset_count']}",
         ]
         if keywords:
@@ -413,6 +415,81 @@ def asset_db(
         _emit_result(payload, as_json=as_json, human_lines=human)
     except Exception as e:
         logger.error("Asset DB build failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
+@main.command("asset-ingest")
+@click.option("--output-root", default="./output", type=click.Path(file_okay=False), help="Output root containing session_* dirs")
+@click.option("--library-dir", default=None, type=click.Path(file_okay=False), help="Reusable material library directory")
+@click.option("--keywords", is_flag=True, help="Use the configured LLM to build matching keywords while ingesting")
+@click.option("--keyword-batch-size", default=3, show_default=True, type=click.IntRange(1, 50), help="Assets per LLM keyword batch")
+@click.option("--env-file", default=".env", help=".env file path used by --keywords and LIBRARY_DIR")
+@click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
+def asset_ingest(
+    output_root: str,
+    library_dir: str | None,
+    keywords: bool,
+    keyword_batch_size: int,
+    env_file: str,
+    as_json: bool,
+):
+    """Copy AI-generated images from output sessions into the reusable library."""
+    try:
+        from edupptx.materials.ai_image_asset_db import (
+            DEFAULT_MATCH_INDEX_FILENAME,
+            ingest_ai_image_asset_library_from_output,
+        )
+
+        config = Config.from_env(env_file)
+        target_library = Path(library_dir) if library_dir else config.library_dir
+
+        keyword_client = None
+        if keywords:
+            if not config.llm_api_key or not config.llm_model:
+                _emit_error(
+                    "--keywords 需要在 .env 中配置 GEN_APIKEY 和 GEN_MODEL",
+                    as_json=as_json,
+                    kind="MissingLLMConfig",
+                )
+            from edupptx.llm_client import create_llm_client
+
+            keyword_client = create_llm_client(config, web_search=False)
+
+        db, target, report = ingest_ai_image_asset_library_from_output(
+            output_root,
+            target_library,
+            keyword_client=keyword_client,
+            keyword_batch_size=keyword_batch_size,
+        )
+        payload = {
+            "ok": True,
+            "db_path": str(target),
+            "match_index_path": str(target.with_name(DEFAULT_MATCH_INDEX_FILENAME)),
+            "output_root": report["output_root"],
+            "library_dir": report["library_dir"],
+            "session_count": report["session_count"],
+            "processed_session_count": len(report["processed_sessions"]),
+            "failed_session_count": len(report["failed_sessions"]),
+            "asset_count": db.get("asset_count", 0),
+            "warning_count": report["warning_count"],
+            "keywords": keywords,
+        }
+        human = [
+            f"Asset library: {report['library_dir']}",
+            f"Asset DB: {target}",
+            f"Match index: {target.with_name(DEFAULT_MATCH_INDEX_FILENAME)}",
+            f"Sessions: {len(report['processed_sessions'])}/{report['session_count']}",
+            f"Assets: {db.get('asset_count', 0)}",
+        ]
+        if keywords:
+            human.append("Keywords: LLM enriched")
+        if report["failed_sessions"]:
+            human.append(f"Failed sessions: {len(report['failed_sessions'])}")
+        if report["warning_count"]:
+            human.append(f"Warnings: {report['warning_count']}")
+        _emit_result(payload, as_json=as_json, human_lines=human)
+    except Exception as e:
+        logger.error("Asset library ingest failed: {}", e)
         _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
 
 
