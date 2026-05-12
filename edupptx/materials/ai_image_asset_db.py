@@ -20,7 +20,8 @@ DEFAULT_MATCH_INDEX_FILENAME = "ai_image_match_index.json"
 DEFAULT_EMBEDDING_INDEX_FILENAME = "ai_image_embedding_index.npz"
 DEFAULT_EMBEDDING_META_FILENAME = "ai_image_embedding_meta.json"
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
-MATCH_INDEX_SCHEMA_VERSION = 5
+MATCH_INDEX_SCHEMA_VERSION = 7
+EMBEDDING_INDEX_SCHEMA_VERSION = 3
 DEFAULT_KEYWORD_BATCH_SIZE = 12
 DEFAULT_LIBRARY_IMAGE_DIR = "ai_images"
 REUSE_MANIFEST_FILENAME = "ai_image_reuse_manifest.json"
@@ -35,10 +36,12 @@ HYBRID_SUBSTRING_WEIGHT = 0.15
 BM25_GRAY_REUSE_THRESHOLD = 0.23
 EMBEDDING_GRAY_REUSE_THRESHOLD = 0.72
 
-CONTENT_PROMPT_REUSE_WEIGHT = 0.75
+CONTENT_PROMPT_REUSE_WEIGHT = 0.80
 ROUTE_REUSE_WEIGHT = 0.10
-ROLE_ASPECT_REUSE_WEIGHT = 0.10
+ASPECT_REUSE_WEIGHT = 0.05
 LIGHT_CONTEXT_REUSE_WEIGHT = 0.05
+BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT = 0.85
+BACKGROUND_COLOR_BIAS_REUSE_WEIGHT = 0.15
 
 VISUAL_GENERIC_REUSE_THRESHOLD = 0.28
 BACKGROUND_REUSE_THRESHOLD = 0.25
@@ -47,7 +50,6 @@ _EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 _LIBRARY_REMOVED_KEYWORD_FIELDS = {
-    "role",
     "page_title",
     "reuse_scope",
     "specificity_score",
@@ -75,9 +77,7 @@ _BACKGROUND_ROUTE_FIELDS = (
     "background_color_bias",
 )
 _BACKGROUND_ROUTE_MATCH_FIELDS = (
-    "template_family",
-    "style_name",
-    "palette_id",
+    "background_color_bias",
 )
 _PAGE_TYPE_CONTEXT_SUMMARIES = {
     "cover": "作为封面主视觉，建立课程主题和导入氛围",
@@ -516,6 +516,8 @@ def write_ai_image_embedding_index(
         }
 
     rows: list[tuple[str, str]] = []
+    background_color_bias_rows: list[tuple[str, str]] = []
+    context_rows: list[tuple[str, str]] = []
     for asset in assets:
         if not isinstance(asset, dict):
             continue
@@ -523,6 +525,12 @@ def write_ai_image_embedding_index(
         text = _asset_embedding_text(asset)
         if asset_id and text:
             rows.append((asset_id, text))
+        color_bias = _background_color_bias(asset) if _is_background_asset(asset) else ""
+        if asset_id and color_bias:
+            background_color_bias_rows.append((asset_id, color_bias))
+        context_text = _candidate_context_embedding_text(asset)
+        if asset_id and context_text:
+            context_rows.append((asset_id, context_text))
     if not rows:
         return {
             "enabled": False,
@@ -532,6 +540,20 @@ def write_ai_image_embedding_index(
 
     try:
         vectors = _encode_embedding_texts([text for _asset_id, text in rows], model_name=model_name, query=False)
+        background_color_bias_vectors = None
+        if background_color_bias_rows:
+            background_color_bias_vectors = _encode_embedding_texts(
+                [text for _asset_id, text in background_color_bias_rows],
+                model_name=model_name,
+                query=False,
+            )
+        context_vectors = None
+        if context_rows:
+            context_vectors = _encode_embedding_texts(
+                [text for _asset_id, text in context_rows],
+                model_name=model_name,
+                query=False,
+            )
         import numpy as np
     except Exception as exc:
         return {
@@ -545,18 +567,41 @@ def write_ai_image_embedding_index(
     meta_path = root / meta_filename
     index_path.parent.mkdir(parents=True, exist_ok=True)
     asset_ids = np.asarray([asset_id for asset_id, _text in rows], dtype=str)
-    np.savez_compressed(index_path, asset_ids=asset_ids, vectors=vectors.astype("float32"))
+    payload: dict[str, Any] = {
+        "asset_ids": asset_ids,
+        "vectors": vectors.astype("float32"),
+    }
+    if background_color_bias_rows and background_color_bias_vectors is not None:
+        payload["background_color_bias_asset_ids"] = np.asarray(
+            [asset_id for asset_id, _text in background_color_bias_rows],
+            dtype=str,
+        )
+        payload["background_color_bias_vectors"] = background_color_bias_vectors.astype("float32")
+    if context_rows and context_vectors is not None:
+        payload["context_asset_ids"] = np.asarray([asset_id for asset_id, _text in context_rows], dtype=str)
+        payload["context_vectors"] = context_vectors.astype("float32")
+    np.savez_compressed(index_path, **payload)
 
     meta = {
-        "schema_version": 1,
+        "schema_version": EMBEDDING_INDEX_SCHEMA_VERSION,
         "built_at": datetime.now(timezone.utc).isoformat(),
         "model": model_name,
         "index_filename": index_filename,
         "asset_count": len(rows),
+        "background_color_bias_asset_count": len(background_color_bias_rows),
+        "context_asset_count": len(context_rows),
         "vector_dim": int(vectors.shape[1]) if len(vectors.shape) == 2 else 0,
         "assets": [
             {"asset_id": asset_id, "embedding_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]}
             for asset_id, text in rows
+        ],
+        "background_color_bias_assets": [
+            {"asset_id": asset_id, "embedding_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]}
+            for asset_id, text in background_color_bias_rows
+        ],
+        "context_assets": [
+            {"asset_id": asset_id, "embedding_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]}
+            for asset_id, text in context_rows
         ],
     }
     meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -710,11 +755,13 @@ def find_reusable_ai_image_asset(
     if not candidates:
         return finish("no_candidate_above_reuse_threshold")
 
-    reason = (
-        "reused_by_content_bm25_score"
-        if _clean_text(candidates[0].get("accepted_by")) == "bm25_threshold"
-        else "reused_by_hybrid_retrieval_score"
-    )
+    accepted_by = _clean_text(candidates[0].get("accepted_by"))
+    if accepted_by == "background_threshold":
+        reason = "reused_by_background_reuse_score"
+    elif accepted_by == "bm25_threshold":
+        reason = "reused_by_core_score"
+    else:
+        reason = "reused_by_hybrid_retrieval_score"
     return finish(reason, candidates[0])
 
 
@@ -820,10 +867,11 @@ def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
         "semantic_aliases": _clean_semantic_aliases(asset.get("semantic_aliases")),
         "context_summary_keywords": _keyword_list(asset.get("context_summary_keywords"), max_items=10),
         "teaching_intent": asset.get("teaching_intent"),
+        "role": _asset_role(asset),
+        "page_type": _asset_page_type(asset),
         "subject": asset.get("subject"),
         "grade": grade,
         "grade_norm": asset.get("grade_norm"),
-        "grade_number": asset.get("grade_number"),
         "grade_band": asset.get("grade_band") or infer_grade_band(grade),
         "aspect_ratio": asset.get("aspect_ratio"),
         "context_summary": asset.get("context_summary"),
@@ -1214,8 +1262,6 @@ def _context_exclusions(asset: dict[str, Any]) -> set[str]:
         _clean_text(grade_info.get("grade_band")),
         subject,
     }
-    if grade_info.get("grade_number") is not None:
-        exclusions.add(f"{grade_info['grade_number']}年级")
     if grade and subject:
         exclusions.add(f"{grade}{subject}")
         exclusions.add(f"{grade} {subject}")
@@ -1267,6 +1313,17 @@ def _clean_keyword(value: Any) -> str:
 
 
 def _build_match_text(asset: dict[str, Any]) -> str:
+    if _is_background_asset(asset):
+        terms = _dedupe_terms(
+            [
+                *_keyword_list(asset.get("core_keywords"), max_items=16),
+                *_semantic_alias_terms(asset),
+                _asset_content_prompt(asset),
+                _clean_text(asset.get("normalized_prompt")),
+            ]
+        )
+        return " ".join(terms)
+
     terms = _dedupe_terms(
         [
             *_keyword_list(asset.get("core_keywords"), max_items=16),
@@ -1281,6 +1338,12 @@ def _build_match_text(asset: dict[str, Any]) -> str:
 
 
 def _asset_embedding_text(asset: dict[str, Any]) -> str:
+    if _is_background_asset(asset):
+        return _join_texts(
+            _asset_content_prompt(asset),
+            asset.get("normalized_prompt"),
+        )
+
     return _join_texts(
         _asset_content_prompt(asset),
         asset.get("normalized_prompt"),
@@ -1290,6 +1353,14 @@ def _asset_embedding_text(asset: dict[str, Any]) -> str:
 
 
 def _target_embedding_text(asset: dict[str, Any]) -> str:
+    if _is_background_asset(asset):
+        return _join_texts(
+            _asset_content_prompt(asset),
+            asset.get("normalized_prompt"),
+            " ".join(_keyword_list(asset.get("core_keywords"), max_items=16)),
+            " ".join(_semantic_alias_terms(asset)),
+        )
+
     return _join_texts(
         _asset_content_prompt(asset),
         asset.get("normalized_prompt"),
@@ -1387,15 +1458,17 @@ def _normalize_asset_for_match(
     grade_info = normalize_grade_info(item.get("grade"), item.get("theme"))
     content_prompt = _asset_content_prompt(item)
     prompt_route = _match_prompt_route(item.get("prompt_route"))
+    role = _asset_role(item)
+    page_type = _asset_page_type(item)
     match_asset: dict[str, Any] = {
         "asset_id": asset_id,
         "asset_kind": asset_kind,
         "image_path": image_path,
         "aspect_ratio": _clean_text(item.get("aspect_ratio")),
+        "role": role,
+        "page_type": page_type,
         "subject": _clean_text(item.get("subject")),
-        "grade": _clean_text(item.get("grade")),
         "grade_norm": grade_info["grade_norm"],
-        "grade_number": grade_info["grade_number"],
         "grade_band": grade_info["grade_band"],
         "content_prompt": content_prompt,
         "prompt_route": prompt_route,
@@ -1452,12 +1525,17 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
         asset["background_route"] = background_route
     else:
         asset.pop("background_route", None)
+    if _is_background_asset(asset):
+        color_bias = _background_color_bias(asset)
+        stripped_prompt = _strip_background_color_bias_from_prompt(asset["content_prompt"], color_bias)
+        if stripped_prompt != asset["content_prompt"]:
+            asset["content_prompt"] = stripped_prompt
+            asset["normalized_prompt"] = _default_normalized_prompt(asset)
 
     grade_info = normalize_grade_info(asset.get("grade"), asset.get("theme"))
     if grade_info["grade_norm"]:
         asset["grade_norm"] = grade_info["grade_norm"]
-    if grade_info["grade_number"] is not None:
-        asset["grade_number"] = grade_info["grade_number"]
+    asset.pop("grade_number", None)
     if grade_info["grade_band"]:
         asset["grade_band"] = grade_info["grade_band"]
 
@@ -1619,6 +1697,7 @@ def _grouped_core_similarity_with_hits(
     if not groups or not doc_tokens:
         return 0.0, [], [_clean_text(group.get("concept")) for group in groups if _clean_text(group.get("concept"))]
 
+    doc_text = " ".join(doc_tokens)
     total = 0.0
     hits: list[dict[str, Any]] = []
     missing: list[str] = []
@@ -1629,7 +1708,11 @@ def _grouped_core_similarity_with_hits(
         best_term = ""
         best_hits: list[dict[str, str]] = []
         for term in terms:
-            score, term_hits = _bm25_similarity_with_hits(_bm25_tokens_from_values([term]), doc_tokens)
+            if _term_in_text(term, doc_text):
+                score = 1.0
+                term_hits = [{"target": term, "candidate": term}]
+            else:
+                score, term_hits = _bm25_similarity_with_hits(_bm25_tokens_from_values([term]), doc_tokens)
             if score > best_score:
                 best_score = score
                 best_term = term
@@ -1756,6 +1839,17 @@ def _route_style_prompt(route: dict[str, Any]) -> str:
 
 
 def _route_match_text(asset: dict[str, Any]) -> str:
+    if not _is_background_asset(asset):
+        return _join_texts(
+            _dedupe_terms(
+                [
+                    _asset_role(asset),
+                    _route_grade_family(asset),
+                    _asset_page_type(asset),
+                ]
+            )
+        )
+
     route = _match_prompt_route(asset.get("prompt_route"))
     terms: list[str] = [
         _clean_text(route.get("template_family")),
@@ -1805,12 +1899,74 @@ def _asset_content_prompt(asset: dict[str, Any]) -> str:
     return _clean_text(asset.get("content_prompt")) or _clean_text(asset.get("prompt"))
 
 
+def _is_background_asset(asset: dict[str, Any]) -> bool:
+    return _clean_text(asset.get("asset_kind")) == "background"
+
+
+def _background_color_bias(asset: dict[str, Any]) -> str:
+    route = _clean_background_route(asset.get("background_route"))
+    return _clean_text(route.get("background_color_bias"))
+
+
+def _strip_background_color_bias_from_prompt(prompt: str, color_bias: str) -> str:
+    prompt = _clean_text(prompt)
+    color_bias = _clean_text(color_bias)
+    if not prompt or not color_bias or color_bias not in prompt:
+        return prompt
+
+    stripped = prompt.replace(f"配色偏向：{color_bias}", "")
+    stripped = stripped.replace(color_bias, "")
+    stripped = re.sub(r"[\s,，、;；:：]+$", "", stripped)
+    stripped = re.sub(r"^[\s,，、;；:：]+", "", stripped)
+    return _clean_text(stripped)
+
+
 def _asset_generation_prompt(asset: dict[str, Any]) -> str:
     return _clean_text(asset.get("generation_prompt")) or _asset_content_prompt(asset)
 
 
 def _asset_style_prompt(asset: dict[str, Any]) -> str:
     return _clean_text(asset.get("style_prompt")) or _route_style_prompt(_clean_prompt_route(asset.get("prompt_route")))
+
+
+def _asset_role(asset: dict[str, Any]) -> str:
+    role = _clean_text(asset.get("role"))
+    if role:
+        return role
+    source_role = _clean_text(_dict(asset.get("source")).get("role"))
+    if source_role:
+        return source_role
+    image_path = _clean_text(asset.get("image_path")) or _clean_text(_dict(asset.get("source")).get("source_image_path"))
+    match = re.search(r"page_\d+_([a-zA-Z]+)_\d+", image_path)
+    return _clean_text(match.group(1)) if match else ""
+
+
+def _asset_page_type(asset: dict[str, Any]) -> str:
+    return _clean_text(asset.get("page_type")) or _clean_text(_dict(asset.get("source")).get("page_type"))
+
+
+def _route_grade_family(asset: dict[str, Any]) -> str:
+    for value in (
+        asset.get("grade_band"),
+        asset.get("grade_norm"),
+        asset.get("grade"),
+        _match_prompt_route(asset.get("prompt_route")).get("template_family"),
+    ):
+        text = _clean_text(value)
+        if not text:
+            continue
+        if "复用" in text:
+            return "复用"
+        if "低年级" in text:
+            return "低年级"
+        if any(term in text for term in ("高年级", "初中", "高中", "high", "upper")):
+            return "高年级"
+        if any(term in text for term in ("low", "lower")):
+            return "低年级"
+        band = infer_grade_band(text)
+        if band:
+            return band
+    return ""
 
 
 def _build_reuse_target_asset(
@@ -1830,6 +1986,11 @@ def _build_reuse_target_asset(
     route = _clean_prompt_route(prompt_route)
     bg_route = _clean_background_route(background_route)
     content_prompt = _clean_text(prompt)
+    if asset_kind == "background":
+        content_prompt = _strip_background_color_bias_from_prompt(
+            content_prompt,
+            _clean_text(bg_route.get("background_color_bias")),
+        )
     asset_key = "|".join([asset_kind, content_prompt, grade, subject, aspect_ratio])
     source = {
         "session_id": "",
@@ -1860,6 +2021,8 @@ def _build_reuse_target_asset(
             page_type=page_type,
         ),
         "teaching_intent": _default_teaching_intent(asset_kind=asset_kind),
+        "role": _clean_text(role),
+        "page_type": _clean_text(page_type),
         "grade": _clean_text(grade),
         "subject": _clean_text(subject),
         "source": source,
@@ -1915,6 +2078,40 @@ def _rank_embedding_candidates(
         query_vectors = _encode_embedding_texts([_target_embedding_text(target)], query=True)
         query_vector = query_vectors[0]
         scores = np.asarray(vectors).dot(query_vector)
+        background_color_bias_scores_by_id: dict[str, float] = {}
+        color_bias_vectors = embedding_index.get("background_color_bias_vectors")
+        color_bias_asset_ids = embedding_index.get("background_color_bias_asset_ids")
+        target_color_bias = _background_color_bias(target)
+        if (
+            _is_background_asset(target)
+            and target_color_bias
+            and color_bias_vectors is not None
+            and isinstance(color_bias_asset_ids, list)
+            and color_bias_asset_ids
+        ):
+            color_query_vector = _encode_embedding_texts([target_color_bias], query=True)[0]
+            color_scores = np.asarray(color_bias_vectors).dot(color_query_vector)
+            background_color_bias_scores_by_id = {
+                _clean_text(asset_id): float(color_scores[idx])
+                for idx, asset_id in enumerate(color_bias_asset_ids)
+            }
+        context_scores_by_id: dict[str, float] = {}
+        context_vectors = embedding_index.get("context_vectors")
+        context_asset_ids = embedding_index.get("context_asset_ids")
+        target_context = _target_context_embedding_text(target)
+        if (
+            not _is_background_asset(target)
+            and target_context
+            and context_vectors is not None
+            and isinstance(context_asset_ids, list)
+            and context_asset_ids
+        ):
+            context_query_vector = _encode_embedding_texts([target_context], query=True)[0]
+            context_scores = np.asarray(context_vectors).dot(context_query_vector)
+            context_scores_by_id = {
+                _clean_text(asset_id): float(context_scores[idx])
+                for idx, asset_id in enumerate(context_asset_ids)
+            }
     except Exception:
         return []
 
@@ -1933,13 +2130,20 @@ def _rank_embedding_candidates(
         image_path = _resolve_asset_image_path(library_root, asset.get("image_path"))
         if image_path is None or not image_path.exists():
             continue
-        scored.append(
-            {
-                "asset": asset,
-                "library_image_path": image_path,
-                "embedding_score": round(float(scores[idx]), 4),
-            }
-        )
+        row = {
+            "asset": asset,
+            "library_image_path": image_path,
+            "embedding_score": round(float(scores[idx]), 4),
+        }
+        clean_asset_id = _clean_text(asset_id)
+        if clean_asset_id in background_color_bias_scores_by_id:
+            row["background_color_bias_embedding_score"] = round(
+                float(background_color_bias_scores_by_id[clean_asset_id]),
+                4,
+            )
+        if clean_asset_id in context_scores_by_id:
+            row["context_embedding_score"] = round(float(context_scores_by_id[clean_asset_id]), 4)
+        scored.append(row)
     scored.sort(key=lambda item: float(item.get("embedding_score") or 0.0), reverse=True)
     return scored[: max(1, int(limit or DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE))]
 
@@ -1951,13 +2155,16 @@ def _rank_substring_candidates(
     library_root: Path,
     limit: int,
 ) -> list[dict[str, Any]]:
-    terms = _dedupe_terms(
-        [
-            *_keyword_list(target.get("core_keywords"), max_items=16),
-            *_semantic_alias_terms(target),
-            *_target_context_summary_terms(target),
-        ]
-    )
+    if _is_background_asset(target):
+        terms = _background_prompt_query_terms(target)
+    else:
+        terms = _dedupe_terms(
+            [
+                *_keyword_list(target.get("core_keywords"), max_items=16),
+                *_semantic_alias_terms(target),
+                *_target_context_summary_terms(target),
+            ]
+        )
     terms = [term for term in terms if len(term.replace(" ", "")) >= 2]
     if not terms:
         return []
@@ -2021,6 +2228,16 @@ def _rank_hybrid_reuse_candidates(
             )
             candidate["library_image_path"] = candidate.get("library_image_path") or item.get("library_image_path")
             candidate[score_key] = max(float(candidate.get(score_key) or 0.0), float(item.get(score_key) or 0.0))
+            if "background_color_bias_embedding_score" in item:
+                candidate["background_color_bias_embedding_score"] = max(
+                    float(candidate.get("background_color_bias_embedding_score") or 0.0),
+                    float(item.get("background_color_bias_embedding_score") or 0.0),
+                )
+            if "context_embedding_score" in item:
+                candidate["context_embedding_score"] = max(
+                    float(candidate.get("context_embedding_score") or 0.0),
+                    float(item.get("context_embedding_score") or 0.0),
+                )
             if score_key == "substring_score":
                 candidate["substring_hits"] = _dedupe_terms(
                     [*(candidate.get("substring_hits") or []), *(item.get("substring_hits") or [])]
@@ -2044,9 +2261,37 @@ def _rank_hybrid_reuse_candidates(
     results: list[dict[str, Any]] = []
     for asset_id, candidate in candidate_by_id.items():
         asset = _dict(candidate.get("asset"))
-        score_details = _score_reuse_candidate_details(target, asset)
-        bm25_score = float(score_details.get("score") or 0.0)
-        candidate["keyword_score"] = round(max(float(candidate.get("keyword_score") or 0.0), bm25_score), 4)
+        if _is_background_asset(target):
+            source_ranks = _dict(candidate.get("source_ranks"))
+            score_details = _score_background_reuse_candidate_details(
+                target,
+                asset,
+                prompt_embedding_score=(
+                    float(candidate.get("embedding_score") or 0.0) if "embedding" in source_ranks else None
+                ),
+                prompt_substring_score=(
+                    float(candidate.get("substring_score") or 0.0) if "substring" in source_ranks else None
+                ),
+                color_bias_embedding_score=(
+                    float(candidate.get("background_color_bias_embedding_score") or 0.0)
+                    if "background_color_bias_embedding_score" in candidate
+                    else None
+                ),
+            )
+            candidate["keyword_score"] = round(float(score_details.get("score") or 0.0), 4)
+            candidate["background_reuse_score"] = candidate["keyword_score"]
+        else:
+            score_details = _score_reuse_candidate_details(
+                target,
+                asset,
+                context_embedding_score=(
+                    float(candidate.get("context_embedding_score") or 0.0)
+                    if "context_embedding_score" in candidate
+                    else None
+                ),
+            )
+            bm25_score = float(score_details.get("score") or 0.0)
+            candidate["keyword_score"] = round(max(float(candidate.get("keyword_score") or 0.0), bm25_score), 4)
         candidate["rrf_score"] = round(rrf_scores.get(asset_id, 0.0), 6)
         candidate["hybrid_score"] = round(rrf_scores.get(asset_id, 0.0) / max(max_rrf, 1e-9), 4)
         candidate["accepted_by"] = _reuse_acceptance_reason(candidate, threshold)
@@ -2055,6 +2300,8 @@ def _rank_hybrid_reuse_candidates(
                 "embedding_score": candidate.get("embedding_score"),
                 "substring_score": candidate.get("substring_score"),
                 "substring_hits": candidate.get("substring_hits"),
+                "background_color_bias_embedding_score": candidate.get("background_color_bias_embedding_score"),
+                "context_embedding_score": candidate.get("context_embedding_score"),
                 "rrf_score": candidate.get("rrf_score"),
                 "hybrid_score": candidate.get("hybrid_score"),
                 "source_ranks": candidate.get("source_ranks"),
@@ -2080,16 +2327,19 @@ def _score_reuse_candidate(target: dict[str, Any], candidate: dict[str, Any]) ->
     return float(_score_reuse_candidate_details(target, candidate).get("score", 0.0))
 
 
-def _score_reuse_candidate_details(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+def _score_reuse_candidate_details(
+    target: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    context_embedding_score: float | None = None,
+) -> dict[str, Any]:
     if _clean_text(target.get("asset_kind")) != _clean_text(candidate.get("asset_kind")):
         return {"score": 0.0, "reject_reason": "asset_kind_mismatch"}
+    if _is_background_asset(target):
+        return _score_background_reuse_candidate_details(target, candidate)
 
     target_core = _keyword_list(target.get("core_keywords"), max_items=16)
-    target_alias_terms = _semantic_alias_terms(target)
     target_alias_groups = _semantic_alias_groups(target, target_core)
-    semantic_details = _semantic_structure_score_details(target, candidate)
-    semantic_score = float(semantic_details.get("semantic_structure_score") or 0.0)
-
     candidate_content_tokens = _bm25_tokens_from_values(
         [_asset_content_prompt(candidate), candidate.get("normalized_prompt")]
     )
@@ -2098,87 +2348,314 @@ def _score_reuse_candidate_details(target: dict[str, Any], candidate: dict[str, 
         candidate_content_tokens,
     )
 
-    role_aspect_score = _aspect_ratio_score(target, candidate)
-    content_score, content_hits = _bm25_similarity_with_hits(
-        _bm25_tokens_from_values([target_core, target_alias_terms]),
-        _bm25_tokens_from_values(
-            [
-                _asset_content_prompt(candidate),
-                candidate.get("normalized_prompt"),
-            ]
-        ),
-    )
-    route_score, route_hits = _bm25_similarity_with_hits(
-        _bm25_tokens_from_values([_route_match_text(target)]),
-        _bm25_tokens_from_values([_route_match_text(candidate)]),
-    )
+    aspect_score = _aspect_ratio_score(target, candidate)
+    route_details = _route_score_details(target, candidate)
+    route_score = float(route_details.get("route_score") or 0.0)
+    route_hits = route_details.get("route_hits") or []
     style_score, style_hits = 0.0, []
-    context_score, context_hits = _bm25_similarity_with_hits(
-        _bm25_tokens_from_values([_target_context_summary_terms(target)]),
-        _bm25_tokens_from_values([_candidate_context_summary_terms(candidate)]),
+    context_details = _context_score_details(
+        target,
+        candidate,
+        context_embedding_score=context_embedding_score,
     )
+    context_score = float(context_details.get("context_score") or 0.0)
+    context_hits = context_details.get("context_hits") or []
 
-    content_match_score = max(content_score, core_score * 0.9, semantic_score * 0.75)
+    content_match_score = core_score
     if content_match_score <= 0:
         return {
             "score": 0.0,
             "reject_reason": "no_content_match",
-            "content_score": content_score,
-            "content_hits": content_hits,
             "target_core_keywords": target_core,
-            "target_semantic_aliases": target_alias_terms,
+            "target_semantic_aliases": _semantic_alias_terms(target),
             "target_semantic_alias_groups": target_alias_groups,
             "missing_core_groups": missing_core_groups,
             "target_context_summary_keywords": _target_context_summary_terms(target),
-            **semantic_details,
+            **context_details,
         }
 
     score = (
         CONTENT_PROMPT_REUSE_WEIGHT * content_match_score
         + ROUTE_REUSE_WEIGHT * route_score
-        + ROLE_ASPECT_REUSE_WEIGHT * role_aspect_score
+        + ASPECT_REUSE_WEIGHT * aspect_score
         + LIGHT_CONTEXT_REUSE_WEIGHT * context_score
     )
     return {
         "score": max(0.0, min(1.0, score)),
         "reject_reason": "",
         "content_match_score": max(0.0, min(1.0, content_match_score)),
-        "content_score": content_score,
-        "content_hits": content_hits,
         "route_score": route_score,
         "route_hits": route_hits,
-        **semantic_details,
         "core_score": core_score,
         "core_hits": core_hits,
         "missing_core_groups": missing_core_groups,
         "scope_score": 0.0,
-        "role_aspect_score": role_aspect_score,
+        "aspect_score": aspect_score,
         "style_score": style_score,
         "style_hits": style_hits,
         "context_score": context_score,
         "context_hits": context_hits,
+        **route_details,
+        **context_details,
         "target_core_keywords": target_core,
-        "target_semantic_aliases": target_alias_terms,
+        "target_semantic_aliases": _semantic_alias_terms(target),
         "target_semantic_alias_groups": target_alias_groups,
         "target_context_summary_keywords": _target_context_summary_terms(target),
         "candidate_core_keywords": [],
     }
 
 
-def _semantic_structure_score_details(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    return _common_semantic_score_details(target, candidate)
+def _score_background_reuse_candidate_details(
+    target: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    prompt_embedding_score: float | None = None,
+    prompt_substring_score: float | None = None,
+    color_bias_embedding_score: float | None = None,
+) -> dict[str, Any]:
+    if _clean_text(target.get("asset_kind")) != _clean_text(candidate.get("asset_kind")):
+        return {"score": 0.0, "reject_reason": "asset_kind_mismatch"}
 
+    prompt_bm25_score, prompt_bm25_hits = _bm25_similarity_with_hits(
+        _background_prompt_query_tokens(target),
+        _background_prompt_doc_tokens(candidate),
+    )
+    local_prompt_substring_score, prompt_substring_hits = _background_substring_similarity(
+        _background_prompt_query_terms(target),
+        _join_texts(_asset_content_prompt(candidate), candidate.get("normalized_prompt")),
+    )
+    prompt_substring = max(_optional_score(prompt_substring_score), local_prompt_substring_score)
+    prompt_embedding = _optional_score(prompt_embedding_score)
+    prompt_match_score = _weighted_hybrid_signal(
+        bm25_score=prompt_bm25_score,
+        embedding_score=prompt_embedding_score,
+        substring_score=prompt_substring,
+        use_hybrid=True,
+    )
 
-def _common_semantic_score_details(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    target_bias = _background_color_bias(target)
+    candidate_bias = _background_color_bias(candidate)
+    color_bias_used = bool(target_bias and candidate_bias)
+    color_bias_bm25_score = 0.0
+    color_bias_bm25_hits: list[dict[str, str]] = []
+    color_bias_substring_score = 0.0
+    color_bias_substring_hits: list[str] = []
+    color_bias_match_score = 0.0
+    if color_bias_used:
+        color_bias_bm25_score, color_bias_bm25_hits = _bm25_similarity_with_hits(
+            _bm25_tokens_from_values([target_bias]),
+            _bm25_tokens_from_values([candidate_bias]),
+        )
+        color_bias_substring_score, color_bias_substring_hits = _background_substring_similarity(
+            _background_text_terms(target_bias),
+            candidate_bias,
+        )
+        color_bias_match_score = _weighted_hybrid_signal(
+            bm25_score=color_bias_bm25_score,
+            embedding_score=color_bias_embedding_score,
+            substring_score=color_bias_substring_score,
+            use_hybrid=True,
+        )
+
+    score = (
+        BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT * prompt_match_score
+        + BACKGROUND_COLOR_BIAS_REUSE_WEIGHT * color_bias_match_score
+        if color_bias_used
+        else prompt_match_score
+    )
+    reject_reason = "" if score > 0 else "no_background_prompt_match"
     return {
-        "semantic_structure_score": 0.0,
-        "intent_score": 0.0,
-        "intent_hits": [],
+        "score": max(0.0, min(1.0, score)),
+        "reject_reason": reject_reason,
+        "background_reuse_score": max(0.0, min(1.0, score)),
+        "background_prompt_match_score": max(0.0, min(1.0, prompt_match_score)),
+        "background_prompt_bm25_score": prompt_bm25_score,
+        "background_prompt_bm25_hits": prompt_bm25_hits,
+        "background_prompt_embedding_score": prompt_embedding,
+        "background_prompt_substring_score": prompt_substring,
+        "background_prompt_substring_hits": prompt_substring_hits,
+        "background_color_bias_used": color_bias_used,
+        "background_color_bias_match_score": max(0.0, min(1.0, color_bias_match_score)),
+        "background_color_bias_bm25_score": color_bias_bm25_score,
+        "background_color_bias_bm25_hits": color_bias_bm25_hits,
+        "background_color_bias_embedding_score": _optional_score(color_bias_embedding_score),
+        "background_color_bias_substring_score": color_bias_substring_score,
+        "background_color_bias_substring_hits": color_bias_substring_hits,
+        "content_match_score": max(0.0, min(1.0, prompt_match_score)),
+        "route_score": 0.0,
+        "route_hits": [],
+        "core_score": prompt_bm25_score,
+        "core_hits": prompt_bm25_hits,
+        "missing_core_groups": [],
+        "scope_score": 0.0,
+        "aspect_score": 0.0,
+        "style_score": 0.0,
+        "style_hits": [],
+        "context_score": 0.0,
+        "context_hits": [],
+        "target_core_keywords": _keyword_list(target.get("core_keywords"), max_items=16),
+        "candidate_core_keywords": [],
+        "target_semantic_aliases": _semantic_alias_terms(target),
+        "target_semantic_alias_groups": _semantic_alias_groups(
+            target,
+            _keyword_list(target.get("core_keywords"), max_items=16),
+        ),
+        "target_context_summary_keywords": [],
     }
 
 
-def _background_semantic_score_details(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    return _common_semantic_score_details(target, candidate)
+def _background_prompt_query_terms(asset: dict[str, Any]) -> list[str]:
+    terms = _dedupe_terms(
+        [
+            *_keyword_list(asset.get("core_keywords"), max_items=16),
+            *_semantic_alias_terms(asset),
+            *_background_text_terms(_join_texts(_asset_content_prompt(asset), asset.get("normalized_prompt"))),
+        ]
+    )
+    return terms
+
+
+def _background_prompt_query_tokens(asset: dict[str, Any]) -> list[str]:
+    return _bm25_tokens_from_values(_background_prompt_query_terms(asset))
+
+
+def _background_prompt_doc_tokens(asset: dict[str, Any]) -> list[str]:
+    return _bm25_tokens_from_values([_asset_content_prompt(asset), asset.get("normalized_prompt")])
+
+
+def _background_text_terms(text: str) -> list[str]:
+    text = _clean_text(text)
+    if not text:
+        return []
+    terms = [text]
+    terms.extend(re.findall(r"[A-Za-z0-9]+|[一-鿿]{2,}", text.casefold()))
+    return _dedupe_terms(terms)[:16]
+
+
+def _background_substring_similarity(query_terms: list[str], candidate_text: str) -> tuple[float, list[str]]:
+    terms = [term for term in _dedupe_terms(query_terms) if len(term.replace(" ", "")) >= 2]
+    candidate_text = _clean_text(candidate_text)
+    if not terms or not candidate_text:
+        return 0.0, []
+    hits = [term for term in terms if _term_in_text(term, candidate_text)]
+    return len(hits) / max(1, len(terms)), hits[:16]
+
+
+def _optional_score(value: float | None) -> float:
+    if value is None:
+        return 0.0
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _weighted_hybrid_signal(
+    *,
+    bm25_score: float,
+    embedding_score: float | None,
+    substring_score: float | None,
+    use_hybrid: bool,
+) -> float:
+    bm25_score = _optional_score(bm25_score)
+    if not use_hybrid:
+        return bm25_score
+
+    total_weight = HYBRID_BM25_WEIGHT
+    total_score = HYBRID_BM25_WEIGHT * bm25_score
+    if embedding_score is not None:
+        total_weight += HYBRID_EMBEDDING_WEIGHT
+        total_score += HYBRID_EMBEDDING_WEIGHT * _optional_score(embedding_score)
+    if substring_score is not None:
+        total_weight += HYBRID_SUBSTRING_WEIGHT
+        total_score += HYBRID_SUBSTRING_WEIGHT * _optional_score(substring_score)
+    return total_score / max(total_weight, 1e-9)
+
+
+def _context_score_details(
+    target: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    context_embedding_score: float | None = None,
+) -> dict[str, Any]:
+    target_terms = _target_context_summary_terms(target)
+    candidate_text = _candidate_context_embedding_text(candidate)
+    if not target_terms or not candidate_text:
+        return {
+            "context_score": 0.0,
+            "context_hits": [],
+            "context_bm25_score": 0.0,
+            "context_bm25_hits": [],
+            "context_embedding_score": _optional_score(context_embedding_score),
+            "context_substring_score": 0.0,
+            "context_substring_hits": [],
+        }
+
+    context_bm25_score, context_bm25_hits = _bm25_similarity_with_hits(
+        _bm25_tokens_from_values([target_terms]),
+        _bm25_tokens_from_values([candidate_text]),
+    )
+    context_substring_score, context_substring_hits = _background_substring_similarity(
+        target_terms,
+        candidate_text,
+    )
+    context_score = _weighted_hybrid_signal(
+        bm25_score=context_bm25_score,
+        embedding_score=context_embedding_score,
+        substring_score=context_substring_score,
+        use_hybrid=True,
+    )
+    return {
+        "context_score": max(0.0, min(1.0, context_score)),
+        "context_hits": context_bm25_hits,
+        "context_bm25_score": context_bm25_score,
+        "context_bm25_hits": context_bm25_hits,
+        "context_embedding_score": _optional_score(context_embedding_score),
+        "context_substring_score": context_substring_score,
+        "context_substring_hits": context_substring_hits,
+    }
+
+
+def _route_score_details(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    target_role = _asset_role(target)
+    candidate_role = _asset_role(candidate)
+    target_grade_family = _route_grade_family(target)
+    candidate_grade_family = _route_grade_family(candidate)
+    target_page_type = _asset_page_type(target)
+    candidate_page_type = _asset_page_type(candidate)
+
+    role_match = _exact_route_match(target_role, candidate_role)
+    grade_family_match = _exact_route_match(target_grade_family, candidate_grade_family)
+    page_type_match = _exact_route_match(target_page_type, candidate_page_type)
+    route_hits: list[dict[str, str]] = []
+    if role_match:
+        route_hits.append({"field": "role", "target": target_role, "candidate": candidate_role})
+    if grade_family_match:
+        route_hits.append(
+            {"field": "grade_family", "target": target_grade_family, "candidate": candidate_grade_family}
+        )
+    if page_type_match:
+        route_hits.append({"field": "page_type", "target": target_page_type, "candidate": candidate_page_type})
+
+    return {
+        "route_score": 0.45 * role_match + 0.35 * grade_family_match + 0.20 * page_type_match,
+        "route_hits": route_hits,
+        "route_role_match": role_match,
+        "route_grade_family_match": grade_family_match,
+        "route_page_type_match": page_type_match,
+        "target_route_role": target_role,
+        "candidate_route_role": candidate_role,
+        "target_route_grade_family": target_grade_family,
+        "candidate_route_grade_family": candidate_grade_family,
+        "target_route_page_type": target_page_type,
+        "candidate_route_page_type": candidate_page_type,
+    }
+
+
+def _exact_route_match(target_value: str, candidate_value: str) -> float:
+    target_value = _clean_text(target_value)
+    candidate_value = _clean_text(candidate_value)
+    return 1.0 if target_value and candidate_value and target_value == candidate_value else 0.0
 
 
 def _semantic_terms(
@@ -2233,22 +2710,33 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
         "reject_reason": _clean_text(details.get("reject_reason")),
         "keyword_score": round(float(details.get("keyword_score") or 0.0), 4),
         "content_match_score": round(float(details.get("content_match_score") or 0.0), 4),
-        "content_score": round(float(details.get("content_score") or 0.0), 4),
-        "content_hits": details.get("content_hits") or [],
         "route_score": round(float(details.get("route_score") or 0.0), 4),
         "route_hits": details.get("route_hits") or [],
-        "semantic_structure_score": round(float(details.get("semantic_structure_score") or 0.0), 4),
+        "route_role_match": round(float(details.get("route_role_match") or 0.0), 4),
+        "route_grade_family_match": round(float(details.get("route_grade_family_match") or 0.0), 4),
+        "route_page_type_match": round(float(details.get("route_page_type_match") or 0.0), 4),
+        "target_route_role": _clean_text(details.get("target_route_role")),
+        "candidate_route_role": _clean_text(details.get("candidate_route_role")),
+        "target_route_grade_family": _clean_text(details.get("target_route_grade_family")),
+        "candidate_route_grade_family": _clean_text(details.get("candidate_route_grade_family")),
+        "target_route_page_type": _clean_text(details.get("target_route_page_type")),
+        "candidate_route_page_type": _clean_text(details.get("candidate_route_page_type")),
         "intent_score": round(float(details.get("intent_score") or 0.0), 4),
         "intent_hits": details.get("intent_hits") or [],
         "core_score": round(float(details.get("core_score") or 0.0), 4),
         "core_hits": details.get("core_hits") or [],
         "missing_core_groups": details.get("missing_core_groups") or [],
         "scope_score": round(float(details.get("scope_score") or 0.0), 4),
-        "role_aspect_score": round(float(details.get("role_aspect_score") or 0.0), 4),
+        "aspect_score": round(float(details.get("aspect_score") or 0.0), 4),
         "style_score": round(float(details.get("style_score") or 0.0), 4),
         "style_hits": details.get("style_hits") or [],
         "context_score": round(float(details.get("context_score") or 0.0), 4),
         "context_hits": details.get("context_hits") or [],
+        "context_bm25_score": round(float(details.get("context_bm25_score") or 0.0), 4),
+        "context_bm25_hits": details.get("context_bm25_hits") or [],
+        "context_embedding_score": round(float(details.get("context_embedding_score") or 0.0), 4),
+        "context_substring_score": round(float(details.get("context_substring_score") or 0.0), 4),
+        "context_substring_hits": details.get("context_substring_hits") or [],
         "embedding_score": round(float(details.get("embedding_score") or 0.0), 4),
         "substring_score": round(float(details.get("substring_score") or 0.0), 4),
         "substring_hits": details.get("substring_hits") or [],
@@ -2261,6 +2749,32 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
         "target_semantic_aliases": details.get("target_semantic_aliases") or [],
         "target_semantic_alias_groups": details.get("target_semantic_alias_groups") or [],
         "target_context_summary_keywords": details.get("target_context_summary_keywords") or [],
+        "background_reuse_score": round(float(details.get("background_reuse_score") or 0.0), 4),
+        "background_prompt_match_score": round(float(details.get("background_prompt_match_score") or 0.0), 4),
+        "background_prompt_bm25_score": round(float(details.get("background_prompt_bm25_score") or 0.0), 4),
+        "background_prompt_bm25_hits": details.get("background_prompt_bm25_hits") or [],
+        "background_prompt_embedding_score": round(float(details.get("background_prompt_embedding_score") or 0.0), 4),
+        "background_prompt_substring_score": round(float(details.get("background_prompt_substring_score") or 0.0), 4),
+        "background_prompt_substring_hits": details.get("background_prompt_substring_hits") or [],
+        "background_color_bias_used": bool(details.get("background_color_bias_used")),
+        "background_color_bias_match_score": round(
+            float(details.get("background_color_bias_match_score") or 0.0),
+            4,
+        ),
+        "background_color_bias_bm25_score": round(
+            float(details.get("background_color_bias_bm25_score") or 0.0),
+            4,
+        ),
+        "background_color_bias_bm25_hits": details.get("background_color_bias_bm25_hits") or [],
+        "background_color_bias_embedding_score": round(
+            float(details.get("background_color_bias_embedding_score") or 0.0),
+            4,
+        ),
+        "background_color_bias_substring_score": round(
+            float(details.get("background_color_bias_substring_score") or 0.0),
+            4,
+        ),
+        "background_color_bias_substring_hits": details.get("background_color_bias_substring_hits") or [],
     }
 
 
@@ -2274,6 +2788,16 @@ def _target_context_summary_terms(asset: dict[str, Any]) -> list[str]:
 
 def _candidate_context_summary_terms(asset: dict[str, Any]) -> list[str]:
     return [_clean_text(asset.get("context_summary"))]
+
+
+def _target_context_embedding_text(asset: dict[str, Any]) -> str:
+    return " ".join(_target_context_summary_terms(asset))
+
+
+def _candidate_context_embedding_text(asset: dict[str, Any]) -> str:
+    if _is_background_asset(asset):
+        return ""
+    return _clean_text(asset.get("context_summary"))
 
 
 def _bm25_tokens_from_values(values: list[Any]) -> list[str]:
@@ -2367,6 +2891,12 @@ def _terms_match(left: str, right: str) -> bool:
 
 
 def _candidate_hybrid_text(asset: dict[str, Any]) -> str:
+    if _is_background_asset(asset):
+        return _join_texts(
+            _asset_content_prompt(asset),
+            asset.get("normalized_prompt"),
+        )
+
     return _join_texts(
         _asset_content_prompt(asset),
         asset.get("normalized_prompt"),
@@ -2383,6 +2913,9 @@ def _term_in_text(term: str, text: str) -> bool:
 
 def _reuse_acceptance_reason(candidate: dict[str, Any], threshold: float | None = None) -> str:
     threshold = VISUAL_GENERIC_REUSE_THRESHOLD if threshold is None else float(threshold)
+    if candidate.get("background_reuse_score") is not None:
+        return "background_threshold" if float(candidate.get("background_reuse_score") or 0.0) >= threshold else ""
+
     bm25_score = float(candidate.get("keyword_score") or 0.0)
     embedding_score = float(candidate.get("embedding_score") or 0.0)
     substring_score = float(candidate.get("substring_score") or 0.0)
@@ -2536,6 +3069,7 @@ def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: 
     if (
         index_path.exists()
         and meta_path.exists()
+        and int(meta.get("schema_version") or 0) == EMBEDDING_INDEX_SCHEMA_VERSION
         and _clean_text(meta.get("model")) == model_name
         and int(meta.get("asset_count") or -1) == expected_count
     ):
@@ -2545,6 +3079,8 @@ def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: 
             "index_path": str(index_path),
             "meta_path": str(meta_path),
             "asset_count": expected_count,
+            "background_color_bias_asset_count": int(meta.get("background_color_bias_asset_count") or 0),
+            "context_asset_count": int(meta.get("context_asset_count") or 0),
             "vector_dim": int(meta.get("vector_dim") or 0),
         }
     return write_ai_image_embedding_index(match_index, library_root)
@@ -2564,6 +3100,18 @@ def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], 
         data = np.load(index_path, allow_pickle=False)
         asset_ids = [str(item) for item in data["asset_ids"].tolist()]
         vectors = np.asarray(data["vectors"], dtype="float32")
+        background_color_bias_asset_ids: list[str] = []
+        background_color_bias_vectors = None
+        if "background_color_bias_asset_ids" in data.files and "background_color_bias_vectors" in data.files:
+            background_color_bias_asset_ids = [
+                str(item) for item in data["background_color_bias_asset_ids"].tolist()
+            ]
+            background_color_bias_vectors = np.asarray(data["background_color_bias_vectors"], dtype="float32")
+        context_asset_ids: list[str] = []
+        context_vectors = None
+        if "context_asset_ids" in data.files and "context_vectors" in data.files:
+            context_asset_ids = [str(item) for item in data["context_asset_ids"].tolist()]
+            context_vectors = np.asarray(data["context_vectors"], dtype="float32")
         meta = _read_json_if_exists(meta_path)
     except Exception as exc:
         return {}, {
@@ -2575,6 +3123,10 @@ def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], 
     return {
         "asset_ids": asset_ids,
         "vectors": vectors,
+        "background_color_bias_asset_ids": background_color_bias_asset_ids,
+        "background_color_bias_vectors": background_color_bias_vectors,
+        "context_asset_ids": context_asset_ids,
+        "context_vectors": context_vectors,
         "meta": meta,
     }, {
         "enabled": True,
@@ -2582,6 +3134,8 @@ def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], 
         "index_path": str(index_path),
         "meta_path": str(meta_path),
         "asset_count": len(asset_ids),
+        "background_color_bias_asset_count": len(background_color_bias_asset_ids),
+        "context_asset_count": len(context_asset_ids),
         "vector_dim": int(vectors.shape[1]) if len(vectors.shape) == 2 else 0,
     }
 
@@ -2804,7 +3358,6 @@ def normalize_grade_info(*texts: Any) -> dict[str, Any]:
     if grade_number is not None:
         return {
             "grade_norm": _GRADE_NAMES.get(grade_number, f"{grade_number}年级"),
-            "grade_number": grade_number,
             "grade_band": _LOW_GRADE_BAND if grade_number <= 3 else _HIGH_GRADE_BAND,
         }
 
@@ -2816,7 +3369,6 @@ def normalize_grade_info(*texts: Any) -> dict[str, Any]:
         band = _HIGH_GRADE_BAND
     return {
         "grade_norm": normalized,
-        "grade_number": None,
         "grade_band": band or infer_grade_band(normalized),
     }
 
@@ -2910,14 +3462,7 @@ def infer_grade_band(*texts: Any) -> str:
         return "低年级"
     if any(term in combined for term in ("高年级", "初中", "高中", "初一", "初二", "初三", "高一", "高二", "高三")):
         return "高年级"
-
-    match = re.search(r"([一二三四五六七八九十0-9]+)年级", combined)
-    if not match:
-        return ""
-    grade_number = _grade_number(match.group(1))
-    if grade_number is None:
-        return ""
-    return "低年级" if grade_number <= 3 else "高年级"
+    return ""
 
 
 def infer_subject(*texts: Any) -> str:
@@ -2985,8 +3530,11 @@ def _build_background_asset(
     plan: dict[str, Any],
     reused_image_paths: set[str] | None = None,
 ) -> dict[str, Any] | None:
+    from edupptx.materials.background_generator import build_background_content_prompt, build_background_prompt
+
     visual = _dict(plan.get("visual"))
-    prompt = _clean_text(visual.get("background_prompt"))
+    prompt = _clean_text(build_background_content_prompt(visual))
+    generation_prompt = _clean_text(build_background_prompt(visual))
     image_path = materials_dir / "background.png"
     if not prompt or not image_path.exists():
         return None
@@ -3007,6 +3555,7 @@ def _build_background_asset(
         image_index=None,
         role="background",
         aspect_ratio="16:9",
+        generation_prompt=generation_prompt,
         background_route=_build_background_route(plan),
     )
 
@@ -3138,6 +3687,11 @@ def _make_asset(
     route = _clean_prompt_route(prompt_route)
     bg_route = _clean_background_route(background_route)
     content_prompt = _clean_text(prompt)
+    if asset_kind == "background":
+        content_prompt = _strip_background_color_bias_from_prompt(
+            content_prompt,
+            _clean_text(bg_route.get("background_color_bias")),
+        )
     generation_prompt = _clean_text(generation_prompt) or content_prompt
     source = {
         "session_id": session_dir.name,
@@ -3146,6 +3700,8 @@ def _make_asset(
         "page_number": page_number,
         "image_index": image_index,
     }
+    if role:
+        source["role"] = role
     if page_type:
         source["page_type"] = page_type
     if layout_hint:
@@ -3169,6 +3725,8 @@ def _make_asset(
         "asset_kind": asset_kind,
         "image_path": rel_image_path,
         "aspect_ratio": aspect_ratio,
+        "role": role,
+        "page_type": page_type,
         "content_prompt": content_prompt,
         "generation_prompt": generation_prompt,
         "style_prompt": _route_style_prompt(route),
@@ -3224,31 +3782,3 @@ def _normalize_grade(value: str) -> str:
     return value.replace("初1", "初一").replace("初2", "初二").replace("初3", "初三").replace(
         "高1", "高一"
     ).replace("高2", "高二").replace("高3", "高三")
-
-
-def _grade_number(value: str) -> int | None:
-    cleaned = _clean_text(value)
-    if not cleaned:
-        return None
-    if cleaned.isdigit():
-        return int(cleaned)
-    mapping = {
-        "一": 1,
-        "二": 2,
-        "三": 3,
-        "四": 4,
-        "五": 5,
-        "六": 6,
-        "七": 7,
-        "八": 8,
-        "九": 9,
-        "十": 10,
-    }
-    if cleaned in mapping:
-        return mapping[cleaned]
-    if "十" not in cleaned:
-        return None
-    left, right = cleaned.split("十", 1)
-    tens = mapping.get(left, 1) if left else 1
-    ones = mapping.get(right, 0) if right else 0
-    return tens * 10 + ones

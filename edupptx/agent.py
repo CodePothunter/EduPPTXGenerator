@@ -527,9 +527,9 @@ class PPTXAgent:
         logger.info("Design spec saved: {}", spec_path)
 
     async def _phase2_background(self, draft: PlanningDraft, session: Session):
-        from edupptx.materials.background_generator import build_background_prompt, generate_background
+        from edupptx.materials.background_generator import build_background_content_prompt, generate_background
 
-        prompt = build_background_prompt(draft.visual)
+        prompt = build_background_content_prompt(draft.visual)
         keyword_client = self._build_llm_client()
         reuse_context = self._ai_image_reuse_context(draft)
         match = self._find_reusable_ai_image(
@@ -588,6 +588,7 @@ class PPTXAgent:
                             subject=reuse_context["subject"],
                             page_title=page.title,
                             page_type=page.page_type,
+                            role=need.role,
                             aspect_ratio=need.aspect_ratio,
                             keyword_client=keyword_client,
                             debug_path=session.dir / "materials" / "ai_image_reuse_debug.json",
@@ -646,6 +647,7 @@ class PPTXAgent:
         keyword_client,
         page_title: str = "",
         page_type: str = "",
+        role: str = "",
         prompt_route: dict[str, Any] | None = None,
         background_route: dict[str, Any] | None = None,
         debug_path: Path | None = None,
@@ -664,6 +666,7 @@ class PPTXAgent:
                 subject=subject,
                 page_title=page_title,
                 page_type=page_type,
+                role=role,
                 aspect_ratio=aspect_ratio,
                 keyword_client=keyword_client,
                 debug_path=debug_path,

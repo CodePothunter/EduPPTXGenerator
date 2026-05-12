@@ -24,9 +24,13 @@ def test_infers_grade_and_subject_from_plan_context():
     assert infer_grade_band("七年级") == "高年级"
 
 
-def test_route_match_text_excludes_generation_only_prompt_terms():
+def test_route_match_text_uses_route_fields_not_generation_prompt_terms():
     text = _route_match_text(
         {
+            "asset_kind": "page_image",
+            "role": "illustration",
+            "page_type": "content",
+            "grade_band": "低年级",
             "style_prompt": "profile style role only page only wide layout quality only no text",
             "prompt_route": {
                 "template_family": "lower",
@@ -41,8 +45,11 @@ def test_route_match_text_excludes_generation_only_prompt_terms():
         }
     )
 
-    assert "lower" in text
-    assert "profile_a" in text
+    assert "illustration" in text
+    assert "低年级" in text
+    assert "content" in text
+    assert "lower" not in text
+    assert "profile_a" not in text
     assert "profile style" not in text
     assert "wide layout" not in text
     assert "role only" not in text
@@ -88,6 +95,60 @@ def test_reuse_score_keyword_signals_are_limited_to_core_keywords():
     assert details["score"] > 0
     assert details["core_score"] == 1.0
     assert "main_entity_score" not in details
+
+
+def test_background_reuse_score_uses_prompt_and_color_bias_only():
+    target = {
+        "asset_kind": "background",
+        "content_prompt": "淡雅秋日课堂背景",
+        "normalized_prompt": "淡雅秋日课堂背景",
+        "core_keywords": ["淡雅秋日课堂背景"],
+        "background_route": {
+            "background_color_bias": "偏暖米色和浅棕色，秋日氛围",
+            "template_family": "高年级",
+            "style_name": "A",
+            "palette_id": "warm",
+        },
+        "subject": "语文",
+        "grade": "七年级",
+    }
+    same_bias_candidate = {
+        "asset_kind": "background",
+        "content_prompt": "淡雅秋日课堂背景",
+        "normalized_prompt": "淡雅秋日课堂背景",
+        "background_route": {
+            "background_color_bias": "偏暖米色和浅棕色，秋日氛围",
+            "template_family": "低年级",
+            "style_name": "B",
+            "palette_id": "other",
+        },
+        "subject": "数学",
+        "grade": "一年级",
+    }
+    different_bias_candidate = {
+        **same_bias_candidate,
+        "background_route": {
+            "background_color_bias": "偏深蓝色，冷静科技感",
+            "template_family": "低年级",
+            "style_name": "B",
+            "palette_id": "other",
+        },
+    }
+
+    same_details = _score_reuse_candidate_details(target, same_bias_candidate)
+    different_details = _score_reuse_candidate_details(target, different_bias_candidate)
+
+    assert same_details["background_prompt_match_score"] >= 0.8
+    assert same_details["background_color_bias_used"] is True
+    assert same_details["background_color_bias_match_score"] == 1.0
+    assert same_details["route_score"] == 0.0
+    assert same_details["context_score"] == 0.0
+    assert different_details["background_prompt_match_score"] == same_details["background_prompt_match_score"]
+    assert different_details["background_reuse_score"] < same_details["background_reuse_score"]
+    assert round(different_details["background_reuse_score"], 4) == round(
+        0.85 * different_details["background_prompt_match_score"],
+        4,
+    )
 
 
 def test_semantic_aliases_score_by_concept_group():
@@ -155,7 +216,7 @@ def test_content_bm25_uses_target_keywords_not_target_prompt_sentence():
 
     assert details["score"] == 0.0
     assert details["reject_reason"] == "no_content_match"
-    assert details["content_score"] == 0.0
+    assert "content_score" not in details
     assert details["missing_core_groups"] == ["author portrait"]
 
 
@@ -181,7 +242,13 @@ def test_context_score_uses_target_keywords_against_candidate_summary_sentence()
     assert details["score"] > 0
     assert details["target_context_summary_keywords"] == ["profile"]
     assert details["context_score"] > 0
+    assert details["context_bm25_score"] > 0
+    assert details["context_substring_score"] > 0
     assert any(hit["target"] == "profile" for hit in details["context_hits"])
+
+    with_embedding = _score_reuse_candidate_details(target, candidate, context_embedding_score=1.0)
+    assert with_embedding["context_embedding_score"] == 1.0
+    assert with_embedding["context_score"] >= details["context_score"]
 
 
 def test_context_score_does_not_use_target_summary_or_candidate_context_keywords():
@@ -209,6 +276,37 @@ def test_context_score_does_not_use_target_summary_or_candidate_context_keywords
     assert details["context_hits"] == []
 
 
+def test_route_score_uses_role_grade_family_and_page_type_weights():
+    target = {
+        "asset_kind": "page_image",
+        "content_prompt": "",
+        "normalized_prompt": "",
+        "core_keywords": ["author portrait"],
+        "role": "hero",
+        "page_type": "cover",
+        "grade_band": "高年级",
+        "aspect_ratio": "16:9",
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "content_prompt": "author portrait",
+        "normalized_prompt": "",
+        "role": "hero",
+        "page_type": "content",
+        "grade_band": "高年级",
+        "aspect_ratio": "4:3",
+    }
+
+    details = _score_reuse_candidate_details(target, candidate)
+
+    assert details["core_score"] == 1.0
+    assert round(details["route_score"], 4) == 0.8
+    assert details["route_role_match"] == 1.0
+    assert details["route_grade_family_match"] == 1.0
+    assert details["route_page_type_match"] == 0.0
+    assert details["aspect_score"] == 0.6
+
+
 def test_builds_ai_image_asset_db_from_output_sessions(tmp_path):
     output_root = tmp_path / "output"
     session_dir = output_root / "session_20260506_111550"
@@ -225,6 +323,7 @@ def test_builds_ai_image_asset_db_from_output_sessions(tmp_path):
         },
         "visual": {
             "background_prompt": "淡雅秋日课堂背景",
+            "background_color_bias": "偏暖米色和浅棕色，秋日氛围",
         },
         "style_routing": {
             "template_family": "高年级",
@@ -273,6 +372,10 @@ def test_builds_ai_image_asset_db_from_output_sessions(tmp_path):
     assert db["asset_count"] == 2
     prompts = {asset["content_prompt"] for asset in db["assets"]}
     assert prompts == {"淡雅秋日课堂背景", "深秋北海公园菊花盛放的静谧场景"}
+    background_asset = next(asset for asset in db["assets"] if asset["asset_kind"] == "background")
+    assert background_asset["content_prompt"] == "淡雅秋日课堂背景"
+    assert background_asset["generation_prompt"] == "淡雅秋日课堂背景 配色偏向：偏暖米色和浅棕色，秋日氛围"
+    assert background_asset["background_route"]["background_color_bias"] == "偏暖米色和浅棕色，秋日氛围"
     page_asset = next(asset for asset in db["assets"] if asset["asset_kind"] == "page_image")
     assert page_asset["content_prompt"] == "深秋北海公园菊花盛放的静谧场景"
     assert page_asset["generation_prompt"] == "深秋北海公园菊花盛放的静谧场景，高年级编辑感风格"
@@ -697,8 +800,8 @@ def test_finds_reusable_asset_with_content_bm25_score(tmp_path):
     debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
     assert debug["queries"][0]["context"]["page_number"] == 4
     assert debug["queries"][0]["decision"]["reused"] is True
-    assert debug["queries"][0]["decision"]["reason"] == "reused_by_content_bm25_score"
-    assert debug["queries"][0]["ranked_candidates"][0]["score_details"]["content_score"] >= 0.6
+    assert debug["queries"][0]["decision"]["reason"] == "reused_by_core_score"
+    assert debug["queries"][0]["ranked_candidates"][0]["score_details"]["core_score"] >= 0.6
 
 
 def test_reuse_manifest_causes_library_ingest_to_skip_reused_images(tmp_path):
@@ -783,16 +886,94 @@ def test_match_index_omits_deprecated_constraints_and_normalizes_grade(tmp_path)
 
     asset = index["assets"][0]
     assert asset["grade_norm"] == "七年级"
-    assert asset["grade_number"] == 7
     assert asset["grade_band"] == "高年级"
     assert asset["core_keywords"] == ["史铁生", "肖像"]
     assert "reuse_scope" not in asset
     assert "specificity_score" not in asset
-    assert "role" not in asset
+    assert asset["role"] == "illustration"
+    assert "grade" not in asset
     assert "prompt" not in asset
     assert "must_match" not in asset
     assert "must_not_conflict" not in asset
     assert "avoid_keywords" not in asset
+    assert "grade_number" not in asset
+
+
+def test_background_match_index_keeps_only_color_bias_route(tmp_path):
+    from edupptx.materials.ai_image_asset_db import build_ai_image_match_index
+
+    db = {
+        "schema_version": 5,
+        "assets": [
+            {
+                "asset_id": "asset_bg",
+                "asset_kind": "background",
+                "image_path": "ai_images/asset_bg.png",
+                "content_prompt": "淡雅秋日课堂背景",
+                "background_route": {
+                    "template_family": "高年级",
+                    "style_name": "秋日模板",
+                    "palette_id": "warm",
+                    "primary_color": "#111111",
+                    "background_color_bias": "偏暖米色和浅棕色，秋日氛围",
+                },
+            }
+        ],
+    }
+
+    index = build_ai_image_match_index(db, library_root=tmp_path)
+
+    asset = index["assets"][0]
+    assert asset["background_route"] == {"background_color_bias": "偏暖米色和浅棕色，秋日氛围"}
+
+
+def test_find_reusable_background_prefers_matching_color_bias(tmp_path):
+    library_dir = tmp_path / "materials_library"
+    image_dir = library_dir / "ai_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "asset_cool.png").write_bytes(b"cool")
+    (image_dir / "asset_warm.png").write_bytes(b"warm")
+    match_index = {
+        "schema_version": 7,
+        "source_asset_count": 0,
+        "asset_count": 2,
+        "assets": [
+            {
+                "asset_id": "asset_cool",
+                "asset_kind": "background",
+                "image_path": "ai_images/asset_cool.png",
+                "aspect_ratio": "16:9",
+                "content_prompt": "淡雅秋日课堂背景",
+                "normalized_prompt": "淡雅秋日课堂背景",
+                "background_route": {"background_color_bias": "偏深蓝色，冷静科技感"},
+            },
+            {
+                "asset_id": "asset_warm",
+                "asset_kind": "background",
+                "image_path": "ai_images/asset_warm.png",
+                "aspect_ratio": "16:9",
+                "content_prompt": "淡雅秋日课堂背景",
+                "normalized_prompt": "淡雅秋日课堂背景",
+                "background_route": {"background_color_bias": "偏暖米色和浅棕色，秋日氛围"},
+            },
+        ],
+    }
+    (library_dir / "ai_image_match_index.json").write_text(json.dumps(match_index, ensure_ascii=False), encoding="utf-8")
+
+    match = find_reusable_ai_image_asset(
+        library_dir=library_dir,
+        asset_kind="background",
+        prompt="淡雅秋日课堂背景",
+        background_route={"background_color_bias": "偏暖米色和浅棕色，秋日氛围"},
+        aspect_ratio="16:9",
+        debug_path=library_dir / "reuse_debug.json",
+    )
+
+    assert match is not None
+    assert match["asset"]["asset_id"] == "asset_warm"
+    assert match["accepted_by"] == "background_threshold"
+    assert match["score_details"]["background_color_bias_used"] is True
+    assert match["score_details"]["route_score"] == 0.0
 
 
 def test_update_library_writes_slim_match_index(tmp_path):
@@ -910,7 +1091,7 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
         ],
     }
     match_index = {
-        "schema_version": 5,
+        "schema_version": 7,
         "source_asset_count": 1,
         "asset_count": 1,
         "assets": [

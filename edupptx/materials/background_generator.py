@@ -12,18 +12,32 @@ from edupptx.models import VisualPlan
 from edupptx.session import Session
 
 
-def build_background_prompt(visual: VisualPlan) -> str:
-    """Compose final background prompt from the original prompt plus an optional color-bias sentence."""
+def _visual_value(visual: VisualPlan | dict, field: str) -> str:
+    if isinstance(visual, dict):
+        return str(visual.get(field) or "")
+    return str(getattr(visual, field, "") or "")
 
-    prompt = visual.background_prompt.strip()
+
+def build_background_content_prompt(visual: VisualPlan | dict) -> str:
+    """Return the reusable background content prompt without palette color-bias text."""
+
+    prompt = _visual_value(visual, "background_prompt").strip()
     if not prompt:
+        primary_color = _visual_value(visual, "primary_color").strip()
         prompt = (
-            f"淡雅抽象渐变背景，轻微偏向 {visual.primary_color} 色调，"
+            f"淡雅抽象渐变背景，轻微偏向 {primary_color} 色调，"
             "简洁几何纹理，画面干净明亮，适合教学演示承载文字，"
             "16:9 横版，高分辨率"
         )
+    return prompt
 
-    color_bias = visual.background_color_bias.strip()
+
+def build_background_prompt(visual: VisualPlan | dict) -> str:
+    """Compose final generation prompt from content prompt plus optional color bias."""
+
+    prompt = build_background_content_prompt(visual)
+
+    color_bias = _visual_value(visual, "background_color_bias").strip()
     if not color_bias:
         return prompt
 
