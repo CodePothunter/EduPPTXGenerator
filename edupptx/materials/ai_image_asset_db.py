@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import shutil
 from copy import deepcopy
@@ -16,6 +17,9 @@ SCHEMA_VERSION = 1
 KEYWORD_SCHEMA_VERSION = 5
 DEFAULT_DB_FILENAME = "ai_image_asset_db.json"
 DEFAULT_MATCH_INDEX_FILENAME = "ai_image_match_index.json"
+DEFAULT_EMBEDDING_INDEX_FILENAME = "ai_image_embedding_index.npz"
+DEFAULT_EMBEDDING_META_FILENAME = "ai_image_embedding_meta.json"
+DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 MATCH_INDEX_SCHEMA_VERSION = 5
 DEFAULT_KEYWORD_BATCH_SIZE = 12
 DEFAULT_LIBRARY_IMAGE_DIR = "ai_images"
@@ -23,6 +27,13 @@ REUSE_MANIFEST_FILENAME = "ai_image_reuse_manifest.json"
 REUSE_DEBUG_FILENAME = "ai_image_reuse_debug.json"
 DEFAULT_REUSE_CANDIDATE_LIMIT = 5
 DEFAULT_MIN_REUSE_KEYWORD_SCORE: float | None = None
+DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE = 20
+DEFAULT_RRF_K = 60
+HYBRID_BM25_WEIGHT = 0.50
+HYBRID_EMBEDDING_WEIGHT = 0.35
+HYBRID_SUBSTRING_WEIGHT = 0.15
+BM25_GRAY_REUSE_THRESHOLD = 0.23
+EMBEDDING_GRAY_REUSE_THRESHOLD = 0.72
 
 CONTENT_PROMPT_REUSE_WEIGHT = 0.75
 ROUTE_REUSE_WEIGHT = 0.10
@@ -31,6 +42,8 @@ LIGHT_CONTEXT_REUSE_WEIGHT = 0.05
 
 VISUAL_GENERIC_REUSE_THRESHOLD = 0.28
 BACKGROUND_REUSE_THRESHOLD = 0.25
+
+_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
 _LIBRARY_REMOVED_KEYWORD_FIELDS = {
@@ -466,10 +479,95 @@ def write_ai_image_match_index(
 
     root = Path(library_dir).expanduser().resolve()
     index = build_ai_image_match_index(db, library_root=root)
+    embedding_report = write_ai_image_embedding_index(index, root)
+    if embedding_report:
+        index["embedding_index"] = embedding_report
     target = root / index_filename
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
     return index, target
+
+
+def write_ai_image_embedding_index(
+    match_index: dict[str, Any],
+    library_dir: str | Path,
+    *,
+    model_name: str = DEFAULT_EMBEDDING_MODEL,
+    index_filename: str = DEFAULT_EMBEDDING_INDEX_FILENAME,
+    meta_filename: str = DEFAULT_EMBEDDING_META_FILENAME,
+) -> dict[str, Any]:
+    """Write the vector sidecar index used by hybrid image reuse retrieval."""
+
+    root = Path(library_dir).expanduser().resolve()
+    model_name = _embedding_model_name(model_name)
+    if _embedding_disabled():
+        return {
+            "enabled": False,
+            "reason": "disabled_by_environment",
+            "model": model_name,
+        }
+
+    assets = match_index.get("assets")
+    if not isinstance(assets, list) or not assets:
+        return {
+            "enabled": False,
+            "reason": "empty_match_index",
+            "model": model_name,
+        }
+
+    rows: list[tuple[str, str]] = []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        asset_id = _clean_text(asset.get("asset_id"))
+        text = _asset_embedding_text(asset)
+        if asset_id and text:
+            rows.append((asset_id, text))
+    if not rows:
+        return {
+            "enabled": False,
+            "reason": "empty_embedding_text",
+            "model": model_name,
+        }
+
+    try:
+        vectors = _encode_embedding_texts([text for _asset_id, text in rows], model_name=model_name, query=False)
+        import numpy as np
+    except Exception as exc:
+        return {
+            "enabled": False,
+            "reason": "embedding_build_failed",
+            "model": model_name,
+            "warnings": [f"AI image embedding index skipped: {str(exc)[:180]}"],
+        }
+
+    index_path = root / index_filename
+    meta_path = root / meta_filename
+    index_path.parent.mkdir(parents=True, exist_ok=True)
+    asset_ids = np.asarray([asset_id for asset_id, _text in rows], dtype=str)
+    np.savez_compressed(index_path, asset_ids=asset_ids, vectors=vectors.astype("float32"))
+
+    meta = {
+        "schema_version": 1,
+        "built_at": datetime.now(timezone.utc).isoformat(),
+        "model": model_name,
+        "index_filename": index_filename,
+        "asset_count": len(rows),
+        "vector_dim": int(vectors.shape[1]) if len(vectors.shape) == 2 else 0,
+        "assets": [
+            {"asset_id": asset_id, "embedding_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]}
+            for asset_id, text in rows
+        ],
+    }
+    meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+    return {
+        "enabled": True,
+        "model": model_name,
+        "index_path": str(index_path),
+        "meta_path": str(meta_path),
+        "asset_count": len(rows),
+        "vector_dim": meta["vector_dim"],
+    }
 
 
 def find_reusable_ai_image_asset(
@@ -494,10 +592,10 @@ def find_reusable_ai_image_asset(
 ) -> dict[str, Any] | None:
     """Find a reusable AI image asset from the central library.
 
-    The final reuse decision is deterministic: BM25 over the content prompt is
-    dominant, while prompt-route, aspect ratio, and context scores are low-weight
-    references. The LLM is used only to build target keywords/context when a
-    client exists.
+    The final reuse decision is deterministic: BM25 remains the precision
+    signal, while optional Qwen embedding and substring retrieval provide
+    gray-zone recall through RRF fusion. The LLM is used only to build target
+    keywords/context when a client exists.
     """
 
     library_root = Path(library_dir).expanduser().resolve()
@@ -505,6 +603,7 @@ def find_reusable_ai_image_asset(
     db = _read_existing_db(db_path)
     index, match_index_path = _read_match_index_or_build(library_root, db)
     assets = index.get("assets")
+    embedding_index, embedding_status = _read_ai_image_embedding_index(library_root)
 
     target = _build_reuse_target_asset(
         asset_kind=asset_kind,
@@ -529,6 +628,7 @@ def find_reusable_ai_image_asset(
         min_keyword_score=min_keyword_score,
         context=debug_context,
     )
+    debug_record["embedding_index"] = embedding_status
     debug_record["threshold_used"] = _reuse_threshold_for_target(target, min_keyword_score)
 
     def finish(reason: str, match: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -561,23 +661,61 @@ def find_reusable_ai_image_asset(
     debug_record["target"] = _reuse_debug_asset_payload(target)
     debug_record["candidate_scores"] = _collect_reuse_candidate_debug(target, assets, library_root)
 
-    ranked_candidates = _rank_reuse_candidates(
+    pool_limit = max(DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE, int(candidate_limit or DEFAULT_REUSE_CANDIDATE_LIMIT))
+    bm25_ranked_candidates = _rank_reuse_candidates(
         target,
         assets,
         library_root=library_root,
+        limit=pool_limit,
+    )
+    embedding_ranked_candidates = _rank_embedding_candidates(
+        target,
+        assets,
+        library_root=library_root,
+        embedding_index=embedding_index,
+        limit=pool_limit,
+    )
+    substring_ranked_candidates = _rank_substring_candidates(
+        target,
+        assets,
+        library_root=library_root,
+        limit=pool_limit,
+    )
+    ranked_candidates = _rank_hybrid_reuse_candidates(
+        target,
+        assets,
+        library_root=library_root,
+        bm25_ranked=bm25_ranked_candidates,
+        embedding_ranked=embedding_ranked_candidates,
+        substring_ranked=substring_ranked_candidates,
+        threshold=threshold,
         limit=candidate_limit,
     )
+    debug_record["bm25_ranked_candidates"] = [
+        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in bm25_ranked_candidates
+    ]
+    debug_record["embedding_ranked_candidates"] = [
+        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in embedding_ranked_candidates
+    ]
+    debug_record["substring_ranked_candidates"] = [
+        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in substring_ranked_candidates
+    ]
     debug_record["ranked_candidates"] = [
         _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in ranked_candidates
     ]
-    candidates = [candidate for candidate in ranked_candidates if candidate["keyword_score"] >= threshold]
+    candidates = [candidate for candidate in ranked_candidates if _candidate_passes_reuse_threshold(candidate, threshold)]
     debug_record["thresholded_candidates"] = [
         _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in candidates
     ]
     if not candidates:
         return finish("no_candidate_above_reuse_threshold")
 
-    return finish("reused_by_content_bm25_score", candidates[0])
+    reason = (
+        "reused_by_content_bm25_score"
+        if _clean_text(candidates[0].get("accepted_by")) == "bm25_threshold"
+        else "reused_by_hybrid_retrieval_score"
+    )
+    return finish(reason, candidates[0])
 
 
 def record_reused_ai_image_asset(
@@ -695,6 +833,13 @@ def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
 def _reuse_debug_candidate_payload(candidate: dict[str, Any], *, threshold: float | None = None) -> dict[str, Any]:
     payload = _reuse_debug_asset_payload(_dict(candidate.get("asset")))
     payload["keyword_score"] = candidate.get("keyword_score")
+    payload["embedding_score"] = candidate.get("embedding_score")
+    payload["substring_score"] = candidate.get("substring_score")
+    payload["hybrid_score"] = candidate.get("hybrid_score")
+    payload["rrf_score"] = candidate.get("rrf_score")
+    payload["accepted_by"] = candidate.get("accepted_by")
+    payload["source_ranks"] = candidate.get("source_ranks") or {}
+    payload["substring_hits"] = candidate.get("substring_hits") or []
     payload["library_image_path"] = str(candidate.get("library_image_path") or "")
     payload["score_details"] = candidate.get("score_details") or {}
     if threshold is not None:
@@ -1133,6 +1278,81 @@ def _build_match_text(asset: dict[str, Any]) -> str:
         ]
     )
     return " ".join(terms)
+
+
+def _asset_embedding_text(asset: dict[str, Any]) -> str:
+    return _join_texts(
+        _asset_content_prompt(asset),
+        asset.get("normalized_prompt"),
+        asset.get("context_summary"),
+        asset.get("teaching_intent"),
+    )
+
+
+def _target_embedding_text(asset: dict[str, Any]) -> str:
+    return _join_texts(
+        _asset_content_prompt(asset),
+        asset.get("normalized_prompt"),
+        asset.get("context_summary"),
+        asset.get("teaching_intent"),
+        " ".join(_target_context_summary_terms(asset)),
+    )
+
+
+def _embedding_query_text(text: str) -> str:
+    text = _clean_text(text)
+    if not text:
+        return ""
+    return f"Instruct: 根据图片需求检索可复用的教学图片素材\nQuery: {text}"
+
+
+def _embedding_disabled() -> bool:
+    value = _clean_text(os.environ.get("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS")).lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _embedding_model_name(model_name: str | None = None) -> str:
+    configured = _clean_text(os.environ.get("EDUPPTX_AI_IMAGE_EMBEDDING_MODEL"))
+    return configured or _clean_text(model_name) or DEFAULT_EMBEDDING_MODEL
+
+
+def _load_embedding_model(model_name: str = DEFAULT_EMBEDDING_MODEL) -> Any:
+    model_name = _embedding_model_name(model_name)
+    cached = _EMBEDDING_MODEL_CACHE.get(model_name)
+    if cached is not None:
+        return cached
+    from sentence_transformers import SentenceTransformer
+
+    model = SentenceTransformer(model_name)
+    _EMBEDDING_MODEL_CACHE[model_name] = model
+    return model
+
+
+def _encode_embedding_texts(
+    texts: list[str],
+    *,
+    model_name: str = DEFAULT_EMBEDDING_MODEL,
+    query: bool = False,
+) -> Any:
+    model_name = _embedding_model_name(model_name)
+    cleaned = [_clean_text(text) for text in texts if _clean_text(text)]
+    if not cleaned:
+        raise ValueError("empty embedding texts")
+    if query:
+        cleaned = [_embedding_query_text(text) for text in cleaned]
+    model = _load_embedding_model(model_name)
+    vectors = model.encode(
+        cleaned,
+        batch_size=16,
+        convert_to_numpy=True,
+        normalize_embeddings=True,
+        show_progress_bar=False,
+    )
+    import numpy as np
+
+    if len(vectors.shape) == 1:
+        vectors = vectors.reshape(1, -1)
+    return np.asarray(vectors, dtype="float32")
 
 
 def _build_match_key(asset: dict[str, Any]) -> str:
@@ -1676,6 +1896,186 @@ def _rank_reuse_candidates(
     return scored[: max(1, int(limit or DEFAULT_REUSE_CANDIDATE_LIMIT))]
 
 
+def _rank_embedding_candidates(
+    target: dict[str, Any],
+    assets: list[Any],
+    *,
+    library_root: Path,
+    embedding_index: dict[str, Any],
+    limit: int,
+) -> list[dict[str, Any]]:
+    vectors = embedding_index.get("vectors")
+    asset_ids = embedding_index.get("asset_ids")
+    if vectors is None or not isinstance(asset_ids, list) or not asset_ids:
+        return []
+
+    try:
+        import numpy as np
+
+        query_vectors = _encode_embedding_texts([_target_embedding_text(target)], query=True)
+        query_vector = query_vectors[0]
+        scores = np.asarray(vectors).dot(query_vector)
+    except Exception:
+        return []
+
+    assets_by_id = {
+        _clean_text(item.get("asset_id")): item
+        for item in assets
+        if isinstance(item, dict) and _clean_text(item.get("asset_id"))
+    }
+    scored: list[dict[str, Any]] = []
+    for idx, asset_id in enumerate(asset_ids):
+        asset = assets_by_id.get(_clean_text(asset_id))
+        if not asset:
+            continue
+        if _clean_text(target.get("asset_kind")) != _clean_text(asset.get("asset_kind")):
+            continue
+        image_path = _resolve_asset_image_path(library_root, asset.get("image_path"))
+        if image_path is None or not image_path.exists():
+            continue
+        scored.append(
+            {
+                "asset": asset,
+                "library_image_path": image_path,
+                "embedding_score": round(float(scores[idx]), 4),
+            }
+        )
+    scored.sort(key=lambda item: float(item.get("embedding_score") or 0.0), reverse=True)
+    return scored[: max(1, int(limit or DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE))]
+
+
+def _rank_substring_candidates(
+    target: dict[str, Any],
+    assets: list[Any],
+    *,
+    library_root: Path,
+    limit: int,
+) -> list[dict[str, Any]]:
+    terms = _dedupe_terms(
+        [
+            *_keyword_list(target.get("core_keywords"), max_items=16),
+            *_semantic_alias_terms(target),
+            *_target_context_summary_terms(target),
+        ]
+    )
+    terms = [term for term in terms if len(term.replace(" ", "")) >= 2]
+    if not terms:
+        return []
+
+    scored: list[dict[str, Any]] = []
+    for item in assets:
+        if not isinstance(item, dict):
+            continue
+        if _clean_text(target.get("asset_kind")) != _clean_text(item.get("asset_kind")):
+            continue
+        image_path = _resolve_asset_image_path(library_root, item.get("image_path"))
+        if image_path is None or not image_path.exists():
+            continue
+        text = _candidate_hybrid_text(item)
+        hits = [term for term in terms if _term_in_text(term, text)]
+        if not hits:
+            continue
+        scored.append(
+            {
+                "asset": item,
+                "library_image_path": image_path,
+                "substring_score": round(len(hits) / max(1, len(terms)), 4),
+                "substring_hits": hits[:16],
+            }
+        )
+    scored.sort(key=lambda item: float(item.get("substring_score") or 0.0), reverse=True)
+    return scored[: max(1, int(limit or DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE))]
+
+
+def _rank_hybrid_reuse_candidates(
+    target: dict[str, Any],
+    assets: list[Any],
+    *,
+    library_root: Path,
+    bm25_ranked: list[dict[str, Any]],
+    embedding_ranked: list[dict[str, Any]],
+    substring_ranked: list[dict[str, Any]],
+    threshold: float,
+    limit: int,
+) -> list[dict[str, Any]]:
+    candidate_by_id: dict[str, dict[str, Any]] = {}
+    rrf_scores: dict[str, float] = {}
+
+    def add_ranked(items: list[dict[str, Any]], score_key: str, weight: float) -> None:
+        for rank, item in enumerate(items, start=1):
+            asset = _dict(item.get("asset"))
+            asset_id = _clean_text(asset.get("asset_id"))
+            if not asset_id:
+                continue
+            candidate = candidate_by_id.setdefault(
+                asset_id,
+                {
+                    "asset": asset,
+                    "library_image_path": item.get("library_image_path"),
+                    "keyword_score": 0.0,
+                    "embedding_score": 0.0,
+                    "substring_score": 0.0,
+                    "substring_hits": [],
+                    "source_ranks": {},
+                },
+            )
+            candidate["library_image_path"] = candidate.get("library_image_path") or item.get("library_image_path")
+            candidate[score_key] = max(float(candidate.get(score_key) or 0.0), float(item.get(score_key) or 0.0))
+            if score_key == "substring_score":
+                candidate["substring_hits"] = _dedupe_terms(
+                    [*(candidate.get("substring_hits") or []), *(item.get("substring_hits") or [])]
+                )[:16]
+            source_name = {
+                "keyword_score": "bm25",
+                "embedding_score": "embedding",
+                "substring_score": "substring",
+            }.get(score_key, score_key)
+            candidate["source_ranks"][source_name] = rank
+            rrf_scores[asset_id] = rrf_scores.get(asset_id, 0.0) + weight / (DEFAULT_RRF_K + rank)
+
+    add_ranked(bm25_ranked, "keyword_score", HYBRID_BM25_WEIGHT)
+    add_ranked(embedding_ranked, "embedding_score", HYBRID_EMBEDDING_WEIGHT)
+    add_ranked(substring_ranked, "substring_score", HYBRID_SUBSTRING_WEIGHT)
+
+    if not candidate_by_id:
+        return []
+
+    max_rrf = max(rrf_scores.values()) if rrf_scores else 1.0
+    results: list[dict[str, Any]] = []
+    for asset_id, candidate in candidate_by_id.items():
+        asset = _dict(candidate.get("asset"))
+        score_details = _score_reuse_candidate_details(target, asset)
+        bm25_score = float(score_details.get("score") or 0.0)
+        candidate["keyword_score"] = round(max(float(candidate.get("keyword_score") or 0.0), bm25_score), 4)
+        candidate["rrf_score"] = round(rrf_scores.get(asset_id, 0.0), 6)
+        candidate["hybrid_score"] = round(rrf_scores.get(asset_id, 0.0) / max(max_rrf, 1e-9), 4)
+        candidate["accepted_by"] = _reuse_acceptance_reason(candidate, threshold)
+        score_details.update(
+            {
+                "embedding_score": candidate.get("embedding_score"),
+                "substring_score": candidate.get("substring_score"),
+                "substring_hits": candidate.get("substring_hits"),
+                "rrf_score": candidate.get("rrf_score"),
+                "hybrid_score": candidate.get("hybrid_score"),
+                "source_ranks": candidate.get("source_ranks"),
+                "accepted_by": candidate.get("accepted_by"),
+            }
+        )
+        candidate["score_details"] = _debug_score_details(score_details)
+        results.append(candidate)
+
+    results.sort(
+        key=lambda item: (
+            1 if item.get("accepted_by") else 0,
+            float(item.get("hybrid_score") or 0.0),
+            float(item.get("keyword_score") or 0.0),
+            float(item.get("embedding_score") or 0.0),
+        ),
+        reverse=True,
+    )
+    return results[: max(1, int(limit or DEFAULT_REUSE_CANDIDATE_LIMIT))]
+
+
 def _score_reuse_candidate(target: dict[str, Any], candidate: dict[str, Any]) -> float:
     return float(_score_reuse_candidate_details(target, candidate).get("score", 0.0))
 
@@ -1849,6 +2249,13 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
         "style_hits": details.get("style_hits") or [],
         "context_score": round(float(details.get("context_score") or 0.0), 4),
         "context_hits": details.get("context_hits") or [],
+        "embedding_score": round(float(details.get("embedding_score") or 0.0), 4),
+        "substring_score": round(float(details.get("substring_score") or 0.0), 4),
+        "substring_hits": details.get("substring_hits") or [],
+        "rrf_score": round(float(details.get("rrf_score") or 0.0), 6),
+        "hybrid_score": round(float(details.get("hybrid_score") or 0.0), 4),
+        "source_ranks": details.get("source_ranks") or {},
+        "accepted_by": _clean_text(details.get("accepted_by")),
         "target_core_keywords": details.get("target_core_keywords") or [],
         "candidate_core_keywords": details.get("candidate_core_keywords") or [],
         "target_semantic_aliases": details.get("target_semantic_aliases") or [],
@@ -1959,6 +2366,39 @@ def _terms_match(left: str, right: str) -> bool:
     return min(len(left), len(right)) >= 2 and (left in right or right in left)
 
 
+def _candidate_hybrid_text(asset: dict[str, Any]) -> str:
+    return _join_texts(
+        _asset_content_prompt(asset),
+        asset.get("normalized_prompt"),
+        asset.get("context_summary"),
+        asset.get("teaching_intent"),
+    )
+
+
+def _term_in_text(term: str, text: str) -> bool:
+    term = _clean_keyword(term).replace(" ", "")
+    text = _clean_text(text).replace(" ", "")
+    return bool(term and text and term in text)
+
+
+def _reuse_acceptance_reason(candidate: dict[str, Any], threshold: float | None = None) -> str:
+    threshold = VISUAL_GENERIC_REUSE_THRESHOLD if threshold is None else float(threshold)
+    bm25_score = float(candidate.get("keyword_score") or 0.0)
+    embedding_score = float(candidate.get("embedding_score") or 0.0)
+    substring_score = float(candidate.get("substring_score") or 0.0)
+    if bm25_score >= threshold:
+        return "bm25_threshold"
+    if bm25_score >= BM25_GRAY_REUSE_THRESHOLD and embedding_score >= EMBEDDING_GRAY_REUSE_THRESHOLD:
+        return "embedding_gray_zone"
+    if bm25_score >= max(0.0, threshold - 0.03) and substring_score >= 0.35 and embedding_score >= 0.62:
+        return "substring_embedding_gray_zone"
+    return ""
+
+
+def _candidate_passes_reuse_threshold(candidate: dict[str, Any], threshold: float) -> bool:
+    return bool(_reuse_acceptance_reason(candidate, threshold))
+
+
 def _reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: float | None) -> float:
     if explicit_threshold is not None:
         try:
@@ -2065,17 +2505,85 @@ def _read_match_index_or_build(library_root: Path, db: dict[str, Any]) -> tuple[
     if isinstance(index_assets, list) and int(index.get("schema_version") or 0) == MATCH_INDEX_SCHEMA_VERSION:
         db_asset_count = len(db_assets) if isinstance(db_assets, list) else None
         if db_asset_count is None or int(index.get("source_asset_count") or -1) == db_asset_count:
+            embedding_report = _ensure_ai_image_embedding_index(index, library_root)
+            if embedding_report:
+                index["embedding_index"] = embedding_report
             return index, index_path
 
     if isinstance(db_assets, list):
         index = build_ai_image_match_index(db, library_root=library_root)
         try:
+            embedding_report = write_ai_image_embedding_index(index, library_root)
+            if embedding_report:
+                index["embedding_index"] = embedding_report
             index_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
         except Exception:
             pass
         return index, index_path
 
     return {"schema_version": MATCH_INDEX_SCHEMA_VERSION, "asset_count": 0, "assets": []}, index_path
+
+
+def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: Path) -> dict[str, Any]:
+    model_name = _embedding_model_name()
+    if _embedding_disabled():
+        return {"enabled": False, "reason": "disabled_by_environment", "model": model_name}
+    index_path = library_root / DEFAULT_EMBEDDING_INDEX_FILENAME
+    meta_path = library_root / DEFAULT_EMBEDDING_META_FILENAME
+    meta = _read_json_if_exists(meta_path)
+    assets = match_index.get("assets")
+    expected_count = len(assets) if isinstance(assets, list) else 0
+    if (
+        index_path.exists()
+        and meta_path.exists()
+        and _clean_text(meta.get("model")) == model_name
+        and int(meta.get("asset_count") or -1) == expected_count
+    ):
+        return {
+            "enabled": True,
+            "model": model_name,
+            "index_path": str(index_path),
+            "meta_path": str(meta_path),
+            "asset_count": expected_count,
+            "vector_dim": int(meta.get("vector_dim") or 0),
+        }
+    return write_ai_image_embedding_index(match_index, library_root)
+
+
+def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
+    model_name = _embedding_model_name()
+    if _embedding_disabled():
+        return {}, {"enabled": False, "reason": "disabled_by_environment", "model": model_name}
+    index_path = library_root / DEFAULT_EMBEDDING_INDEX_FILENAME
+    meta_path = library_root / DEFAULT_EMBEDDING_META_FILENAME
+    if not index_path.exists() or not meta_path.exists():
+        return {}, {"enabled": False, "reason": "missing_embedding_index", "model": model_name}
+    try:
+        import numpy as np
+
+        data = np.load(index_path, allow_pickle=False)
+        asset_ids = [str(item) for item in data["asset_ids"].tolist()]
+        vectors = np.asarray(data["vectors"], dtype="float32")
+        meta = _read_json_if_exists(meta_path)
+    except Exception as exc:
+        return {}, {
+            "enabled": False,
+            "reason": "embedding_index_read_failed",
+            "model": model_name,
+            "warnings": [f"AI image embedding index could not be read: {str(exc)[:180]}"],
+        }
+    return {
+        "asset_ids": asset_ids,
+        "vectors": vectors,
+        "meta": meta,
+    }, {
+        "enabled": True,
+        "model": _clean_text(meta.get("model")) or model_name,
+        "index_path": str(index_path),
+        "meta_path": str(meta_path),
+        "asset_count": len(asset_ids),
+        "vector_dim": int(vectors.shape[1]) if len(vectors.shape) == 2 else 0,
+    }
 
 
 def _file_sha256(path: Path) -> str:
