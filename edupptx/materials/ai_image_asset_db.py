@@ -13,14 +13,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from edupptx.materials.reuse_policy import (
+    apply_reuse_policy_defaults,
+    evaluate_reuse_filter,
+    normalize_reuse_policy_fields,
+    reuse_threshold_for_target as policy_reuse_threshold_for_target,
+)
+
 SCHEMA_VERSION = 1
-KEYWORD_SCHEMA_VERSION = 5
+KEYWORD_SCHEMA_VERSION = 6
 DEFAULT_DB_FILENAME = "ai_image_asset_db.json"
 DEFAULT_MATCH_INDEX_FILENAME = "ai_image_match_index.json"
 DEFAULT_EMBEDDING_INDEX_FILENAME = "ai_image_embedding_index.npz"
 DEFAULT_EMBEDDING_META_FILENAME = "ai_image_embedding_meta.json"
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
-MATCH_INDEX_SCHEMA_VERSION = 7
+MATCH_INDEX_SCHEMA_VERSION = 8
 EMBEDDING_INDEX_SCHEMA_VERSION = 3
 DEFAULT_KEYWORD_BATCH_SIZE = 12
 DEFAULT_LIBRARY_IMAGE_DIR = "ai_images"
@@ -683,6 +690,7 @@ def find_reusable_ai_image_asset(
             "asset_id": _dict(match.get("asset")).get("asset_id") if match else "",
             "keyword_score": match.get("keyword_score") if match else None,
             "threshold_used": debug_record.get("threshold_used"),
+            "reuse_policy": match.get("reuse_policy") if match else None,
         }
         _append_reuse_debug_record(debug_path, debug_record)
         return match
@@ -755,14 +763,55 @@ def find_reusable_ai_image_asset(
     if not candidates:
         return finish("no_candidate_above_reuse_threshold")
 
-    accepted_by = _clean_text(candidates[0].get("accepted_by"))
+    accepted_candidates: list[dict[str, Any]] = []
+    rejected_by_policy: list[dict[str, Any]] = []
+    for candidate in candidates:
+        score_details = dict(_dict(candidate.get("score_details")))
+        for key in (
+            "keyword_score",
+            "embedding_score",
+            "substring_score",
+            "hybrid_score",
+            "rrf_score",
+            "accepted_by",
+            "background_reuse_score",
+        ):
+            if key in candidate and key not in score_details:
+                score_details[key] = candidate.get(key)
+        policy_result = evaluate_reuse_filter(
+            target,
+            _dict(candidate.get("asset")),
+            score_details,
+            threshold=threshold,
+        )
+        candidate["reuse_policy"] = policy_result
+        decision = _clean_text(policy_result.get("decision"))
+        if decision in {"full_match", "generic_support"}:
+            accepted_candidates.append(candidate)
+        else:
+            rejected_by_policy.append(candidate)
+
+    debug_record["policy_candidates"] = [
+        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in candidates
+    ]
+    if not accepted_candidates:
+        debug_record["policy_rejected_candidates"] = [
+            _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in rejected_by_policy
+        ]
+        return finish("no_candidate_after_reuse_policy")
+
+    best = accepted_candidates[0]
+    accepted_by = _clean_text(best.get("accepted_by"))
+    policy_decision = _clean_text(_dict(best.get("reuse_policy")).get("decision"))
     if accepted_by == "background_threshold":
         reason = "reused_by_background_reuse_score"
     elif accepted_by == "bm25_threshold":
         reason = "reused_by_core_score"
+    elif policy_decision == "generic_support":
+        reason = "reused_by_policy_generic_support"
     else:
         reason = "reused_by_hybrid_retrieval_score"
-    return finish(reason, candidates[0])
+    return finish(reason, best)
 
 
 def record_reused_ai_image_asset(
@@ -854,6 +903,7 @@ def _append_reuse_debug_record(path: str | Path | None, record: dict[str, Any]) 
 
 def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
     grade = _clean_text(asset.get("grade"))
+    reuse_policy = normalize_reuse_policy_fields(asset)
     return {
         "asset_id": asset.get("asset_id"),
         "asset_kind": asset.get("asset_kind"),
@@ -875,6 +925,10 @@ def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
         "grade_band": asset.get("grade_band") or infer_grade_band(grade),
         "aspect_ratio": asset.get("aspect_ratio"),
         "context_summary": asset.get("context_summary"),
+        "reuse_level": reuse_policy["reuse_level"],
+        "asset_category": reuse_policy["asset_category"],
+        "core_constraints": reuse_policy["core_constraints"],
+        "generic_support_allowed": reuse_policy["generic_support_allowed"],
     }
 
 
@@ -890,6 +944,7 @@ def _reuse_debug_candidate_payload(candidate: dict[str, Any], *, threshold: floa
     payload["substring_hits"] = candidate.get("substring_hits") or []
     payload["library_image_path"] = str(candidate.get("library_image_path") or "")
     payload["score_details"] = candidate.get("score_details") or {}
+    payload["reuse_policy"] = candidate.get("reuse_policy") or {}
     if threshold is not None:
         payload["threshold_used"] = threshold
         payload["score_gap_to_threshold"] = round(float(candidate.get("keyword_score") or 0.0) - threshold, 4)
@@ -1024,6 +1079,8 @@ def _build_keyword_messages(
                 "subject": asset.get("subject"),
                 "page_title": source.get("page_title"),
                 "page_type": source.get("page_type"),
+                "image_role": _asset_role(asset),
+                "aspect_ratio": _clean_text(asset.get("aspect_ratio")),
                 "layout_hint": source.get("layout_hint"),
                 "content_points": source.get("content_points"),
             }
@@ -1031,7 +1088,8 @@ def _build_keyword_messages(
 
     required_fields = (
         "asset_id, normalized_prompt, context_summary, teaching_intent, "
-        "core_keywords, semantic_aliases, context_summary_keywords"
+        "core_keywords, semantic_aliases, context_summary_keywords, "
+        "reuse_level, asset_category, core_constraints, generic_support_allowed"
     )
     purpose = (
         "你需要为已入库素材和待匹配目标提取同一套可复用元数据。"
@@ -1068,6 +1126,25 @@ def _build_keyword_messages(
         "emotion_tone、visual_motifs、color_palette、texture_style、layout_function 或 mood。"
     )
     user = "请规范化以下素材：\n" + json.dumps({"assets": items}, ensure_ascii=False, indent=2)
+    system += (
+        "Also output simplified reuse policy metadata. "
+        "reuse_level must be one of loose, medium, strict. "
+        "asset_category must be one of learning_behavior, generic_tool, generic_diagram, "
+        "concept_scene, content_specific, character_action, unknown. "
+        "core_constraints must be an array of objects with kind, value, exact. "
+        "kind must be one of text, math, physics, entity, object, action, relation. "
+        "generic_support_allowed must be boolean. "
+        "These fields are not keyword tags. They describe reuse risk and required teaching constraints. "
+        "Use loose for background-like, atmosphere, and general learning behavior. "
+        "Use medium for empty tools, generic templates, and generic diagrams. "
+        "Use strict for concrete text, pinyin, formulas, variables, numbers, units, geometry relations, "
+        "physics connections, force/light directions, experimental equipment, concrete characters, actions, or relations. "
+        "Only put non-replaceable teaching content into core_constraints. "
+        "Do not put visual style, color, quality, composition, aspect ratio, page type, or prompt routing words "
+        "into core_constraints. "
+        "If information is insufficient, use reuse_level medium, asset_category unknown, core_constraints [], "
+        "generic_support_allowed true. "
+    )
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -1160,6 +1237,8 @@ def _apply_keyword_payload(
             ),
         ]
     )[:10]
+    policy_source = {**asset, **payload, "asset_kind": asset.get("asset_kind")}
+    asset.update(normalize_reuse_policy_fields(policy_source))
 
     if not include_match_keywords:
         _strip_library_keyword_fields(asset)
@@ -1460,6 +1539,7 @@ def _normalize_asset_for_match(
     prompt_route = _match_prompt_route(item.get("prompt_route"))
     role = _asset_role(item)
     page_type = _asset_page_type(item)
+    reuse_policy = normalize_reuse_policy_fields(item)
     match_asset: dict[str, Any] = {
         "asset_id": asset_id,
         "asset_kind": asset_kind,
@@ -1483,6 +1563,10 @@ def _normalize_asset_for_match(
             max_items=10,
             exclude=_context_exclusions(item) | _GENERIC_CORE_NOISE,
         ),
+        "reuse_level": reuse_policy["reuse_level"],
+        "asset_category": reuse_policy["asset_category"],
+        "core_constraints": reuse_policy["core_constraints"],
+        "generic_support_allowed": reuse_policy["generic_support_allowed"],
         "duplicate_asset_ids": [],
     }
 
@@ -1560,6 +1644,7 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
             max_items=10,
             exclude=_context_exclusions(asset) | _GENERIC_CORE_NOISE,
         )
+    apply_reuse_policy_defaults(asset)
     _strip_library_keyword_fields(asset)
     source = _dict(asset.get("source"))
     source.pop("page_title", None)
@@ -1630,6 +1715,10 @@ def _strip_empty_match_fields(asset: dict[str, Any]) -> dict[str, Any]:
         "duplicate_asset_ids",
         "_image_sha256",
         "_quality_score",
+        "reuse_level",
+        "asset_category",
+        "core_constraints",
+        "generic_support_allowed",
     }
     cleaned: dict[str, Any] = {}
     for key, value in asset.items():
@@ -2940,7 +3029,7 @@ def _reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: floa
             pass
     if _clean_text(target.get("asset_kind")) == "background":
         return BACKGROUND_REUSE_THRESHOLD
-    return VISUAL_GENERIC_REUSE_THRESHOLD
+    return policy_reuse_threshold_for_target(target)
 
 
 def _aspect_ratio_score(target: dict[str, Any], candidate: dict[str, Any]) -> float:

@@ -499,7 +499,7 @@ def test_enriches_asset_db_keywords_with_llm_payload():
 
     author = db["assets"][0]
     pinyin = db["assets"][1]
-    assert db["schema_version"] == 5
+    assert db["schema_version"] == 6
     assert db["keyword_builder"]["method"] == "llm_reuse_metadata_extraction"
     assert db["keyword_builder"]["model"] == "fake-keyword-model"
     assert "reuse_scope" not in author
@@ -656,7 +656,7 @@ def test_updates_reusable_asset_library_by_copying_images_and_merging_db(tmp_pat
     assert db_path.exists()
     assert db["output_root"] == str(library_dir.resolve())
     assert db["asset_count"] == 2
-    assert db["schema_version"] == 5
+    assert db["schema_version"] == 6
     for asset in db["assets"]:
         copied_path = library_dir / asset["image_path"]
         assert copied_path.exists()
@@ -934,7 +934,7 @@ def test_find_reusable_background_prefers_matching_color_bias(tmp_path):
     (image_dir / "asset_cool.png").write_bytes(b"cool")
     (image_dir / "asset_warm.png").write_bytes(b"warm")
     match_index = {
-        "schema_version": 7,
+        "schema_version": 8,
         "source_asset_count": 0,
         "asset_count": 2,
         "assets": [
@@ -1091,7 +1091,7 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
         ],
     }
     match_index = {
-        "schema_version": 7,
+        "schema_version": 8,
         "source_asset_count": 1,
         "asset_count": 1,
         "assets": [
@@ -1133,3 +1133,99 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
     assert match["asset"]["asset_id"] == "asset_author"
     debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
     assert debug["queries"][0]["match_index_path"].endswith("ai_image_match_index.json")
+
+
+def test_reuse_policy_rejects_conflicting_top_candidate_and_accepts_next(tmp_path):
+    class FakeReuseClient:
+        _model = "fake-reuse-model"
+
+        def chat_json(self, messages, **kwargs):
+            raw = messages[1]["content"]
+            request = json.loads(raw[raw.index("{"):])
+            asset_id = request["assets"][0]["asset_id"]
+            return {
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "normalized_prompt": "character bi teaching card",
+                        "context_summary": "specific character teaching card",
+                        "teaching_intent": "teach the exact character",
+                        "core_keywords": ["character", "bi"],
+                        "semantic_aliases": {},
+                        "context_summary_keywords": ["character card"],
+                        "reuse_level": "strict",
+                        "asset_category": "content_specific",
+                        "core_constraints": [
+                            {"kind": "text", "value": "character: bi", "exact": True},
+                        ],
+                        "generic_support_allowed": False,
+                    }
+                ]
+            }
+
+    library_dir = tmp_path / "materials_library"
+    image_dir = library_dir / "ai_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "bad.png").write_bytes(b"bad")
+    (image_dir / "good.png").write_bytes(b"good")
+    db = {
+        "schema_version": 6,
+        "output_root": str(library_dir),
+        "asset_count": 2,
+        "assets": [
+            {
+                "asset_id": "bad",
+                "asset_kind": "page_image",
+                "image_path": "ai_images/bad.png",
+                "aspect_ratio": "1:1",
+                "content_prompt": "character bi teaching card",
+                "normalized_prompt": "character bi teaching card",
+                "core_keywords": ["character", "bi"],
+                "semantic_aliases": {},
+                "reuse_level": "strict",
+                "asset_category": "content_specific",
+                "core_constraints": [{"kind": "text", "value": "character: bei", "exact": True}],
+                "generic_support_allowed": False,
+            },
+            {
+                "asset_id": "good",
+                "asset_kind": "page_image",
+                "image_path": "ai_images/good.png",
+                "aspect_ratio": "1:1",
+                "content_prompt": "character bi teaching card",
+                "normalized_prompt": "character bi teaching card",
+                "core_keywords": ["character", "bi"],
+                "semantic_aliases": {},
+                "reuse_level": "strict",
+                "asset_category": "content_specific",
+                "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                "generic_support_allowed": False,
+            },
+        ],
+        "warnings": [],
+    }
+    (library_dir / "ai_image_asset_db.json").write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
+
+    match = find_reusable_ai_image_asset(
+        library_dir=library_dir,
+        asset_kind="page_image",
+        prompt="character bi teaching card",
+        subject="Chinese",
+        grade="2",
+        page_title="Character",
+        role="illustration",
+        aspect_ratio="1:1",
+        keyword_client=FakeReuseClient(),
+        debug_path=library_dir / "reuse_debug.json",
+    )
+
+    assert match is not None
+    assert match["asset"]["asset_id"] == "good"
+    assert match["reuse_policy"]["decision"] == "full_match"
+    debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
+    policies = {
+        item["asset_id"]: item["reuse_policy"]["decision"]
+        for item in debug["queries"][0]["policy_candidates"]
+    }
+    assert policies["bad"] == "reject"
+    assert policies["good"] == "full_match"
