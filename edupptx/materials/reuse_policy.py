@@ -55,6 +55,7 @@ CONFIDENT_LOOSE_MARGIN = 0.08
 
 HIGH_RISK_KINDS = {"text", "math", "physics", "count", "relation"}
 LLM_REVIEW_REQUIRED_KINDS = {"text", "math", "physics", "count", "relation"}
+VISUAL_SEMANTIC_KINDS = {"entity", "object", "action", "setting", "emotion"}
 CONSTRAINT_EMBEDDING_THRESHOLDS = {
     "entity": (0.92, 0.80),
     "object": (0.92, 0.80),
@@ -129,10 +130,20 @@ def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
 
     constraints = normalize_core_constraints(asset.get("core_constraints"))
     reuse_risk = normalize_reuse_risk_fields(asset)
-    has_strict_risk = _has_strict_reuse_risk(constraints, reuse_risk)
 
     strict_downgraded = False
-    if has_strict_risk:
+    if asset_category in MEDIUM_CATEGORIES and not _has_high_risk_kind_constraints(constraints):
+        # Medium-pool categories are intentionally threshold based. LLMs often
+        # mark ordinary visible subjects/actions as hard constraints because a
+        # page "needs" that subject, but those signals belong in keywords.
+        strict_downgraded = (
+            reuse_level == "strict"
+            or any(reuse_risk.values())
+            or any(item.get("kind") in VISUAL_SEMANTIC_KINDS for item in constraints)
+        )
+        reuse_level = "medium"
+        constraints = []
+    elif _has_strict_reuse_risk(constraints, reuse_risk):
         reuse_level = "strict"
     elif reuse_level == "strict" and constraints and asset_category in STRICT_CATEGORIES:
         # Strict category assets may rely on visible subjects, actions, or
@@ -1010,6 +1021,10 @@ def _is_specific_constraint(constraint: dict[str, Any]) -> bool:
 
 def _has_high_risk_exact_constraints(constraints: list[dict[str, Any]]) -> bool:
     return any(item.get("kind") in HIGH_RISK_KINDS or item.get("hard") for item in constraints)
+
+
+def _has_high_risk_kind_constraints(constraints: list[dict[str, Any]]) -> bool:
+    return any(item.get("kind") in HIGH_RISK_KINDS for item in constraints)
 
 
 def _has_strict_reuse_risk(constraints: list[dict[str, Any]], reuse_risk: dict[str, bool]) -> bool:

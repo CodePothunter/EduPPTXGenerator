@@ -1428,7 +1428,7 @@ def _normalize_reuse_debug_mode(value: Any) -> str:
     env_mode = _clean_text(os.environ.get("EDUPPTX_AI_IMAGE_REUSE_DEBUG_MODE")).casefold()
     if env_mode in {"full", "summary", "off"}:
         return env_mode
-    return "full"
+    return "summary"
 
 
 def _reuse_debug_record_for_mode(
@@ -1831,15 +1831,28 @@ def _build_keyword_messages(
         "learning_behavior 表示通用学习或课堂行为，通常应为 medium。"
         "generic_tool 表示可复用的视觉辅助、符号工具、标注气泡、图标、抽象支架，通常应为 medium。"
         "concept_scene 表示可广泛复用的语义场景；只要相似主体或相似场景通过阈值后仍能服务页面，通常应为 medium。"
-        "content_specific 表示课文或知识点中的特定事件、不可替换的可见内容、精确概念或关键元素变化会改变含义的图示。"
-        "character_action 表示人物、角色或形象的动作、对象、状态、关系、场景、情绪或数量不可替换。"
-        "当 reuse_risk 中任一 required 为 true，或教学正确性依赖精确文字、数学、物理、数量、关系、顺序、"
-        "主体、客体、动作、地点、情绪等可见内容时，使用 strict。"
+        "普通主体、普通动物、普通人物、普通地点或普通单一动作本身不构成 strict；"
+        "页面需要出现某主体，只说明它应进入 core_keywords，不等于 unique_referent。"
+        "content_specific 表示课文或知识点中的特定事件、具体可读内容、固定知识对象、固定顺序、"
+        "具体对应关系或关键元素变化会改变含义的图示。"
+        "character_action 表示人物、角色或形象的身份、动作方向、作用对象、状态、情绪、数量或场景关系不可替换。"
+        "readable_knowledge 只在图片承载具体可读、可数或可验证的教学内容时设为 true，"
+        "例如具体汉字、拼音、词语、句子、公式、数字、单位、答案、标签、图例、步骤编号、笔顺、笔画或具体结构关系。"
+        "不要因为图片服务于知识讲解、展示普通概念、普通实体或普通场景，就把 readable_knowledge 设为 true。"
+        "unique_referent 只用于具名人物、具名地点、具名作品对象、具体课文情节节点或同类替换会直接造成事实错误的唯一对象。"
+        "不要把普通动物、普通学生、普通老人、普通池塘、公园、教室、识字方法、写字行为、观察行为标为 unique_referent。"
+        "exact_relation 只用于必须保留的具体主体-动作-客体、固定顺序、因果、空间关系、事件节点或知识对应关系；"
+        "抽象教学方法、通用隐喻或没有具体对象的泛化组合逻辑不要设为 exact_relation。"
+        "当教学正确性依赖精确文字、数学、物理、数量、具体关系、固定顺序、不可替换情节、"
+        "动作方向、作用对象或情绪状态时，才使用 strict。"
+        "learning_behavior、generic_tool、concept_scene 默认保持 medium，除非存在上述具体高风险内容。"
         "strict 素材通常必须有 core_constraints。请把必须过滤的内容拆成原子约束："
         "entity 表示必需的主体、人物、角色或身份；object 表示必需的可见物体；"
         "action 表示必需的动作或行为；setting 表示必需地点或场景；emotion 表示必需情绪；"
         "count 表示必需数量；relation 表示主体-动作-客体、空间关系、因果、顺序或事件节点关系。"
         "不可替换的约束设置 hard true。"
+        "对于 character_action，如果动作方向、对象关系或情绪状态不可替换，应优先提取 relation、action、object、emotion，"
+        "例如提取为“角色A推着角色B”“某人处于崩溃/绝望状态”这类泛化关系，而不是只列普通人物关键词。"
         "所有 core_constraints 都会先做精确、包含、aliases 匹配；不通过时再做同 kind 的 embedding 语义判断。"
         "text、math、physics、count、relation 即使通过匹配或 embedding，也会进入 LLM 二次复核；"
         "entity、object、action、setting、emotion 在高置信匹配时可以直接通过，灰区进入 LLM 复核。"

@@ -99,15 +99,20 @@ def test_normalize_reuse_policy_preserves_strict_structured_constraints():
     assert policy["generic_support_allowed"] is False
 
 
-def test_normalize_reuse_policy_keeps_medium_categories_threshold_based_without_hard_constraints():
+def test_normalize_reuse_policy_keeps_medium_categories_threshold_based_without_high_risk_constraints():
     policy = normalize_reuse_policy_fields(
         {
             "asset_kind": "page_image",
             "reuse_level": "strict",
             "asset_category": "concept_scene",
+            "reuse_risk": {
+                "readable_knowledge": {"required": True, "evidence": ["ordinary concept explanation"]},
+                "unique_referent": {"required": True, "evidence": ["ordinary subject needed"]},
+                "exact_relation": {"required": False, "evidence": []},
+            },
             "core_constraints": [
-                {"kind": "entity", "value": "visible subject", "exact": True},
-                {"kind": "action", "value": "visible action", "exact": True},
+                {"kind": "entity", "value": "visible subject", "exact": True, "hard": True},
+                {"kind": "action", "value": "visible action", "exact": True, "hard": True},
             ],
             "generic_support_allowed": False,
         }
@@ -115,6 +120,23 @@ def test_normalize_reuse_policy_keeps_medium_categories_threshold_based_without_
 
     assert policy["reuse_level"] == "medium"
     assert policy["generic_support_allowed"] is True
+    assert policy["core_constraints"] == []
+
+
+def test_normalize_reuse_policy_preserves_high_risk_constraints_in_medium_categories():
+    policy = normalize_reuse_policy_fields(
+        {
+            "asset_kind": "page_image",
+            "reuse_level": "medium",
+            "asset_category": "generic_tool",
+            "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+            "generic_support_allowed": True,
+        }
+    )
+
+    assert policy["reuse_level"] == "strict"
+    assert policy["generic_support_allowed"] is False
+    assert policy["core_constraints"] == [{"kind": "text", "value": "character: bi", "exact": True}]
 
 
 def test_normalize_reuse_policy_keeps_strict_when_reuse_risk_requires_exactness():
@@ -256,7 +278,7 @@ def test_strict_candidate_requires_target_to_cover_candidate_constraints():
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
-        "asset_category": "concept_scene",
+        "asset_category": "character_action",
         "core_constraints": [
             {"kind": "entity", "value": "specific subject", "exact": True, "hard": True},
             {"kind": "action", "value": "specific action", "exact": True, "hard": True},
@@ -274,7 +296,7 @@ def test_strict_candidate_accepts_when_target_covers_structured_constraints():
     target = {
         "asset_kind": "page_image",
         "reuse_level": "medium",
-        "asset_category": "concept_scene",
+        "asset_category": "character_action",
         "core_constraints": [
             {"kind": "entity", "value": "specific subject", "exact": True, "hard": True},
             {"kind": "action", "value": "specific action", "exact": True, "hard": True},
@@ -283,7 +305,7 @@ def test_strict_candidate_accepts_when_target_covers_structured_constraints():
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
-        "asset_category": "concept_scene",
+        "asset_category": "character_action",
         "core_constraints": [
             {"kind": "entity", "value": "specific subject", "exact": True, "hard": True},
             {"kind": "action", "value": "specific action", "exact": True, "hard": True},
