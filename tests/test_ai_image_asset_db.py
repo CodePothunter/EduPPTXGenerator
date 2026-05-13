@@ -18,6 +18,41 @@ from edupptx.materials.ai_image_asset_db import (
 )
 
 
+def _fake_reuse_review_response(messages):
+    raw = messages[1]["content"]
+    request = json.loads(raw[raw.index("{"):])
+    if not request.get("reuse_review"):
+        return None
+    target_constraints = request.get("target", {}).get("core_constraints") or []
+    candidate_constraints = request.get("candidate", {}).get("core_constraints") or []
+    for target_constraint in target_constraints:
+        same_kind = [
+            item
+            for item in candidate_constraints
+            if item.get("kind") == target_constraint.get("kind")
+        ]
+        if same_kind and any(item.get("value") == target_constraint.get("value") for item in same_kind):
+            continue
+        return {
+            "decision": "reject",
+            "reason": "fake review found constraint mismatch",
+            "teaching_safe": False,
+            "critical_mismatch": [target_constraint.get("value")],
+            "matched_constraints": [],
+            "mismatched_constraints": [target_constraint],
+            "missing_constraints": [],
+        }
+    return {
+        "decision": "accept",
+        "reason": "fake review accepted matching constraints",
+        "teaching_safe": True,
+        "critical_mismatch": [],
+        "matched_constraints": target_constraints,
+        "mismatched_constraints": [],
+        "missing_constraints": [],
+    }
+
+
 def test_infers_grade_and_subject_from_plan_context():
     assert infer_grade("七年级语文《秋天的怀念》课文教学", "七年级学生、初中语文教师") == "七年级"
     assert infer_subject("七年级语文《秋天的怀念》课文教学", "七年级学生、初中语文教师") == "语文"
@@ -758,6 +793,9 @@ def test_finds_reusable_asset_with_content_bm25_score(tmp_path):
         _model = "fake-reuse-model"
 
         def chat_json(self, messages, **kwargs):
+            review = _fake_reuse_review_response(messages)
+            if review is not None:
+                return review
             raw = messages[1]["content"]
             request = json.loads(raw[raw.index("{"):])
             asset_id = request["assets"][0]["asset_id"]
@@ -823,6 +861,7 @@ def test_finds_reusable_asset_with_content_bm25_score(tmp_path):
         keyword_client=FakeReuseClient(),
         debug_path=library_dir / "reuse_debug.json",
         debug_context={"page_number": 4, "slot_key": "illustration_1"},
+        reuse_debug_mode="full",
     )
 
     assert match is not None
@@ -1110,6 +1149,9 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
         _model = "fake-reuse-model"
 
         def chat_json(self, messages, **kwargs):
+            review = _fake_reuse_review_response(messages)
+            if review is not None:
+                return review
             raw = messages[1]["content"]
             request = json.loads(raw[raw.index("{"):])
             asset_id = request["assets"][0]["asset_id"]
@@ -1194,6 +1236,7 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
         aspect_ratio="1:1",
         keyword_client=FakeReuseClient(),
         debug_path=library_dir / "reuse_debug.json",
+        reuse_debug_mode="full",
     )
 
     assert match is not None
@@ -1207,6 +1250,9 @@ def test_reuse_policy_rejects_conflicting_top_candidate_and_accepts_next(tmp_pat
         _model = "fake-reuse-model"
 
         def chat_json(self, messages, **kwargs):
+            review = _fake_reuse_review_response(messages)
+            if review is not None:
+                return review
             raw = messages[1]["content"]
             request = json.loads(raw[raw.index("{"):])
             asset_id = request["assets"][0]["asset_id"]
@@ -1284,6 +1330,7 @@ def test_reuse_policy_rejects_conflicting_top_candidate_and_accepts_next(tmp_pat
         aspect_ratio="1:1",
         keyword_client=FakeReuseClient(),
         debug_path=library_dir / "reuse_debug.json",
+        reuse_debug_mode="full",
     )
 
     assert match is not None
@@ -1298,11 +1345,109 @@ def test_reuse_policy_rejects_conflicting_top_candidate_and_accepts_next(tmp_pat
     assert policies["good"] == "full_match"
 
 
+def test_summary_debug_records_top_two_candidates_when_no_reuse(tmp_path):
+    class FakeReuseClient:
+        _model = "fake-reuse-model"
+
+        def chat_json(self, messages, **kwargs):
+            review = _fake_reuse_review_response(messages)
+            if review is not None:
+                return review
+            raw = messages[1]["content"]
+            request = json.loads(raw[raw.index("{"):])
+            asset_id = request["assets"][0]["asset_id"]
+            return {
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "normalized_prompt": "character bi teaching card",
+                        "context_summary": "specific character teaching card",
+                        "teaching_intent": "teach the exact character",
+                        "core_keywords": ["character", "bi"],
+                        "semantic_aliases": {},
+                        "context_summary_keywords": ["character card"],
+                        "reuse_level": "strict",
+                        "asset_category": "content_specific",
+                        "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                        "generic_support_allowed": False,
+                    }
+                ]
+            }
+
+    library_dir = tmp_path / "materials_library"
+    image_dir = library_dir / "ai_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "one.png").write_bytes(b"one")
+    (image_dir / "two.png").write_bytes(b"two")
+    db = {
+        "schema_version": 6,
+        "output_root": str(library_dir),
+        "asset_count": 2,
+        "assets": [
+            {
+                "asset_id": "one",
+                "asset_kind": "page_image",
+                "image_path": "ai_images/one.png",
+                "aspect_ratio": "1:1",
+                "content_prompt": "character bi teaching card",
+                "normalized_prompt": "character bi teaching card",
+                "core_keywords": ["character", "bi"],
+                "semantic_aliases": {},
+                "reuse_level": "strict",
+                "asset_category": "content_specific",
+                "core_constraints": [{"kind": "text", "value": "character: bei", "exact": True}],
+                "generic_support_allowed": False,
+            },
+            {
+                "asset_id": "two",
+                "asset_kind": "page_image",
+                "image_path": "ai_images/two.png",
+                "aspect_ratio": "1:1",
+                "content_prompt": "character bi teaching card",
+                "normalized_prompt": "character bi teaching card",
+                "core_keywords": ["character", "bi"],
+                "semantic_aliases": {},
+                "reuse_level": "strict",
+                "asset_category": "content_specific",
+                "core_constraints": [{"kind": "text", "value": "character: pi", "exact": True}],
+                "generic_support_allowed": False,
+            },
+        ],
+    }
+    (library_dir / "ai_image_asset_db.json").write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
+
+    match = find_reusable_ai_image_asset(
+        library_dir=library_dir,
+        asset_kind="page_image",
+        prompt="character bi teaching card",
+        subject="Chinese",
+        grade="2",
+        page_title="Character",
+        role="illustration",
+        aspect_ratio="1:1",
+        keyword_client=FakeReuseClient(),
+        debug_path=library_dir / "reuse_debug.json",
+    )
+
+    assert match is None
+    debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
+    query = debug["queries"][0]
+    assert query["debug_mode"] == "summary"
+    assert "ranked_candidates" not in query
+    assert "policy_candidates" not in query
+    assert len(query["no_reuse_top_candidates"]) == 2
+    assert {item["asset_id"] for item in query["no_reuse_top_candidates"]} == {"one", "two"}
+    assert all(item["reuse_policy"]["decision"] == "reject" for item in query["no_reuse_top_candidates"])
+
+
 def test_strict_reuse_session_limit_skips_candidate_after_two_uses(tmp_path):
     class FakeReuseClient:
         _model = "fake-reuse-model"
 
         def chat_json(self, messages, **kwargs):
+            review = _fake_reuse_review_response(messages)
+            if review is not None:
+                return review
             raw = messages[1]["content"]
             request = json.loads(raw[raw.index("{"):])
             asset_id = request["assets"][0]["asset_id"]
@@ -1382,6 +1527,7 @@ def test_strict_reuse_session_limit_skips_candidate_after_two_uses(tmp_path):
         keyword_client=FakeReuseClient(),
         debug_path=library_dir / "reuse_debug.json",
         reuse_session_state=state,
+        reuse_debug_mode="full",
     )
 
     assert match is not None
@@ -1400,6 +1546,9 @@ def test_plan_reuse_match_check_does_not_generate_or_ingest_assets(tmp_path):
         _model = "fake-reuse-model"
 
         def chat_json(self, messages, **kwargs):
+            review = _fake_reuse_review_response(messages)
+            if review is not None:
+                return review
             raw = messages[1]["content"]
             request = json.loads(raw[raw.index("{"):])
             asset_id = request["assets"][0]["asset_id"]
@@ -1495,6 +1644,9 @@ def test_plan_reuse_match_check_can_copy_matches_to_session(tmp_path):
         _model = "fake-reuse-model"
 
         def chat_json(self, messages, **kwargs):
+            review = _fake_reuse_review_response(messages)
+            if review is not None:
+                return review
             raw = messages[1]["content"]
             request = json.loads(raw[raw.index("{"):])
             asset_id = request["assets"][0]["asset_id"]

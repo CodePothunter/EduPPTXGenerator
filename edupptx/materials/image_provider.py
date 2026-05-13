@@ -66,7 +66,7 @@ async def fetch_images(needs: list[ImageNeed], config: Config) -> list[ImageResu
     gen_provider = SeedreamProvider(config) if config.image_api_key else None
 
     async def _fetch_one(need: ImageNeed) -> ImageResult | None:
-        if need.source == "ai_generate":
+        if need.source == "ai_generate" or (need.source == "search" and not search_providers):
             prompt = (need.generation_prompt or need.query).strip()
             if gen_provider is None:
                 logger.warning("No AI image provider configured, skipping: {}", prompt)

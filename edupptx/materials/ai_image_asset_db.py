@@ -53,7 +53,7 @@ BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT = 0.85
 BACKGROUND_COLOR_BIAS_REUSE_WEIGHT = 0.15
 
 VISUAL_GENERIC_REUSE_THRESHOLD = 0.28
-BACKGROUND_REUSE_THRESHOLD = 0.25
+BACKGROUND_REUSE_THRESHOLD = 0.38
 
 _EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 
@@ -644,13 +644,15 @@ def find_reusable_ai_image_asset(
     debug_path: str | Path | None = None,
     debug_context: dict[str, Any] | None = None,
     reuse_session_state: dict[str, Any] | None = None,
+    llm_review_enabled: bool = True,
+    reuse_debug_mode: str = "",
 ) -> dict[str, Any] | None:
     """Find a reusable AI image asset from the central library.
 
-    The final reuse decision is deterministic: BM25 remains the precision
-    signal, while optional Qwen embedding and substring retrieval provide
-    gray-zone recall through RRF fusion. The LLM is used only to build target
-    keywords/context when a client exists.
+    BM25 remains the precision signal, while optional Qwen embedding and
+    substring retrieval provide gray-zone recall through RRF fusion. When a
+    strict reuse policy needs semantic confirmation, the same LLM client can
+    perform a bounded second-stage review.
     """
 
     library_root = Path(library_dir).expanduser().resolve()
@@ -659,6 +661,7 @@ def find_reusable_ai_image_asset(
     index, match_index_path = _read_match_index_or_build(library_root, db)
     assets = index.get("assets")
     embedding_index, embedding_status = _read_ai_image_embedding_index(library_root)
+    reuse_debug_mode = _normalize_reuse_debug_mode(reuse_debug_mode)
 
     target = _build_reuse_target_asset(
         asset_kind=asset_kind,
@@ -684,6 +687,8 @@ def find_reusable_ai_image_asset(
         context=debug_context,
     )
     debug_record["embedding_index"] = embedding_status
+    debug_record["llm_review_enabled"] = bool(llm_review_enabled)
+    debug_record["debug_mode"] = reuse_debug_mode
     debug_record["threshold_used"] = _reuse_threshold_for_target(target, min_keyword_score)
 
     def finish(reason: str, match: dict[str, Any] | None = None) -> dict[str, Any] | None:
@@ -696,7 +701,10 @@ def find_reusable_ai_image_asset(
             "reuse_policy": match.get("reuse_policy") if match else None,
             "strict_reuse_occupancy": match.get("strict_reuse_occupancy") if match else None,
         }
-        _append_reuse_debug_record(debug_path, debug_record)
+        _append_reuse_debug_record(
+            debug_path,
+            _reuse_debug_record_for_mode(debug_record, mode=reuse_debug_mode, match=match),
+        )
         return match
 
     if not isinstance(assets, list) or not assets:
@@ -784,12 +792,40 @@ def find_reusable_ai_image_asset(
         ):
             if key in candidate and key not in score_details:
                 score_details[key] = candidate.get(key)
+        if _dict(embedding_status).get("enabled"):
+            score_details["constraint_embedding_scores"] = _score_constraint_embedding_pairs(
+                target,
+                _dict(candidate.get("asset")),
+            )
         policy_result = evaluate_reuse_filter(
             target,
             _dict(candidate.get("asset")),
             score_details,
             threshold=threshold,
         )
+        if _clean_text(policy_result.get("decision")) == "llm_review" and llm_review_enabled:
+            review_result = _review_reuse_candidate_with_llm(
+                keyword_client,
+                target=target,
+                candidate=_dict(candidate.get("asset")),
+                policy_result=policy_result,
+                score_details=score_details,
+            )
+            policy_result["llm_review"] = review_result
+            if _reuse_review_accepts(review_result):
+                policy_result = dict(policy_result)
+                policy_result["decision"] = "full_match"
+                policy_result["reason"] = "strict_llm_review_accepted"
+                policy_result["confidence"] = max(float(policy_result.get("confidence") or 0.0), 0.75)
+            else:
+                policy_result = dict(policy_result)
+                policy_result["decision"] = "reject"
+                policy_result["reason"] = "strict_llm_review_rejected"
+        elif _clean_text(policy_result.get("decision")) == "llm_review":
+            policy_result = dict(policy_result)
+            policy_result["llm_review"] = {"decision": "uncertain", "reason": "llm_review_disabled"}
+            policy_result["decision"] = "reject"
+            policy_result["reason"] = "strict_llm_review_disabled"
         candidate["reuse_policy"] = policy_result
         decision = _clean_text(policy_result.get("decision"))
         if decision in {"full_match", "generic_support"}:
@@ -947,6 +983,8 @@ def evaluate_ai_image_reuse_matches_from_plan(
     debug_path: str | Path | None = None,
     include_background: bool = True,
     materialize_matches: bool = False,
+    llm_review_enabled: bool = True,
+    reuse_debug_mode: str = "full",
 ) -> dict[str, Any]:
     """Evaluate reuse matches from a plan without generating or ingesting assets.
 
@@ -982,6 +1020,7 @@ def evaluate_ai_image_reuse_matches_from_plan(
         "strict_asset_use_counts": {},
         "strict_asset_used_by": {},
     }
+    reuse_debug_mode = _normalize_reuse_debug_mode(reuse_debug_mode)
     checks: list[dict[str, Any]] = []
     materialized_count = 0
 
@@ -998,6 +1037,8 @@ def evaluate_ai_image_reuse_matches_from_plan(
             debug_path=debug_path,
             debug_context={"check_type": "plan_reuse_match", "asset_kind": "background"},
             reuse_session_state=reuse_session_state,
+            llm_review_enabled=llm_review_enabled,
+            reuse_debug_mode=reuse_debug_mode,
         )
         session_image_path: Path | None = None
         if background_match:
@@ -1057,6 +1098,8 @@ def evaluate_ai_image_reuse_matches_from_plan(
                 debug_path=debug_path,
                 debug_context=debug_context,
                 reuse_session_state=reuse_session_state,
+                llm_review_enabled=llm_review_enabled,
+                reuse_debug_mode=reuse_debug_mode,
             )
             session_image_path: Path | None = None
             if match:
@@ -1325,6 +1368,13 @@ def _ratio_value(value: str) -> float:
     return parsed if parsed > 0 else 0.0
 
 
+def _optional_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _new_reuse_debug_record(
     *,
     library_root: Path,
@@ -1354,7 +1404,7 @@ def _new_reuse_debug_record(
 
 
 def _append_reuse_debug_record(path: str | Path | None, record: dict[str, Any]) -> None:
-    if path is None:
+    if path is None or not record:
         return
     debug_path = Path(path).expanduser()
     debug_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1369,6 +1419,88 @@ def _append_reuse_debug_record(path: str | Path | None, record: dict[str, Any]) 
         "queries": queries,
     }
     debug_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _normalize_reuse_debug_mode(value: Any) -> str:
+    mode = _clean_text(value).casefold()
+    if mode in {"full", "summary", "off"}:
+        return mode
+    env_mode = _clean_text(os.environ.get("EDUPPTX_AI_IMAGE_REUSE_DEBUG_MODE")).casefold()
+    if env_mode in {"full", "summary", "off"}:
+        return env_mode
+    return "full"
+
+
+def _reuse_debug_record_for_mode(
+    record: dict[str, Any],
+    *,
+    mode: str,
+    match: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if mode == "off":
+        return {}
+    if mode == "full":
+        return record
+
+    summary = {
+        "ts": record.get("ts"),
+        "debug_mode": "summary",
+        "context": record.get("context") or {},
+        "library_dir": record.get("library_dir"),
+        "db_path": record.get("db_path"),
+        "match_index_path": record.get("match_index_path"),
+        "asset_count": record.get("asset_count"),
+        "candidate_limit": record.get("candidate_limit"),
+        "threshold_used": record.get("threshold_used"),
+        "llm_review_enabled": bool(record.get("llm_review_enabled")),
+        "embedding_index": record.get("embedding_index") or {},
+        "target": record.get("target") or {},
+        "decision": record.get("decision") or {},
+    }
+    if match is not None:
+        summary["reused_asset"] = _reuse_debug_candidate_summary(
+            _reuse_debug_candidate_payload(match, threshold=_optional_float(record.get("threshold_used")))
+        )
+    else:
+        summary["no_reuse_top_candidates"] = _reuse_no_match_top_candidate_summaries(record, limit=2)
+    return summary
+
+
+def _reuse_no_match_top_candidate_summaries(record: dict[str, Any], *, limit: int = 2) -> list[dict[str, Any]]:
+    for key in ("policy_candidates", "thresholded_candidates", "ranked_candidates", "candidate_scores"):
+        candidates = record.get(key)
+        if isinstance(candidates, list) and candidates:
+            return [_reuse_debug_candidate_summary(item) for item in candidates[:limit] if isinstance(item, dict)]
+    return []
+
+
+def _reuse_debug_candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
+    policy = _dict(candidate.get("reuse_policy"))
+    return {
+        "asset_id": candidate.get("asset_id"),
+        "image_path": candidate.get("image_path"),
+        "library_image_path": candidate.get("library_image_path"),
+        "content_prompt": candidate.get("content_prompt"),
+        "reuse_level": candidate.get("reuse_level"),
+        "asset_category": candidate.get("asset_category"),
+        "core_keywords": candidate.get("core_keywords") or [],
+        "core_constraints": candidate.get("core_constraints") or [],
+        "keyword_score": candidate.get("keyword_score"),
+        "embedding_score": candidate.get("embedding_score"),
+        "substring_score": candidate.get("substring_score"),
+        "hybrid_score": candidate.get("hybrid_score"),
+        "accepted_by": candidate.get("accepted_by"),
+        "score_gap_to_threshold": candidate.get("score_gap_to_threshold"),
+        "reuse_policy": {
+            "decision": policy.get("decision"),
+            "reason": policy.get("reason"),
+            "missing": policy.get("missing") or [],
+            "conflicts": policy.get("conflicts") or [],
+            "review_items": policy.get("review_items") or [],
+            "llm_review": policy.get("llm_review") or {},
+        },
+        "strict_reuse_occupancy": candidate.get("strict_reuse_occupancy") or {},
+    }
 
 
 def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
@@ -1532,6 +1664,93 @@ def _call_keyword_llm(
     return _load_json_response(raw)
 
 
+def _review_reuse_candidate_with_llm(
+    client: Any | None,
+    *,
+    target: dict[str, Any],
+    candidate: dict[str, Any],
+    policy_result: dict[str, Any],
+    score_details: dict[str, Any],
+) -> dict[str, Any]:
+    if client is None:
+        return {"decision": "uncertain", "reason": "missing_llm_client"}
+
+    messages = _build_reuse_review_messages(
+        target=target,
+        candidate=candidate,
+        policy_result=policy_result,
+        score_details=score_details,
+    )
+    chat_json = getattr(client, "chat_json", None)
+    try:
+        if callable(chat_json):
+            try:
+                response = chat_json(messages=messages, temperature=0.0, max_tokens=1200, max_retries=1)
+            except TypeError:
+                response = chat_json(messages, temperature=0.0, max_tokens=1200)
+        else:
+            chat = getattr(client, "chat", None)
+            if not callable(chat):
+                return {"decision": "uncertain", "reason": "llm_client_missing_chat"}
+            response = _load_json_response(chat(messages=messages, temperature=0.0, max_tokens=1200))
+    except Exception as exc:
+        return {"decision": "uncertain", "reason": f"llm_review_failed: {str(exc)[:160]}"}
+
+    if not isinstance(response, dict):
+        return {"decision": "uncertain", "reason": "llm_review_invalid_response"}
+    decision = _normalize_reuse_review_decision(response.get("decision"))
+    return {
+        "decision": decision,
+        "reason": _clean_text(response.get("reason")) or "llm_review",
+        "teaching_safe": bool(response.get("teaching_safe")) if "teaching_safe" in response else decision == "accept",
+        "critical_mismatch": _as_string_list(response.get("critical_mismatch")),
+        "matched_constraints": response.get("matched_constraints") if isinstance(response.get("matched_constraints"), list) else [],
+        "mismatched_constraints": response.get("mismatched_constraints") if isinstance(response.get("mismatched_constraints"), list) else [],
+        "missing_constraints": response.get("missing_constraints") if isinstance(response.get("missing_constraints"), list) else [],
+    }
+
+
+def _build_reuse_review_messages(
+    *,
+    target: dict[str, Any],
+    candidate: dict[str, Any],
+    policy_result: dict[str, Any],
+    score_details: dict[str, Any],
+) -> list[dict[str, str]]:
+    payload = {
+        "reuse_review": True,
+        "target": _reuse_debug_asset_payload(target),
+        "candidate": _reuse_debug_asset_payload(candidate),
+        "reuse_policy": policy_result,
+        "score_details": _debug_score_details(score_details),
+    }
+    system = (
+        "你是教学PPT素材复用审核器。请只判断候选图片素材是否能在教学语义上安全替代目标图片需求。"
+        "重点检查可读文字、数学、物理、数量、主体、客体、动作、地点、情感、组合关系、顺序和因果是否会造成教学错误。"
+        "如果信息不足或存在明显风险，返回 uncertain 或 reject。"
+        "只输出 JSON，不要输出解释性正文。JSON 字段必须包含："
+        "decision（accept、reject、uncertain 之一）、reason、teaching_safe、critical_mismatch、"
+        "matched_constraints、mismatched_constraints、missing_constraints。"
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, indent=2)},
+    ]
+
+
+def _normalize_reuse_review_decision(value: Any) -> str:
+    text = _clean_text(value).casefold()
+    if text in {"accept", "accepted", "reuse", "yes", "true", "通过", "接受", "可复用", "复用"}:
+        return "accept"
+    if text in {"reject", "rejected", "no", "false", "拒绝", "不通过", "不可复用", "不复用"}:
+        return "reject"
+    return "uncertain"
+
+
+def _reuse_review_accepts(review: dict[str, Any]) -> bool:
+    return _clean_text(review.get("decision")) == "accept" and bool(review.get("teaching_safe", True))
+
+
 def _build_keyword_messages(
     batch: list[dict[str, Any]],
     *,
@@ -1599,26 +1818,39 @@ def _build_keyword_messages(
     )
     user = "请规范化以下素材：\n" + json.dumps({"assets": items}, ensure_ascii=False, indent=2)
     system += (
-        "Also output simplified reuse policy metadata and reuse_risk. "
-        "reuse_level must be one of loose, medium, strict. "
-        "asset_category must be one of learning_behavior, generic_tool, generic_diagram, "
-        "concept_scene, content_specific, character_action, unknown. "
-        "core_constraints must be an array of objects with kind, value, exact. "
-        "kind must be one of text, math, physics, entity, object, action, relation. "
-        "generic_support_allowed must be boolean. "
-        "reuse_risk must be an object with readable_knowledge, unique_referent, exact_relation; "
-        "each value must be an object with boolean required and array evidence. "
-        "These fields are not keyword tags. They describe whether a similar-but-not-identical image would "
-        "break teaching correctness. Use strict only when one of the reuse_risk.required values is true, "
-        "or when core_constraints contain readable text/math/physics/relation content that must be exact. "
-        "Use medium for semantic scenes where a similar subject, action, or setting can still serve the page. "
-        "Use loose for atmosphere, background-like imagery, general learning behavior, and generic tools. "
-        "Only put non-replaceable teaching content into core_constraints. Ordinary visible entities, objects, "
-        "actions, emotions, settings, colors, or atmosphere are soft matching signals in core_keywords, not hard constraints. "
-        "Do not put visual style, color, quality, composition, aspect ratio, page type, or prompt routing words "
-        "into core_constraints. "
-        "If information is insufficient, use reuse_level medium, asset_category unknown, core_constraints [], "
-        "generic_support_allowed true, and reuse_risk values with required false. "
+        "还必须输出简化的复用策略字段和 reuse_risk。"
+        "reuse_level 只能是 loose、medium、strict。"
+        "asset_category 只能是 learning_behavior、generic_tool、generic_diagram、"
+        "concept_scene、content_specific、character_action、unknown。"
+        "core_constraints 必须是对象数组，每个对象包含 kind、value、exact，可选 hard、aliases。"
+        "kind 只能是 text、math、physics、entity、object、action、relation、setting、emotion、count。"
+        "generic_support_allowed 必须是布尔值。"
+        "reuse_risk 必须包含 readable_knowledge、unique_referent、exact_relation；"
+        "每项都必须是包含布尔 required 和数组 evidence 的对象。"
+        "这些字段不是关键词标签，而是用来判断相似但不完全相同的图片是否会破坏教学正确性。"
+        "learning_behavior 表示通用学习或课堂行为，通常应为 medium。"
+        "generic_tool 表示可复用的视觉辅助、符号工具、标注气泡、图标、抽象支架，通常应为 medium。"
+        "concept_scene 表示可广泛复用的语义场景；只要相似主体或相似场景通过阈值后仍能服务页面，通常应为 medium。"
+        "content_specific 表示课文或知识点中的特定事件、不可替换的可见内容、精确概念或关键元素变化会改变含义的图示。"
+        "character_action 表示人物、角色或形象的动作、对象、状态、关系、场景、情绪或数量不可替换。"
+        "当 reuse_risk 中任一 required 为 true，或教学正确性依赖精确文字、数学、物理、数量、关系、顺序、"
+        "主体、客体、动作、地点、情绪等可见内容时，使用 strict。"
+        "strict 素材通常必须有 core_constraints。请把必须过滤的内容拆成原子约束："
+        "entity 表示必需的主体、人物、角色或身份；object 表示必需的可见物体；"
+        "action 表示必需的动作或行为；setting 表示必需地点或场景；emotion 表示必需情绪；"
+        "count 表示必需数量；relation 表示主体-动作-客体、空间关系、因果、顺序或事件节点关系。"
+        "不可替换的约束设置 hard true。"
+        "所有 core_constraints 都会先做精确、包含、aliases 匹配；不通过时再做同 kind 的 embedding 语义判断。"
+        "text、math、physics、count、relation 即使通过匹配或 embedding，也会进入 LLM 二次复核；"
+        "entity、object、action、setting、emotion 在高置信匹配时可以直接通过，灰区进入 LLM 复核。"
+        "视觉语义类约束可提供 aliases，用于表达同义或近义的泛化说法；不要把具体测试样例硬编码为规则。"
+        "如果无法可靠判断不可替换过滤条件，不要标 strict；使用 medium，并保持 core_constraints 为空。"
+        "loose 只用于背景和纯氛围素材。"
+        "普通可见主体、物体、动作、情绪、场景、颜色或氛围，如果不是教学正确性必需内容，"
+        "只放入 core_keywords 或 semantic_aliases，不放入 hard core_constraints。"
+        "不要把视觉风格、颜色、质量、构图、比例、页面类型或 prompt_route 词放入 core_constraints。"
+        "信息不足时，使用 reuse_level medium、asset_category unknown、core_constraints []、"
+        "generic_support_allowed true，并将 reuse_risk 各项 required 设为 false。"
     )
     return [
         {"role": "system", "content": system},
@@ -1983,6 +2215,77 @@ def _encode_embedding_texts(
     if len(vectors.shape) == 1:
         vectors = vectors.reshape(1, -1)
     return np.asarray(vectors, dtype="float32")
+
+
+def _score_constraint_embedding_pairs(target: dict[str, Any], candidate: dict[str, Any]) -> list[dict[str, Any]]:
+    target_constraints = normalize_reuse_policy_fields(target)["core_constraints"]
+    candidate_constraints = normalize_reuse_policy_fields(candidate)["core_constraints"]
+    pairs: list[tuple[dict[str, Any], dict[str, Any]]] = []
+    for target_constraint in target_constraints:
+        for candidate_constraint in candidate_constraints:
+            if _clean_text(target_constraint.get("kind")) != _clean_text(candidate_constraint.get("kind")):
+                continue
+            if _constraints_have_light_match(target_constraint, candidate_constraint):
+                continue
+            pairs.append((target_constraint, candidate_constraint))
+    if not pairs:
+        return []
+
+    texts: list[str] = []
+    for left, right in pairs:
+        texts.append(_constraint_embedding_text(left))
+        texts.append(_constraint_embedding_text(right))
+    try:
+        vectors = _encode_embedding_texts(texts, query=False)
+    except Exception:
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for index, (target_constraint, candidate_constraint) in enumerate(pairs):
+        left_vector = vectors[index * 2]
+        right_vector = vectors[index * 2 + 1]
+        score = float((left_vector * right_vector).sum())
+        rows.append(
+            {
+                "kind": _clean_text(target_constraint.get("kind")),
+                "target": _clean_text(target_constraint.get("value")),
+                "candidate": _clean_text(candidate_constraint.get("value")),
+                "score": round(max(0.0, min(1.0, score)), 4),
+            }
+        )
+    return rows
+
+
+def _constraint_embedding_text(constraint: dict[str, Any]) -> str:
+    kind = _clean_text(constraint.get("kind"))
+    value = _clean_text(constraint.get("value"))
+    return f"{kind}: {value}" if kind else value
+
+
+def _constraints_have_light_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    kind = _clean_text(left.get("kind"))
+    if kind != _clean_text(right.get("kind")):
+        return False
+    left_value = _normalize_constraint_for_match(kind, left.get("value"))
+    right_value = _normalize_constraint_for_match(kind, right.get("value"))
+    if not left_value or not right_value:
+        return False
+    if left_value == right_value:
+        return True
+    if min(len(left_value), len(right_value)) >= 2 and (left_value in right_value or right_value in left_value):
+        return True
+    left_terms = {left_value, *[_normalize_constraint_for_match(kind, item) for item in _as_string_list(left.get("aliases"))]}
+    right_terms = {right_value, *[_normalize_constraint_for_match(kind, item) for item in _as_string_list(right.get("aliases"))]}
+    return bool(left_terms & right_terms)
+
+
+def _normalize_constraint_for_match(kind: str, value: Any) -> str:
+    text = _clean_text(value).casefold()
+    if kind in {"math", "physics", "text", "relation"}:
+        text = re.sub(r"\s+", "", text)
+    else:
+        text = re.sub(r"\s+", " ", text)
+    return text.strip(" ,;:()[]{}<>")
 
 
 def _build_match_key(asset: dict[str, Any]) -> str:

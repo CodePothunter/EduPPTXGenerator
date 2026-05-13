@@ -21,6 +21,7 @@ class TestImageNeed:
     def test_normalizes_source_aliases(self):
         assert ImageNeed(query="old photo", source="public_domain").source == "search"
         assert ImageNeed(query="new illustration", source="seedream").source == "ai_generate"
+        assert ImageNeed(query="default illustration").source == "ai_generate"
 
 
 class TestInputContext:

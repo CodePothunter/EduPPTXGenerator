@@ -92,7 +92,7 @@ class ImageSlotSpec(BaseModel):
     aspect_ratio: str = "16:9"
     query_from: str = "topic"
     query_suffix: str = ""
-    source: str = "search"
+    source: str = "ai_generate"
     x: float | None = None
     y: float | None = None
     width: float | None = None
@@ -381,7 +381,7 @@ def _parse_page_spec_node(node: ET.Element) -> PlannerPageSpec | None:
                 aspect_ratio=slot_node.get("aspect_ratio") or _child_text(slot_node, "aspect_ratio") or "16:9",
                 query_from=slot_node.get("query_from") or _child_text(slot_node, "query_from") or "topic",
                 query_suffix=slot_node.get("query_suffix") or _child_text(slot_node, "query_suffix"),
-                source=slot_node.get("source") or _child_text(slot_node, "source") or "search",
+                source=slot_node.get("source") or _child_text(slot_node, "source") or "ai_generate",
                 x=_as_float(slot_node.get("x") or _child_text(slot_node, "x")),
                 y=_as_float(slot_node.get("y") or _child_text(slot_node, "y")),
                 width=_as_float(slot_node.get("width") or _child_text(slot_node, "width")),

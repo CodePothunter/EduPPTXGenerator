@@ -15,7 +15,18 @@ ASSET_CATEGORIES = {
     "character_action",
     "unknown",
 }
-CONSTRAINT_KINDS = {"text", "math", "physics", "entity", "object", "action", "relation"}
+CONSTRAINT_KINDS = {
+    "text",
+    "math",
+    "physics",
+    "entity",
+    "object",
+    "action",
+    "relation",
+    "setting",
+    "emotion",
+    "count",
+}
 
 DEFAULT_POLICY = {
     "reuse_level": "medium",
@@ -25,10 +36,10 @@ DEFAULT_POLICY = {
 }
 
 CATEGORY_THRESHOLDS = {
-    "learning_behavior": 0.42,
-    "generic_tool": 0.45,
+    "learning_behavior": 0.40,
+    "generic_tool": 0.40,
     "generic_diagram": 0.48,
-    "concept_scene": 0.50,
+    "concept_scene": 0.40,
     "content_specific": 0.58,
     "character_action": 0.60,
     "unknown": 0.55,
@@ -42,8 +53,22 @@ REUSE_LEVEL_DELTAS = {
 LOW_SCORE_REJECT_MARGIN = 0.08
 CONFIDENT_LOOSE_MARGIN = 0.08
 
-HIGH_RISK_KINDS = {"text", "math", "physics", "relation"}
+HIGH_RISK_KINDS = {"text", "math", "physics", "count", "relation"}
+LLM_REVIEW_REQUIRED_KINDS = {"text", "math", "physics", "count", "relation"}
+CONSTRAINT_EMBEDDING_THRESHOLDS = {
+    "entity": (0.92, 0.80),
+    "object": (0.92, 0.80),
+    "action": (0.86, 0.74),
+    "setting": (0.84, 0.72),
+    "emotion": (0.84, 0.72),
+    "text": (0.90, 0.78),
+    "math": (0.90, 0.78),
+    "physics": (0.90, 0.78),
+    "count": (0.90, 0.78),
+    "relation": (0.90, 0.78),
+}
 STRICT_CATEGORIES = {"content_specific", "character_action"}
+MEDIUM_CATEGORIES = {"learning_behavior", "generic_tool", "generic_diagram", "concept_scene"}
 GENERIC_CATEGORIES = {"generic_tool", "generic_diagram"}
 CONTENT_PRESERVING_CATEGORIES = {"generic_tool", "generic_diagram", "content_specific", "character_action"}
 SEMANTIC_SCENE_CATEGORIES = {"concept_scene", "character_action"}
@@ -109,13 +134,19 @@ def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
     strict_downgraded = False
     if has_strict_risk:
         reuse_level = "strict"
-    elif asset_category in GENERIC_CATEGORIES and not _has_high_risk_exact_constraints(constraints):
+    elif reuse_level == "strict" and constraints and asset_category in STRICT_CATEGORIES:
+        # Strict category assets may rely on visible subjects, actions, or
+        # relations that must survive reuse. Medium categories stay threshold
+        # based unless metadata marks a high-risk exact constraint above.
+        reuse_level = "strict"
+    elif asset_category in MEDIUM_CATEGORIES and not _has_high_risk_exact_constraints(constraints):
+        strict_downgraded = reuse_level == "strict"
         reuse_level = "medium"
     elif reuse_level == "strict":
-        # A strict LLM label is treated as advisory unless it is backed by a
-        # hard reuse-risk signal. Ordinary entities/actions are semantic
-        # matching signals, not exact teaching constraints.
-        reuse_level = "loose" if asset_category == "learning_behavior" else "medium"
+        # A strict LLM label without any structured constraint is advisory.
+        # Backgrounds are handled above; other visual assets fall back to the
+        # normal medium threshold path.
+        reuse_level = "medium"
         strict_downgraded = True
 
     if reuse_level == "strict":
@@ -166,6 +197,9 @@ def normalize_core_constraints(value: Any, *, max_items: int = 12) -> list[dict[
             continue
         seen.add(key)
         constraint = {"kind": kind, "value": raw_value, "exact": exact}
+        aliases = _clean_alias_list(item.get("aliases"))
+        if aliases:
+            constraint["aliases"] = aliases
         if isinstance(item.get("hard"), bool) and item.get("hard"):
             constraint["hard"] = True
         constraints.append(constraint)
@@ -246,7 +280,120 @@ def evaluate_reuse_filter(
     target_category = target_policy["asset_category"]
     candidate_category = candidate_policy["asset_category"]
     target_level = target_policy["reuse_level"]
+    candidate_level = candidate_policy["reuse_level"]
     semantic_signal = _has_semantic_reuse_signal(score_details, score)
+
+    if target_level != "strict" and candidate_level != "strict":
+        if score_gap >= 0 or semantic_signal:
+            return _result(
+                "full_match",
+                "medium_similarity_threshold_match",
+                confidence=0.8 if score_gap >= 0 else 0.7,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
+        return _result(
+            "reject",
+            "similarity_below_threshold",
+            confidence=0.85,
+            threshold=threshold_used,
+            score_gap=score_gap,
+            target_policy=target_policy,
+            candidate_policy=candidate_policy,
+        )
+
+    if target_level == "strict" or candidate_level == "strict":
+        if score_gap < 0 and not semantic_signal:
+            return _result(
+                "reject",
+                "strict_similarity_below_threshold",
+                confidence=0.9,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
+        if not target_policy["core_constraints"] and not candidate_policy["core_constraints"]:
+            return _result(
+                "full_match",
+                "strict_unconstrained_similarity_match",
+                confidence=0.75 if score_gap >= 0 else 0.65,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
+        strict_missing: list[dict[str, Any]] = []
+        strict_conflicts: list[dict[str, Any]] = []
+        strict_reviews: list[dict[str, Any]] = []
+        if target_level == "strict":
+            missing, conflicts, reviews = compare_strict_core_constraints(
+                target_policy["core_constraints"],
+                candidate_policy["core_constraints"],
+                score_details=score_details,
+            )
+            strict_missing.extend(missing)
+            strict_conflicts.extend(conflicts)
+            strict_reviews.extend(reviews)
+        if candidate_level == "strict":
+            missing, conflicts, reviews = compare_strict_core_constraints(
+                candidate_policy["core_constraints"],
+                target_policy["core_constraints"],
+                score_details=score_details,
+                side="candidate",
+            )
+            strict_missing.extend(
+                {"kind": item["kind"], "value": item["value"], "exact": item.get("exact", True), "side": "candidate"}
+                for item in missing
+            )
+            strict_conflicts.extend(conflicts)
+            strict_reviews.extend(reviews)
+        strict_conflicts = _dedupe_conflicts(strict_conflicts)
+        strict_reviews = _dedupe_review_items(strict_reviews)
+        if strict_conflicts:
+            return _result(
+                "reject",
+                "strict_core_constraints_conflict",
+                conflicts=strict_conflicts,
+                confidence=0.95,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
+        if strict_reviews:
+            return _result(
+                "llm_review",
+                "strict_core_constraints_require_llm_review",
+                review_items=strict_reviews,
+                confidence=0.55,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
+        if strict_missing:
+            return _result(
+                "reject",
+                "strict_core_constraints_missing",
+                missing=strict_missing,
+                confidence=0.9,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
+        return _result(
+            "full_match",
+            "strict_core_constraints_covered",
+            confidence=0.9,
+            threshold=threshold_used,
+            score_gap=score_gap,
+            target_policy=target_policy,
+            candidate_policy=candidate_policy,
+        )
 
     if (
         target_category == "unknown"
@@ -580,16 +727,205 @@ def compare_core_constraints(
     return missing, _dedupe_conflicts(conflicts)
 
 
+def compare_strict_core_constraints(
+    required_constraints: list[dict[str, Any]],
+    available_constraints: list[dict[str, Any]],
+    *,
+    score_details: dict[str, Any] | None = None,
+    side: str = "target",
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]], list[dict[str, Any]]]:
+    """Require strict constraints to be covered, rejected, or LLM-reviewed."""
+
+    missing: list[dict[str, Any]] = []
+    conflicts: list[dict[str, Any]] = []
+    reviews: list[dict[str, Any]] = []
+    for required in required_constraints:
+        same_kind = [
+            available
+            for available in available_constraints
+            if available["kind"] == required["kind"]
+        ]
+        if not same_kind:
+            reviews.append(_constraint_review_item(required, [], "missing_same_kind", side=side))
+            continue
+        match_results = [
+            _strict_constraint_match_result(required, available, score_details or {}, side=side)
+            for available in same_kind
+        ]
+        if any(item["decision"] == "matched" for item in match_results):
+            continue
+        review_results = [item for item in match_results if item["decision"] == "llm_review"]
+        if review_results:
+            reviews.append(_best_review_result(required, review_results, side=side))
+            continue
+        conflicts.append(
+            {
+                "kind": required["kind"],
+                "target": required["value"],
+                "candidate_values": [available["value"] for available in same_kind],
+            }
+        )
+    return missing, _dedupe_conflicts(conflicts), _dedupe_review_items(reviews)
+
+
 def _constraints_equivalent(left: dict[str, Any], right: dict[str, Any]) -> bool:
     if left["kind"] != right["kind"]:
         return False
+    if _light_constraint_match_method(left, right):
+        return True
     left_value = _normalize_constraint_value(left["kind"], left["value"])
     right_value = _normalize_constraint_value(right["kind"], right["value"])
-    if not left_value or not right_value:
-        return False
-    if left.get("exact", True) or right.get("exact", True):
-        return left_value == right_value
     return _soft_equivalent(left_value, right_value)
+
+
+def _strict_constraint_match_result(
+    required: dict[str, Any],
+    available: dict[str, Any],
+    score_details: dict[str, Any],
+    *,
+    side: str,
+) -> dict[str, Any]:
+    kind = _clean_text(required.get("kind"))
+    light_method = _light_constraint_match_method(required, available)
+    if light_method:
+        if kind in LLM_REVIEW_REQUIRED_KINDS:
+            return _constraint_review_item(
+                required,
+                [available],
+                light_method,
+                side=side,
+                decision="llm_review",
+            )
+        return {"decision": "matched", "match_method": light_method}
+
+    embedding_score = _constraint_embedding_score(required, available, score_details)
+    if embedding_score is None:
+        return _constraint_review_item(
+            required,
+            [available],
+            "missing_constraint_embedding",
+            side=side,
+            decision="llm_review",
+        )
+
+    high, low = CONSTRAINT_EMBEDDING_THRESHOLDS.get(kind, (0.88, 0.76))
+    if embedding_score >= high:
+        method = "embedding_high"
+        if kind in LLM_REVIEW_REQUIRED_KINDS:
+            return _constraint_review_item(
+                required,
+                [available],
+                method,
+                side=side,
+                decision="llm_review",
+                embedding_score=embedding_score,
+            )
+        return {"decision": "matched", "match_method": method, "embedding_score": embedding_score}
+    if embedding_score >= low:
+        return _constraint_review_item(
+            required,
+            [available],
+            "embedding_gray",
+            side=side,
+            decision="llm_review",
+            embedding_score=embedding_score,
+        )
+    return {"decision": "failed", "match_method": "embedding_low", "embedding_score": embedding_score}
+
+
+def _light_constraint_match_method(left: dict[str, Any], right: dict[str, Any]) -> str:
+    kind = _clean_text(left.get("kind"))
+    if kind != _clean_text(right.get("kind")):
+        return ""
+    left_value = _normalize_constraint_value(kind, left.get("value"))
+    right_value = _normalize_constraint_value(kind, right.get("value"))
+    if not left_value or not right_value:
+        return ""
+    if left_value == right_value:
+        return "exact"
+    if min(len(left_value), len(right_value)) >= 2 and (left_value in right_value or right_value in left_value):
+        return "contains"
+    left_aliases = {
+        _normalize_constraint_value(kind, alias)
+        for alias in _clean_alias_list(left.get("aliases"))
+    }
+    right_aliases = {
+        _normalize_constraint_value(kind, alias)
+        for alias in _clean_alias_list(right.get("aliases"))
+    }
+    left_terms = {left_value, *left_aliases}
+    right_terms = {right_value, *right_aliases}
+    if left_terms & right_terms:
+        return "alias"
+    return ""
+
+
+def _constraint_embedding_score(
+    required: dict[str, Any],
+    available: dict[str, Any],
+    score_details: dict[str, Any],
+) -> float | None:
+    kind = _clean_text(required.get("kind"))
+    required_value = _normalize_constraint_value(kind, required.get("value"))
+    available_value = _normalize_constraint_value(kind, available.get("value"))
+    if not kind or not required_value or not available_value:
+        return None
+    items = score_details.get("constraint_embedding_scores")
+    if not isinstance(items, list):
+        return None
+    best: float | None = None
+    for item in items:
+        if not isinstance(item, dict) or _clean_text(item.get("kind")) != kind:
+            continue
+        left = _normalize_constraint_value(kind, item.get("target"))
+        right = _normalize_constraint_value(kind, item.get("candidate"))
+        if {left, right} != {required_value, available_value}:
+            continue
+        try:
+            score = float(item.get("score"))
+        except (TypeError, ValueError):
+            continue
+        best = score if best is None else max(best, score)
+    return best
+
+
+def _constraint_review_item(
+    required: dict[str, Any],
+    available_constraints: list[dict[str, Any]],
+    reason: str,
+    *,
+    side: str,
+    decision: str = "llm_review",
+    embedding_score: float | None = None,
+) -> dict[str, Any]:
+    item: dict[str, Any] = {
+        "decision": decision,
+        "kind": required.get("kind"),
+        "value": required.get("value"),
+        "exact": required.get("exact", True),
+        "hard": bool(required.get("hard")),
+        "side": side,
+        "reason": reason,
+        "candidate_values": [available.get("value") for available in available_constraints],
+    }
+    if embedding_score is not None:
+        item["embedding_score"] = round(float(embedding_score), 4)
+    return item
+
+
+def _best_review_result(required: dict[str, Any], reviews: list[dict[str, Any]], *, side: str) -> dict[str, Any]:
+    if not reviews:
+        return _constraint_review_item(required, [], "missing_same_kind", side=side)
+    def rank(item: dict[str, Any]) -> tuple[int, float]:
+        reason = _clean_text(item.get("reason"))
+        reason_rank = {"exact": 4, "contains": 3, "alias": 3, "embedding_high": 2, "embedding_gray": 1}.get(reason, 0)
+        try:
+            score = float(item.get("embedding_score") or 0.0)
+        except (TypeError, ValueError):
+            score = 0.0
+        return reason_rank, score
+
+    return max(reviews, key=rank)
 
 
 def _parse_aspect_ratio(value: Any) -> float:
@@ -770,6 +1106,7 @@ def _result(
     *,
     missing: list[dict[str, Any]] | None = None,
     conflicts: list[dict[str, Any]] | None = None,
+    review_items: list[dict[str, Any]] | None = None,
     confidence: float = 0.5,
     threshold: float = 0.0,
     score_gap: float = 0.0,
@@ -781,6 +1118,7 @@ def _result(
         "reason": reason,
         "missing": missing or [],
         "conflicts": conflicts or [],
+        "review_items": review_items or [],
         "confidence": _clamp(confidence),
         "threshold_used": round(float(threshold or 0.0), 4),
         "score_gap": round(float(score_gap or 0.0), 4),
@@ -803,6 +1141,44 @@ def _dedupe_conflicts(conflicts: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         deduped.append(item)
     return deduped
+
+
+def _dedupe_review_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deduped: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, str, tuple[str, ...], str]] = set()
+    for item in items:
+        values = tuple(_clean_text(value) for value in item.get("candidate_values") or [])
+        key = (
+            _clean_text(item.get("side")),
+            _clean_text(item.get("kind")),
+            _clean_text(item.get("value")),
+            values,
+            _clean_text(item.get("reason")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
+
+
+def _clean_alias_list(value: Any, *, max_items: int = 8) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    aliases: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = _clean_text(item)
+        if not text or _looks_like_style_or_quality_value(text):
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        aliases.append(text)
+        if len(aliases) >= max_items:
+            break
+    return aliases
 
 
 def _clean_text(value: Any) -> str:

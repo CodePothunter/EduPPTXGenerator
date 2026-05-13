@@ -80,7 +80,7 @@ def normalize_image_source(value: object) -> Literal["search", "ai_generate"]:
     """Normalize LLM image source aliases into the supported schema values."""
     text = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
     if not text:
-        return "search"
+        return "ai_generate"
 
     if text in {
         "ai",
@@ -128,7 +128,7 @@ def normalize_image_source(value: object) -> Literal["search", "ai_generate"]:
         or "photo" in text
     ):
         return "search"
-    return "search"
+    return "ai_generate"
 
 
 def match_aspect_ratio(width: float, height: float) -> str:
@@ -153,7 +153,7 @@ class ImageNeed(BaseModel):
     """A single image request within a page's material_needs."""
 
     query: str = Field(description="Semantic image content query without routed style or quality terms")
-    source: Literal["search", "ai_generate"] = "search"
+    source: Literal["search", "ai_generate"] = "ai_generate"
     role: Literal["hero", "illustration", "icon", "background"] = "illustration"
     aspect_ratio: str = Field(
         default="16:9",

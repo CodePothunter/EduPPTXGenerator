@@ -445,10 +445,24 @@ class PPTXAgent:
 
         from edupptx.materials.image_prompt_router import build_routed_image_needs
 
+        self._coerce_unavailable_search_sources(draft)
         for page in draft.pages:
             if page.material_needs.images:
                 page.material_needs.images = build_routed_image_needs(draft, page)
         return draft
+
+    def _search_images_enabled(self) -> bool:
+        return bool(self.config.pixabay_api_key or self.config.unsplash_access_key)
+
+    def _coerce_unavailable_search_sources(self, draft: PlanningDraft) -> None:
+        """Use reusable/generated images when no search provider is configured."""
+
+        if self._search_images_enabled():
+            return
+        for page in draft.pages:
+            for need in page.material_needs.images or []:
+                if need.source == "search":
+                    need.source = "ai_generate"
 
     def _ensure_template_state(self, draft: PlanningDraft) -> PlanningDraft:
         from edupptx.design.template_router import (
@@ -668,6 +682,7 @@ class PPTXAgent:
         debug_path: Path | None = None,
         debug_context: dict[str, Any] | None = None,
         reuse_session_state: dict[str, Any] | None = None,
+        llm_review_enabled: bool = True,
     ):
         try:
             from edupptx.materials.ai_image_asset_db import find_reusable_ai_image_asset
@@ -688,6 +703,7 @@ class PPTXAgent:
                 debug_path=debug_path,
                 debug_context=debug_context,
                 reuse_session_state=reuse_session_state,
+                llm_review_enabled=llm_review_enabled,
             )
         except Exception as exc:
             logger.warning("AI image reuse lookup skipped: {}", str(exc)[:160])
