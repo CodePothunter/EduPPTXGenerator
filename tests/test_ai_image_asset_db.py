@@ -5,11 +5,13 @@ from edupptx.materials.ai_image_asset_db import (
     _score_reuse_candidate_details,
     build_ai_image_asset_db,
     enrich_ai_image_asset_db_keywords,
+    evaluate_ai_image_reuse_matches_from_plan,
     find_reusable_ai_image_asset,
     ingest_ai_image_asset_library_from_output,
     infer_grade,
     infer_grade_band,
     infer_subject,
+    materialize_reused_ai_image_asset,
     record_reused_ai_image_asset,
     update_ai_image_asset_library,
     write_ai_image_asset_db,
@@ -305,6 +307,36 @@ def test_route_score_uses_role_grade_family_and_page_type_weights():
     assert details["route_grade_family_match"] == 1.0
     assert details["route_page_type_match"] == 0.0
     assert details["aspect_score"] == 0.6
+
+
+def test_route_score_ignores_prompt_route_template_family_for_grade_match():
+    target = {
+        "asset_kind": "page_image",
+        "content_prompt": "",
+        "normalized_prompt": "",
+        "core_keywords": ["author portrait"],
+        "prompt_route": {
+            "template_family": "upper",
+            "profile_ids": ["upper_grade_base"],
+        },
+        "aspect_ratio": "16:9",
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "content_prompt": "author portrait",
+        "normalized_prompt": "",
+        "prompt_route": {
+            "template_family": "upper",
+            "profile_ids": ["upper_grade_analysis"],
+        },
+        "aspect_ratio": "16:9",
+    }
+
+    details = _score_reuse_candidate_details(target, candidate)
+
+    assert details["core_score"] == 1.0
+    assert details["route_score"] == 0.0
+    assert details["route_grade_family_match"] == 0.0
 
 
 def test_builds_ai_image_asset_db_from_output_sessions(tmp_path):
@@ -845,6 +877,41 @@ def test_reuse_manifest_causes_library_ingest_to_skip_reused_images(tmp_path):
     assert db["asset_count"] == 0
 
 
+def test_materialize_reused_ai_image_creates_contain_pad_derivative(tmp_path):
+    from PIL import Image
+
+    session_dir = tmp_path / "output" / "session"
+    library_dir = tmp_path / "materials_library"
+    image_dir = library_dir / "ai_images"
+    image_dir.mkdir(parents=True)
+    source = image_dir / "square.png"
+    Image.new("RGB", (100, 100), (220, 30, 30)).save(source)
+    dest = session_dir / "materials" / "page_01_illustration_1.png"
+
+    materialize_reused_ai_image_asset(
+        session_dir=session_dir,
+        session_image_path=dest,
+        match={
+            "asset": {"asset_id": "asset_square", "image_path": "ai_images/square.png"},
+            "library_image_path": str(source),
+            "keyword_score": 0.8,
+            "transform_policy": {
+                "mode": "contain_pad",
+                "source_aspect_ratio": "1:1",
+                "target_aspect_ratio": "4:3",
+                "crop_loss": 0.25,
+                "transform_penalty": 0.09,
+            },
+        },
+    )
+
+    with Image.open(dest) as result:
+        assert result.size == (133, 100)
+
+    manifest = json.loads((session_dir / "materials" / "ai_image_reuse_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["reused_assets"][0]["transform_policy"]["mode"] == "contain_pad"
+
+
 def test_match_index_omits_deprecated_constraints_and_normalizes_grade(tmp_path):
     from edupptx.materials.ai_image_asset_db import build_ai_image_match_index
 
@@ -1229,3 +1296,298 @@ def test_reuse_policy_rejects_conflicting_top_candidate_and_accepts_next(tmp_pat
     }
     assert policies["bad"] == "reject"
     assert policies["good"] == "full_match"
+
+
+def test_strict_reuse_session_limit_skips_candidate_after_two_uses(tmp_path):
+    class FakeReuseClient:
+        _model = "fake-reuse-model"
+
+        def chat_json(self, messages, **kwargs):
+            raw = messages[1]["content"]
+            request = json.loads(raw[raw.index("{"):])
+            asset_id = request["assets"][0]["asset_id"]
+            return {
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "normalized_prompt": "character bi teaching card",
+                        "context_summary": "specific character teaching card",
+                        "teaching_intent": "teach the exact character",
+                        "core_keywords": ["character", "bi"],
+                        "semantic_aliases": {},
+                        "context_summary_keywords": ["character card"],
+                        "reuse_level": "strict",
+                        "asset_category": "content_specific",
+                        "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                        "generic_support_allowed": False,
+                    }
+                ]
+            }
+
+    library_dir = tmp_path / "materials_library"
+    image_dir = library_dir / "ai_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "first.png").write_bytes(b"first")
+    (image_dir / "second.png").write_bytes(b"second")
+    db = {
+        "schema_version": 6,
+        "output_root": str(library_dir),
+        "asset_count": 2,
+        "assets": [
+            {
+                "asset_id": "first",
+                "asset_kind": "page_image",
+                "image_path": "ai_images/first.png",
+                "aspect_ratio": "1:1",
+                "content_prompt": "character bi teaching card",
+                "normalized_prompt": "character bi teaching card",
+                "core_keywords": ["character", "bi"],
+                "semantic_aliases": {},
+                "reuse_level": "strict",
+                "asset_category": "content_specific",
+                "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                "generic_support_allowed": False,
+            },
+            {
+                "asset_id": "second",
+                "asset_kind": "page_image",
+                "image_path": "ai_images/second.png",
+                "aspect_ratio": "1:1",
+                "content_prompt": "character bi teaching card",
+                "normalized_prompt": "character bi teaching card",
+                "core_keywords": ["character", "bi"],
+                "semantic_aliases": {},
+                "reuse_level": "strict",
+                "asset_category": "content_specific",
+                "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                "generic_support_allowed": False,
+            },
+        ],
+    }
+    (library_dir / "ai_image_asset_db.json").write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
+    state = {
+        "strict_asset_use_counts": {"first": 2},
+        "strict_asset_used_by": {"first": [{"page_number": 1, "slot_key": "illustration_1"}]},
+    }
+
+    match = find_reusable_ai_image_asset(
+        library_dir=library_dir,
+        asset_kind="page_image",
+        prompt="character bi teaching card",
+        subject="Chinese",
+        grade="2",
+        page_title="Character",
+        role="illustration",
+        aspect_ratio="1:1",
+        keyword_client=FakeReuseClient(),
+        debug_path=library_dir / "reuse_debug.json",
+        reuse_session_state=state,
+    )
+
+    assert match is not None
+    assert match["asset"]["asset_id"] == "second"
+    debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
+    occupancy = {
+        item["asset_id"]: item["strict_reuse_occupancy"]["decision"]
+        for item in debug["queries"][0]["policy_candidates"]
+    }
+    assert occupancy["first"] == "skip_strict_asset_reuse_limit"
+    assert occupancy["second"] == "available_within_limit"
+
+
+def test_plan_reuse_match_check_does_not_generate_or_ingest_assets(tmp_path):
+    class FakeReuseClient:
+        _model = "fake-reuse-model"
+
+        def chat_json(self, messages, **kwargs):
+            raw = messages[1]["content"]
+            request = json.loads(raw[raw.index("{"):])
+            asset_id = request["assets"][0]["asset_id"]
+            return {
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "normalized_prompt": "character bi teaching card",
+                        "context_summary": "specific character teaching card",
+                        "teaching_intent": "teach the exact character",
+                        "core_keywords": ["character", "bi"],
+                        "semantic_aliases": {},
+                        "context_summary_keywords": ["character card"],
+                        "reuse_level": "strict",
+                        "asset_category": "content_specific",
+                        "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                        "generic_support_allowed": False,
+                    }
+                ]
+            }
+
+    library_dir = tmp_path / "materials_library"
+    image_dir = library_dir / "ai_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "character.png").write_bytes(b"character")
+    db = {
+        "schema_version": 6,
+        "output_root": str(library_dir),
+        "asset_count": 1,
+        "assets": [
+            {
+                "asset_id": "character",
+                "asset_kind": "page_image",
+                "image_path": "ai_images/character.png",
+                "aspect_ratio": "1:1",
+                "content_prompt": "character bi teaching card",
+                "normalized_prompt": "character bi teaching card",
+                "core_keywords": ["character", "bi"],
+                "semantic_aliases": {},
+                "reuse_level": "strict",
+                "asset_category": "content_specific",
+                "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                "generic_support_allowed": False,
+            }
+        ],
+    }
+    db_path = library_dir / "ai_image_asset_db.json"
+    db_path.write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
+    session_dir = tmp_path / "output" / "session_plan_only"
+    session_dir.mkdir(parents=True)
+    plan = {
+        "meta": {"topic": "Chinese character lesson", "audience": "grade 2"},
+        "pages": [
+            {
+                "page_number": 1,
+                "page_type": "content",
+                "title": "Character",
+                "material_needs": {
+                    "images": [
+                        {
+                            "query": "character bi teaching card",
+                            "source": "ai_generate",
+                            "role": "illustration",
+                            "aspect_ratio": "1:1",
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    plan_path = session_dir / "plan.json"
+    plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+
+    report = evaluate_ai_image_reuse_matches_from_plan(
+        plan_path=plan_path,
+        library_dir=library_dir,
+        keyword_client=FakeReuseClient(),
+        include_background=False,
+    )
+
+    assert report["generated_images"] is False
+    assert report["updated_asset_library"] is False
+    assert report["check_count"] == 1
+    assert report["matched_count"] == 1
+    assert report["checks"][0]["asset_id"] == "character"
+    assert not (session_dir / "materials").exists()
+    db_after = json.loads(db_path.read_text(encoding="utf-8"))
+    assert db_after["asset_count"] == 1
+
+
+def test_plan_reuse_match_check_can_copy_matches_to_session(tmp_path):
+    class FakeReuseClient:
+        _model = "fake-reuse-model"
+
+        def chat_json(self, messages, **kwargs):
+            raw = messages[1]["content"]
+            request = json.loads(raw[raw.index("{"):])
+            asset_id = request["assets"][0]["asset_id"]
+            return {
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "normalized_prompt": "character bi teaching card",
+                        "context_summary": "specific character teaching card",
+                        "teaching_intent": "teach the exact character",
+                        "core_keywords": ["character", "bi"],
+                        "semantic_aliases": {},
+                        "context_summary_keywords": ["character card"],
+                        "reuse_level": "strict",
+                        "asset_category": "content_specific",
+                        "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                        "generic_support_allowed": False,
+                    }
+                ]
+            }
+
+    library_dir = tmp_path / "materials_library"
+    image_dir = library_dir / "ai_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "character.png").write_bytes(b"character")
+    db = {
+        "schema_version": 6,
+        "output_root": str(library_dir),
+        "asset_count": 1,
+        "assets": [
+            {
+                "asset_id": "character",
+                "asset_kind": "page_image",
+                "image_path": "ai_images/character.png",
+                "aspect_ratio": "1:1",
+                "content_prompt": "character bi teaching card",
+                "normalized_prompt": "character bi teaching card",
+                "core_keywords": ["character", "bi"],
+                "semantic_aliases": {},
+                "reuse_level": "strict",
+                "asset_category": "content_specific",
+                "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                "generic_support_allowed": False,
+            }
+        ],
+    }
+    db_path = library_dir / "ai_image_asset_db.json"
+    db_path.write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
+    session_dir = tmp_path / "output" / "session_plan_only"
+    session_dir.mkdir(parents=True)
+    plan = {
+        "meta": {"topic": "Chinese character lesson", "audience": "grade 2"},
+        "pages": [
+            {
+                "page_number": 1,
+                "page_type": "content",
+                "title": "Character",
+                "material_needs": {
+                    "images": [
+                        {
+                            "query": "character bi teaching card",
+                            "source": "ai_generate",
+                            "role": "illustration",
+                            "aspect_ratio": "1:1",
+                        }
+                    ]
+                },
+            }
+        ],
+    }
+    plan_path = session_dir / "plan.json"
+    plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
+
+    report = evaluate_ai_image_reuse_matches_from_plan(
+        plan_path=plan_path,
+        library_dir=library_dir,
+        keyword_client=FakeReuseClient(),
+        include_background=False,
+        materialize_matches=True,
+    )
+
+    copied = session_dir / "materials" / "page_01_illustration_1.png"
+    manifest_path = session_dir / "materials" / "ai_image_reuse_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert report["generated_images"] is False
+    assert report["updated_asset_library"] is False
+    assert report["materialize_matches"] is True
+    assert report["materialized_count"] == 1
+    assert report["checks"][0]["asset_id"] == "character"
+    assert report["checks"][0]["session_image_path"] == str(copied)
+    assert copied.read_bytes() == b"character"
+    assert manifest["reused_assets"][0]["image_path"] == "materials/page_01_illustration_1.png"
+    assert manifest["reused_assets"][0]["reuse_asset_id"] == "character"
+    db_after = json.loads(db_path.read_text(encoding="utf-8"))
+    assert db_after["asset_count"] == 1

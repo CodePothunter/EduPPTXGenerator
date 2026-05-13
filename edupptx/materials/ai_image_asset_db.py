@@ -15,6 +15,7 @@ from typing import Any
 
 from edupptx.materials.reuse_policy import (
     apply_reuse_policy_defaults,
+    evaluate_aspect_transform,
     evaluate_reuse_filter,
     normalize_reuse_policy_fields,
     reuse_threshold_for_target as policy_reuse_threshold_for_target,
@@ -42,6 +43,7 @@ HYBRID_EMBEDDING_WEIGHT = 0.35
 HYBRID_SUBSTRING_WEIGHT = 0.15
 BM25_GRAY_REUSE_THRESHOLD = 0.23
 EMBEDDING_GRAY_REUSE_THRESHOLD = 0.72
+STRICT_REUSE_MAX_PER_SESSION = 2
 
 CONTENT_PROMPT_REUSE_WEIGHT = 0.80
 ROUTE_REUSE_WEIGHT = 0.10
@@ -641,6 +643,7 @@ def find_reusable_ai_image_asset(
     min_keyword_score: float | None = DEFAULT_MIN_REUSE_KEYWORD_SCORE,
     debug_path: str | Path | None = None,
     debug_context: dict[str, Any] | None = None,
+    reuse_session_state: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Find a reusable AI image asset from the central library.
 
@@ -691,6 +694,7 @@ def find_reusable_ai_image_asset(
             "keyword_score": match.get("keyword_score") if match else None,
             "threshold_used": debug_record.get("threshold_used"),
             "reuse_policy": match.get("reuse_policy") if match else None,
+            "strict_reuse_occupancy": match.get("strict_reuse_occupancy") if match else None,
         }
         _append_reuse_debug_record(debug_path, debug_record)
         return match
@@ -765,6 +769,7 @@ def find_reusable_ai_image_asset(
 
     accepted_candidates: list[dict[str, Any]] = []
     rejected_by_policy: list[dict[str, Any]] = []
+    rejected_by_occupancy: list[dict[str, Any]] = []
     for candidate in candidates:
         score_details = dict(_dict(candidate.get("score_details")))
         for key in (
@@ -775,6 +780,7 @@ def find_reusable_ai_image_asset(
             "rrf_score",
             "accepted_by",
             "background_reuse_score",
+            "transform_policy",
         ):
             if key in candidate and key not in score_details:
                 score_details[key] = candidate.get(key)
@@ -787,6 +793,11 @@ def find_reusable_ai_image_asset(
         candidate["reuse_policy"] = policy_result
         decision = _clean_text(policy_result.get("decision"))
         if decision in {"full_match", "generic_support"}:
+            occupancy = _strict_reuse_occupancy_status(candidate, reuse_session_state)
+            candidate["strict_reuse_occupancy"] = occupancy
+            if _clean_text(occupancy.get("decision")) == "skip_strict_asset_reuse_limit":
+                rejected_by_occupancy.append(candidate)
+                continue
             accepted_candidates.append(candidate)
         else:
             rejected_by_policy.append(candidate)
@@ -798,7 +809,10 @@ def find_reusable_ai_image_asset(
         debug_record["policy_rejected_candidates"] = [
             _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in rejected_by_policy
         ]
-        return finish("no_candidate_after_reuse_policy")
+        debug_record["occupancy_rejected_candidates"] = [
+            _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in rejected_by_occupancy
+        ]
+        return finish("no_candidate_after_reuse_policy_or_occupancy")
 
     best = accepted_candidates[0]
     accepted_by = _clean_text(best.get("accepted_by"))
@@ -836,6 +850,7 @@ def record_reused_ai_image_asset(
         "library_image_path": asset.get("image_path"),
         "keyword_score": match.get("keyword_score"),
         "score_details": match.get("score_details", {}),
+        "transform_policy": _match_transform_policy(match),
         "reused_at": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -853,6 +868,461 @@ def record_reused_ai_image_asset(
         "reused_assets": entries,
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def mark_reused_ai_image_asset_in_session(
+    match: dict[str, Any],
+    reuse_session_state: dict[str, Any] | None,
+    context: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Record an accepted match in the current in-memory reuse session state."""
+
+    if reuse_session_state is None:
+        return {}
+    asset = _dict(match.get("asset"))
+    if not _is_strict_reuse_limited_asset(asset):
+        return {
+            "enabled": True,
+            "max_per_session": STRICT_REUSE_MAX_PER_SESSION,
+            "limited": False,
+            "decision": "not_limited",
+        }
+
+    counts = reuse_session_state.setdefault("strict_asset_use_counts", {})
+    used_by = reuse_session_state.setdefault("strict_asset_used_by", {})
+    ids = _strict_reuse_occupancy_ids(asset)
+    used_count_before = max([int(_dict(counts).get(asset_id) or 0) for asset_id in ids] or [0])
+    context_payload = context or {}
+    for asset_id in ids:
+        counts[asset_id] = int(counts.get(asset_id) or 0) + 1
+        used_by.setdefault(asset_id, []).append(context_payload)
+    used_count_after = max([int(_dict(counts).get(asset_id) or 0) for asset_id in ids] or [0])
+    occupancy = {
+        "enabled": True,
+        "max_per_session": STRICT_REUSE_MAX_PER_SESSION,
+        "limited": True,
+        "asset_ids": ids,
+        "used_count_before": used_count_before,
+        "used_count_after": used_count_after,
+        "decision": "accepted_within_limit",
+    }
+    match["strict_reuse_occupancy"] = occupancy
+    return occupancy
+
+
+def materialize_reused_ai_image_asset(
+    *,
+    session_dir: str | Path,
+    session_image_path: str | Path,
+    match: dict[str, Any],
+) -> None:
+    """Copy or derive a reusable image according to its aspect transform policy."""
+
+    dest = Path(session_image_path).expanduser().resolve()
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    source = Path(_clean_text(match.get("library_image_path"))).expanduser()
+    transform_policy = _match_transform_policy(match)
+    mode = _clean_text(transform_policy.get("mode")) or "copy"
+
+    try:
+        if mode == "copy":
+            shutil.copy2(source, dest)
+        else:
+            _write_transformed_reuse_image(source, dest, transform_policy)
+    except Exception:
+        shutil.copy2(source, dest)
+
+    record_reused_ai_image_asset(
+        session_dir=session_dir,
+        session_image_path=dest,
+        match=match,
+    )
+
+
+def evaluate_ai_image_reuse_matches_from_plan(
+    *,
+    plan_path: str | Path,
+    library_dir: str | Path,
+    keyword_client: Any | None = None,
+    debug_path: str | Path | None = None,
+    include_background: bool = True,
+    materialize_matches: bool = False,
+) -> dict[str, Any]:
+    """Evaluate reuse matches from a plan without generating or ingesting assets.
+
+    When ``materialize_matches`` is true, accepted reusable-library matches are
+    copied into the plan session's ``materials/`` directory. This still does not
+    generate new images or update the central asset library.
+    """
+
+    from edupptx.materials.background_generator import build_background_content_prompt
+    from edupptx.materials.image_prompt_router import build_routed_image_needs
+    from edupptx.models import PlanningDraft, iter_image_slot_keys
+
+    source_plan = Path(plan_path).expanduser().resolve()
+    data = json.loads(source_plan.read_text(encoding="utf-8"))
+    draft = PlanningDraft.model_validate(data)
+    plan_data = draft.model_dump()
+    context = {
+        "theme": _clean_text(draft.meta.topic),
+        "grade": infer_grade(
+            draft.meta.topic,
+            draft.meta.audience,
+            draft.style_routing.template_family,
+            draft.style_routing.style_name,
+        ),
+        "subject": infer_subject(
+            draft.meta.topic,
+            draft.meta.audience,
+            draft.meta.purpose,
+            draft.meta.style_direction,
+        ),
+    }
+    reuse_session_state: dict[str, Any] = {
+        "strict_asset_use_counts": {},
+        "strict_asset_used_by": {},
+    }
+    checks: list[dict[str, Any]] = []
+    materialized_count = 0
+
+    if include_background:
+        background_match = find_reusable_ai_image_asset(
+            library_dir=library_dir,
+            asset_kind="background",
+            prompt=build_background_content_prompt(draft.visual),
+            background_route=_build_background_route(plan_data),
+            grade=context["grade"],
+            subject=context["subject"],
+            aspect_ratio="16:9",
+            keyword_client=keyword_client,
+            debug_path=debug_path,
+            debug_context={"check_type": "plan_reuse_match", "asset_kind": "background"},
+            reuse_session_state=reuse_session_state,
+        )
+        session_image_path: Path | None = None
+        if background_match:
+            if materialize_matches:
+                session_image_path = _materialize_plan_reuse_match(
+                    session_dir=source_plan.parent,
+                    asset_kind="background",
+                    page_number=None,
+                    slot_key="background",
+                    match=background_match,
+                )
+                materialized_count += 1
+            mark_reused_ai_image_asset_in_session(
+                background_match,
+                reuse_session_state,
+                {
+                    "asset_kind": "background",
+                    "slot_key": "background",
+                    "session_image_path": str(session_image_path or ""),
+                },
+            )
+        checks.append(
+            _plan_reuse_check_record(
+                "background",
+                None,
+                "background",
+                None,
+                background_match,
+                session_image_path=session_image_path,
+            )
+        )
+
+    for page in draft.pages:
+        routed_needs = build_routed_image_needs(draft, page)
+        for slot_key, need in iter_image_slot_keys(routed_needs):
+            if need.source != "ai_generate":
+                continue
+            debug_context = {
+                "check_type": "plan_reuse_match",
+                "asset_kind": "page_image",
+                "page_number": page.page_number,
+                "slot_key": slot_key,
+                "aspect_ratio": need.aspect_ratio,
+            }
+            match = find_reusable_ai_image_asset(
+                library_dir=library_dir,
+                asset_kind="page_image",
+                prompt=need.query,
+                prompt_route=need.prompt_route,
+                grade=context["grade"],
+                subject=context["subject"],
+                page_title=page.title,
+                page_type=page.page_type,
+                role=need.role,
+                aspect_ratio=need.aspect_ratio,
+                keyword_client=keyword_client,
+                debug_path=debug_path,
+                debug_context=debug_context,
+                reuse_session_state=reuse_session_state,
+            )
+            session_image_path: Path | None = None
+            if match:
+                if materialize_matches:
+                    session_image_path = _materialize_plan_reuse_match(
+                        session_dir=source_plan.parent,
+                        asset_kind="page_image",
+                        page_number=page.page_number,
+                        slot_key=slot_key,
+                        match=match,
+                    )
+                    materialized_count += 1
+                mark_context = dict(debug_context)
+                mark_context["session_image_path"] = str(session_image_path or "")
+                mark_reused_ai_image_asset_in_session(match, reuse_session_state, mark_context)
+            checks.append(
+                _plan_reuse_check_record(
+                    "page_image",
+                    page.page_number,
+                    slot_key,
+                    need.model_dump(),
+                    match,
+                    session_image_path=session_image_path,
+                )
+            )
+
+    matched = [item for item in checks if item["matched"]]
+    return {
+        "schema_version": 1,
+        "plan_path": str(source_plan),
+        "library_dir": str(Path(library_dir).expanduser().resolve()),
+        "generated_images": False,
+        "updated_asset_library": False,
+        "materialize_matches": materialize_matches,
+        "materialized_count": materialized_count,
+        "materials_dir": str(source_plan.parent / "materials") if materialize_matches else "",
+        "check_count": len(checks),
+        "matched_count": len(matched),
+        "unmatched_count": len(checks) - len(matched),
+        "strict_asset_use_counts": reuse_session_state["strict_asset_use_counts"],
+        "checks": checks,
+    }
+
+
+def _match_transform_policy(match: dict[str, Any]) -> dict[str, Any]:
+    policy = _dict(match.get("transform_policy"))
+    if policy:
+        return policy
+    return _dict(_dict(match.get("score_details")).get("transform_policy"))
+
+
+def _materialize_plan_reuse_match(
+    *,
+    session_dir: Path,
+    asset_kind: str,
+    page_number: int | None,
+    slot_key: str,
+    match: dict[str, Any],
+) -> Path:
+    materials_dir = session_dir / "materials"
+    if asset_kind == "background":
+        dest = materials_dir / "background.png"
+    else:
+        suffix = Path(_clean_text(match.get("library_image_path"))).suffix.lower() or ".img"
+        dest = materials_dir / f"page_{int(page_number or 0):02d}_{slot_key}{suffix}"
+    materialize_reused_ai_image_asset(
+        session_dir=session_dir,
+        session_image_path=dest,
+        match=match,
+    )
+    return dest
+
+
+def _plan_reuse_check_record(
+    asset_kind: str,
+    page_number: int | None,
+    slot_key: str,
+    need: dict[str, Any] | None,
+    match: dict[str, Any] | None,
+    *,
+    session_image_path: str | Path | None = None,
+) -> dict[str, Any]:
+    asset = _dict(match.get("asset")) if match else {}
+    return {
+        "asset_kind": asset_kind,
+        "page_number": page_number,
+        "slot_key": slot_key,
+        "need": need or {},
+        "matched": match is not None,
+        "asset_id": asset.get("asset_id", ""),
+        "library_image_path": _clean_text(match.get("library_image_path")) if match else "",
+        "session_image_path": str(session_image_path or ""),
+        "keyword_score": match.get("keyword_score") if match else None,
+        "accepted_by": match.get("accepted_by") if match else "",
+        "reuse_policy": match.get("reuse_policy") if match else {},
+        "transform_policy": _match_transform_policy(match) if match else {},
+        "strict_reuse_occupancy": match.get("strict_reuse_occupancy") if match else {},
+    }
+
+
+def _strict_reuse_occupancy_status(
+    candidate: dict[str, Any],
+    reuse_session_state: dict[str, Any] | None,
+) -> dict[str, Any]:
+    asset = _dict(candidate.get("asset"))
+    if reuse_session_state is None:
+        return {
+            "enabled": False,
+            "max_per_session": STRICT_REUSE_MAX_PER_SESSION,
+            "limited": _is_strict_reuse_limited_asset(asset),
+            "decision": "disabled",
+        }
+    if not _is_strict_reuse_limited_asset(asset):
+        return {
+            "enabled": True,
+            "max_per_session": STRICT_REUSE_MAX_PER_SESSION,
+            "limited": False,
+            "decision": "not_limited",
+        }
+
+    counts = _dict(reuse_session_state.get("strict_asset_use_counts"))
+    used_by = _dict(reuse_session_state.get("strict_asset_used_by"))
+    ids = _strict_reuse_occupancy_ids(asset)
+    used_count = max([int(counts.get(asset_id) or 0) for asset_id in ids] or [0])
+    occupancy = {
+        "enabled": True,
+        "max_per_session": STRICT_REUSE_MAX_PER_SESSION,
+        "limited": True,
+        "asset_ids": ids,
+        "used_count": used_count,
+        "used_by": {asset_id: used_by.get(asset_id, []) for asset_id in ids},
+    }
+    if used_count >= STRICT_REUSE_MAX_PER_SESSION:
+        occupancy["decision"] = "skip_strict_asset_reuse_limit"
+    else:
+        occupancy["decision"] = "available_within_limit"
+    return occupancy
+
+
+def _is_strict_reuse_limited_asset(asset: dict[str, Any]) -> bool:
+    if _clean_text(asset.get("asset_kind")) != "page_image":
+        return False
+    policy = normalize_reuse_policy_fields(asset)
+    return policy["reuse_level"] == "strict"
+
+
+def _strict_reuse_occupancy_ids(asset: dict[str, Any]) -> list[str]:
+    ids = [_clean_text(asset.get("asset_id"))]
+    duplicates = asset.get("duplicate_asset_ids")
+    if isinstance(duplicates, list):
+        ids.extend(_clean_text(item) for item in duplicates)
+    return _dedupe_terms([asset_id for asset_id in ids if asset_id])
+
+
+def _write_transformed_reuse_image(source: Path, dest: Path, transform_policy: dict[str, Any]) -> None:
+    from PIL import Image
+
+    mode = _clean_text(transform_policy.get("mode")) or "copy"
+    target_ratio = _ratio_value(_clean_text(transform_policy.get("target_aspect_ratio")))
+    with Image.open(source) as img:
+        image = img.convert("RGBA") if img.mode not in {"RGB", "RGBA"} else img.copy()
+        if target_ratio <= 0:
+            image.save(dest)
+            return
+
+        if mode == "cover_crop":
+            result = _cover_crop_image(image, target_ratio)
+        elif mode == "contain_pad":
+            result = _contain_pad_image(image, target_ratio)
+        elif mode == "blur_pad":
+            result = _blur_pad_image(image, target_ratio)
+        elif mode == "micro_stretch":
+            result = _micro_stretch_image(image, target_ratio)
+        else:
+            result = image
+
+        if dest.suffix.lower() in {".jpg", ".jpeg"} and result.mode == "RGBA":
+            background = Image.new("RGB", result.size, _average_rgb(result))
+            background.paste(result, mask=result.getchannel("A"))
+            result = background
+        result.save(dest)
+
+
+def _cover_crop_image(image: Any, target_ratio: float) -> Any:
+    width, height = image.size
+    source_ratio = width / max(1, height)
+    if source_ratio > target_ratio:
+        crop_width = max(1, int(round(height * target_ratio)))
+        left = max(0, (width - crop_width) // 2)
+        return image.crop((left, 0, left + crop_width, height))
+    crop_height = max(1, int(round(width / target_ratio)))
+    top = max(0, (height - crop_height) // 2)
+    return image.crop((0, top, width, top + crop_height))
+
+
+def _contain_pad_image(image: Any, target_ratio: float) -> Any:
+    from PIL import Image
+
+    width, height = image.size
+    canvas_width, canvas_height = _contain_canvas_size(width, height, target_ratio)
+    canvas = Image.new(image.mode, (canvas_width, canvas_height), _average_rgba(image))
+    left = (canvas_width - width) // 2
+    top = (canvas_height - height) // 2
+    canvas.paste(image, (left, top), image if image.mode == "RGBA" else None)
+    return canvas
+
+
+def _blur_pad_image(image: Any, target_ratio: float) -> Any:
+    from PIL import ImageFilter
+
+    width, height = image.size
+    canvas_width, canvas_height = _contain_canvas_size(width, height, target_ratio)
+    background = image.convert("RGB").resize((canvas_width, canvas_height))
+    background = background.filter(ImageFilter.GaussianBlur(radius=max(8, min(canvas_width, canvas_height) // 24)))
+    foreground = image.convert("RGBA")
+    background = background.convert("RGBA")
+    left = (canvas_width - width) // 2
+    top = (canvas_height - height) // 2
+    background.paste(foreground, (left, top), foreground)
+    return background
+
+
+def _micro_stretch_image(image: Any, target_ratio: float) -> Any:
+    width, height = image.size
+    area = max(1, width * height)
+    target_width = max(1, int(round(math.sqrt(area * target_ratio))))
+    target_height = max(1, int(round(target_width / target_ratio)))
+    return image.resize((target_width, target_height))
+
+
+def _contain_canvas_size(width: int, height: int, target_ratio: float) -> tuple[int, int]:
+    source_ratio = width / max(1, height)
+    if source_ratio > target_ratio:
+        return width, max(height, int(round(width / target_ratio)))
+    return max(width, int(round(height * target_ratio))), height
+
+
+def _average_rgba(image: Any) -> tuple[int, int, int, int]:
+    rgb = _average_rgb(image)
+    return rgb[0], rgb[1], rgb[2], 255
+
+
+def _average_rgb(image: Any) -> tuple[int, int, int]:
+    from PIL import ImageStat
+
+    stat = ImageStat.Stat(image.convert("RGB").resize((1, 1)))
+    return tuple(int(value) for value in stat.mean[:3])
+
+
+def _ratio_value(value: str) -> float:
+    value = _clean_text(value).lower()
+    if not value:
+        return 0.0
+    parts = re.split(r"[:/x×]", value)
+    if len(parts) == 2:
+        try:
+            width = float(parts[0])
+            height = float(parts[1])
+        except ValueError:
+            return 0.0
+        return width / height if width > 0 and height > 0 else 0.0
+    try:
+        parsed = float(value)
+    except ValueError:
+        return 0.0
+    return parsed if parsed > 0 else 0.0
 
 
 def _new_reuse_debug_record(
@@ -945,6 +1415,7 @@ def _reuse_debug_candidate_payload(candidate: dict[str, Any], *, threshold: floa
     payload["library_image_path"] = str(candidate.get("library_image_path") or "")
     payload["score_details"] = candidate.get("score_details") or {}
     payload["reuse_policy"] = candidate.get("reuse_policy") or {}
+    payload["strict_reuse_occupancy"] = candidate.get("strict_reuse_occupancy") or {}
     if threshold is not None:
         payload["threshold_used"] = threshold
         payload["score_gap_to_threshold"] = round(float(candidate.get("keyword_score") or 0.0) - threshold, 4)
@@ -2037,9 +2508,6 @@ def _asset_page_type(asset: dict[str, Any]) -> str:
 def _route_grade_family(asset: dict[str, Any]) -> str:
     for value in (
         asset.get("grade_band"),
-        asset.get("grade_norm"),
-        asset.get("grade"),
-        _match_prompt_route(asset.get("prompt_route")).get("template_family"),
     ):
         text = _clean_text(value)
         if not text:
@@ -2141,6 +2609,7 @@ def _rank_reuse_candidates(
                 "asset": item,
                 "library_image_path": image_path,
                 "keyword_score": round(score, 4),
+                "transform_policy": score_details.get("transform_policy") or {},
                 "score_details": _debug_score_details(score_details),
             }
         )
@@ -2384,6 +2853,7 @@ def _rank_hybrid_reuse_candidates(
         candidate["rrf_score"] = round(rrf_scores.get(asset_id, 0.0), 6)
         candidate["hybrid_score"] = round(rrf_scores.get(asset_id, 0.0) / max(max_rrf, 1e-9), 4)
         candidate["accepted_by"] = _reuse_acceptance_reason(candidate, threshold)
+        candidate["transform_policy"] = score_details.get("transform_policy") or {}
         score_details.update(
             {
                 "embedding_score": candidate.get("embedding_score"),
@@ -2438,6 +2908,8 @@ def _score_reuse_candidate_details(
     )
 
     aspect_score = _aspect_ratio_score(target, candidate)
+    transform_policy = evaluate_aspect_transform(target, candidate)
+    transform_penalty = float(transform_policy.get("transform_penalty") or 0.0)
     route_details = _route_score_details(target, candidate)
     route_score = float(route_details.get("route_score") or 0.0)
     route_hits = route_details.get("route_hits") or []
@@ -2455,6 +2927,7 @@ def _score_reuse_candidate_details(
         return {
             "score": 0.0,
             "reject_reason": "no_content_match",
+            "transform_policy": transform_policy,
             "target_core_keywords": target_core,
             "target_semantic_aliases": _semantic_alias_terms(target),
             "target_semantic_alias_groups": target_alias_groups,
@@ -2463,12 +2936,39 @@ def _score_reuse_candidate_details(
             **context_details,
         }
 
-    score = (
+    raw_score = (
         CONTENT_PROMPT_REUSE_WEIGHT * content_match_score
         + ROUTE_REUSE_WEIGHT * route_score
         + ASPECT_REUSE_WEIGHT * aspect_score
         + LIGHT_CONTEXT_REUSE_WEIGHT * context_score
     )
+    if _clean_text(transform_policy.get("decision")) == "reject":
+        return {
+            "score": 0.0,
+            "reject_reason": "aspect_transform_rejected",
+            "content_match_score": max(0.0, min(1.0, content_match_score)),
+            "route_score": route_score,
+            "route_hits": route_hits,
+            "core_score": core_score,
+            "core_hits": core_hits,
+            "missing_core_groups": missing_core_groups,
+            "scope_score": 0.0,
+            "aspect_score": aspect_score,
+            "style_score": style_score,
+            "style_hits": style_hits,
+            "context_score": context_score,
+            "context_hits": context_hits,
+            "transform_policy": transform_policy,
+            "raw_score_before_transform_penalty": max(0.0, min(1.0, raw_score)),
+            **route_details,
+            **context_details,
+            "target_core_keywords": target_core,
+            "target_semantic_aliases": _semantic_alias_terms(target),
+            "target_semantic_alias_groups": target_alias_groups,
+            "target_context_summary_keywords": _target_context_summary_terms(target),
+            "candidate_core_keywords": [],
+        }
+    score = raw_score - transform_penalty
     return {
         "score": max(0.0, min(1.0, score)),
         "reject_reason": "",
@@ -2484,6 +2984,8 @@ def _score_reuse_candidate_details(
         "style_hits": style_hits,
         "context_score": context_score,
         "context_hits": context_hits,
+        "transform_policy": transform_policy,
+        "raw_score_before_transform_penalty": max(0.0, min(1.0, raw_score)),
         **route_details,
         **context_details,
         "target_core_keywords": target_core,
@@ -2546,13 +3048,18 @@ def _score_background_reuse_candidate_details(
             use_hybrid=True,
         )
 
-    score = (
+    transform_policy = evaluate_aspect_transform(target, candidate)
+    transform_penalty = float(transform_policy.get("transform_penalty") or 0.0)
+    raw_score = (
         BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT * prompt_match_score
         + BACKGROUND_COLOR_BIAS_REUSE_WEIGHT * color_bias_match_score
         if color_bias_used
         else prompt_match_score
     )
+    score = 0.0 if _clean_text(transform_policy.get("decision")) == "reject" else raw_score - transform_penalty
     reject_reason = "" if score > 0 else "no_background_prompt_match"
+    if _clean_text(transform_policy.get("decision")) == "reject":
+        reject_reason = "aspect_transform_rejected"
     return {
         "score": max(0.0, min(1.0, score)),
         "reject_reason": reject_reason,
@@ -2582,6 +3089,8 @@ def _score_background_reuse_candidate_details(
         "style_hits": [],
         "context_score": 0.0,
         "context_hits": [],
+        "transform_policy": transform_policy,
+        "raw_score_before_transform_penalty": max(0.0, min(1.0, raw_score)),
         "target_core_keywords": _keyword_list(target.get("core_keywords"), max_items=16),
         "candidate_core_keywords": [],
         "target_semantic_aliases": _semantic_alias_terms(target),
@@ -2817,6 +3326,11 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
         "missing_core_groups": details.get("missing_core_groups") or [],
         "scope_score": round(float(details.get("scope_score") or 0.0), 4),
         "aspect_score": round(float(details.get("aspect_score") or 0.0), 4),
+        "transform_policy": details.get("transform_policy") or {},
+        "raw_score_before_transform_penalty": round(
+            float(details.get("raw_score_before_transform_penalty") or 0.0),
+            4,
+        ),
         "style_score": round(float(details.get("style_score") or 0.0), 4),
         "style_hits": details.get("style_hits") or [],
         "context_score": round(float(details.get("context_score") or 0.0), 4),

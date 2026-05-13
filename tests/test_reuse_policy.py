@@ -1,4 +1,5 @@
 from edupptx.materials.reuse_policy import (
+    evaluate_aspect_transform,
     evaluate_reuse_filter,
     normalize_reuse_policy_fields,
     reuse_threshold_for_target,
@@ -89,3 +90,59 @@ def test_reuse_threshold_uses_category_and_level():
 
     assert loose == 0.37
     assert strict == 0.66
+
+
+def test_aspect_transform_rejects_strict_content_large_mismatch():
+    result = evaluate_aspect_transform(
+        {
+            "asset_kind": "page_image",
+            "aspect_ratio": "4:3",
+            "reuse_level": "strict",
+            "asset_category": "content_specific",
+            "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+        },
+        {
+            "asset_kind": "page_image",
+            "aspect_ratio": "1:1",
+            "reuse_level": "strict",
+            "asset_category": "content_specific",
+            "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+        },
+    )
+
+    assert result["decision"] == "reject"
+    assert result["reason"] == "strict_aspect_mismatch_too_large"
+
+
+def test_aspect_transform_pads_generic_tool_medium_mismatch():
+    result = evaluate_aspect_transform(
+        {
+            "asset_kind": "page_image",
+            "aspect_ratio": "4:3",
+            "reuse_level": "medium",
+            "asset_category": "generic_tool",
+            "core_constraints": [],
+        },
+        {
+            "asset_kind": "page_image",
+            "aspect_ratio": "1:1",
+            "reuse_level": "medium",
+            "asset_category": "generic_tool",
+            "core_constraints": [],
+        },
+    )
+
+    assert result["decision"] == "penalize"
+    assert result["mode"] == "contain_pad"
+    assert result["transform_penalty"] == 0.09
+
+
+def test_aspect_transform_allows_background_blur_pad():
+    result = evaluate_aspect_transform(
+        {"asset_kind": "background", "aspect_ratio": "16:9"},
+        {"asset_kind": "background", "aspect_ratio": "4:3"},
+    )
+
+    assert result["decision"] == "penalize"
+    assert result["mode"] == "blur_pad"
+    assert result["transform_penalty"] == 0.06

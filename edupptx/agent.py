@@ -570,6 +570,10 @@ class PPTXAgent:
         materials_dir.mkdir(exist_ok=True)
         keyword_client = self._build_llm_client()
         reuse_context = self._ai_image_reuse_context(draft)
+        reuse_session_state: dict[str, Any] = {
+            "strict_asset_use_counts": {},
+            "strict_asset_used_by": {},
+        }
 
         for page in draft.pages:
             assets = SlideAssets(page_number=page.page_number)
@@ -598,11 +602,22 @@ class PPTXAgent:
                                 "slot_key": slot_key,
                                 "aspect_ratio": need.aspect_ratio,
                             },
+                            reuse_session_state=reuse_session_state,
                         )
                         if match:
                             suffix = Path(match["library_image_path"]).suffix.lower() or ".img"
                             dest = materials_dir / f"page_{page.page_number:02d}_{slot_key}{suffix}"
-                            self._copy_reusable_ai_image(match, dest, session)
+                            self._copy_reusable_ai_image(
+                                match,
+                                dest,
+                                session,
+                                reuse_session_state=reuse_session_state,
+                                reuse_context={
+                                    "asset_kind": "page_image",
+                                    "page_number": page.page_number,
+                                    "slot_key": slot_key,
+                                },
+                            )
                             assets.image_paths[slot_key] = dest
                             logger.info(
                                 "Reused image asset for page {} {}: {} score={}",
@@ -652,6 +667,7 @@ class PPTXAgent:
         background_route: dict[str, Any] | None = None,
         debug_path: Path | None = None,
         debug_context: dict[str, Any] | None = None,
+        reuse_session_state: dict[str, Any] | None = None,
     ):
         try:
             from edupptx.materials.ai_image_asset_db import find_reusable_ai_image_asset
@@ -671,6 +687,7 @@ class PPTXAgent:
                 keyword_client=keyword_client,
                 debug_path=debug_path,
                 debug_context=debug_context,
+                reuse_session_state=reuse_session_state,
             )
         except Exception as exc:
             logger.warning("AI image reuse lookup skipped: {}", str(exc)[:160])
@@ -716,16 +733,26 @@ class PPTXAgent:
         return {key: str(value).strip() for key, value in values.items() if str(value or "").strip()}
 
     @staticmethod
-    def _copy_reusable_ai_image(match, dest: Path, session: Session) -> None:
-        from edupptx.materials.ai_image_asset_db import record_reused_ai_image_asset
+    def _copy_reusable_ai_image(
+        match,
+        dest: Path,
+        session: Session,
+        *,
+        reuse_session_state: dict[str, Any] | None = None,
+        reuse_context: dict[str, Any] | None = None,
+    ) -> None:
+        from edupptx.materials.ai_image_asset_db import (
+            mark_reused_ai_image_asset_in_session,
+            materialize_reused_ai_image_asset,
+        )
 
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(match["library_image_path"], dest)
-        record_reused_ai_image_asset(
+        materialize_reused_ai_image_asset(
             session_dir=session.dir,
             session_image_path=dest,
             match=match,
         )
+        mark_reused_ai_image_asset_in_session(match, reuse_session_state, reuse_context)
 
     def _phase2c_asset_library(self, session: Session) -> None:
         """Ingest this session's newly generated AI images into the reusable library."""

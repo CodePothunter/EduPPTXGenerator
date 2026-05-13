@@ -45,6 +45,7 @@ CONFIDENT_LOOSE_MARGIN = 0.08
 HIGH_RISK_KINDS = {"text", "math", "physics", "relation"}
 STRICT_CATEGORIES = {"content_specific", "character_action"}
 GENERIC_CATEGORIES = {"generic_tool", "generic_diagram"}
+CONTENT_PRESERVING_CATEGORIES = {"generic_tool", "generic_diagram", "content_specific", "character_action"}
 
 CATEGORY_COMPATIBILITY = {
     "learning_behavior": {
@@ -374,6 +375,111 @@ def evaluate_reuse_filter(
     )
 
 
+def evaluate_aspect_transform(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
+    """Choose a safe transform mode and score penalty for aspect-ratio mismatch."""
+
+    source_label = _clean_text(candidate.get("aspect_ratio"))
+    target_label = _clean_text(target.get("aspect_ratio"))
+    source_ratio = _parse_aspect_ratio(source_label)
+    target_ratio = _parse_aspect_ratio(target_label)
+    if source_ratio <= 0 or target_ratio <= 0:
+        return {
+            "decision": "accept",
+            "mode": "copy",
+            "crop_loss": 0.0,
+            "transform_penalty": 0.0,
+            "source_aspect_ratio": source_label,
+            "target_aspect_ratio": target_label,
+            "reason": "missing_or_invalid_aspect_ratio",
+        }
+
+    loss = _crop_loss(source_ratio, target_ratio)
+    reversed_orientation = _orientation(source_ratio) != _orientation(target_ratio) and "square" not in {
+        _orientation(source_ratio),
+        _orientation(target_ratio),
+    }
+    target_policy = normalize_reuse_policy_fields(target)
+    category = target_policy["asset_category"]
+    reuse_level = target_policy["reuse_level"]
+    role = _clean_text(target.get("role") or candidate.get("role"))
+    has_constraints = bool(target_policy["core_constraints"])
+    asset_kind = _clean_text(target.get("asset_kind"))
+
+    if loss <= 0.02:
+        return _transform_result(
+            "accept",
+            "copy",
+            loss,
+            0.0,
+            source_label,
+            target_label,
+            "aspect_ratio_aligned",
+        )
+
+    if asset_kind == "background":
+        if loss <= 0.05:
+            return _transform_result("accept", "micro_stretch", loss, 0.01, source_label, target_label, "background_micro_stretch")
+        if loss <= 0.12:
+            return _transform_result("penalize", "cover_crop", loss, 0.02, source_label, target_label, "background_light_crop")
+        if loss <= 0.25:
+            return _transform_result("penalize", "blur_pad", loss, 0.06, source_label, target_label, "background_blur_pad")
+        if loss <= 0.35 and not reversed_orientation:
+            return _transform_result("penalize", "blur_pad", loss, 0.10, source_label, target_label, "background_high_pad")
+        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "background_aspect_mismatch_too_large")
+
+    if role == "hero" and loss > 0.12:
+        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "hero_aspect_mismatch_too_large")
+
+    if role == "icon":
+        if loss <= 0.12:
+            return _transform_result("penalize", "contain_pad", loss, 0.04, source_label, target_label, "icon_content_preserving_pad")
+        if loss <= 0.25 and not reversed_orientation:
+            return _transform_result("penalize", "contain_pad", loss, 0.09, source_label, target_label, "icon_medium_pad")
+        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "icon_aspect_mismatch_too_large")
+
+    if reuse_level == "strict" or category in {"content_specific", "character_action"} or has_constraints:
+        if loss <= 0.05:
+            return _transform_result("accept", "copy", loss, 0.0, source_label, target_label, "strict_small_mismatch")
+        if loss <= 0.12 and not reversed_orientation:
+            return _transform_result("penalize", "contain_pad", loss, 0.05, source_label, target_label, "strict_content_preserving_pad")
+        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "strict_aspect_mismatch_too_large")
+
+    if category in {"generic_tool", "generic_diagram"}:
+        if loss <= 0.05:
+            return _transform_result("accept", "copy", loss, 0.0, source_label, target_label, "generic_structure_small_mismatch")
+        if loss <= 0.12:
+            return _transform_result("penalize", "contain_pad", loss, 0.04, source_label, target_label, "generic_structure_light_pad")
+        if loss <= 0.25 and not reversed_orientation:
+            return _transform_result("penalize", "contain_pad", loss, 0.09, source_label, target_label, "generic_structure_medium_pad")
+        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "generic_structure_aspect_mismatch_too_large")
+
+    if category == "learning_behavior":
+        if loss <= 0.05:
+            return _transform_result("accept", "copy", loss, 0.0, source_label, target_label, "learning_behavior_small_mismatch")
+        if loss <= 0.12:
+            return _transform_result("penalize", "cover_crop", loss, 0.03, source_label, target_label, "learning_behavior_light_crop")
+        if loss <= 0.25 and not reversed_orientation:
+            return _transform_result("penalize", "contain_pad", loss, 0.08, source_label, target_label, "learning_behavior_medium_pad")
+        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "learning_behavior_aspect_mismatch_too_large")
+
+    if category == "concept_scene":
+        if loss <= 0.05:
+            return _transform_result("accept", "copy", loss, 0.0, source_label, target_label, "concept_scene_small_mismatch")
+        if loss <= 0.12:
+            return _transform_result("penalize", "cover_crop", loss, 0.03, source_label, target_label, "concept_scene_light_crop")
+        if loss <= 0.25 and not reversed_orientation:
+            return _transform_result("penalize", "blur_pad", loss, 0.08, source_label, target_label, "concept_scene_medium_blur_pad")
+        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "concept_scene_aspect_mismatch_too_large")
+
+    if loss <= 0.05:
+        return _transform_result("accept", "copy", loss, 0.0, source_label, target_label, "unknown_small_mismatch")
+    if loss <= 0.12:
+        return _transform_result("penalize", "contain_pad", loss, 0.05, source_label, target_label, "unknown_light_pad")
+    if loss <= 0.25 and not reversed_orientation:
+        return _transform_result("penalize", "contain_pad", loss, 0.10, source_label, target_label, "unknown_medium_pad")
+    return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "unknown_aspect_mismatch_too_large")
+
+
 def compare_core_constraints(
     target_constraints: list[dict[str, Any]],
     candidate_constraints: list[dict[str, Any]],
@@ -432,6 +538,59 @@ def _constraints_equivalent(left: dict[str, Any], right: dict[str, Any]) -> bool
     if left.get("exact", True) or right.get("exact", True):
         return left_value == right_value
     return _soft_equivalent(left_value, right_value)
+
+
+def _parse_aspect_ratio(value: Any) -> float:
+    text = _clean_text(value).lower()
+    if not text:
+        return 0.0
+    parts = re.split(r"[:/x×]", text)
+    if len(parts) == 2:
+        try:
+            width = float(parts[0])
+            height = float(parts[1])
+        except ValueError:
+            return 0.0
+        return width / height if width > 0 and height > 0 else 0.0
+    try:
+        value_float = float(text)
+    except ValueError:
+        return 0.0
+    return value_float if value_float > 0 else 0.0
+
+
+def _crop_loss(source_ratio: float, target_ratio: float) -> float:
+    if source_ratio <= 0 or target_ratio <= 0:
+        return 0.25
+    return 1.0 - min(source_ratio, target_ratio) / max(source_ratio, target_ratio)
+
+
+def _orientation(ratio: float) -> str:
+    if ratio <= 0:
+        return ""
+    if abs(ratio - 1.0) <= 0.03:
+        return "square"
+    return "landscape" if ratio > 1.0 else "portrait"
+
+
+def _transform_result(
+    decision: str,
+    mode: str,
+    crop_loss: float,
+    penalty: float,
+    source_aspect_ratio: str,
+    target_aspect_ratio: str,
+    reason: str,
+) -> dict[str, Any]:
+    return {
+        "decision": decision,
+        "mode": mode,
+        "crop_loss": round(_clamp(crop_loss), 4),
+        "transform_penalty": round(_clamp(penalty), 4),
+        "source_aspect_ratio": source_aspect_ratio,
+        "target_aspect_ratio": target_aspect_ratio,
+        "reason": reason,
+    }
 
 
 def _soft_equivalent(left: str, right: str) -> bool:

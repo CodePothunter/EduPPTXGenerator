@@ -63,6 +63,31 @@ def _optional_keyword_client(config: Config, *, enabled: bool):
     return create_llm_client(config, web_search=False), "enabled"
 
 
+def _run_plan_reuse_match_check(
+    *,
+    plan_path: Path,
+    config: Config,
+    keywords: bool = True,
+    materialize_matches: bool = False,
+) -> tuple[dict, Path, str]:
+    from edupptx.materials.ai_image_asset_db import evaluate_ai_image_reuse_matches_from_plan
+
+    keyword_client, keyword_status = _optional_keyword_client(config, enabled=keywords)
+    report_path = plan_path.parent / "ai_image_reuse_plan_check.json"
+    debug_path = plan_path.parent / "ai_image_reuse_plan_check_debug.json"
+    report = evaluate_ai_image_reuse_matches_from_plan(
+        plan_path=plan_path,
+        library_dir=config.library_dir,
+        keyword_client=keyword_client,
+        debug_path=debug_path,
+        materialize_matches=materialize_matches,
+    )
+    report["keyword_status"] = keyword_status
+    report["debug_path"] = str(debug_path)
+    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    return report, report_path, keyword_status
+
+
 @click.group()
 @click.version_option(_VERSION, prog_name="edupptx")
 @click.option("--verbose", "-v", is_flag=True, help="Enable verbose logging")
@@ -334,8 +359,10 @@ def images_from_plan(plan_path: str, env_file: str, as_json: bool):
 @click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
 @click.option("--env-file", default=".env", help=".env 文件路径")
 @click.option("--json", "as_json", is_flag=True, help="以 JSON 格式输出结果")
+@click.option("--check-reuse", is_flag=True, help="Check AI image reuse matches after planning and copy matches into the session; no image generation or library update")
+@click.option("--reuse-keywords/--no-reuse-keywords", default=True, show_default=True, help="Use LLM keyword enrichment for reuse targets during --check-reuse")
 def plan(topic: str, requirements: str, file_path: str | None, research: bool,
-         output: str, env_file: str, as_json: bool):
+         output: str, env_file: str, as_json: bool, check_reuse: bool, reuse_keywords: bool):
     """只生成策划稿，不渲染。
 
     \b
@@ -360,9 +387,70 @@ def plan(topic: str, requirements: str, file_path: str | None, research: bool,
             "session_dir": str(session_dir),
             "plan_path": str(plan_path),
         }
-        _emit_result(payload, as_json=as_json, human_lines=[f"策划稿: {plan_path}"])
+        human = [f"Plan: {plan_path}"]
+        if check_reuse:
+            report, report_path, keyword_status = _run_plan_reuse_match_check(
+                plan_path=plan_path,
+                config=config,
+                keywords=reuse_keywords,
+                materialize_matches=True,
+            )
+            payload["reuse_match_check"] = {
+                "report_path": str(report_path),
+                "check_count": report["check_count"],
+                "matched_count": report["matched_count"],
+                "unmatched_count": report["unmatched_count"],
+                "keyword_status": keyword_status,
+                "generated_images": False,
+                "updated_asset_library": False,
+                "materialized_count": report["materialized_count"],
+                "materials_dir": report["materials_dir"],
+            }
+            human.append(
+                f"Reuse check: {report_path} matched={report['matched_count']}/{report['check_count']} "
+                f"copied={report['materialized_count']}"
+            )
+        _emit_result(payload, as_json=as_json, human_lines=human)
     except Exception as e:
         logger.error("Planning failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
+@main.command("reuse-check-plan")
+@click.argument("plan_path", type=click.Path(exists=True))
+@click.option("--env-file", default=".env", help=".env file path")
+@click.option("--keywords/--no-keywords", default=True, show_default=True, help="Use LLM keyword enrichment for reuse targets")
+@click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
+def reuse_check_plan(plan_path: str, env_file: str, keywords: bool, as_json: bool):
+    """Check AI image reuse matches from an existing plan without generating images or ingesting assets."""
+    try:
+        config = Config.from_env(env_file)
+        report, report_path, keyword_status = _run_plan_reuse_match_check(
+            plan_path=Path(plan_path),
+            config=config,
+            keywords=keywords,
+        )
+        payload = {
+            "ok": True,
+            "mode": "reuse-check-plan",
+            "plan_path": str(Path(plan_path)),
+            "report_path": str(report_path),
+            "check_count": report["check_count"],
+            "matched_count": report["matched_count"],
+            "unmatched_count": report["unmatched_count"],
+            "keyword_status": keyword_status,
+            "generated_images": False,
+            "updated_asset_library": False,
+        }
+        human = [
+            f"Reuse check: {report_path}",
+            f"Matched: {report['matched_count']}/{report['check_count']}",
+            "Images: not generated",
+            "Asset library: not updated",
+        ]
+        _emit_result(payload, as_json=as_json, human_lines=human)
+    except Exception as e:
+        logger.error("Plan reuse check failed: {}", e)
         _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
 
 
