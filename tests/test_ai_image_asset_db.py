@@ -560,7 +560,7 @@ def test_keyword_enrichment_uses_same_schema_and_unions_terms():
             assert "必须默认使用简体中文" in messages[0]["content"]
             assert "不要把中文内容翻译成英文" in messages[0]["content"]
             assert "原子级关键词" in messages[0]["content"]
-            assert "发脾气的儿子" in messages[0]["content"]
+            assert "抽取时只保留可见内容的原子语义" in messages[0]["content"]
             assert "不要套用通用页面类型模板" in messages[0]["content"]
             assert "You are normalizing" not in messages[0]["content"]
             assert messages[1]["content"].startswith("请规范化以下素材")

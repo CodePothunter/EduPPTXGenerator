@@ -46,6 +46,10 @@ HIGH_RISK_KINDS = {"text", "math", "physics", "relation"}
 STRICT_CATEGORIES = {"content_specific", "character_action"}
 GENERIC_CATEGORIES = {"generic_tool", "generic_diagram"}
 CONTENT_PRESERVING_CATEGORIES = {"generic_tool", "generic_diagram", "content_specific", "character_action"}
+SEMANTIC_SCENE_CATEGORIES = {"concept_scene", "character_action"}
+SEMANTIC_SIGNAL_ACCEPT_REASONS = {"embedding_gray_zone", "substring_embedding_gray_zone"}
+SEMANTIC_EMBEDDING_ACCEPT_THRESHOLD = 0.82
+SEMANTIC_SCORE_FLOOR = 0.18
 
 CATEGORY_COMPATIBILITY = {
     "learning_behavior": {
@@ -61,15 +65,15 @@ CATEGORY_COMPATIBILITY = {
         "support": {"generic_diagram", "generic_tool"},
     },
     "concept_scene": {
-        "full": {"concept_scene"},
+        "full": {"concept_scene", "character_action"},
         "support": {"learning_behavior", "generic_diagram", "generic_tool"},
     },
     "content_specific": {
         "full": {"content_specific"},
-        "support": {"generic_tool", "generic_diagram", "concept_scene"},
+        "support": {"generic_tool", "generic_diagram", "concept_scene", "character_action"},
     },
     "character_action": {
-        "full": {"character_action"},
+        "full": {"character_action", "concept_scene"},
         "support": {"concept_scene", "learning_behavior"},
     },
     "unknown": {
@@ -99,16 +103,25 @@ def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
         asset_category = DEFAULT_POLICY["asset_category"]
 
     constraints = normalize_core_constraints(asset.get("core_constraints"))
+    reuse_risk = normalize_reuse_risk_fields(asset)
+    has_strict_risk = _has_strict_reuse_risk(constraints, reuse_risk)
 
-    if _has_high_risk_exact_constraints(constraints):
+    strict_downgraded = False
+    if has_strict_risk:
         reuse_level = "strict"
     elif asset_category in GENERIC_CATEGORIES and not _has_high_risk_exact_constraints(constraints):
         reuse_level = "medium"
-    elif asset_category in STRICT_CATEGORIES and constraints:
-        reuse_level = "strict"
+    elif reuse_level == "strict":
+        # A strict LLM label is treated as advisory unless it is backed by a
+        # hard reuse-risk signal. Ordinary entities/actions are semantic
+        # matching signals, not exact teaching constraints.
+        reuse_level = "loose" if asset_category == "learning_behavior" else "medium"
+        strict_downgraded = True
 
     if reuse_level == "strict":
         generic_support_allowed = False
+    elif strict_downgraded:
+        generic_support_allowed = True
     elif "generic_support_allowed" in asset and isinstance(asset.get("generic_support_allowed"), bool):
         generic_support_allowed = bool(asset.get("generic_support_allowed"))
     else:
@@ -152,10 +165,25 @@ def normalize_core_constraints(value: Any, *, max_items: int = 12) -> list[dict[
         if key in seen:
             continue
         seen.add(key)
-        constraints.append({"kind": kind, "value": raw_value, "exact": exact})
+        constraint = {"kind": kind, "value": raw_value, "exact": exact}
+        if isinstance(item.get("hard"), bool) and item.get("hard"):
+            constraint["hard"] = True
+        constraints.append(constraint)
         if len(constraints) >= max_items:
             break
     return constraints
+
+
+def normalize_reuse_risk_fields(asset: dict[str, Any]) -> dict[str, bool]:
+    risk = asset.get("reuse_risk")
+    risk = risk if isinstance(risk, dict) else {}
+    return {
+        "readable_knowledge": _risk_required(
+            risk.get("readable_knowledge", asset.get("readable_knowledge"))
+        ),
+        "unique_referent": _risk_required(risk.get("unique_referent", asset.get("unique_referent"))),
+        "exact_relation": _risk_required(risk.get("exact_relation", asset.get("exact_relation"))),
+    }
 
 
 def reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: float | None = None) -> float:
@@ -213,20 +241,12 @@ def evaluate_reuse_filter(
             score_gap=score_gap,
         )
 
-    if score < threshold_used - LOW_SCORE_REJECT_MARGIN:
-        return _result(
-            "reject",
-            "score_far_below_policy_threshold",
-            confidence=0.9,
-            threshold=threshold_used,
-            score_gap=score_gap,
-        )
-
     target_policy = normalize_reuse_policy_fields(target)
     candidate_policy = normalize_reuse_policy_fields(candidate)
     target_category = target_policy["asset_category"]
     candidate_category = candidate_policy["asset_category"]
     target_level = target_policy["reuse_level"]
+    semantic_signal = _has_semantic_reuse_signal(score_details, score)
 
     if (
         target_category == "unknown"
@@ -266,8 +286,30 @@ def evaluate_reuse_filter(
             candidate_policy=candidate_policy,
         )
 
+    hard_missing = [item for item in missing if _is_specific_constraint(item)]
+    categories_semantically_compatible = _semantic_categories_compatible(
+        target_policy,
+        candidate_policy,
+        full_compatible=full_compatible,
+        support_compatible=support_compatible,
+    )
+
+    if score < threshold_used - LOW_SCORE_REJECT_MARGIN and not (
+        semantic_signal and categories_semantically_compatible and not hard_missing
+    ):
+        return _result(
+            "reject",
+            "score_far_below_policy_threshold",
+            missing=missing,
+            confidence=0.9,
+            threshold=threshold_used,
+            score_gap=score_gap,
+            target_policy=target_policy,
+            candidate_policy=candidate_policy,
+        )
+
     if target_level == "loose":
-        if full_compatible and score_gap >= 0:
+        if full_compatible and (score_gap >= 0 or semantic_signal):
             return _result(
                 "full_match",
                 "loose_category_match",
@@ -277,7 +319,9 @@ def evaluate_reuse_filter(
                 target_policy=target_policy,
                 candidate_policy=candidate_policy,
             )
-        if candidate_policy["generic_support_allowed"] and (support_compatible or score_gap >= 0):
+        if candidate_policy["generic_support_allowed"] and (
+            support_compatible or score_gap >= 0 or (semantic_signal and categories_semantically_compatible)
+        ):
             return _result(
                 "generic_support",
                 "loose_candidate_allowed_as_support",
@@ -298,17 +342,21 @@ def evaluate_reuse_filter(
         )
 
     if target_level == "medium":
-        if full_compatible and not missing:
+        if categories_semantically_compatible and not hard_missing and (score_gap >= 0 or semantic_signal):
             return _result(
                 "full_match",
-                "medium_category_and_constraints_match",
+                "medium_semantic_match",
                 confidence=0.8,
                 threshold=threshold_used,
                 score_gap=score_gap,
                 target_policy=target_policy,
                 candidate_policy=candidate_policy,
             )
-        if candidate_policy["generic_support_allowed"] and (support_compatible or candidate_category in GENERIC_CATEGORIES):
+        if candidate_policy["generic_support_allowed"] and (
+            support_compatible
+            or candidate_category in GENERIC_CATEGORIES
+            or (semantic_signal and categories_semantically_compatible and not hard_missing)
+        ):
             return _result(
                 "generic_support",
                 "medium_candidate_allowed_as_generic_support",
@@ -327,9 +375,9 @@ def evaluate_reuse_filter(
             score_gap=score_gap,
             target_policy=target_policy,
             candidate_policy=candidate_policy,
-        )
+            )
 
-    if not full_compatible:
+    if not full_compatible and not (semantic_signal and categories_semantically_compatible and not hard_missing):
         if candidate_policy["generic_support_allowed"] and support_compatible:
             return _result(
                 "generic_support",
@@ -350,9 +398,9 @@ def evaluate_reuse_filter(
             score_gap=score_gap,
             target_policy=target_policy,
             candidate_policy=candidate_policy,
-        )
+            )
 
-    if not missing:
+    if not hard_missing:
         return _result(
             "full_match",
             "strict_core_constraints_covered",
@@ -366,7 +414,7 @@ def evaluate_reuse_filter(
     return _result(
         "uncertain",
         "strict_core_constraints_missing",
-        missing=missing,
+        missing=hard_missing,
         confidence=0.4,
         threshold=threshold_used,
         score_gap=score_gap,
@@ -427,8 +475,10 @@ def evaluate_aspect_transform(target: dict[str, Any], candidate: dict[str, Any])
             return _transform_result("penalize", "blur_pad", loss, 0.10, source_label, target_label, "background_high_pad")
         return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "background_aspect_mismatch_too_large")
 
-    if role == "hero" and loss > 0.12:
+    if role == "hero" and loss > 0.25:
         return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "hero_aspect_mismatch_too_large")
+    if role == "hero" and loss > 0.12:
+        return _transform_result("penalize", "contain_pad", loss, 0.10, source_label, target_label, "hero_content_preserving_pad")
 
     if role == "icon":
         if loss <= 0.12:
@@ -442,6 +492,8 @@ def evaluate_aspect_transform(target: dict[str, Any], candidate: dict[str, Any])
             return _transform_result("accept", "copy", loss, 0.0, source_label, target_label, "strict_small_mismatch")
         if loss <= 0.12 and not reversed_orientation:
             return _transform_result("penalize", "contain_pad", loss, 0.05, source_label, target_label, "strict_content_preserving_pad")
+        if loss <= 0.25 and not reversed_orientation:
+            return _transform_result("penalize", "contain_pad", loss, 0.10, source_label, target_label, "strict_content_preserving_medium_pad")
         return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "strict_aspect_mismatch_too_large")
 
     if category in {"generic_tool", "generic_diagram"}:
@@ -468,7 +520,7 @@ def evaluate_aspect_transform(target: dict[str, Any], candidate: dict[str, Any])
         if loss <= 0.12:
             return _transform_result("penalize", "cover_crop", loss, 0.03, source_label, target_label, "concept_scene_light_crop")
         if loss <= 0.25 and not reversed_orientation:
-            return _transform_result("penalize", "blur_pad", loss, 0.08, source_label, target_label, "concept_scene_medium_blur_pad")
+            return _transform_result("penalize", "contain_pad", loss, 0.08, source_label, target_label, "concept_scene_medium_pad")
         return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "concept_scene_aspect_mismatch_too_large")
 
     if loss <= 0.05:
@@ -617,11 +669,66 @@ def _normalize_constraint_value(kind: str, value: Any) -> str:
 
 def _is_specific_constraint(constraint: dict[str, Any]) -> bool:
     kind = constraint.get("kind")
-    return bool(constraint.get("exact", True) or kind in HIGH_RISK_KINDS)
+    return bool(constraint.get("hard") or kind in HIGH_RISK_KINDS)
 
 
 def _has_high_risk_exact_constraints(constraints: list[dict[str, Any]]) -> bool:
-    return any(item.get("exact", True) and item.get("kind") in HIGH_RISK_KINDS for item in constraints)
+    return any(item.get("kind") in HIGH_RISK_KINDS or item.get("hard") for item in constraints)
+
+
+def _has_strict_reuse_risk(constraints: list[dict[str, Any]], reuse_risk: dict[str, bool]) -> bool:
+    return bool(
+        _has_high_risk_exact_constraints(constraints)
+        or reuse_risk.get("readable_knowledge")
+        or reuse_risk.get("unique_referent")
+        or reuse_risk.get("exact_relation")
+    )
+
+
+def _risk_required(value: Any) -> bool:
+    if isinstance(value, dict):
+        return bool(value.get("required"))
+    return bool(value)
+
+
+def _has_semantic_reuse_signal(score_details: dict[str, Any], score: float) -> bool:
+    accepted_by = _clean_text(score_details.get("accepted_by"))
+    if accepted_by in SEMANTIC_SIGNAL_ACCEPT_REASONS:
+        return True
+    try:
+        embedding_score = float(score_details.get("embedding_score") or 0.0)
+    except (TypeError, ValueError):
+        embedding_score = 0.0
+    try:
+        substring_score = float(score_details.get("substring_score") or 0.0)
+    except (TypeError, ValueError):
+        substring_score = 0.0
+    return embedding_score >= SEMANTIC_EMBEDDING_ACCEPT_THRESHOLD and (
+        score >= SEMANTIC_SCORE_FLOOR or substring_score > 0.0
+    )
+
+
+def _semantic_categories_compatible(
+    target_policy: dict[str, Any],
+    candidate_policy: dict[str, Any],
+    *,
+    full_compatible: bool,
+    support_compatible: bool,
+) -> bool:
+    if full_compatible or support_compatible:
+        return True
+    target_category = target_policy["asset_category"]
+    candidate_category = candidate_policy["asset_category"]
+    if target_category in SEMANTIC_SCENE_CATEGORIES and candidate_category in SEMANTIC_SCENE_CATEGORIES:
+        return True
+    target_has_hard = any(_is_specific_constraint(item) for item in target_policy["core_constraints"])
+    candidate_has_hard = any(_is_specific_constraint(item) for item in candidate_policy["core_constraints"])
+    if target_has_hard or candidate_has_hard:
+        return False
+    return bool(
+        target_category == "content_specific" and candidate_category in SEMANTIC_SCENE_CATEGORIES
+        or candidate_category == "content_specific" and target_category in SEMANTIC_SCENE_CATEGORIES
+    )
 
 
 def _looks_like_style_or_quality_value(value: str) -> bool:

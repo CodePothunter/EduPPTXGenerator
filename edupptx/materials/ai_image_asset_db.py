@@ -1398,6 +1398,7 @@ def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
         "reuse_level": reuse_policy["reuse_level"],
         "asset_category": reuse_policy["asset_category"],
         "core_constraints": reuse_policy["core_constraints"],
+        "reuse_risk": _dict(asset.get("reuse_risk")),
         "generic_support_allowed": reuse_policy["generic_support_allowed"],
     }
 
@@ -1560,7 +1561,7 @@ def _build_keyword_messages(
     required_fields = (
         "asset_id, normalized_prompt, context_summary, teaching_intent, "
         "core_keywords, semantic_aliases, context_summary_keywords, "
-        "reuse_level, asset_category, core_constraints, generic_support_allowed"
+        "reuse_level, asset_category, core_constraints, generic_support_allowed, reuse_risk"
     )
     purpose = (
         "你需要为已入库素材和待匹配目标提取同一套可复用元数据。"
@@ -1588,7 +1589,7 @@ def _build_keyword_messages(
         "提取 core_keywords 时，先在语义上拆解 content_prompt，把主实体、关键物体、动作、状态分别作为独立词。"
         "实体、物体、动作、状态要分开写；不要输出形容词加名词、风格词加主体、整句式短语。"
         "不要输出包含“的”的组合短语；不要输出风格、画法、用途、页面功能、课堂属性或质量描述。"
-        "例如：卡通小蝌蚪 -> 小蝌蚪；举着小旗子 -> 举着、小旗子；发脾气的儿子 -> 发脾气、儿子。"
+        "抽取时只保留可见内容的原子语义，不把修饰语和主体合并成硬绑定短语。"
         "semantic_aliases 的 key 必须来自 core_keywords，并映射到等价短语。"
         "page_title、page_type、layout_hint、content_points 只能用于推断 context_summary、"
         "teaching_intent 和 context_summary_keywords；不要把它们当作可见 core_keywords。"
@@ -1598,23 +1599,26 @@ def _build_keyword_messages(
     )
     user = "请规范化以下素材：\n" + json.dumps({"assets": items}, ensure_ascii=False, indent=2)
     system += (
-        "Also output simplified reuse policy metadata. "
+        "Also output simplified reuse policy metadata and reuse_risk. "
         "reuse_level must be one of loose, medium, strict. "
         "asset_category must be one of learning_behavior, generic_tool, generic_diagram, "
         "concept_scene, content_specific, character_action, unknown. "
         "core_constraints must be an array of objects with kind, value, exact. "
         "kind must be one of text, math, physics, entity, object, action, relation. "
         "generic_support_allowed must be boolean. "
-        "These fields are not keyword tags. They describe reuse risk and required teaching constraints. "
-        "Use loose for background-like, atmosphere, and general learning behavior. "
-        "Use medium for empty tools, generic templates, and generic diagrams. "
-        "Use strict for concrete text, pinyin, formulas, variables, numbers, units, geometry relations, "
-        "physics connections, force/light directions, experimental equipment, concrete characters, actions, or relations. "
-        "Only put non-replaceable teaching content into core_constraints. "
+        "reuse_risk must be an object with readable_knowledge, unique_referent, exact_relation; "
+        "each value must be an object with boolean required and array evidence. "
+        "These fields are not keyword tags. They describe whether a similar-but-not-identical image would "
+        "break teaching correctness. Use strict only when one of the reuse_risk.required values is true, "
+        "or when core_constraints contain readable text/math/physics/relation content that must be exact. "
+        "Use medium for semantic scenes where a similar subject, action, or setting can still serve the page. "
+        "Use loose for atmosphere, background-like imagery, general learning behavior, and generic tools. "
+        "Only put non-replaceable teaching content into core_constraints. Ordinary visible entities, objects, "
+        "actions, emotions, settings, colors, or atmosphere are soft matching signals in core_keywords, not hard constraints. "
         "Do not put visual style, color, quality, composition, aspect ratio, page type, or prompt routing words "
         "into core_constraints. "
         "If information is insufficient, use reuse_level medium, asset_category unknown, core_constraints [], "
-        "generic_support_allowed true. "
+        "generic_support_allowed true, and reuse_risk values with required false. "
     )
     return [
         {"role": "system", "content": system},
@@ -1708,6 +1712,11 @@ def _apply_keyword_payload(
             ),
         ]
     )[:10]
+    reuse_risk = payload.get("reuse_risk")
+    if isinstance(reuse_risk, dict):
+        asset["reuse_risk"] = reuse_risk
+    else:
+        asset.pop("reuse_risk", None)
     policy_source = {**asset, **payload, "asset_kind": asset.get("asset_kind")}
     asset.update(normalize_reuse_policy_fields(policy_source))
 
@@ -2034,6 +2043,7 @@ def _normalize_asset_for_match(
             max_items=10,
             exclude=_context_exclusions(item) | _GENERIC_CORE_NOISE,
         ),
+        "reuse_risk": _dict(item.get("reuse_risk")),
         "reuse_level": reuse_policy["reuse_level"],
         "asset_category": reuse_policy["asset_category"],
         "core_constraints": reuse_policy["core_constraints"],
