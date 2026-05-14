@@ -15,28 +15,32 @@ from typing import Any
 
 from edupptx.materials.reuse_policy import (
     MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
+    SCORE_DERIVED_REUSE_THRESHOLDS,
     STRICT_EMBEDDING_REVIEW_THRESHOLD,
     apply_reuse_policy_defaults,
+    derive_reuse_policy_from_scores,
     evaluate_aspect_transform,
     evaluate_reuse_filter,
+    normalize_reuse_score_fields,
     normalize_reuse_policy_fields,
     reuse_threshold_for_target as policy_reuse_threshold_for_target,
 )
 
 SCHEMA_VERSION = 1
-KEYWORD_SCHEMA_VERSION = 6
+KEYWORD_SCHEMA_VERSION = 7
 DEFAULT_DB_FILENAME = "ai_image_asset_db.json"
 DEFAULT_MATCH_INDEX_FILENAME = "ai_image_match_index.json"
 DEFAULT_EMBEDDING_INDEX_FILENAME = "ai_image_embedding_index.npz"
 DEFAULT_EMBEDDING_META_FILENAME = "ai_image_embedding_meta.json"
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
-MATCH_INDEX_SCHEMA_VERSION = 9
+MATCH_INDEX_SCHEMA_VERSION = 10
 EMBEDDING_INDEX_SCHEMA_VERSION = 3
 DEFAULT_KEYWORD_BATCH_SIZE = 12
 DEFAULT_LIBRARY_IMAGE_DIR = "ai_images"
 REUSE_MANIFEST_FILENAME = "ai_image_reuse_manifest.json"
 REUSE_DEBUG_FILENAME = "ai_image_reuse_debug.json"
 KEYWORD_REUSE_RULES_REFERENCE = Path(__file__).resolve().parent / "Reference" / "ai_image_reuse_metadata_rules.md"
+REUSE_REVIEW_SCORE_RULES_REFERENCE = Path(__file__).resolve().parent / "Reference" / "ai_image_reuse_review_score_rules.md"
 DEFAULT_REUSE_CANDIDATE_LIMIT = 5
 DEFAULT_MIN_REUSE_KEYWORD_SCORE: float | None = None
 DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE = 20
@@ -47,6 +51,7 @@ HYBRID_SUBSTRING_WEIGHT = 0.15
 BM25_GRAY_REUSE_THRESHOLD = 0.23
 EMBEDDING_GRAY_REUSE_THRESHOLD = 0.72
 STRICT_REUSE_MAX_PER_SESSION = 2
+REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD = 0.70
 
 CONTENT_PROMPT_REUSE_WEIGHT = 0.80
 ROUTE_REUSE_WEIGHT = 0.10
@@ -833,20 +838,28 @@ def find_reusable_ai_image_asset(
                 policy_result = dict(policy_result)
                 policy_result["decision"] = "full_match"
                 policy_result["reason"] = (
-                    "strict_llm_review_accepted" if review_reason.startswith("strict_") else "llm_review_accepted"
+                    "strict_llm_score_review_accepted" if review_reason.startswith("strict_") else "llm_score_review_accepted"
                 )
-                policy_result["confidence"] = max(float(policy_result.get("confidence") or 0.0), 0.75)
+                policy_result["confidence"] = max(
+                    float(policy_result.get("confidence") or 0.0),
+                    _clamp_score(review_result.get("score")),
+                )
             else:
                 policy_result = dict(policy_result)
                 policy_result["decision"] = "reject"
                 policy_result["reason"] = (
-                    "strict_llm_review_rejected" if review_reason.startswith("strict_") else "llm_review_rejected"
+                    "strict_llm_score_review_rejected" if review_reason.startswith("strict_") else "llm_score_review_rejected"
                 )
         elif review_decision == "llm_review":
             policy_result = dict(policy_result)
             policy_result["llm_review_required"] = True
             policy_result["llm_review_performed"] = False
-            policy_result["llm_review"] = {"decision": "uncertain", "reason": "llm_review_disabled"}
+            policy_result["llm_review"] = {
+                "score": 0.0,
+                "threshold": REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD,
+                "decision": "reject",
+                "brief_reason": "llm_review_disabled",
+            }
             policy_result["decision"] = "reject"
             policy_result["reason"] = (
                 "strict_llm_review_disabled" if review_reason.startswith("strict_") else "llm_review_disabled"
@@ -1480,6 +1493,14 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
+def _clamp_score(value: Any) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    return max(0.0, min(1.0, score))
+
+
 def _optional_int(value: Any) -> int | None:
     try:
         return int(value)
@@ -1598,6 +1619,7 @@ def _reuse_debug_candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
         "reuse_level": candidate.get("reuse_level"),
         "asset_category": candidate.get("asset_category"),
         "core_keywords": candidate.get("core_keywords") or [],
+        "reuse_scores": candidate.get("reuse_scores") or {},
         "core_constraints": candidate.get("core_constraints") or [],
         "keyword_score": candidate.get("keyword_score"),
         "embedding_score": candidate.get("embedding_score"),
@@ -1641,6 +1663,7 @@ def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
         "core_keywords": _keyword_list(asset.get("core_keywords"), max_items=16),
         "semantic_aliases": _clean_semantic_aliases(asset.get("semantic_aliases")),
         "context_summary_keywords": _keyword_list(asset.get("context_summary_keywords"), max_items=10),
+        "reuse_scores": normalize_reuse_score_fields(asset.get("reuse_scores")),
         "teaching_intent": asset.get("teaching_intent"),
         "role": _asset_role(asset),
         "page_type": _asset_page_type(asset),
@@ -1655,6 +1678,10 @@ def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
         "core_constraints": reuse_policy["core_constraints"],
         "reuse_risk": _dict(asset.get("reuse_risk")),
         "generic_support_allowed": reuse_policy["generic_support_allowed"],
+        "score_thresholds": {
+            **SCORE_DERIVED_REUSE_THRESHOLDS,
+            "reuse_review_accept_score": REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD,
+        },
     }
 
 
@@ -1739,6 +1766,7 @@ def enrich_ai_image_asset_db_keywords(
         "method": "llm_reuse_target_keyword_extraction" if include_match_keywords else "llm_reuse_metadata_extraction",
         "batch_size": batch_size,
         "model": _client_model_name(client),
+        "score_thresholds": SCORE_DERIVED_REUSE_THRESHOLDS,
     }
 
     for start in range(0, len(assets), batch_size):
@@ -1799,7 +1827,7 @@ def _review_reuse_candidate_with_llm(
     score_details: dict[str, Any],
 ) -> dict[str, Any]:
     if client is None:
-        return {"decision": "uncertain", "reason": "missing_llm_client"}
+        return _normalize_reuse_review_score_response({"score": 0.0, "brief_reason": "missing_llm_client"})
 
     messages = _build_reuse_review_messages(
         target=target,
@@ -1820,20 +1848,13 @@ def _review_reuse_candidate_with_llm(
                 return {"decision": "uncertain", "reason": "llm_client_missing_chat"}
             response = _load_json_response(chat(messages=messages, temperature=0.0, max_tokens=1200))
     except Exception as exc:
-        return {"decision": "uncertain", "reason": f"llm_review_failed: {str(exc)[:160]}"}
+        return _normalize_reuse_review_score_response(
+            {"score": 0.0, "brief_reason": f"llm_review_failed: {str(exc)[:160]}"}
+        )
 
     if not isinstance(response, dict):
-        return {"decision": "uncertain", "reason": "llm_review_invalid_response"}
-    decision = _normalize_reuse_review_decision(response.get("decision"))
-    return {
-        "decision": decision,
-        "reason": _clean_text(response.get("reason")) or "llm_review",
-        "teaching_safe": bool(response.get("teaching_safe")) if "teaching_safe" in response else decision == "accept",
-        "critical_mismatch": _as_string_list(response.get("critical_mismatch")),
-        "matched_constraints": response.get("matched_constraints") if isinstance(response.get("matched_constraints"), list) else [],
-        "mismatched_constraints": response.get("mismatched_constraints") if isinstance(response.get("mismatched_constraints"), list) else [],
-        "missing_constraints": response.get("missing_constraints") if isinstance(response.get("missing_constraints"), list) else [],
-    }
+        return _normalize_reuse_review_score_response({"score": 0.0, "brief_reason": "llm_review_invalid_response"})
+    return _normalize_reuse_review_score_response(response)
 
 
 def _build_reuse_review_messages(
@@ -1849,32 +1870,32 @@ def _build_reuse_review_messages(
         "candidate": _reuse_debug_asset_payload(candidate),
         "reuse_policy": policy_result,
         "score_details": _debug_score_details(score_details),
+        "accept_score_threshold": REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD,
     }
-    system = (
-        "你是教学PPT素材复用审核器。请只判断候选图片素材是否能在教学语义上安全替代目标图片需求。"
-        "重点检查可读文字、数学、物理、数量、主体、客体、动作、地点、情感、组合关系、顺序和因果是否会造成教学错误。"
-        "如果信息不足或存在明显风险，返回 uncertain 或 reject。"
-        "只输出 JSON，不要输出解释性正文。JSON 字段必须包含："
-        "decision（accept、reject、uncertain 之一）、reason、teaching_safe、critical_mismatch、"
-        "matched_constraints、mismatched_constraints、missing_constraints。"
-    )
+    system = _load_reuse_review_score_rules_reference()
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": json.dumps(payload, ensure_ascii=False, indent=2)},
     ]
 
 
-def _normalize_reuse_review_decision(value: Any) -> str:
-    text = _clean_text(value).casefold()
-    if text in {"accept", "accepted", "reuse", "yes", "true", "通过", "接受", "可复用", "复用"}:
-        return "accept"
-    if text in {"reject", "rejected", "no", "false", "拒绝", "不通过", "不可复用", "不复用"}:
-        return "reject"
-    return "uncertain"
+def _normalize_reuse_review_score_response(response: dict[str, Any]) -> dict[str, Any]:
+    score = _clamp_score(response.get("score", response.get("reuse_score")))
+    return {
+        "score": score,
+        "threshold": REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD,
+        "decision": "accept" if score >= REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD else "reject",
+        "brief_reason": _clean_text(response.get("brief_reason", response.get("reason"))) or "llm_score_review",
+        "evidence": _as_string_list(response.get("evidence")),
+        "risk_factors": _as_string_list(response.get("risk_factors")),
+        "matched_constraints": response.get("matched_constraints") if isinstance(response.get("matched_constraints"), list) else [],
+        "mismatched_constraints": response.get("mismatched_constraints") if isinstance(response.get("mismatched_constraints"), list) else [],
+        "missing_constraints": response.get("missing_constraints") if isinstance(response.get("missing_constraints"), list) else [],
+    }
 
 
 def _reuse_review_accepts(review: dict[str, Any]) -> bool:
-    return _clean_text(review.get("decision")) == "accept" and bool(review.get("teaching_safe", True))
+    return _clamp_score(review.get("score")) >= REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD
 
 
 def _build_keyword_messages(
@@ -1906,7 +1927,7 @@ def _build_keyword_messages(
     required_fields = (
         "asset_id, normalized_prompt, context_summary, teaching_intent, "
         "core_keywords, semantic_aliases, context_summary_keywords, "
-        "reuse_level, asset_category, core_constraints, generic_support_allowed, reuse_risk"
+        "reuse_scores"
     )
     purpose = (
         "你需要为已入库素材和待匹配目标提取同一套可复用元数据。"
@@ -1957,6 +1978,16 @@ def _load_keyword_reuse_rules_reference() -> str:
         raise RuntimeError(f"missing AI image reuse metadata rules reference: {KEYWORD_REUSE_RULES_REFERENCE}") from exc
     if not text:
         raise RuntimeError(f"empty AI image reuse metadata rules reference: {KEYWORD_REUSE_RULES_REFERENCE}")
+    return text
+
+
+def _load_reuse_review_score_rules_reference() -> str:
+    try:
+        text = REUSE_REVIEW_SCORE_RULES_REFERENCE.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"missing AI image reuse review score rules reference: {REUSE_REVIEW_SCORE_RULES_REFERENCE}") from exc
+    if not text:
+        raise RuntimeError(f"empty AI image reuse review score rules reference: {REUSE_REVIEW_SCORE_RULES_REFERENCE}")
     return text
 
 
@@ -2047,12 +2078,15 @@ def _apply_keyword_payload(
             ),
         ]
     )[:10]
-    reuse_risk = payload.get("reuse_risk")
-    if isinstance(reuse_risk, dict):
-        asset["reuse_risk"] = reuse_risk
+    reuse_scores = normalize_reuse_score_fields(payload.get("reuse_scores", payload.get("reuse_profile")))
+    if reuse_scores:
+        asset["reuse_scores"] = reuse_scores
+    score_policy = derive_reuse_policy_from_scores(asset)
+    if score_policy:
+        asset["reuse_risk"] = score_policy["reuse_risk"]
+        policy_source = {**asset, **score_policy, "asset_kind": asset.get("asset_kind")}
     else:
-        asset.pop("reuse_risk", None)
-    policy_source = {**asset, **payload, "asset_kind": asset.get("asset_kind")}
+        policy_source = {**asset, "asset_kind": asset.get("asset_kind")}
     asset.update(normalize_reuse_policy_fields(policy_source))
 
     if not include_match_keywords:
@@ -2452,6 +2486,7 @@ def _normalize_asset_for_match(
             max_items=10,
             exclude=_context_exclusions(item) | _GENERIC_CORE_NOISE,
         ),
+        "reuse_scores": normalize_reuse_score_fields(item.get("reuse_scores")),
         "reuse_risk": _dict(item.get("reuse_risk")),
         "reuse_level": reuse_policy["reuse_level"],
         "asset_category": reuse_policy["asset_category"],

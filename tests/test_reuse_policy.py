@@ -1,12 +1,76 @@
 from edupptx.materials.ai_image_asset_db import _reuse_acceptance_reason
 from edupptx.materials.reuse_policy import (
     MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
+    SCORE_DERIVED_REUSE_THRESHOLDS,
     STRICT_EMBEDDING_REVIEW_THRESHOLD,
+    derive_reuse_policy_from_scores,
     evaluate_aspect_transform,
     evaluate_reuse_filter,
     normalize_reuse_policy_fields,
     reuse_threshold_for_target,
 )
+
+
+def test_reuse_policy_derives_strict_metadata_from_scores():
+    asset = {
+        "asset_kind": "page_image",
+        "reuse_scores": {
+            "strict_score": SCORE_DERIVED_REUSE_THRESHOLDS["strict_score"],
+            "loose_score": 0.0,
+            "generic_support_score": 0.1,
+            "readable_knowledge_score": 0.92,
+            "unique_referent_score": 0.2,
+            "exact_relation_score": 0.1,
+            "category_scores": {"content_specific": 0.95, "concept_scene": 0.2},
+            "constraint_scores": [
+                {
+                    "kind": "text",
+                    "value": "character: bi",
+                    "importance_score": SCORE_DERIVED_REUSE_THRESHOLDS["hard_constraint_score"],
+                    "exactness_score": SCORE_DERIVED_REUSE_THRESHOLDS["exact_constraint_score"],
+                }
+            ],
+        },
+    }
+
+    derived = derive_reuse_policy_from_scores(asset)
+    policy = normalize_reuse_policy_fields(asset)
+
+    assert derived["reuse_level"] == "strict"
+    assert derived["asset_category"] == "content_specific"
+    assert derived["generic_support_allowed"] is False
+    assert derived["reuse_risk"]["readable_knowledge"]["required"] is True
+    assert policy["core_constraints"] == [{"kind": "text", "value": "character: bi", "exact": True, "hard": True}]
+
+
+def test_reuse_policy_derives_medium_generic_metadata_from_scores():
+    asset = {
+        "asset_kind": "page_image",
+        "reuse_scores": {
+            "strict_score": 0.2,
+            "loose_score": 0.1,
+            "generic_support_score": 0.8,
+            "readable_knowledge_score": 0.0,
+            "unique_referent_score": 0.0,
+            "exact_relation_score": 0.0,
+            "category_scores": {"concept_scene": 0.78, "content_specific": 0.1},
+            "constraint_scores": [
+                {
+                    "kind": "entity",
+                    "value": "ordinary animal",
+                    "importance_score": 0.4,
+                    "exactness_score": 0.2,
+                }
+            ],
+        },
+    }
+
+    policy = normalize_reuse_policy_fields(asset)
+
+    assert policy["reuse_level"] == "medium"
+    assert policy["asset_category"] == "concept_scene"
+    assert policy["generic_support_allowed"] is True
+    assert policy["core_constraints"] == []
 
 
 def test_strict_high_embedding_candidate_enters_review_even_when_keyword_score_is_zero():

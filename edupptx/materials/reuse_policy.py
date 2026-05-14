@@ -35,6 +35,16 @@ DEFAULT_POLICY = {
     "generic_support_allowed": True,
 }
 
+SCORE_DERIVED_REUSE_THRESHOLDS = {
+    "strict_score": 0.78,
+    "loose_score": 0.72,
+    "risk_required_score": 0.70,
+    "hard_constraint_score": 0.72,
+    "exact_constraint_score": 0.80,
+    "generic_support_score": 0.62,
+    "asset_category_score": 0.50,
+}
+
 CATEGORY_THRESHOLDS = {
     "learning_behavior": 0.40,
     "generic_tool": 0.40,
@@ -77,6 +87,8 @@ SEMANTIC_SIGNAL_ACCEPT_REASONS = {"embedding_gray_zone", "substring_embedding_gr
 SEMANTIC_EMBEDDING_ACCEPT_THRESHOLD = 0.82
 SEMANTIC_SCORE_FLOOR = 0.18
 STRICT_EMBEDDING_REVIEW_THRESHOLD = 0.78
+STRICT_SEMANTIC_GRAY_REVIEW_THRESHOLD = 0.70
+STRICT_SEMANTIC_GRAY_BM25_THRESHOLD = 0.20
 MEDIUM_EMBEDDING_REVIEW_THRESHOLD = 0.80
 AUTO_ACCEPT_EMBEDDING_FLOORS = {
     "strict": 0.58,
@@ -201,6 +213,10 @@ def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
             "generic_support_allowed": True,
         }
 
+    score_policy = derive_reuse_policy_from_scores(asset)
+    if score_policy:
+        asset = {**asset, **score_policy}
+
     reuse_level = _clean_text(asset.get("reuse_level"))
     if reuse_level not in REUSE_LEVELS:
         reuse_level = DEFAULT_POLICY["reuse_level"]
@@ -257,6 +273,85 @@ def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
         "asset_category": asset_category,
         "core_constraints": constraints,
         "generic_support_allowed": generic_support_allowed,
+    }
+
+
+def normalize_reuse_score_fields(value: Any) -> dict[str, Any]:
+    profile = value if isinstance(value, dict) else {}
+    if not profile:
+        return {}
+
+    category_scores_raw = profile.get("category_scores")
+    if not isinstance(category_scores_raw, dict):
+        category_scores_raw = profile.get("asset_category_scores")
+    category_scores_raw = category_scores_raw if isinstance(category_scores_raw, dict) else {}
+
+    category_scores: dict[str, float] = {}
+    for category in sorted(ASSET_CATEGORIES - {"unknown"}):
+        score = _score_value(
+            category_scores_raw.get(category, profile.get(f"{category}_score"))
+        )
+        if score > 0:
+            category_scores[category] = score
+
+    constraint_scores = _normalize_constraint_score_candidates(
+        profile.get("constraint_scores", profile.get("constraint_candidates"))
+    )
+    result: dict[str, Any] = {
+        "strict_score": _score_value(profile.get("strict_score")),
+        "loose_score": _score_value(profile.get("loose_score")),
+        "generic_support_score": _score_value(profile.get("generic_support_score")),
+        "readable_knowledge_score": _score_value(profile.get("readable_knowledge_score")),
+        "unique_referent_score": _score_value(profile.get("unique_referent_score")),
+        "exact_relation_score": _score_value(profile.get("exact_relation_score")),
+        "category_scores": category_scores,
+        "constraint_scores": constraint_scores,
+        "evidence": _clean_string_list(profile.get("evidence")),
+        "risk_factors": _clean_string_list(profile.get("risk_factors")),
+        "brief_reason": _clean_text(profile.get("brief_reason")),
+    }
+    return result
+
+
+def derive_reuse_policy_from_scores(asset: dict[str, Any]) -> dict[str, Any]:
+    profile = normalize_reuse_score_fields(asset.get("reuse_scores", asset.get("reuse_profile")))
+    if not profile:
+        return {}
+
+    category = _category_from_scores(profile.get("category_scores"))
+    constraints = _constraints_from_scores(profile.get("constraint_scores"))
+    reuse_risk = _reuse_risk_from_scores(profile)
+    strict_score = max(
+        _score_value(profile.get("strict_score")),
+        _score_value(profile.get("readable_knowledge_score")),
+        _score_value(profile.get("unique_referent_score")),
+        _score_value(profile.get("exact_relation_score")),
+        max([_score_value(item.get("importance_score")) for item in profile.get("constraint_scores", [])] or [0.0]),
+    )
+    generic_support_score = _score_value(profile.get("generic_support_score"))
+    generic_support_allowed = generic_support_score >= SCORE_DERIVED_REUSE_THRESHOLDS["generic_support_score"]
+
+    if (
+        strict_score >= SCORE_DERIVED_REUSE_THRESHOLDS["strict_score"]
+        and (constraints or any(_risk_required(value) for value in reuse_risk.values()) or category in STRICT_CATEGORIES)
+    ):
+        reuse_level = "strict"
+        generic_support_allowed = False
+    elif (
+        _score_value(profile.get("loose_score")) >= SCORE_DERIVED_REUSE_THRESHOLDS["loose_score"]
+        and generic_support_allowed
+        and not constraints
+    ):
+        reuse_level = "loose"
+    else:
+        reuse_level = "medium"
+
+    return {
+        "reuse_level": reuse_level,
+        "asset_category": category,
+        "core_constraints": constraints if reuse_level == "strict" else [],
+        "generic_support_allowed": generic_support_allowed,
+        "reuse_risk": reuse_risk,
     }
 
 
@@ -370,6 +465,9 @@ def normalize_core_constraints(value: Any, *, max_items: int = 12) -> list[dict[
 
 
 def normalize_reuse_risk_fields(asset: dict[str, Any]) -> dict[str, bool]:
+    score_policy = derive_reuse_policy_from_scores(asset)
+    if score_policy:
+        asset = {**asset, "reuse_risk": score_policy.get("reuse_risk", {})}
     risk = asset.get("reuse_risk")
     risk = risk if isinstance(risk, dict) else {}
     return {
@@ -379,6 +477,135 @@ def normalize_reuse_risk_fields(asset: dict[str, Any]) -> dict[str, bool]:
         "unique_referent": _risk_required(risk.get("unique_referent", asset.get("unique_referent"))),
         "exact_relation": _risk_required(risk.get("exact_relation", asset.get("exact_relation"))),
     }
+
+
+def _category_from_scores(category_scores: Any) -> str:
+    scores = category_scores if isinstance(category_scores, dict) else {}
+    best_category = "unknown"
+    best_score = 0.0
+    for category, raw_score in scores.items():
+        if category not in ASSET_CATEGORIES or category == "unknown":
+            continue
+        score = _score_value(raw_score)
+        if score > best_score:
+            best_category = category
+            best_score = score
+    if best_score < SCORE_DERIVED_REUSE_THRESHOLDS["asset_category_score"]:
+        return "unknown"
+    return best_category
+
+
+def _reuse_risk_from_scores(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    return {
+        "readable_knowledge": _score_risk_item(
+            profile,
+            "readable_knowledge_score",
+            "图片承载可读、可数或可验证的教学内容",
+        ),
+        "unique_referent": _score_risk_item(
+            profile,
+            "unique_referent_score",
+            "图片承载不可替换的唯一对象或具体情节节点",
+        ),
+        "exact_relation": _score_risk_item(
+            profile,
+            "exact_relation_score",
+            "图片承载必须保留的关系、顺序或因果",
+        ),
+    }
+
+
+def _score_risk_item(profile: dict[str, Any], key: str, default_evidence: str) -> dict[str, Any]:
+    score = _score_value(profile.get(key))
+    evidence = _clean_string_list(profile.get("evidence"))
+    if score >= SCORE_DERIVED_REUSE_THRESHOLDS["risk_required_score"] and not evidence:
+        evidence = [default_evidence]
+    return {
+        "required": score >= SCORE_DERIVED_REUSE_THRESHOLDS["risk_required_score"],
+        "score": round(score, 4),
+        "evidence": evidence[:4],
+    }
+
+
+def _constraints_from_scores(value: Any) -> list[dict[str, Any]]:
+    constraints: list[dict[str, Any]] = []
+    items = value if isinstance(value, list) else []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        if _score_value(item.get("importance_score")) < SCORE_DERIVED_REUSE_THRESHOLDS["hard_constraint_score"]:
+            continue
+        kind = _clean_text(item.get("kind"))
+        raw_value = _clean_text(item.get("value"))
+        if kind not in CONSTRAINT_KINDS or not raw_value:
+            continue
+        constraints.append(
+            {
+                "kind": kind,
+                "value": raw_value,
+                "exact": _score_value(item.get("exactness_score")) >= SCORE_DERIVED_REUSE_THRESHOLDS["exact_constraint_score"],
+                "hard": True,
+                "aliases": _clean_string_list(item.get("aliases")),
+            }
+        )
+    return normalize_core_constraints(constraints)
+
+
+def _normalize_constraint_score_candidates(value: Any) -> list[dict[str, Any]]:
+    items = value if isinstance(value, list) else []
+    results: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind = _clean_text(item.get("kind"))
+        raw_value = _clean_text(item.get("value"))
+        if kind not in CONSTRAINT_KINDS or not raw_value:
+            continue
+        key = (kind, raw_value)
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(
+            {
+                "kind": kind,
+                "value": raw_value,
+                "importance_score": _score_value(item.get("importance_score", item.get("score"))),
+                "exactness_score": _score_value(item.get("exactness_score")),
+                "aliases": _clean_string_list(item.get("aliases")),
+                "evidence": _clean_string_list(item.get("evidence")),
+            }
+        )
+        if len(results) >= 12:
+            break
+    return results
+
+
+def _score_value(value: Any) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if score < 0:
+        return 0.0
+    if score > 1:
+        return 1.0
+    return score
+
+
+def _clean_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        text = _clean_text(value)
+        return [text] if text else []
+    results: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        text = _clean_text(item)
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        results.append(text)
+    return results
 
 
 def reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: float | None = None) -> float:
@@ -505,6 +732,11 @@ def evaluate_reuse_filter(
 
     if target_level == "strict" or candidate_level == "strict":
         if score_gap < 0 and not semantic_signal:
+            if accepted_by == "strict_semantic_gray_review":
+                return high_embedding_review_result(
+                    "strict_semantic_gray_review",
+                    STRICT_SEMANTIC_GRAY_REVIEW_THRESHOLD,
+                )
             if embedding_score >= STRICT_EMBEDDING_REVIEW_THRESHOLD:
                 return high_embedding_review_result(
                     "strict_embedding_high_keyword_below_threshold",
