@@ -139,6 +139,73 @@ def test_normalize_reuse_policy_preserves_high_risk_constraints_in_medium_catego
     assert policy["core_constraints"] == [{"kind": "text", "value": "character: bi", "exact": True}]
 
 
+def test_normalize_reuse_policy_clears_constraints_for_non_strict_assets():
+    policy = normalize_reuse_policy_fields(
+        {
+            "asset_kind": "page_image",
+            "reuse_level": "medium",
+            "asset_category": "content_specific",
+            "core_constraints": [{"kind": "entity", "value": "ordinary subject", "exact": False}],
+        }
+    )
+
+    assert policy["reuse_level"] == "medium"
+    assert policy["core_constraints"] == []
+
+
+def test_normalize_reuse_policy_infers_strict_for_specific_story_event():
+    policy = normalize_reuse_policy_fields(
+        {
+            "asset_kind": "page_image",
+            "reuse_level": "medium",
+            "asset_category": "content_specific",
+            "content_prompt": "小蝌蚪和鲤鱼妈妈对话",
+            "context_summary": "呈现课文中间情节，辅助学生梳理故事脉络",
+            "teaching_intent": "帮助学生理解故事情节节点",
+            "core_constraints": [],
+        }
+    )
+
+    assert policy["reuse_level"] == "strict"
+    assert policy["generic_support_allowed"] is False
+    assert policy["core_constraints"][0]["kind"] == "relation"
+    assert "鲤鱼妈妈" in policy["core_constraints"][0]["value"]
+
+
+def test_normalize_reuse_policy_infers_strict_for_anchored_character_state():
+    policy = normalize_reuse_policy_fields(
+        {
+            "asset_kind": "page_image",
+            "reuse_level": "medium",
+            "asset_category": "character_action",
+            "content_prompt": "青年生气摔东西的场景，情绪激动",
+            "context_summary": "作为课文情节时间线的插图，展现主人公暴怒状态",
+            "teaching_intent": "帮助学生理解人物情绪转变",
+            "core_constraints": [],
+        }
+    )
+
+    assert policy["reuse_level"] == "strict"
+    assert {item["kind"] for item in policy["core_constraints"]} == {"relation", "emotion"}
+
+
+def test_normalize_reuse_policy_keeps_decorative_character_action_medium():
+    policy = normalize_reuse_policy_fields(
+        {
+            "asset_kind": "page_image",
+            "reuse_level": "medium",
+            "asset_category": "character_action",
+            "content_prompt": "卡通小蝌蚪举着小旗子引导学习路线",
+            "context_summary": "用于目录页的装饰插图，引导学生了解学习环节顺序",
+            "teaching_intent": "降低目录页的枯燥感",
+            "core_constraints": [],
+        }
+    )
+
+    assert policy["reuse_level"] == "medium"
+    assert policy["core_constraints"] == []
+
+
 def test_normalize_reuse_policy_keeps_strict_when_reuse_risk_requires_exactness():
     policy = normalize_reuse_policy_fields(
         {

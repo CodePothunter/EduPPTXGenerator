@@ -76,6 +76,75 @@ SEMANTIC_SCENE_CATEGORIES = {"concept_scene", "character_action"}
 SEMANTIC_SIGNAL_ACCEPT_REASONS = {"embedding_gray_zone", "substring_embedding_gray_zone"}
 SEMANTIC_EMBEDDING_ACCEPT_THRESHOLD = 0.82
 SEMANTIC_SCORE_FLOOR = 0.18
+STRICT_CONTENT_CONTEXT_MARKERS = (
+    "故事情节",
+    "课文情节",
+    "中间情节",
+    "情节节点",
+    "事件节点",
+    "故事结局",
+    "课文结局",
+    "成长结局",
+    "最终场景",
+    "具体情节",
+    "梳理故事",
+    "梳理情节",
+)
+STRICT_CONTENT_VISUAL_MARKERS = (
+    "对话",
+    "遇到",
+    "找到",
+    "变成",
+    "一起",
+    "结局",
+)
+STRICT_CHARACTER_CONTEXT_MARKERS = (
+    "情节时间线",
+    "课文情节",
+    "情节发展",
+    "课文结局",
+    "主人公",
+    "人物情绪",
+    "人物状态",
+    "情绪转变",
+    "母亲心意",
+    "关系缓和",
+    "经典场景",
+)
+STRICT_CHARACTER_VISUAL_MARKERS = (
+    "摔",
+    "说话",
+    "对话",
+    "坐在",
+    "独自",
+    "望",
+    "站在",
+    "轮椅",
+    "瘫痪",
+    "碎",
+    "生气",
+    "激动",
+    "平静",
+    "缓和",
+    "压抑",
+    "暴怒",
+    "痛苦",
+    "绝望",
+    "妹妹",
+    "母亲",
+    "儿子",
+)
+STRICT_EMOTION_TERMS = (
+    "生气",
+    "激动",
+    "平静",
+    "缓和",
+    "压抑",
+    "暴怒",
+    "痛苦",
+    "绝望",
+    "沉静",
+)
 
 CATEGORY_COMPATIBILITY = {
     "learning_behavior": {
@@ -132,6 +201,9 @@ def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
     reuse_risk = normalize_reuse_risk_fields(asset)
 
     strict_downgraded = False
+    if not constraints:
+        constraints = _infer_strict_core_constraints(asset, asset_category)
+
     if asset_category in MEDIUM_CATEGORIES and not _has_high_risk_kind_constraints(constraints):
         # Medium-pool categories are intentionally threshold based. LLMs often
         # mark ordinary visible subjects/actions as hard constraints because a
@@ -169,6 +241,9 @@ def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
     else:
         generic_support_allowed = True
 
+    if reuse_level != "strict":
+        constraints = []
+
     return {
         "reuse_level": reuse_level,
         "asset_category": asset_category,
@@ -182,6 +257,73 @@ def apply_reuse_policy_defaults(asset: dict[str, Any]) -> dict[str, Any]:
 
     asset.update(normalize_reuse_policy_fields(asset))
     return asset
+
+
+def _infer_strict_core_constraints(asset: dict[str, Any], asset_category: str) -> list[dict[str, Any]]:
+    if asset_category not in STRICT_CATEGORIES:
+        return []
+
+    prompt = _clean_text(asset.get("normalized_prompt")) or _clean_text(asset.get("content_prompt"))
+    if not prompt:
+        return []
+
+    context_text = _join_policy_text(
+        asset.get("context_summary"),
+        asset.get("teaching_intent"),
+        _source_field(asset, "content_points"),
+        _source_field(asset, "page_title"),
+    )
+    prompt_text = _join_policy_text(prompt, asset.get("content_prompt"))
+
+    if asset_category == "content_specific" and _has_any(
+        context_text,
+        STRICT_CONTENT_CONTEXT_MARKERS,
+    ) and _has_any(prompt_text, STRICT_CONTENT_VISUAL_MARKERS):
+        return _strict_relation_constraints(prompt)
+
+    if asset_category == "character_action" and _has_any(
+        context_text,
+        STRICT_CHARACTER_CONTEXT_MARKERS,
+    ) and _has_any(prompt_text, STRICT_CHARACTER_VISUAL_MARKERS):
+        constraints = _strict_relation_constraints(prompt)
+        emotion = _first_marker(prompt_text, STRICT_EMOTION_TERMS)
+        if emotion:
+            constraints.append({"kind": "emotion", "value": emotion, "exact": False, "hard": True})
+        return normalize_core_constraints(constraints)
+
+    return []
+
+
+def _strict_relation_constraints(value: str) -> list[dict[str, Any]]:
+    return normalize_core_constraints(
+        [{"kind": "relation", "value": value, "exact": False, "hard": True}]
+    )
+
+
+def _join_policy_text(*values: Any) -> str:
+    parts: list[str] = []
+    for value in values:
+        if isinstance(value, list):
+            parts.extend(_clean_text(item) for item in value)
+        else:
+            parts.append(_clean_text(value))
+    return " ".join(part for part in parts if part)
+
+
+def _source_field(asset: dict[str, Any], key: str) -> Any:
+    source = asset.get("source")
+    return source.get(key) if isinstance(source, dict) else None
+
+
+def _has_any(text: str, markers: tuple[str, ...]) -> bool:
+    return any(marker and marker in text for marker in markers)
+
+
+def _first_marker(text: str, markers: tuple[str, ...]) -> str:
+    for marker in markers:
+        if marker and marker in text:
+            return marker
+    return ""
 
 
 def normalize_core_constraints(value: Any, *, max_items: int = 12) -> list[dict[str, Any]]:
