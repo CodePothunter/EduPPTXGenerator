@@ -597,6 +597,9 @@ def test_keyword_enrichment_uses_same_schema_and_unions_terms():
             assert "原子级关键词" in messages[0]["content"]
             assert "抽取时只保留可见内容的原子语义" in messages[0]["content"]
             assert "不要套用通用页面类型模板" in messages[0]["content"]
+            assert "AI Image Reuse Metadata Rules" in messages[0]["content"]
+            assert "标为 `strict` 之前" in messages[0]["content"]
+            assert "物种默认外观特征" in messages[0]["content"]
             assert "You are normalizing" not in messages[0]["content"]
             assert messages[1]["content"].startswith("请规范化以下素材")
             assert "current_context_summary" not in messages[1]["content"]
