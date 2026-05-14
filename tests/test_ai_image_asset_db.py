@@ -941,6 +941,18 @@ def test_materialize_reused_ai_image_creates_contain_pad_derivative(tmp_path):
                 "crop_loss": 0.25,
                 "transform_penalty": 0.09,
             },
+            "reuse_audit": {
+                "target_theme": "lesson",
+                "target_page_number": 1,
+                "source_theme": "lesson",
+                "source_session": "session_source",
+                "source_page_number": 2,
+                "target_aspect_ratio": "4:3",
+                "candidate_aspect_ratio": "1:1",
+                "same_theme": True,
+                "cross_theme": False,
+                "source_visible_in_current_library": True,
+            },
         },
     )
 
@@ -949,6 +961,10 @@ def test_materialize_reused_ai_image_creates_contain_pad_derivative(tmp_path):
 
     manifest = json.loads((session_dir / "materials" / "ai_image_reuse_manifest.json").read_text(encoding="utf-8"))
     assert manifest["reused_assets"][0]["transform_policy"]["mode"] == "contain_pad"
+    assert manifest["reused_assets"][0]["target_theme"] == "lesson"
+    assert manifest["reused_assets"][0]["source_session"] == "session_source"
+    assert manifest["reused_assets"][0]["same_theme"] is True
+    assert manifest["reused_assets"][0]["reuse_audit"]["target_aspect_ratio"] == "4:3"
 
 
 def test_match_index_omits_deprecated_constraints_and_normalizes_grade(tmp_path):
@@ -1040,7 +1056,7 @@ def test_find_reusable_background_prefers_matching_color_bias(tmp_path):
     (image_dir / "asset_cool.png").write_bytes(b"cool")
     (image_dir / "asset_warm.png").write_bytes(b"warm")
     match_index = {
-        "schema_version": 8,
+        "schema_version": 9,
         "source_asset_count": 0,
         "asset_count": 2,
         "assets": [
@@ -1137,9 +1153,11 @@ def test_update_library_writes_slim_match_index(tmp_path):
     index = json.loads(index_path.read_text(encoding="utf-8"))
     assert index["source_asset_count"] == 1
     assert index["asset_count"] == 1
-    assert "source" not in index["assets"][0]
-    assert "library" not in index["assets"][0]
     asset = index["assets"][0]
+    assert asset["theme"] == "topic"
+    assert asset["source"]["session_id"] == "session_20260507_150001"
+    assert asset["source"]["page_number"] == 1
+    assert asset["library"]["source_output_root"] == str(session_dir.resolve())
     assert "style_prompt" not in asset
     assert asset["prompt_route"] == {"template_family": "lower", "profile_ids": ["lower_base"]}
 
@@ -1200,7 +1218,7 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
         ],
     }
     match_index = {
-        "schema_version": 8,
+        "schema_version": 9,
         "source_asset_count": 1,
         "asset_count": 1,
         "assets": [
@@ -1217,6 +1235,13 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
                 "normalized_prompt": "author portrait",
                 "context_summary": "author profile image",
                 "teaching_intent": "author profile image",
+                "theme": "lesson",
+                "source": {
+                    "session_id": "session_source",
+                    "page_number": 3,
+                    "source_output_root": "/tmp/output/session_source",
+                    "source_image_path": "materials/page_03_illustration_1.png",
+                },
                 "duplicate_asset_ids": [],
             }
         ],
@@ -1241,8 +1266,16 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
 
     assert match is not None
     assert match["asset"]["asset_id"] == "asset_author"
+    assert match["reuse_audit"]["target_theme"] == "lesson"
+    assert match["reuse_audit"]["source_theme"] == "lesson"
+    assert match["reuse_audit"]["source_session"] == "session_source"
+    assert match["reuse_audit"]["source_page_number"] == 3
+    assert match["reuse_audit"]["same_theme"] is True
+    assert match["reuse_audit"]["cross_theme"] is False
     debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
     assert debug["queries"][0]["match_index_path"].endswith("ai_image_match_index.json")
+    assert debug["queries"][0]["decision"]["reuse_audit"]["target_theme"] == "lesson"
+    assert debug["queries"][0]["decision"]["reuse_audit"]["source_session"] == "session_source"
 
 
 def test_reuse_policy_rejects_conflicting_top_candidate_and_accepts_next(tmp_path):

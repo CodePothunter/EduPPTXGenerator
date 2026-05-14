@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Any
 
 from edupptx.materials.reuse_policy import (
+    MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
+    STRICT_EMBEDDING_REVIEW_THRESHOLD,
     apply_reuse_policy_defaults,
     evaluate_aspect_transform,
     evaluate_reuse_filter,
@@ -28,7 +30,7 @@ DEFAULT_MATCH_INDEX_FILENAME = "ai_image_match_index.json"
 DEFAULT_EMBEDDING_INDEX_FILENAME = "ai_image_embedding_index.npz"
 DEFAULT_EMBEDDING_META_FILENAME = "ai_image_embedding_meta.json"
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
-MATCH_INDEX_SCHEMA_VERSION = 8
+MATCH_INDEX_SCHEMA_VERSION = 9
 EMBEDDING_INDEX_SCHEMA_VERSION = 3
 DEFAULT_KEYWORD_BATCH_SIZE = 12
 DEFAULT_LIBRARY_IMAGE_DIR = "ai_images"
@@ -699,6 +701,8 @@ def find_reusable_ai_image_asset(
             "keyword_score": match.get("keyword_score") if match else None,
             "threshold_used": debug_record.get("threshold_used"),
             "reuse_policy": match.get("reuse_policy") if match else None,
+            "reuse_audit": match.get("reuse_audit") if match else None,
+            "llm_reuse_review_performed": _match_llm_reuse_review_performed(match) if match else False,
             "strict_reuse_occupancy": match.get("strict_reuse_occupancy") if match else None,
         }
         _append_reuse_debug_record(
@@ -756,6 +760,13 @@ def find_reusable_ai_image_asset(
         threshold=threshold,
         limit=candidate_limit,
     )
+    for candidate in ranked_candidates:
+        candidate["reuse_audit"] = _reuse_audit_payload(
+            target,
+            _dict(candidate.get("asset")),
+            debug_context,
+            _match_transform_policy(candidate),
+        )
     debug_record["bm25_ranked_candidates"] = [
         _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in bm25_ranked_candidates
     ]
@@ -803,7 +814,11 @@ def find_reusable_ai_image_asset(
             score_details,
             threshold=threshold,
         )
-        if _clean_text(policy_result.get("decision")) == "llm_review" and llm_review_enabled:
+        review_decision = _clean_text(policy_result.get("decision"))
+        review_reason = _clean_text(policy_result.get("reason"))
+        if review_decision == "llm_review" and llm_review_enabled:
+            policy_result = dict(policy_result)
+            policy_result["llm_review_required"] = True
             review_result = _review_reuse_candidate_with_llm(
                 keyword_client,
                 target=target,
@@ -812,20 +827,33 @@ def find_reusable_ai_image_asset(
                 score_details=score_details,
             )
             policy_result["llm_review"] = review_result
+            policy_result["llm_review_performed"] = True
             if _reuse_review_accepts(review_result):
                 policy_result = dict(policy_result)
                 policy_result["decision"] = "full_match"
-                policy_result["reason"] = "strict_llm_review_accepted"
+                policy_result["reason"] = (
+                    "strict_llm_review_accepted" if review_reason.startswith("strict_") else "llm_review_accepted"
+                )
                 policy_result["confidence"] = max(float(policy_result.get("confidence") or 0.0), 0.75)
             else:
                 policy_result = dict(policy_result)
                 policy_result["decision"] = "reject"
-                policy_result["reason"] = "strict_llm_review_rejected"
-        elif _clean_text(policy_result.get("decision")) == "llm_review":
+                policy_result["reason"] = (
+                    "strict_llm_review_rejected" if review_reason.startswith("strict_") else "llm_review_rejected"
+                )
+        elif review_decision == "llm_review":
             policy_result = dict(policy_result)
+            policy_result["llm_review_required"] = True
+            policy_result["llm_review_performed"] = False
             policy_result["llm_review"] = {"decision": "uncertain", "reason": "llm_review_disabled"}
             policy_result["decision"] = "reject"
-            policy_result["reason"] = "strict_llm_review_disabled"
+            policy_result["reason"] = (
+                "strict_llm_review_disabled" if review_reason.startswith("strict_") else "llm_review_disabled"
+            )
+        else:
+            policy_result = dict(policy_result)
+            policy_result["llm_review_required"] = False
+            policy_result["llm_review_performed"] = False
         candidate["reuse_policy"] = policy_result
         decision = _clean_text(policy_result.get("decision"))
         if decision in {"full_match", "generic_support"}:
@@ -886,9 +914,13 @@ def record_reused_ai_image_asset(
         "library_image_path": asset.get("image_path"),
         "keyword_score": match.get("keyword_score"),
         "score_details": match.get("score_details", {}),
+        "reuse_policy": match.get("reuse_policy", {}),
+        "reuse_audit": match.get("reuse_audit", {}),
+        "llm_reuse_review_performed": _match_llm_reuse_review_performed(match),
         "transform_policy": _match_transform_policy(match),
         "reused_at": datetime.now(timezone.utc).isoformat(),
     }
+    entry.update(_flat_reuse_audit_fields(_dict(match.get("reuse_audit"))))
 
     manifest_path = session_root / "materials" / REUSE_MANIFEST_FILENAME
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1030,6 +1062,7 @@ def evaluate_ai_image_reuse_matches_from_plan(
             asset_kind="background",
             prompt=build_background_content_prompt(draft.visual),
             background_route=_build_background_route(plan_data),
+            theme=context["theme"],
             grade=context["grade"],
             subject=context["subject"],
             aspect_ratio="16:9",
@@ -1088,6 +1121,7 @@ def evaluate_ai_image_reuse_matches_from_plan(
                 asset_kind="page_image",
                 prompt=need.query,
                 prompt_route=need.prompt_route,
+                theme=context["theme"],
                 grade=context["grade"],
                 subject=context["subject"],
                 page_title=page.title,
@@ -1151,6 +1185,74 @@ def _match_transform_policy(match: dict[str, Any]) -> dict[str, Any]:
     return _dict(_dict(match.get("score_details")).get("transform_policy"))
 
 
+def _match_llm_reuse_review_performed(match: dict[str, Any]) -> bool:
+    return bool(_dict(match.get("reuse_policy")).get("llm_review_performed"))
+
+
+def _reuse_audit_payload(
+    target: dict[str, Any],
+    candidate: dict[str, Any],
+    context: dict[str, Any] | None,
+    transform_policy: dict[str, Any] | None,
+) -> dict[str, Any]:
+    context = _dict(context)
+    target_source = _dict(target.get("source"))
+    candidate_source = _dict(candidate.get("source"))
+    candidate_library = _dict(candidate.get("library"))
+
+    target_theme = _clean_text(target.get("theme"))
+    source_theme = _clean_text(candidate.get("theme"))
+    target_page_number = _optional_int(target_source.get("page_number"))
+    if target_page_number is None:
+        target_page_number = _optional_int(context.get("page_number"))
+    source_page_number = _optional_int(candidate_source.get("page_number"))
+    source_session = _clean_text(candidate_source.get("session_id")) or _session_id_from_output_root(
+        candidate_source.get("source_output_root") or candidate_library.get("source_output_root")
+    )
+    same_theme = bool(target_theme and source_theme and target_theme == source_theme)
+    cross_theme = bool(target_theme and source_theme and target_theme != source_theme)
+    return {
+        "target_theme": target_theme,
+        "target_page_number": target_page_number,
+        "source_theme": source_theme,
+        "source_session": source_session,
+        "source_page_number": source_page_number,
+        "target_aspect_ratio": _clean_text(target.get("aspect_ratio")) or _clean_text(context.get("aspect_ratio")),
+        "candidate_aspect_ratio": _clean_text(candidate.get("aspect_ratio")),
+        "transform_policy": transform_policy or {},
+        "same_theme": same_theme,
+        "cross_theme": cross_theme,
+        "source_visible_in_current_library": bool(candidate.get("asset_id") and candidate.get("image_path")),
+        "source_ingested_at": _clean_text(candidate_library.get("ingested_at")),
+        "source_output_root": _clean_text(candidate_source.get("source_output_root") or candidate_library.get("source_output_root")),
+        "source_image_path": _clean_text(candidate_source.get("source_image_path") or candidate_library.get("source_image_path")),
+    }
+
+
+def _flat_reuse_audit_fields(audit: dict[str, Any]) -> dict[str, Any]:
+    keys = (
+        "target_theme",
+        "target_page_number",
+        "source_theme",
+        "source_session",
+        "source_page_number",
+        "target_aspect_ratio",
+        "candidate_aspect_ratio",
+        "same_theme",
+        "cross_theme",
+        "source_visible_in_current_library",
+        "source_ingested_at",
+    )
+    return {key: audit.get(key) for key in keys if key in audit}
+
+
+def _session_id_from_output_root(value: Any) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    return Path(text).name
+
+
 def _materialize_plan_reuse_match(
     *,
     session_dir: Path,
@@ -1195,6 +1297,8 @@ def _plan_reuse_check_record(
         "keyword_score": match.get("keyword_score") if match else None,
         "accepted_by": match.get("accepted_by") if match else "",
         "reuse_policy": match.get("reuse_policy") if match else {},
+        "reuse_audit": match.get("reuse_audit") if match else {},
+        "llm_reuse_review_performed": _match_llm_reuse_review_performed(match) if match else False,
         "transform_policy": _match_transform_policy(match) if match else {},
         "strict_reuse_occupancy": match.get("strict_reuse_occupancy") if match else {},
     }
@@ -1375,6 +1479,13 @@ def _optional_float(value: Any) -> float | None:
         return None
 
 
+def _optional_int(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _new_reuse_debug_record(
     *,
     library_root: Path,
@@ -1476,7 +1587,9 @@ def _reuse_no_match_top_candidate_summaries(record: dict[str, Any], *, limit: in
 
 def _reuse_debug_candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
     policy = _dict(candidate.get("reuse_policy"))
-    return {
+    audit = _dict(candidate.get("reuse_audit"))
+    llm_review_performed = bool(policy.get("llm_review_performed"))
+    payload = {
         "asset_id": candidate.get("asset_id"),
         "image_path": candidate.get("image_path"),
         "library_image_path": candidate.get("library_image_path"),
@@ -1491,16 +1604,22 @@ def _reuse_debug_candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
         "hybrid_score": candidate.get("hybrid_score"),
         "accepted_by": candidate.get("accepted_by"),
         "score_gap_to_threshold": candidate.get("score_gap_to_threshold"),
+        "reuse_audit": audit,
+        "llm_reuse_review_performed": llm_review_performed,
         "reuse_policy": {
             "decision": policy.get("decision"),
             "reason": policy.get("reason"),
             "missing": policy.get("missing") or [],
             "conflicts": policy.get("conflicts") or [],
             "review_items": policy.get("review_items") or [],
+            "llm_review_required": bool(policy.get("llm_review_required")),
+            "llm_review_performed": llm_review_performed,
             "llm_review": policy.get("llm_review") or {},
         },
         "strict_reuse_occupancy": candidate.get("strict_reuse_occupancy") or {},
     }
+    payload.update(_flat_reuse_audit_fields(audit))
+    return payload
 
 
 def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
@@ -1515,6 +1634,9 @@ def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
         "style_prompt": _asset_style_prompt(asset),
         "prompt_route": _clean_prompt_route(asset.get("prompt_route")),
         "background_route": _clean_background_route(asset.get("background_route")),
+        "theme": _clean_text(asset.get("theme")),
+        "source": _match_source_info(asset.get("source")),
+        "library": _match_library_info(asset.get("library")),
         "core_keywords": _keyword_list(asset.get("core_keywords"), max_items=16),
         "semantic_aliases": _clean_semantic_aliases(asset.get("semantic_aliases")),
         "context_summary_keywords": _keyword_list(asset.get("context_summary_keywords"), max_items=10),
@@ -1548,6 +1670,9 @@ def _reuse_debug_candidate_payload(candidate: dict[str, Any], *, threshold: floa
     payload["library_image_path"] = str(candidate.get("library_image_path") or "")
     payload["score_details"] = candidate.get("score_details") or {}
     payload["reuse_policy"] = candidate.get("reuse_policy") or {}
+    payload["reuse_audit"] = candidate.get("reuse_audit") or {}
+    payload.update(_flat_reuse_audit_fields(_dict(payload["reuse_audit"])))
+    payload["llm_reuse_review_performed"] = bool(_dict(payload["reuse_policy"]).get("llm_review_performed"))
     payload["strict_reuse_occupancy"] = candidate.get("strict_reuse_occupancy") or {}
     if threshold is not None:
         payload["threshold_used"] = threshold
@@ -2346,9 +2471,12 @@ def _normalize_asset_for_match(
         "aspect_ratio": _clean_text(item.get("aspect_ratio")),
         "role": role,
         "page_type": page_type,
+        "theme": _clean_text(item.get("theme")),
         "subject": _clean_text(item.get("subject")),
         "grade_norm": grade_info["grade_norm"],
         "grade_band": grade_info["grade_band"],
+        "source": _match_source_info(item.get("source")),
+        "library": _match_library_info(item.get("library")),
         "content_prompt": content_prompt,
         "prompt_route": prompt_route,
         "background_route": _match_background_route(item.get("background_route")),
@@ -2531,6 +2659,37 @@ def _strip_empty_match_fields(asset: dict[str, Any]) -> dict[str, Any]:
             continue
         cleaned[key] = value
     return cleaned
+
+
+def _match_source_info(source: Any) -> dict[str, Any]:
+    source = _dict(source)
+    payload: dict[str, Any] = {}
+    for key in (
+        "session_id",
+        "source_output_root",
+        "source_image_path",
+        "plan_path",
+        "prompt_path",
+        "page_number",
+        "image_index",
+        "page_title",
+        "page_type",
+        "role",
+    ):
+        value = source.get(key)
+        if value not in ("", None):
+            payload[key] = value
+    return payload
+
+
+def _match_library_info(library: Any) -> dict[str, Any]:
+    library = _dict(library)
+    payload: dict[str, Any] = {}
+    for key in ("ingested_at", "source_output_root", "source_image_path"):
+        value = library.get(key)
+        if value not in ("", None):
+            payload[key] = value
+    return payload
 
 
 def _semantic_alias_terms(asset: dict[str, Any]) -> list[str]:
@@ -2894,6 +3053,7 @@ def _build_reuse_target_asset(
         "asset_kind": asset_kind,
         "image_path": "",
         "aspect_ratio": aspect_ratio,
+        "theme": _clean_text(theme),
         "content_prompt": content_prompt,
         "style_prompt": _route_style_prompt(route),
         "prompt_route": route,
@@ -3181,7 +3341,7 @@ def _rank_hybrid_reuse_candidates(
             candidate["keyword_score"] = round(max(float(candidate.get("keyword_score") or 0.0), bm25_score), 4)
         candidate["rrf_score"] = round(rrf_scores.get(asset_id, 0.0), 6)
         candidate["hybrid_score"] = round(rrf_scores.get(asset_id, 0.0) / max(max_rrf, 1e-9), 4)
-        candidate["accepted_by"] = _reuse_acceptance_reason(candidate, threshold)
+        candidate["accepted_by"] = _reuse_acceptance_reason(candidate, threshold, target=target)
         candidate["transform_policy"] = score_details.get("transform_policy") or {}
         score_details.update(
             {
@@ -3843,7 +4003,12 @@ def _term_in_text(term: str, text: str) -> bool:
     return bool(term and text and term in text)
 
 
-def _reuse_acceptance_reason(candidate: dict[str, Any], threshold: float | None = None) -> str:
+def _reuse_acceptance_reason(
+    candidate: dict[str, Any],
+    threshold: float | None = None,
+    *,
+    target: dict[str, Any] | None = None,
+) -> str:
     threshold = VISUAL_GENERIC_REUSE_THRESHOLD if threshold is None else float(threshold)
     if candidate.get("background_reuse_score") is not None:
         return "background_threshold" if float(candidate.get("background_reuse_score") or 0.0) >= threshold else ""
@@ -3853,15 +4018,52 @@ def _reuse_acceptance_reason(candidate: dict[str, Any], threshold: float | None 
     substring_score = float(candidate.get("substring_score") or 0.0)
     if bm25_score >= threshold:
         return "bm25_threshold"
+    if _is_strict_embedding_review_candidate(target, candidate, embedding_score):
+        return "strict_embedding_review"
     if bm25_score >= BM25_GRAY_REUSE_THRESHOLD and embedding_score >= EMBEDDING_GRAY_REUSE_THRESHOLD:
         return "embedding_gray_zone"
     if bm25_score >= max(0.0, threshold - 0.03) and substring_score >= 0.35 and embedding_score >= 0.62:
         return "substring_embedding_gray_zone"
+    if _is_medium_embedding_review_candidate(target, candidate, embedding_score):
+        return "medium_embedding_review"
     return ""
 
 
+def _is_strict_embedding_review_candidate(
+    target: dict[str, Any] | None,
+    candidate: dict[str, Any],
+    embedding_score: float,
+) -> bool:
+    if embedding_score < STRICT_EMBEDDING_REVIEW_THRESHOLD:
+        return False
+    asset = _dict(candidate.get("asset"))
+    if _clean_text(asset.get("asset_kind")) == "background":
+        return False
+    policies = [normalize_reuse_policy_fields(asset)]
+    if target is not None:
+        policies.append(normalize_reuse_policy_fields(_dict(target)))
+    return any(policy.get("reuse_level") == "strict" for policy in policies)
+
+
+def _is_medium_embedding_review_candidate(
+    target: dict[str, Any] | None,
+    candidate: dict[str, Any],
+    embedding_score: float,
+) -> bool:
+    if embedding_score < MEDIUM_EMBEDDING_REVIEW_THRESHOLD:
+        return False
+    asset = _dict(candidate.get("asset"))
+    if _clean_text(asset.get("asset_kind")) == "background":
+        return False
+    policies = [normalize_reuse_policy_fields(asset)]
+    if target is not None:
+        policies.append(normalize_reuse_policy_fields(_dict(target)))
+    levels = {_clean_text(policy.get("reuse_level")) for policy in policies}
+    return "strict" not in levels and "medium" in levels
+
+
 def _candidate_passes_reuse_threshold(candidate: dict[str, Any], threshold: float) -> bool:
-    return bool(_reuse_acceptance_reason(candidate, threshold))
+    return bool(candidate.get("accepted_by") or _reuse_acceptance_reason(candidate, threshold))
 
 
 def _reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: float | None) -> float:

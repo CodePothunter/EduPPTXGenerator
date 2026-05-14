@@ -76,6 +76,18 @@ SEMANTIC_SCENE_CATEGORIES = {"concept_scene", "character_action"}
 SEMANTIC_SIGNAL_ACCEPT_REASONS = {"embedding_gray_zone", "substring_embedding_gray_zone"}
 SEMANTIC_EMBEDDING_ACCEPT_THRESHOLD = 0.82
 SEMANTIC_SCORE_FLOOR = 0.18
+STRICT_EMBEDDING_REVIEW_THRESHOLD = 0.78
+MEDIUM_EMBEDDING_REVIEW_THRESHOLD = 0.80
+AUTO_ACCEPT_EMBEDDING_FLOORS = {
+    "strict": 0.58,
+    "content_specific": 0.58,
+    "character_action": 0.58,
+    "generic_diagram": 0.60,
+    "concept_scene": 0.55,
+    "unknown": 0.55,
+    "generic_tool": 0.50,
+    "learning_behavior": 0.50,
+}
 STRICT_CONTENT_CONTEXT_MARKERS = (
     "故事情节",
     "课文情节",
@@ -205,16 +217,12 @@ def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
         constraints = _infer_strict_core_constraints(asset, asset_category)
 
     if asset_category in MEDIUM_CATEGORIES and not _has_high_risk_kind_constraints(constraints):
-        # Medium-pool categories are intentionally threshold based. LLMs often
-        # mark ordinary visible subjects/actions as hard constraints because a
-        # page "needs" that subject, but those signals belong in keywords.
         strict_downgraded = (
             reuse_level == "strict"
             or any(reuse_risk.values())
             or any(item.get("kind") in VISUAL_SEMANTIC_KINDS for item in constraints)
         )
         reuse_level = "medium"
-        constraints = []
     elif _has_strict_reuse_risk(constraints, reuse_risk):
         reuse_level = "strict"
     elif reuse_level == "strict" and constraints and asset_category in STRICT_CATEGORIES:
@@ -241,7 +249,7 @@ def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
     else:
         generic_support_allowed = True
 
-    if reuse_level != "strict":
+    if reuse_level == "loose":
         constraints = []
 
     return {
@@ -435,9 +443,47 @@ def evaluate_reuse_filter(
     target_level = target_policy["reuse_level"]
     candidate_level = candidate_policy["reuse_level"]
     semantic_signal = _has_semantic_reuse_signal(score_details, score)
+    embedding_score = _embedding_score_from_details(score_details)
+    accepted_by = _clean_text(score_details.get("accepted_by"))
+
+    def high_embedding_review_result(reason: str, threshold_value: float) -> dict[str, Any]:
+        return _result(
+            "llm_review",
+            reason,
+            review_items=[
+                {
+                    "decision": "llm_review",
+                    "kind": "embedding",
+                    "reason": reason,
+                    "embedding_score": round(float(embedding_score), 4),
+                    "threshold": round(float(threshold_value), 4),
+                }
+            ],
+            confidence=0.5,
+            threshold=threshold_used,
+            score_gap=score_gap,
+            target_policy=target_policy,
+            candidate_policy=candidate_policy,
+        )
+
+    def embedding_floor_review_result(reason: str) -> dict[str, Any]:
+        floor = _auto_accept_embedding_floor(target_policy, candidate_policy)
+        return high_embedding_review_result(reason, floor)
 
     if target_level != "strict" and candidate_level != "strict":
+        if (
+            "medium" in {target_level, candidate_level}
+            and score_gap < 0
+            and embedding_score >= MEDIUM_EMBEDDING_REVIEW_THRESHOLD
+            and (accepted_by == "medium_embedding_review" or score <= 0)
+        ):
+            return high_embedding_review_result(
+                "medium_embedding_high_keyword_below_threshold",
+                MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
+            )
         if score_gap >= 0 or semantic_signal:
+            if score_gap >= 0 and _requires_embedding_floor_review(target_policy, candidate_policy, embedding_score):
+                return embedding_floor_review_result("embedding_below_auto_accept_floor")
             return _result(
                 "full_match",
                 "medium_similarity_threshold_match",
@@ -459,6 +505,11 @@ def evaluate_reuse_filter(
 
     if target_level == "strict" or candidate_level == "strict":
         if score_gap < 0 and not semantic_signal:
+            if embedding_score >= STRICT_EMBEDDING_REVIEW_THRESHOLD:
+                return high_embedding_review_result(
+                    "strict_embedding_high_keyword_below_threshold",
+                    STRICT_EMBEDDING_REVIEW_THRESHOLD,
+                )
             return _result(
                 "reject",
                 "strict_similarity_below_threshold",
@@ -469,6 +520,8 @@ def evaluate_reuse_filter(
                 candidate_policy=candidate_policy,
             )
         if not target_policy["core_constraints"] and not candidate_policy["core_constraints"]:
+            if score_gap >= 0 and _requires_embedding_floor_review(target_policy, candidate_policy, embedding_score):
+                return embedding_floor_review_result("embedding_below_auto_accept_floor")
             return _result(
                 "full_match",
                 "strict_unconstrained_similarity_match",
@@ -538,6 +591,8 @@ def evaluate_reuse_filter(
                 target_policy=target_policy,
                 candidate_policy=candidate_policy,
             )
+        if score_gap >= 0 and _requires_embedding_floor_review(target_policy, candidate_policy, embedding_score):
+            return embedding_floor_review_result("embedding_below_auto_accept_floor")
         return _result(
             "full_match",
             "strict_core_constraints_covered",
@@ -1184,14 +1239,41 @@ def _risk_required(value: Any) -> bool:
     return bool(value)
 
 
+def _embedding_score_from_details(score_details: dict[str, Any]) -> float:
+    try:
+        return float(score_details.get("embedding_score") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _auto_accept_embedding_floor(target_policy: dict[str, Any], candidate_policy: dict[str, Any]) -> float:
+    floors: list[float] = []
+    if target_policy.get("reuse_level") == "strict" or candidate_policy.get("reuse_level") == "strict":
+        floors.append(float(AUTO_ACCEPT_EMBEDDING_FLOORS["strict"]))
+    for policy in (target_policy, candidate_policy):
+        category = _clean_text(policy.get("asset_category")) or "unknown"
+        if category in AUTO_ACCEPT_EMBEDDING_FLOORS:
+            floors.append(float(AUTO_ACCEPT_EMBEDDING_FLOORS[category]))
+    return max(floors or [0.0])
+
+
+def _requires_embedding_floor_review(
+    target_policy: dict[str, Any],
+    candidate_policy: dict[str, Any],
+    embedding_score: float,
+) -> bool:
+    levels = {target_policy.get("reuse_level"), candidate_policy.get("reuse_level")}
+    if not ({"medium", "strict"} & levels):
+        return False
+    floor = _auto_accept_embedding_floor(target_policy, candidate_policy)
+    return floor > 0 and embedding_score < floor
+
+
 def _has_semantic_reuse_signal(score_details: dict[str, Any], score: float) -> bool:
     accepted_by = _clean_text(score_details.get("accepted_by"))
     if accepted_by in SEMANTIC_SIGNAL_ACCEPT_REASONS:
         return True
-    try:
-        embedding_score = float(score_details.get("embedding_score") or 0.0)
-    except (TypeError, ValueError):
-        embedding_score = 0.0
+    embedding_score = _embedding_score_from_details(score_details)
     try:
         substring_score = float(score_details.get("substring_score") or 0.0)
     except (TypeError, ValueError):

@@ -1,9 +1,56 @@
+from edupptx.materials.ai_image_asset_db import _reuse_acceptance_reason
 from edupptx.materials.reuse_policy import (
+    MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
+    STRICT_EMBEDDING_REVIEW_THRESHOLD,
     evaluate_aspect_transform,
     evaluate_reuse_filter,
     normalize_reuse_policy_fields,
     reuse_threshold_for_target,
 )
+
+
+def test_strict_high_embedding_candidate_enters_review_even_when_keyword_score_is_zero():
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "strict",
+        "asset_category": "content_specific",
+        "core_constraints": [{"kind": "action", "value": "摔东西", "exact": False}],
+    }
+    candidate = {
+        "asset": {
+            "asset_kind": "page_image",
+            "reuse_level": "strict",
+            "asset_category": "character_action",
+            "core_constraints": [{"kind": "action", "value": "摔砸", "exact": False}],
+        },
+        "keyword_score": 0.0,
+        "embedding_score": STRICT_EMBEDDING_REVIEW_THRESHOLD,
+        "substring_score": 0.0,
+    }
+
+    assert _reuse_acceptance_reason(candidate, threshold=0.68, target=target) == "strict_embedding_review"
+
+
+def test_medium_high_embedding_candidate_enters_review_even_when_keyword_score_is_zero():
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "medium",
+        "asset_category": "concept_scene",
+        "core_constraints": [],
+    }
+    candidate = {
+        "asset": {
+            "asset_kind": "page_image",
+            "reuse_level": "medium",
+            "asset_category": "concept_scene",
+            "core_constraints": [],
+        },
+        "keyword_score": 0.0,
+        "embedding_score": MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
+        "substring_score": 0.0,
+    }
+
+    assert _reuse_acceptance_reason(candidate, threshold=0.40, target=target) == "medium_embedding_review"
 
 
 def test_normalize_reuse_policy_fields_forces_strict_for_high_risk_constraints():
@@ -100,6 +147,10 @@ def test_normalize_reuse_policy_preserves_strict_structured_constraints():
 
 
 def test_normalize_reuse_policy_keeps_medium_categories_threshold_based_without_high_risk_constraints():
+    expected_constraints = [
+        {"kind": "entity", "value": "visible subject", "exact": True, "hard": True},
+        {"kind": "action", "value": "visible action", "exact": True, "hard": True},
+    ]
     policy = normalize_reuse_policy_fields(
         {
             "asset_kind": "page_image",
@@ -110,17 +161,14 @@ def test_normalize_reuse_policy_keeps_medium_categories_threshold_based_without_
                 "unique_referent": {"required": True, "evidence": ["ordinary subject needed"]},
                 "exact_relation": {"required": False, "evidence": []},
             },
-            "core_constraints": [
-                {"kind": "entity", "value": "visible subject", "exact": True, "hard": True},
-                {"kind": "action", "value": "visible action", "exact": True, "hard": True},
-            ],
+            "core_constraints": expected_constraints,
             "generic_support_allowed": False,
         }
     )
 
     assert policy["reuse_level"] == "medium"
     assert policy["generic_support_allowed"] is True
-    assert policy["core_constraints"] == []
+    assert policy["core_constraints"] == expected_constraints
 
 
 def test_normalize_reuse_policy_preserves_high_risk_constraints_in_medium_categories():
@@ -139,7 +187,7 @@ def test_normalize_reuse_policy_preserves_high_risk_constraints_in_medium_catego
     assert policy["core_constraints"] == [{"kind": "text", "value": "character: bi", "exact": True}]
 
 
-def test_normalize_reuse_policy_clears_constraints_for_non_strict_assets():
+def test_normalize_reuse_policy_preserves_constraints_for_medium_assets():
     policy = normalize_reuse_policy_fields(
         {
             "asset_kind": "page_image",
@@ -150,7 +198,7 @@ def test_normalize_reuse_policy_clears_constraints_for_non_strict_assets():
     )
 
     assert policy["reuse_level"] == "medium"
-    assert policy["core_constraints"] == []
+    assert policy["core_constraints"] == [{"kind": "entity", "value": "ordinary subject", "exact": False}]
 
 
 def test_normalize_reuse_policy_infers_strict_for_specific_story_event():
@@ -253,6 +301,36 @@ def test_medium_semantic_reuse_accepts_embedding_signal_and_missing_soft_constra
     assert result["reason"] == "medium_similarity_threshold_match"
 
 
+def test_medium_filter_requires_llm_when_embedding_high_but_keyword_score_is_zero():
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "medium",
+        "asset_category": "concept_scene",
+        "core_constraints": [],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "medium",
+        "asset_category": "concept_scene",
+        "core_constraints": [],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {
+            "keyword_score": 0.0,
+            "embedding_score": MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
+            "accepted_by": "medium_embedding_review",
+        },
+        threshold=0.40,
+    )
+
+    assert result["decision"] == "llm_review"
+    assert result["reason"] == "medium_embedding_high_keyword_below_threshold"
+    assert result["review_items"][0]["threshold"] == MEDIUM_EMBEDDING_REVIEW_THRESHOLD
+
+
 def test_character_action_and_concept_scene_are_semantically_compatible():
     target = {
         "asset_kind": "page_image",
@@ -267,7 +345,7 @@ def test_character_action_and_concept_scene_are_semantically_compatible():
         "core_constraints": [{"kind": "action", "value": "visible action", "exact": True}],
     }
 
-    result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.55}, threshold=0.5)
+    result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.55, "embedding_score": 0.7}, threshold=0.5)
 
     assert result["decision"] == "full_match"
 
@@ -326,13 +404,96 @@ def test_strict_without_constraints_falls_back_to_similarity_threshold():
         "core_constraints": [],
     }
 
-    accepted = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.7}, threshold=0.6)
+    accepted = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.7, "embedding_score": 0.7}, threshold=0.6)
     rejected = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.5}, threshold=0.6)
 
     assert accepted["decision"] == "full_match"
     assert accepted["reason"] == "strict_unconstrained_similarity_match"
     assert rejected["decision"] == "reject"
     assert rejected["reason"] == "strict_similarity_below_threshold"
+
+
+def test_strict_filter_requires_llm_when_embedding_high_but_keyword_score_below_threshold():
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "strict",
+        "asset_category": "content_specific",
+        "core_constraints": [{"kind": "action", "value": "摔东西", "exact": False, "hard": True}],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "strict",
+        "asset_category": "character_action",
+        "core_constraints": [{"kind": "action", "value": "摔砸", "exact": False, "hard": True}],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {
+            "keyword_score": 0.0,
+            "embedding_score": STRICT_EMBEDDING_REVIEW_THRESHOLD,
+            "accepted_by": "strict_embedding_review",
+        },
+        threshold=0.68,
+    )
+
+    assert result["decision"] == "llm_review"
+    assert result["reason"] == "strict_embedding_high_keyword_below_threshold"
+
+
+def test_medium_score_match_requires_llm_when_embedding_below_auto_accept_floor():
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "medium",
+        "asset_category": "generic_diagram",
+        "core_constraints": [],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "medium",
+        "asset_category": "generic_diagram",
+        "core_constraints": [],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.55, "embedding_score": 0.0, "accepted_by": "bm25_threshold"},
+        threshold=0.48,
+    )
+
+    assert result["decision"] == "llm_review"
+    assert result["reason"] == "embedding_below_auto_accept_floor"
+    assert result["review_items"][0]["threshold"] == 0.6
+
+
+def test_strict_score_match_requires_llm_when_embedding_below_auto_accept_floor():
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "strict",
+        "asset_category": "content_specific",
+        "reuse_risk": {"unique_referent": {"required": True, "evidence": ["specific content required"]}},
+        "core_constraints": [],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "strict",
+        "asset_category": "content_specific",
+        "reuse_risk": {"unique_referent": {"required": True, "evidence": ["specific content required"]}},
+        "core_constraints": [],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.7, "embedding_score": 0.2, "accepted_by": "bm25_threshold"},
+        threshold=0.66,
+    )
+
+    assert result["decision"] == "llm_review"
+    assert result["reason"] == "embedding_below_auto_accept_floor"
+    assert result["review_items"][0]["threshold"] == 0.58
 
 
 def test_strict_candidate_requires_target_to_cover_candidate_constraints():
@@ -352,7 +513,7 @@ def test_strict_candidate_requires_target_to_cover_candidate_constraints():
         ],
     }
 
-    result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.9}, threshold=0.5)
+    result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.9, "embedding_score": 0.7}, threshold=0.5)
 
     assert result["decision"] == "llm_review"
     assert result["reason"] == "strict_core_constraints_require_llm_review"
@@ -379,7 +540,7 @@ def test_strict_candidate_accepts_when_target_covers_structured_constraints():
         ],
     }
 
-    result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.9}, threshold=0.5)
+    result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.9, "embedding_score": 0.7}, threshold=0.5)
 
     assert result["decision"] == "full_match"
     assert result["reason"] == "strict_core_constraints_covered"
@@ -399,7 +560,7 @@ def test_strict_visual_constraint_accepts_alias_match():
         "core_constraints": [{"kind": "action", "value": "朗读", "exact": False, "hard": True}],
     }
 
-    result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.9}, threshold=0.6)
+    result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.9, "embedding_score": 0.7}, threshold=0.6)
 
     assert result["decision"] == "full_match"
     assert result["reason"] == "strict_core_constraints_covered"
@@ -424,6 +585,7 @@ def test_strict_visual_constraint_accepts_high_embedding_match():
         candidate,
         {
             "keyword_score": 0.9,
+            "embedding_score": 0.9,
             "constraint_embedding_scores": [
                 {"kind": "action", "target": "read aloud", "candidate": "oral reading", "score": 0.87}
             ],
@@ -453,6 +615,7 @@ def test_strict_relation_constraint_requires_llm_after_high_embedding_match():
         candidate,
         {
             "keyword_score": 0.9,
+            "embedding_score": 0.9,
             "constraint_embedding_scores": [
                 {
                     "kind": "relation",
