@@ -16,18 +16,22 @@ from typing import Any
 from edupptx.materials.reuse_policy import (
     MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
     SCORE_DERIVED_REUSE_THRESHOLDS,
+    STRICT_CATEGORIES,
     STRICT_EMBEDDING_REVIEW_THRESHOLD,
+    STRICT_SEMANTIC_GRAY_BM25_THRESHOLD,
+    STRICT_SEMANTIC_GRAY_REVIEW_THRESHOLD,
     apply_reuse_policy_defaults,
     derive_reuse_policy_from_scores,
     evaluate_aspect_transform,
     evaluate_reuse_filter,
+    normalize_core_constraints,
     normalize_reuse_score_fields,
     normalize_reuse_policy_fields,
     reuse_threshold_for_target as policy_reuse_threshold_for_target,
 )
 
 SCHEMA_VERSION = 1
-KEYWORD_SCHEMA_VERSION = 7
+KEYWORD_SCHEMA_VERSION = 9
 DEFAULT_DB_FILENAME = "ai_image_asset_db.json"
 DEFAULT_MATCH_INDEX_FILENAME = "ai_image_match_index.json"
 DEFAULT_EMBEDDING_INDEX_FILENAME = "ai_image_embedding_index.npz"
@@ -52,6 +56,68 @@ BM25_GRAY_REUSE_THRESHOLD = 0.23
 EMBEDDING_GRAY_REUSE_THRESHOLD = 0.72
 STRICT_REUSE_MAX_PER_SESSION = 2
 REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD = 0.70
+
+BACKGROUND_REUSE_GATE_THRESHOLDS = {
+    "keyword_min": 0.10,
+    "embedding_min": 0.42,
+    "keyword_high": 0.38,
+    "embedding_high": 0.78,
+    "keyword_gray_high": 0.26,
+    "embedding_gray_low": 0.55,
+    "embedding_gray_high": 0.68,
+    "keyword_gray_low": 0.16,
+}
+PAGE_IMAGE_REUSE_GATE_THRESHOLDS = {
+    "loose": {
+        "keyword_min": 0.12,
+        "embedding_min": 0.46,
+        "keyword_high": 0.54,
+        "embedding_high": 0.78,
+        "keyword_gray_high": 0.28,
+        "embedding_gray_low": 0.56,
+        "embedding_gray_high": 0.68,
+        "keyword_gray_low": 0.18,
+    },
+    "medium": {
+        "keyword_min": 0.14,
+        "embedding_min": 0.50,
+        "keyword_high": 0.58,
+        "embedding_high": 0.80,
+        "keyword_gray_high": 0.30,
+        "embedding_gray_low": 0.60,
+        "embedding_gray_high": 0.70,
+        "keyword_gray_low": 0.20,
+    },
+    "strict_literary": {
+        "keyword_min": 0.12,
+        "embedding_min": 0.50,
+        "keyword_high": 0.58,
+        "embedding_high": 0.80,
+        "keyword_gray_high": 0.32,
+        "embedding_gray_low": 0.60,
+        "embedding_gray_high": 0.72,
+        "keyword_gray_low": 0.18,
+    },
+    "strict_knowledge": {
+        "keyword_min": 0.20,
+        "embedding_min": 0.55,
+        "keyword_high": 0.64,
+        "embedding_high": 0.80,
+        "keyword_gray_high": 0.45,
+        "embedding_gray_low": 0.70,
+        "embedding_gray_high": 0.76,
+        "keyword_gray_low": 0.25,
+    },
+}
+TEXT_OVERLAP_REVIEW_THRESHOLD = 0.15
+TEXT_OVERLAP_EMBEDDING_THRESHOLD = 0.78
+PAGE_IMAGE_SCORE_GATE_REVIEW_REASONS = {
+    "keyword_high_review",
+    "embedding_high_review",
+    "text_overlap_embedding_review",
+    "keyword_led_gray_review",
+    "embedding_led_gray_review",
+}
 
 CONTENT_PROMPT_REUSE_WEIGHT = 0.80
 ROUTE_REUSE_WEIGHT = 0.10
@@ -81,6 +147,20 @@ _LIBRARY_REMOVED_KEYWORD_FIELDS = {
     "texture_style",
     "layout_function",
     "mood",
+}
+_BACKGROUND_REMOVED_REUSE_FIELDS = {
+    "primary_subjects",
+    "primary_actions",
+    "primary_emotions",
+    "teaching_objects",
+    "soft_modifiers",
+    "core_constraints",
+    "reuse_scores",
+    "reuse_risk",
+    "reuse_level",
+    "asset_category",
+    "generic_support_allowed",
+    "score_thresholds",
 }
 _BACKGROUND_ROUTE_FIELDS = (
     "template_family",
@@ -785,7 +865,11 @@ def find_reusable_ai_image_asset(
     debug_record["ranked_candidates"] = [
         _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in ranked_candidates
     ]
-    candidates = [candidate for candidate in ranked_candidates if _candidate_passes_reuse_threshold(candidate, threshold)]
+    candidates = [
+        candidate
+        for candidate in ranked_candidates
+        if _candidate_passes_reuse_threshold(candidate, threshold, target=target)
+    ]
     debug_record["thresholded_candidates"] = [
         _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in candidates
     ]
@@ -851,12 +935,17 @@ def find_reusable_ai_image_asset(
                     "strict_llm_score_review_rejected" if review_reason.startswith("strict_") else "llm_score_review_rejected"
                 )
         elif review_decision == "llm_review":
+            review_threshold = _reuse_review_accept_score_threshold(
+                target,
+                _dict(candidate.get("asset")),
+                policy_result=policy_result,
+            )
             policy_result = dict(policy_result)
             policy_result["llm_review_required"] = True
             policy_result["llm_review_performed"] = False
             policy_result["llm_review"] = {
                 "score": 0.0,
-                "threshold": REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD,
+                "threshold": review_threshold,
                 "decision": "reject",
                 "brief_reason": "llm_review_disabled",
             }
@@ -1004,6 +1093,9 @@ def materialize_reused_ai_image_asset(
     dest.parent.mkdir(parents=True, exist_ok=True)
     source = Path(_clean_text(match.get("library_image_path"))).expanduser()
     transform_policy = _match_transform_policy(match)
+    if _clean_text(transform_policy.get("decision")) == "reject":
+        reason = _clean_text(transform_policy.get("reason")) or "aspect_transform_rejected"
+        raise ValueError(f"refusing to materialize rejected AI image reuse match: {reason}")
     mode = _clean_text(transform_policy.get("mode")) or "copy"
 
     try:
@@ -1619,6 +1711,7 @@ def _reuse_debug_candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
         "reuse_level": candidate.get("reuse_level"),
         "asset_category": candidate.get("asset_category"),
         "core_keywords": candidate.get("core_keywords") or [],
+        **_structured_keyword_fields_payload(candidate),
         "reuse_scores": candidate.get("reuse_scores") or {},
         "core_constraints": candidate.get("core_constraints") or [],
         "keyword_score": candidate.get("keyword_score"),
@@ -1663,6 +1756,7 @@ def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
         "core_keywords": _keyword_list(asset.get("core_keywords"), max_items=16),
         "semantic_aliases": _clean_semantic_aliases(asset.get("semantic_aliases")),
         "context_summary_keywords": _keyword_list(asset.get("context_summary_keywords"), max_items=10),
+        **_structured_keyword_fields_payload(asset),
         "reuse_scores": normalize_reuse_score_fields(asset.get("reuse_scores")),
         "teaching_intent": asset.get("teaching_intent"),
         "role": _asset_role(asset),
@@ -1681,6 +1775,8 @@ def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
         "score_thresholds": {
             **SCORE_DERIVED_REUSE_THRESHOLDS,
             "reuse_review_accept_score": REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD,
+            "strict_semantic_gray_review_embedding": STRICT_SEMANTIC_GRAY_REVIEW_THRESHOLD,
+            "strict_semantic_gray_review_bm25": STRICT_SEMANTIC_GRAY_BM25_THRESHOLD,
         },
     }
 
@@ -1826,8 +1922,16 @@ def _review_reuse_candidate_with_llm(
     policy_result: dict[str, Any],
     score_details: dict[str, Any],
 ) -> dict[str, Any]:
+    accept_threshold = _reuse_review_accept_score_threshold(
+        target,
+        candidate,
+        policy_result=policy_result,
+    )
     if client is None:
-        return _normalize_reuse_review_score_response({"score": 0.0, "brief_reason": "missing_llm_client"})
+        return _normalize_reuse_review_score_response(
+            {"score": 0.0, "brief_reason": "missing_llm_client"},
+            accept_threshold=accept_threshold,
+        )
 
     messages = _build_reuse_review_messages(
         target=target,
@@ -1845,16 +1949,23 @@ def _review_reuse_candidate_with_llm(
         else:
             chat = getattr(client, "chat", None)
             if not callable(chat):
-                return {"decision": "uncertain", "reason": "llm_client_missing_chat"}
+                return _normalize_reuse_review_score_response(
+                    {"score": 0.0, "brief_reason": "llm_client_missing_chat"},
+                    accept_threshold=accept_threshold,
+                )
             response = _load_json_response(chat(messages=messages, temperature=0.0, max_tokens=1200))
     except Exception as exc:
         return _normalize_reuse_review_score_response(
-            {"score": 0.0, "brief_reason": f"llm_review_failed: {str(exc)[:160]}"}
+            {"score": 0.0, "brief_reason": f"llm_review_failed: {str(exc)[:160]}"},
+            accept_threshold=accept_threshold,
         )
 
     if not isinstance(response, dict):
-        return _normalize_reuse_review_score_response({"score": 0.0, "brief_reason": "llm_review_invalid_response"})
-    return _normalize_reuse_review_score_response(response)
+        return _normalize_reuse_review_score_response(
+            {"score": 0.0, "brief_reason": "llm_review_invalid_response"},
+            accept_threshold=accept_threshold,
+        )
+    return _normalize_reuse_review_score_response(response, accept_threshold=accept_threshold)
 
 
 def _build_reuse_review_messages(
@@ -1870,7 +1981,11 @@ def _build_reuse_review_messages(
         "candidate": _reuse_debug_asset_payload(candidate),
         "reuse_policy": policy_result,
         "score_details": _debug_score_details(score_details),
-        "accept_score_threshold": REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD,
+        "accept_score_threshold": _reuse_review_accept_score_threshold(
+            target,
+            candidate,
+            policy_result=policy_result,
+        ),
     }
     system = _load_reuse_review_score_rules_reference()
     return [
@@ -1879,12 +1994,17 @@ def _build_reuse_review_messages(
     ]
 
 
-def _normalize_reuse_review_score_response(response: dict[str, Any]) -> dict[str, Any]:
+def _normalize_reuse_review_score_response(
+    response: dict[str, Any],
+    *,
+    accept_threshold: float = REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD,
+) -> dict[str, Any]:
     score = _clamp_score(response.get("score", response.get("reuse_score")))
+    threshold = max(0.0, min(1.0, float(accept_threshold)))
     return {
         "score": score,
-        "threshold": REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD,
-        "decision": "accept" if score >= REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD else "reject",
+        "threshold": threshold,
+        "decision": "accept" if score >= threshold else "reject",
         "brief_reason": _clean_text(response.get("brief_reason", response.get("reason"))) or "llm_score_review",
         "evidence": _as_string_list(response.get("evidence")),
         "risk_factors": _as_string_list(response.get("risk_factors")),
@@ -1895,7 +2015,12 @@ def _normalize_reuse_review_score_response(response: dict[str, Any]) -> dict[str
 
 
 def _reuse_review_accepts(review: dict[str, Any]) -> bool:
-    return _clamp_score(review.get("score")) >= REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD
+    threshold = review.get("threshold", REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD)
+    try:
+        threshold_float = float(threshold)
+    except (TypeError, ValueError):
+        threshold_float = REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD
+    return _clamp_score(review.get("score")) >= threshold_float
 
 
 def _build_keyword_messages(
@@ -1925,9 +2050,12 @@ def _build_keyword_messages(
         )
 
     required_fields = (
-        "asset_id, normalized_prompt, context_summary, teaching_intent, "
-        "core_keywords, semantic_aliases, context_summary_keywords, "
-        "reuse_scores"
+        "page_image assets: asset_id, normalized_prompt, context_summary, teaching_intent, "
+        "core_keywords, semantic_aliases, context_summary_keywords, primary_subjects, "
+        "primary_actions, primary_emotions, teaching_objects, soft_modifiers, "
+        "core_constraints, reuse_scores. "
+        "background assets: asset_id, normalized_prompt, context_summary, teaching_intent, "
+        "core_keywords, semantic_aliases, context_summary_keywords only."
     )
     purpose = (
         "你需要为已入库素材和待匹配目标提取同一套可复用元数据。"
@@ -1957,6 +2085,22 @@ def _build_keyword_messages(
         "不要输出包含“的”的组合短语；不要输出风格、画法、用途、页面功能、课堂属性或质量描述。"
         "抽取时只保留可见内容的原子语义，不把修饰语和主体合并成硬绑定短语。"
         "semantic_aliases 的 key 必须来自 core_keywords，并映射到等价短语。"
+        "reuse_scores must use dimension_scores; do not output strict_score or loose_score. "
+        "The code will aggregate dimension scores into factual_risk_score, visual_guard_score, "
+        "and reuse_specificity_score, then map score ranges to loose, medium, or strict. "
+        "For asset_kind=background, do not output primary_subjects, primary_actions, primary_emotions, "
+        "teaching_objects, soft_modifiers, core_constraints, reuse_scores, reuse_level, asset_category, "
+        "generic_support_allowed, or reuse_risk. Background metadata is only used for BM25, embedding, "
+        "and substring retrieval. "
+        "primary_subjects 只输出 name、strictness、aliases；"
+        "primary_actions 和 teaching_objects 至少输出 name、strictness、aliases；"
+        "primary_emotions 输出 name、strictness、polarity、aliases，其中 polarity 只能是 positive、negative、neutral 或 mixed。"
+        "strictness 只能是 hard、medium、soft。具体人物/动物/明确性别角色/核心年龄差异通常是 hard；"
+        "青年、男孩、男人这类非核心年龄性别差异可通过 aliases 兼容为 medium；"
+        "情绪 polarity 必须一致，但具体情绪名允许相近。"
+        "soft_modifiers 放暖光、彩色、虚线、特写、黄裙、装饰、像伞参照物、门材质等非核心修饰。"
+        "core_constraints 只放必须参与复用过滤的结构化约束，不要把所有 primary_* 字段照搬进去；"
+        "只有主体、动作、教学对象、情绪或数量关系被替换后会造成教学语义错误时才进入 core_constraints。"
         "page_title、page_type、layout_hint、content_points 只能用于推断 context_summary、"
         "teaching_intent 和 context_summary_keywords；不要把它们当作可见 core_keywords。"
         "不要输出 role、theme、page_title、reuse_scope、specificity_score、"
@@ -2063,6 +2207,55 @@ def _apply_keyword_payload(
         _clean_semantic_aliases(asset.get("semantic_aliases")),
         _clean_semantic_aliases(payload.get("semantic_aliases")),
     )
+    if _is_background_asset(asset):
+        asset["context_summary_keywords"] = _dedupe_terms(
+            [
+                *_keyword_list(
+                    asset.get("context_summary_keywords"),
+                    max_items=10,
+                    exclude=context_exclusions | _GENERIC_CORE_NOISE,
+                ),
+                *_keyword_list(
+                    payload.get("context_summary_keywords"),
+                    max_items=10,
+                    exclude=context_exclusions | _GENERIC_CORE_NOISE,
+                ),
+            ]
+        )[:10]
+        _strip_background_reuse_metadata(asset)
+        if not include_match_keywords:
+            _strip_library_keyword_fields(asset)
+        _normalize_rich_asset_fields(asset, keep_match_keywords=include_match_keywords)
+        if include_match_keywords:
+            asset["match_text"] = _build_match_text(asset)
+            asset["match_key"] = _build_match_key(asset)
+        return
+    for field, include_polarity in (
+        ("primary_subjects", False),
+        ("primary_actions", False),
+        ("primary_emotions", True),
+        ("teaching_objects", False),
+    ):
+        structured_items = [
+            *_clean_structured_keyword_items(asset.get(field), include_polarity=include_polarity),
+            *_clean_structured_keyword_items(payload.get(field), include_polarity=include_polarity),
+        ]
+        if structured_items:
+            asset[field] = _clean_structured_keyword_items(structured_items, include_polarity=include_polarity)
+    soft_modifiers = _dedupe_terms(
+        [
+            *_keyword_list(asset.get("soft_modifiers"), max_items=16),
+            *_keyword_list(payload.get("soft_modifiers"), max_items=16),
+        ]
+    )[:16]
+    if soft_modifiers:
+        asset["soft_modifiers"] = soft_modifiers
+
+    payload_constraints = normalize_core_constraints(payload.get("core_constraints"))
+    if payload_constraints:
+        asset["core_constraints"] = normalize_core_constraints(
+            [*normalize_core_constraints(asset.get("core_constraints")), *payload_constraints]
+        )
 
     asset["context_summary_keywords"] = _dedupe_terms(
         [
@@ -2083,6 +2276,14 @@ def _apply_keyword_payload(
         asset["reuse_scores"] = reuse_scores
     score_policy = derive_reuse_policy_from_scores(asset)
     if score_policy:
+        explicit_constraints = normalize_core_constraints(asset.get("core_constraints"))
+        if explicit_constraints:
+            score_policy = {
+                **score_policy,
+                "core_constraints": normalize_core_constraints(
+                    [*explicit_constraints, *normalize_core_constraints(score_policy.get("core_constraints"))]
+                ),
+            }
         asset["reuse_risk"] = score_policy["reuse_risk"]
         policy_source = {**asset, **score_policy, "asset_kind": asset.get("asset_kind")}
     else:
@@ -2111,6 +2312,13 @@ def _fallback_context_summary(asset: dict[str, Any]) -> str:
 
 def _strip_library_keyword_fields(asset: dict[str, Any]) -> None:
     for field in _LIBRARY_REMOVED_KEYWORD_FIELDS:
+        asset.pop(field, None)
+
+
+def _strip_background_reuse_metadata(asset: dict[str, Any]) -> None:
+    if not _is_background_asset(asset):
+        return
+    for field in _BACKGROUND_REMOVED_REUSE_FIELDS:
         asset.pop(field, None)
 
 
@@ -2167,6 +2375,52 @@ def _clean_semantic_aliases(value: Any) -> dict[str, list[str]]:
         if terms:
             aliases[key] = terms
     return aliases
+
+
+def _clean_strictness(value: Any) -> str:
+    text = _clean_text(value).casefold()
+    return text if text in {"hard", "medium", "soft"} else "medium"
+
+
+def _clean_structured_keyword_items(value: Any, *, include_polarity: bool = False) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    cleaned: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        name = _clean_text(item.get("name") or item.get("value"))
+        if not name:
+            continue
+        strictness = _clean_strictness(item.get("strictness"))
+        key = (name.casefold(), strictness)
+        if key in seen:
+            continue
+        seen.add(key)
+        payload: dict[str, Any] = {
+            "name": name,
+            "strictness": strictness,
+            "aliases": _keyword_list(item.get("aliases"), max_items=8),
+        }
+        if include_polarity:
+            polarity = _clean_text(item.get("polarity")).casefold()
+            if polarity in {"positive", "negative", "neutral", "mixed"}:
+                payload["polarity"] = polarity
+        cleaned.append(payload)
+        if len(cleaned) >= 12:
+            break
+    return cleaned
+
+
+def _structured_keyword_fields_payload(asset: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "primary_subjects": _clean_structured_keyword_items(asset.get("primary_subjects")),
+        "primary_actions": _clean_structured_keyword_items(asset.get("primary_actions")),
+        "primary_emotions": _clean_structured_keyword_items(asset.get("primary_emotions"), include_polarity=True),
+        "teaching_objects": _clean_structured_keyword_items(asset.get("teaching_objects")),
+        "soft_modifiers": _keyword_list(asset.get("soft_modifiers"), max_items=16),
+    }
 
 
 def _merge_semantic_aliases(*items: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -2486,6 +2740,7 @@ def _normalize_asset_for_match(
             max_items=10,
             exclude=_context_exclusions(item) | _GENERIC_CORE_NOISE,
         ),
+        **_structured_keyword_fields_payload(item),
         "reuse_scores": normalize_reuse_score_fields(item.get("reuse_scores")),
         "reuse_risk": _dict(item.get("reuse_risk")),
         "reuse_level": reuse_policy["reuse_level"],
@@ -2557,6 +2812,14 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
     )
     asset["core_keywords"] = core_keywords[:12]
     asset["semantic_aliases"] = _clean_semantic_aliases(asset.get("semantic_aliases"))
+    if _is_background_asset(asset):
+        _strip_background_reuse_metadata(asset)
+    else:
+        for key, value in _structured_keyword_fields_payload(asset).items():
+            if value:
+                asset[key] = value
+            else:
+                asset.pop(key, None)
     if keep_match_keywords:
         asset["context_summary_keywords"] = _keyword_list(
             asset.get("context_summary_keywords"),
@@ -2569,7 +2832,10 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
             max_items=10,
             exclude=_context_exclusions(asset) | _GENERIC_CORE_NOISE,
         )
-    apply_reuse_policy_defaults(asset)
+    if _is_background_asset(asset):
+        _strip_background_reuse_metadata(asset)
+    else:
+        apply_reuse_policy_defaults(asset)
     _strip_library_keyword_fields(asset)
     source = _dict(asset.get("source"))
     source.pop("page_title", None)
@@ -4000,6 +4266,110 @@ def _term_in_text(term: str, text: str) -> bool:
     return bool(term and text and term in text)
 
 
+def _transform_rejects_candidate(candidate: dict[str, Any]) -> bool:
+    transform_policy = _dict(candidate.get("transform_policy"))
+    if not transform_policy:
+        transform_policy = _dict(_dict(candidate.get("score_details")).get("transform_policy"))
+    return _clean_text(transform_policy.get("decision")) == "reject"
+
+
+def _reuse_gate_profile(target: dict[str, Any] | None) -> str:
+    if target is None:
+        return "medium"
+    if _clean_text(target.get("asset_kind")) == "background":
+        return "background"
+    policy = normalize_reuse_policy_fields(_dict(target))
+    level = _clean_text(policy.get("reuse_level")) or "medium"
+    if level == "loose":
+        return "medium"
+    if level == "strict":
+        constraint_kinds = {
+            _clean_text(item.get("kind"))
+            for item in policy.get("core_constraints", [])
+            if isinstance(item, dict)
+        }
+        if constraint_kinds & {"text", "math", "physics", "count", "relation"}:
+            return "strict_knowledge"
+        category = _clean_text(policy.get("asset_category"))
+        if category in {"generic_tool", "generic_diagram"}:
+            return "strict_knowledge"
+        return "strict_literary"
+    return "medium"
+
+
+def _reuse_gate_thresholds_for_target(target: dict[str, Any] | None) -> dict[str, float]:
+    profile = _reuse_gate_profile(target)
+    if profile == "background":
+        return BACKGROUND_REUSE_GATE_THRESHOLDS
+    return PAGE_IMAGE_REUSE_GATE_THRESHOLDS.get(profile, PAGE_IMAGE_REUSE_GATE_THRESHOLDS["medium"])
+
+
+def _is_text_overlap_review_slot(target: dict[str, Any] | None, candidate: dict[str, Any]) -> bool:
+    target_policy = normalize_reuse_policy_fields(_dict(target)) if target is not None else {}
+    candidate_asset = _dict(candidate.get("asset")) or _dict(candidate)
+    candidate_policy = normalize_reuse_policy_fields(candidate_asset)
+    for policy in (target_policy, candidate_policy):
+        for item in policy.get("core_constraints", []):
+            if _clean_text(_dict(item).get("kind")) in {"text", "math", "physics", "count", "relation"}:
+                return True
+    return False
+
+
+def _reuse_gate_reason(
+    *,
+    target: dict[str, Any] | None,
+    candidate: dict[str, Any],
+    keyword_score: float,
+    embedding_score: float,
+    substring_score: float,
+) -> str:
+    if _transform_rejects_candidate(candidate):
+        return ""
+    thresholds = _reuse_gate_thresholds_for_target(target)
+    if keyword_score < thresholds["keyword_min"] and embedding_score < thresholds["embedding_min"]:
+        return ""
+    if keyword_score >= thresholds["keyword_high"]:
+        return "keyword_high_review"
+    if embedding_score >= thresholds["embedding_high"]:
+        return "embedding_high_review"
+    if (
+        _is_text_overlap_review_slot(target, candidate)
+        and substring_score >= TEXT_OVERLAP_REVIEW_THRESHOLD
+        and embedding_score >= TEXT_OVERLAP_EMBEDDING_THRESHOLD
+    ):
+        return "text_overlap_embedding_review"
+    if keyword_score >= thresholds["keyword_gray_high"] and embedding_score >= thresholds["embedding_gray_low"]:
+        return "keyword_led_gray_review"
+    if embedding_score >= thresholds["embedding_gray_high"] and keyword_score >= thresholds["keyword_gray_low"]:
+        return "embedding_led_gray_review"
+    return ""
+
+
+def _reuse_review_accept_score_threshold(
+    target: dict[str, Any],
+    candidate: dict[str, Any] | None = None,
+    *,
+    policy_result: dict[str, Any] | None = None,
+) -> float:
+    transform_policy = _dict(policy_result).get("transform_policy")
+    if isinstance(transform_policy, dict) and _clean_text(transform_policy.get("decision")) == "reject":
+        return 1.0
+    profile = _reuse_gate_profile(target)
+    if profile == "loose":
+        return 0.60
+    target_policy = normalize_reuse_policy_fields(_dict(target))
+    category = _clean_text(target_policy.get("asset_category"))
+    if category == "learning_behavior":
+        return 0.62
+    if profile == "medium":
+        return 0.64
+    if profile == "strict_literary":
+        return 0.64
+    if profile == "strict_knowledge":
+        return 0.72
+    return REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD
+
+
 def _reuse_acceptance_reason(
     candidate: dict[str, Any],
     threshold: float | None = None,
@@ -4007,16 +4377,49 @@ def _reuse_acceptance_reason(
     target: dict[str, Any] | None = None,
 ) -> str:
     threshold = VISUAL_GENERIC_REUSE_THRESHOLD if threshold is None else float(threshold)
+    if _transform_rejects_candidate(candidate):
+        return ""
     if candidate.get("background_reuse_score") is not None:
-        return "background_threshold" if float(candidate.get("background_reuse_score") or 0.0) >= threshold else ""
+        keyword_score = float(candidate.get("background_reuse_score") or candidate.get("keyword_score") or 0.0)
+        embedding_score = float(candidate.get("embedding_score") or 0.0)
+        substring_score = float(candidate.get("substring_score") or 0.0)
+        return (
+            "background_threshold"
+            if _reuse_gate_reason(
+                target=target,
+                candidate=candidate,
+                keyword_score=keyword_score,
+                embedding_score=embedding_score,
+                substring_score=substring_score,
+            )
+            else ""
+        )
 
     bm25_score = float(candidate.get("keyword_score") or 0.0)
     embedding_score = float(candidate.get("embedding_score") or 0.0)
     substring_score = float(candidate.get("substring_score") or 0.0)
-    if bm25_score >= threshold:
+    thresholds = _reuse_gate_thresholds_for_target(target)
+    if bm25_score >= threshold and embedding_score >= thresholds["embedding_min"]:
         return "bm25_threshold"
+    gate_reason = _reuse_gate_reason(
+        target=target,
+        candidate=candidate,
+        keyword_score=bm25_score,
+        embedding_score=embedding_score,
+        substring_score=substring_score,
+    )
+    if gate_reason:
+        return gate_reason
     if _is_strict_embedding_review_candidate(target, candidate, embedding_score):
         return "strict_embedding_review"
+    if _is_strict_semantic_gray_review_candidate(
+        target,
+        candidate,
+        bm25_score=bm25_score,
+        embedding_score=embedding_score,
+        substring_score=substring_score,
+    ):
+        return "strict_semantic_gray_review"
     if bm25_score >= BM25_GRAY_REUSE_THRESHOLD and embedding_score >= EMBEDDING_GRAY_REUSE_THRESHOLD:
         return "embedding_gray_zone"
     if bm25_score >= max(0.0, threshold - 0.03) and substring_score >= 0.35 and embedding_score >= 0.62:
@@ -4042,6 +4445,39 @@ def _is_strict_embedding_review_candidate(
     return any(policy.get("reuse_level") == "strict" for policy in policies)
 
 
+def _is_strict_semantic_gray_review_candidate(
+    target: dict[str, Any] | None,
+    candidate: dict[str, Any],
+    *,
+    bm25_score: float,
+    embedding_score: float,
+    substring_score: float,
+) -> bool:
+    if target is None:
+        return False
+    if embedding_score < STRICT_SEMANTIC_GRAY_REVIEW_THRESHOLD:
+        return False
+    if bm25_score < STRICT_SEMANTIC_GRAY_BM25_THRESHOLD and substring_score < 0.25:
+        return False
+
+    asset = _dict(candidate.get("asset"))
+    if _clean_text(asset.get("asset_kind")) == "background":
+        return False
+
+    target_theme = _clean_text(target.get("theme"))
+    source_theme = _clean_text(asset.get("theme"))
+    if not (target_theme and source_theme and target_theme == source_theme):
+        return False
+
+    policies = [
+        normalize_reuse_policy_fields(asset),
+        normalize_reuse_policy_fields(_dict(target)),
+    ]
+    if not any(_clean_text(policy.get("reuse_level")) == "strict" for policy in policies):
+        return False
+    return any(_clean_text(policy.get("asset_category")) in STRICT_CATEGORIES for policy in policies)
+
+
 def _is_medium_embedding_review_candidate(
     target: dict[str, Any] | None,
     candidate: dict[str, Any],
@@ -4056,11 +4492,16 @@ def _is_medium_embedding_review_candidate(
     if target is not None:
         policies.append(normalize_reuse_policy_fields(_dict(target)))
     levels = {_clean_text(policy.get("reuse_level")) for policy in policies}
-    return "strict" not in levels and "medium" in levels
+    return "strict" not in levels and bool(levels & {"loose", "medium"})
 
 
-def _candidate_passes_reuse_threshold(candidate: dict[str, Any], threshold: float) -> bool:
-    return bool(candidate.get("accepted_by") or _reuse_acceptance_reason(candidate, threshold))
+def _candidate_passes_reuse_threshold(
+    candidate: dict[str, Any],
+    threshold: float,
+    *,
+    target: dict[str, Any] | None = None,
+) -> bool:
+    return bool(candidate.get("accepted_by") or _reuse_acceptance_reason(candidate, threshold, target=target))
 
 
 def _reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: float | None) -> float:

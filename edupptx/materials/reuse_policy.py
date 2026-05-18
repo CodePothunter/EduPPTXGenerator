@@ -38,8 +38,12 @@ DEFAULT_POLICY = {
 SCORE_DERIVED_REUSE_THRESHOLDS = {
     "strict_score": 0.78,
     "loose_score": 0.72,
+    "factual_risk_score": 0.70,
+    "visual_guard_score": 0.55,
+    "medium_specificity_score": 0.55,
+    "strict_specificity_score": 0.70,
     "risk_required_score": 0.70,
-    "hard_constraint_score": 0.72,
+    "hard_constraint_score": 0.70,
     "exact_constraint_score": 0.80,
     "generic_support_score": 0.62,
     "asset_category_score": 0.50,
@@ -64,6 +68,26 @@ LOW_SCORE_REJECT_MARGIN = 0.08
 CONFIDENT_LOOSE_MARGIN = 0.08
 
 HIGH_RISK_KINDS = {"text", "math", "physics", "count", "relation"}
+STRICT_LEVEL_KINDS = {"text", "math", "physics", "count"}
+DIMENSION_SCORE_KEYS = {
+    "subject_importance_score",
+    "action_importance_score",
+    "emotion_importance_score",
+    "teaching_object_importance_score",
+    "setting_importance_score",
+    "readable_text_score",
+    "count_integrity_score",
+    "exact_relation_score",
+    "unique_referent_score",
+    "generic_support_score",
+}
+VISUAL_GUARD_WEIGHTS = {
+    "subject_importance_score": 0.35,
+    "action_importance_score": 0.30,
+    "emotion_importance_score": 0.20,
+    "teaching_object_importance_score": 0.30,
+    "setting_importance_score": 0.15,
+}
 LLM_REVIEW_REQUIRED_KINDS = {"text", "math", "physics", "count", "relation"}
 VISUAL_SEMANTIC_KINDS = {"entity", "object", "action", "setting", "emotion"}
 CONSTRAINT_EMBEDDING_THRESHOLDS = {
@@ -84,6 +108,13 @@ GENERIC_CATEGORIES = {"generic_tool", "generic_diagram"}
 CONTENT_PRESERVING_CATEGORIES = {"generic_tool", "generic_diagram", "content_specific", "character_action"}
 SEMANTIC_SCENE_CATEGORIES = {"concept_scene", "character_action"}
 SEMANTIC_SIGNAL_ACCEPT_REASONS = {"embedding_gray_zone", "substring_embedding_gray_zone"}
+SCORE_GATE_LLM_REVIEW_REASONS = {
+    "keyword_high_review",
+    "embedding_high_review",
+    "text_overlap_embedding_review",
+    "keyword_led_gray_review",
+    "embedding_led_gray_review",
+}
 SEMANTIC_EMBEDDING_ACCEPT_THRESHOLD = 0.82
 SEMANTIC_SCORE_FLOOR = 0.18
 STRICT_EMBEDDING_REVIEW_THRESHOLD = 0.78
@@ -213,8 +244,16 @@ def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
             "generic_support_allowed": True,
         }
 
+    explicit_constraints = normalize_core_constraints(asset.get("core_constraints"))
     score_policy = derive_reuse_policy_from_scores(asset)
     if score_policy:
+        if explicit_constraints:
+            score_policy = {
+                **score_policy,
+                "core_constraints": normalize_core_constraints(
+                    [*explicit_constraints, *normalize_core_constraints(score_policy.get("core_constraints"))]
+                ),
+            }
         asset = {**asset, **score_policy}
 
     reuse_level = _clean_text(asset.get("reuse_level"))
@@ -228,37 +267,24 @@ def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
     constraints = normalize_core_constraints(asset.get("core_constraints"))
     reuse_risk = normalize_reuse_risk_fields(asset)
 
-    strict_downgraded = False
     if not constraints:
         constraints = _infer_strict_core_constraints(asset, asset_category)
 
-    if asset_category in MEDIUM_CATEGORIES and not _has_high_risk_kind_constraints(constraints):
-        strict_downgraded = (
-            reuse_level == "strict"
-            or any(reuse_risk.values())
-            or any(item.get("kind") in VISUAL_SEMANTIC_KINDS for item in constraints)
-        )
-        reuse_level = "medium"
-    elif _has_strict_reuse_risk(constraints, reuse_risk):
+    if _emotion_only_constraints_should_be_loose(asset_category, constraints, reuse_risk, asset):
+        reuse_level = "loose"
+        constraints = []
+    elif _has_strict_reuse_risk(asset_category, constraints, reuse_risk):
         reuse_level = "strict"
-    elif reuse_level == "strict" and constraints and asset_category in STRICT_CATEGORIES:
-        # Strict category assets may rely on visible subjects, actions, or
-        # relations that must survive reuse. Medium categories stay threshold
-        # based unless metadata marks a high-risk exact constraint above.
-        reuse_level = "strict"
-    elif asset_category in MEDIUM_CATEGORIES and not _has_high_risk_exact_constraints(constraints):
-        strict_downgraded = reuse_level == "strict"
+    elif constraints:
         reuse_level = "medium"
-    elif reuse_level == "strict":
-        # A strict LLM label without any structured constraint is advisory.
-        # Backgrounds are handled above; other visual assets fall back to the
-        # normal medium threshold path.
-        reuse_level = "medium"
-        strict_downgraded = True
+    else:
+        reuse_level = "loose"
 
     if reuse_level == "strict":
         generic_support_allowed = False
-    elif strict_downgraded:
+    elif reuse_level == "medium":
+        generic_support_allowed = False
+    elif reuse_level == "loose":
         generic_support_allowed = True
     elif "generic_support_allowed" in asset and isinstance(asset.get("generic_support_allowed"), bool):
         generic_support_allowed = bool(asset.get("generic_support_allowed"))
@@ -297,6 +323,7 @@ def normalize_reuse_score_fields(value: Any) -> dict[str, Any]:
     constraint_scores = _normalize_constraint_score_candidates(
         profile.get("constraint_scores", profile.get("constraint_candidates"))
     )
+    dimension_scores = _normalize_dimension_scores(profile, constraint_scores)
     result: dict[str, Any] = {
         "strict_score": _score_value(profile.get("strict_score")),
         "loose_score": _score_value(profile.get("loose_score")),
@@ -304,6 +331,10 @@ def normalize_reuse_score_fields(value: Any) -> dict[str, Any]:
         "readable_knowledge_score": _score_value(profile.get("readable_knowledge_score")),
         "unique_referent_score": _score_value(profile.get("unique_referent_score")),
         "exact_relation_score": _score_value(profile.get("exact_relation_score")),
+        "dimension_scores": dimension_scores,
+        "factual_risk_score": _aggregate_factual_risk_score(dimension_scores),
+        "visual_guard_score": _aggregate_visual_guard_score(dimension_scores),
+        "reuse_specificity_score": _aggregate_reuse_specificity_score(dimension_scores),
         "category_scores": category_scores,
         "constraint_scores": constraint_scores,
         "evidence": _clean_string_list(profile.get("evidence")),
@@ -321,35 +352,41 @@ def derive_reuse_policy_from_scores(asset: dict[str, Any]) -> dict[str, Any]:
     category = _category_from_scores(profile.get("category_scores"))
     constraints = _constraints_from_scores(profile.get("constraint_scores"))
     reuse_risk = _reuse_risk_from_scores(profile)
-    strict_score = max(
-        _score_value(profile.get("strict_score")),
-        _score_value(profile.get("readable_knowledge_score")),
-        _score_value(profile.get("unique_referent_score")),
-        _score_value(profile.get("exact_relation_score")),
-        max([_score_value(item.get("importance_score")) for item in profile.get("constraint_scores", [])] or [0.0]),
+    reuse_risk_required = {
+        key: _risk_required(value)
+        for key, value in reuse_risk.items()
+    }
+    factual_risk_score = _score_value(profile.get("factual_risk_score"))
+    specificity_score = _score_value(profile.get("reuse_specificity_score"))
+    dimension_scores = profile.get("dimension_scores") if isinstance(profile.get("dimension_scores"), dict) else {}
+    generic_support_score = max(
+        _score_value(profile.get("generic_support_score")),
+        _score_value(dimension_scores.get("generic_support_score")),
     )
-    generic_support_score = _score_value(profile.get("generic_support_score"))
     generic_support_allowed = generic_support_score >= SCORE_DERIVED_REUSE_THRESHOLDS["generic_support_score"]
 
-    if (
-        strict_score >= SCORE_DERIVED_REUSE_THRESHOLDS["strict_score"]
-        and (constraints or any(_risk_required(value) for value in reuse_risk.values()) or category in STRICT_CATEGORIES)
-    ):
+    strict_by_score = (
+        factual_risk_score >= SCORE_DERIVED_REUSE_THRESHOLDS["strict_specificity_score"]
+        and _has_high_risk_kind_constraints(constraints)
+    )
+    if _emotion_only_constraints_should_be_loose(category, constraints, reuse_risk_required, asset):
+        reuse_level = "loose"
+        generic_support_allowed = True
+        constraints = []
+    elif _has_strict_reuse_risk(category, constraints, reuse_risk_required) or strict_by_score:
         reuse_level = "strict"
         generic_support_allowed = False
-    elif (
-        _score_value(profile.get("loose_score")) >= SCORE_DERIVED_REUSE_THRESHOLDS["loose_score"]
-        and generic_support_allowed
-        and not constraints
-    ):
-        reuse_level = "loose"
-    else:
+    elif constraints or specificity_score >= SCORE_DERIVED_REUSE_THRESHOLDS["medium_specificity_score"]:
         reuse_level = "medium"
+        generic_support_allowed = False
+    else:
+        reuse_level = "loose"
+        generic_support_allowed = True
 
     return {
         "reuse_level": reuse_level,
         "asset_category": category,
-        "core_constraints": constraints if reuse_level == "strict" else [],
+        "core_constraints": constraints if reuse_level in {"medium", "strict"} else [],
         "generic_support_allowed": generic_support_allowed,
         "reuse_risk": reuse_risk,
     }
@@ -447,6 +484,8 @@ def normalize_core_constraints(value: Any, *, max_items: int = 12) -> list[dict[
         exact = item.get("exact")
         if not isinstance(exact, bool):
             exact = True
+        if kind not in STRICT_LEVEL_KINDS | {"relation"}:
+            exact = False
         normalized_value = _normalize_constraint_value(kind, raw_value)
         key = (kind, normalized_value, exact)
         if key in seen:
@@ -495,7 +534,83 @@ def _category_from_scores(category_scores: Any) -> str:
     return best_category
 
 
-def _reuse_risk_from_scores(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
+def _normalize_dimension_scores(
+    profile: dict[str, Any],
+    constraint_scores: list[dict[str, Any]],
+) -> dict[str, float]:
+    raw_dimensions = profile.get("dimension_scores")
+    raw_dimensions = raw_dimensions if isinstance(raw_dimensions, dict) else {}
+    dimensions = {
+        key: _score_value(raw_dimensions.get(key, profile.get(key)))
+        for key in DIMENSION_SCORE_KEYS
+    }
+
+    dimensions["generic_support_score"] = max(
+        dimensions["generic_support_score"],
+        _score_value(profile.get("generic_support_score")),
+    )
+    dimensions["readable_text_score"] = max(
+        dimensions["readable_text_score"],
+        _score_value(profile.get("readable_knowledge_score")),
+    )
+    dimensions["exact_relation_score"] = max(
+        dimensions["exact_relation_score"],
+        _score_value(profile.get("exact_relation_score")),
+    )
+
+    for item in constraint_scores:
+        kind = _clean_text(item.get("kind"))
+        importance = _score_value(item.get("importance_score"))
+        exactness = _score_value(item.get("exactness_score"))
+        if kind == "entity":
+            dimensions["subject_importance_score"] = max(dimensions["subject_importance_score"], importance)
+        elif kind == "action":
+            dimensions["action_importance_score"] = max(dimensions["action_importance_score"], importance)
+        elif kind == "emotion":
+            dimensions["emotion_importance_score"] = max(dimensions["emotion_importance_score"], importance)
+        elif kind == "setting":
+            dimensions["setting_importance_score"] = max(dimensions["setting_importance_score"], importance)
+        elif kind == "object":
+            dimensions["teaching_object_importance_score"] = max(
+                dimensions["teaching_object_importance_score"],
+                importance,
+            )
+        elif kind in {"text", "math", "physics"}:
+            dimensions["readable_text_score"] = max(dimensions["readable_text_score"], importance)
+        elif kind == "count":
+            dimensions["count_integrity_score"] = max(dimensions["count_integrity_score"], importance)
+        elif kind == "relation" and exactness >= SCORE_DERIVED_REUSE_THRESHOLDS["exact_constraint_score"]:
+            dimensions["exact_relation_score"] = max(dimensions["exact_relation_score"], importance)
+
+    return {key: round(value, 4) for key, value in dimensions.items() if value > 0}
+
+
+def _aggregate_factual_risk_score(dimension_scores: dict[str, float]) -> float:
+    return round(
+        max(
+            _score_value(dimension_scores.get("readable_text_score")),
+            _score_value(dimension_scores.get("count_integrity_score")),
+            _score_value(dimension_scores.get("exact_relation_score")),
+            _score_value(dimension_scores.get("unique_referent_score")),
+        ),
+        4,
+    )
+
+
+def _aggregate_visual_guard_score(dimension_scores: dict[str, float]) -> float:
+    score = 0.0
+    for key, weight in VISUAL_GUARD_WEIGHTS.items():
+        score += weight * _score_value(dimension_scores.get(key))
+    return round(min(1.0, score), 4)
+
+
+def _aggregate_reuse_specificity_score(dimension_scores: dict[str, float]) -> float:
+    factual_score = _aggregate_factual_risk_score(dimension_scores)
+    visual_score = _aggregate_visual_guard_score(dimension_scores)
+    return round(max(factual_score, visual_score), 4)
+
+
+def _legacy_reuse_risk_from_scores(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
     return {
         "readable_knowledge": _score_risk_item(
             profile,
@@ -511,6 +626,45 @@ def _reuse_risk_from_scores(profile: dict[str, Any]) -> dict[str, dict[str, Any]
             profile,
             "exact_relation_score",
             "图片承载必须保留的关系、顺序或因果",
+        ),
+    }
+
+
+def _reuse_risk_from_scores(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    dimensions = profile.get("dimension_scores") if isinstance(profile.get("dimension_scores"), dict) else {}
+    readable_profile = {
+        **profile,
+        "readable_knowledge_score": max(
+            _score_value(profile.get("readable_knowledge_score")),
+            _score_value(dimensions.get("readable_text_score")),
+        ),
+    }
+    unique_profile = {
+        **profile,
+        "unique_referent_score": _score_value(dimensions.get("unique_referent_score")),
+    }
+    relation_profile = {
+        **profile,
+        "exact_relation_score": max(
+            _score_value(profile.get("exact_relation_score")),
+            _score_value(dimensions.get("exact_relation_score")),
+        ),
+    }
+    return {
+        "readable_knowledge": _score_risk_item(
+            readable_profile,
+            "readable_knowledge_score",
+            "image carries readable or verifiable teaching content",
+        ),
+        "unique_referent": _score_risk_item(
+            unique_profile,
+            "unique_referent_score",
+            "image carries a named or uniquely referential object",
+        ),
+        "exact_relation": _score_risk_item(
+            relation_profile,
+            "exact_relation_score",
+            "image carries an exact relation, order, or causality",
         ),
     }
 
@@ -539,11 +693,15 @@ def _constraints_from_scores(value: Any) -> list[dict[str, Any]]:
         raw_value = _clean_text(item.get("value"))
         if kind not in CONSTRAINT_KINDS or not raw_value:
             continue
+        exact = (
+            kind in STRICT_LEVEL_KINDS | {"relation"}
+            and _score_value(item.get("exactness_score")) >= SCORE_DERIVED_REUSE_THRESHOLDS["exact_constraint_score"]
+        )
         constraints.append(
             {
                 "kind": kind,
                 "value": raw_value,
-                "exact": _score_value(item.get("exactness_score")) >= SCORE_DERIVED_REUSE_THRESHOLDS["exact_constraint_score"],
+                "exact": exact,
                 "hard": True,
                 "aliases": _clean_string_list(item.get("aliases")),
             }
@@ -618,6 +776,8 @@ def reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: float
     policy = normalize_reuse_policy_fields(target)
     category = policy["asset_category"]
     reuse_level = policy["reuse_level"]
+    if _clean_text(target.get("asset_kind")) == "page_image" and reuse_level == "loose":
+        reuse_level = "medium"
     threshold = CATEGORY_THRESHOLDS.get(category, CATEGORY_THRESHOLDS["unknown"])
     threshold += REUSE_LEVEL_DELTAS.get(reuse_level, 0.0)
     return round(_clamp(threshold, minimum=0.30, maximum=0.75), 4)
@@ -641,6 +801,16 @@ def evaluate_reuse_filter(
         return _result(
             "reject",
             "asset_kind_mismatch",
+            confidence=1.0,
+            threshold=threshold_used,
+            score_gap=score_gap,
+        )
+
+    transform_policy = score_details.get("transform_policy") if isinstance(score_details.get("transform_policy"), dict) else {}
+    if _clean_text(transform_policy.get("decision")) == "reject":
+        return _result(
+            "reject",
+            "aspect_transform_rejected",
             confidence=1.0,
             threshold=threshold_used,
             score_gap=score_gap,
@@ -697,12 +867,77 @@ def evaluate_reuse_filter(
         floor = _auto_accept_embedding_floor(target_policy, candidate_policy)
         return high_embedding_review_result(reason, floor)
 
+    if accepted_by in SCORE_GATE_LLM_REVIEW_REASONS:
+        return high_embedding_review_result(accepted_by, threshold_used)
+
     if target_level != "strict" and candidate_level != "strict":
+        medium_missing, medium_conflicts = compare_core_constraints(
+            target_policy["core_constraints"],
+            candidate_policy["core_constraints"],
+            strict_target=False,
+        )
+        if medium_conflicts:
+            _missing, unresolved_conflicts, conflict_reviews = compare_strict_core_constraints(
+                target_policy["core_constraints"],
+                candidate_policy["core_constraints"],
+                score_details=score_details,
+            )
+            actionable_reviews = [
+                item for item in conflict_reviews
+                if _clean_text(item.get("reason")) != "missing_constraint_embedding"
+            ]
+            if actionable_reviews:
+                return _result(
+                    "llm_review",
+                    "medium_core_constraints_require_llm_review",
+                    review_items=actionable_reviews,
+                    confidence=0.55,
+                    threshold=threshold_used,
+                    score_gap=score_gap,
+                    target_policy=target_policy,
+                    candidate_policy=candidate_policy,
+                )
+            if unresolved_conflicts:
+                return _result(
+                    "reject",
+                    "medium_core_constraints_conflict",
+                    conflicts=unresolved_conflicts,
+                    confidence=0.95,
+                    threshold=threshold_used,
+                    score_gap=score_gap,
+                    target_policy=target_policy,
+                    candidate_policy=candidate_policy,
+                )
+            if conflict_reviews:
+                return _result(
+                    "reject",
+                    "medium_core_constraints_conflict",
+                    conflicts=medium_conflicts,
+                    confidence=0.95,
+                    threshold=threshold_used,
+                    score_gap=score_gap,
+                    target_policy=target_policy,
+                    candidate_policy=candidate_policy,
+                )
+        medium_hard_missing = [item for item in medium_missing if _is_specific_constraint(item)]
+        if medium_hard_missing:
+            return _result(
+                "llm_review",
+                "medium_core_constraints_require_llm_review",
+                review_items=[
+                    _constraint_review_item(item, [], "missing_same_kind", side="target")
+                    for item in medium_hard_missing
+                ],
+                confidence=0.55,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
         if (
-            "medium" in {target_level, candidate_level}
-            and score_gap < 0
+            score_gap < 0
             and embedding_score >= MEDIUM_EMBEDDING_REVIEW_THRESHOLD
-            and (accepted_by == "medium_embedding_review" or score <= 0)
+            and (accepted_by in {"medium_embedding_review", "embedding_high_review"} or score <= 0)
         ):
             return high_embedding_review_result(
                 "medium_embedding_high_keyword_below_threshold",
@@ -1449,20 +1684,53 @@ def _is_specific_constraint(constraint: dict[str, Any]) -> bool:
 
 
 def _has_high_risk_exact_constraints(constraints: list[dict[str, Any]]) -> bool:
-    return any(item.get("kind") in HIGH_RISK_KINDS or item.get("hard") for item in constraints)
+    return any(_constraint_requires_strict_level(item) for item in constraints)
 
 
 def _has_high_risk_kind_constraints(constraints: list[dict[str, Any]]) -> bool:
-    return any(item.get("kind") in HIGH_RISK_KINDS for item in constraints)
+    return any(_constraint_requires_strict_level(item) for item in constraints)
 
 
-def _has_strict_reuse_risk(constraints: list[dict[str, Any]], reuse_risk: dict[str, bool]) -> bool:
-    return bool(
-        _has_high_risk_exact_constraints(constraints)
-        or reuse_risk.get("readable_knowledge")
-        or reuse_risk.get("unique_referent")
-        or reuse_risk.get("exact_relation")
-    )
+def _has_strict_reuse_risk(
+    asset_category: str,
+    constraints: list[dict[str, Any]],
+    reuse_risk: dict[str, bool],
+) -> bool:
+    if _has_high_risk_kind_constraints(constraints):
+        return True
+    if reuse_risk.get("readable_knowledge"):
+        return True
+    if reuse_risk.get("exact_relation"):
+        return any(
+            item.get("kind") == "relation" and item.get("exact")
+            for item in constraints
+        )
+    return False
+
+
+def _constraint_requires_strict_level(constraint: dict[str, Any]) -> bool:
+    kind = _clean_text(constraint.get("kind"))
+    if kind in STRICT_LEVEL_KINDS:
+        return True
+    return kind == "relation" and bool(constraint.get("exact"))
+
+
+def _emotion_only_constraints_should_be_loose(
+    asset_category: str,
+    constraints: list[dict[str, Any]],
+    reuse_risk: dict[str, bool],
+    asset: dict[str, Any],
+) -> bool:
+    if not constraints:
+        return False
+    if any(_clean_text(item.get("kind")) != "emotion" for item in constraints):
+        return False
+    if reuse_risk.get("readable_knowledge") or reuse_risk.get("unique_referent") or reuse_risk.get("exact_relation"):
+        return False
+    profile = normalize_reuse_score_fields(asset.get("reuse_scores", asset.get("reuse_profile")))
+    if _score_value(profile.get("factual_risk_score")) >= SCORE_DERIVED_REUSE_THRESHOLDS["risk_required_score"]:
+        return False
+    return asset_category in {"character_action", "concept_scene", "content_specific", "unknown"}
 
 
 def _risk_required(value: Any) -> bool:
@@ -1495,7 +1763,7 @@ def _requires_embedding_floor_review(
     embedding_score: float,
 ) -> bool:
     levels = {target_policy.get("reuse_level"), candidate_policy.get("reuse_level")}
-    if not ({"medium", "strict"} & levels):
+    if not ({"loose", "medium", "strict"} & levels):
         return False
     floor = _auto_accept_embedding_floor(target_policy, candidate_policy)
     return floor > 0 and embedding_score < floor
