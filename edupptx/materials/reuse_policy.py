@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import re
 from typing import Any
 
@@ -13,100 +14,78 @@ ASSET_CATEGORIES = {
     "concept_scene",
     "content_specific",
     "character_action",
+    "emotion_scene",
+    "symbolic_material",
     "unknown",
 }
+FORCED_LOOSE_CATEGORIES = {"learning_behavior", "generic_tool", "generic_diagram"}
 CONSTRAINT_KINDS = {
-    "text",
-    "math",
-    "physics",
     "entity",
     "object",
     "action",
-    "relation",
-    "setting",
+    "scene",
     "emotion",
-    "count",
+    "text",
+    "math",
+    "physics",
+}
+STRICT_KNOWLEDGE_CONSTRAINT_KINDS = {"text", "math", "physics"}
+CONSTRAINT_SUBTYPES = {
+    "named_individual",
+    "species_instance",
+    "role",
+    "generic_class",
+    "teaching_carrier",
+    "scene_prop",
+    "decorative",
+    "teaching_fact",
+    "generic_motion",
+    "teaching_content",
+    "decorative_text",
+    "story_scene",
+    "generic_ambient",
+    "narrative_emotion",
+}
+NAMED_INDIVIDUAL_SUBTYPES = {"named_individual", "species_instance"}
+ROLE_HARDCAP_TERMS = {
+    "爸爸", "妈妈", "爹", "娘", "父亲", "母亲", "妈", "爸",
+    "爷爷", "奶奶", "外公", "外婆", "姥爷", "姥姥",
+    "叔叔", "阿姨", "伯伯", "舅舅", "姑姑", "姨妈",
+    "哥哥", "姐姐", "弟弟", "妹妹",
+    "儿子", "女儿", "孙子", "孙女", "外孙", "宝宝", "宝贝",
+    "老师", "教师", "学生", "同学", "医生", "护士", "警察",
+    "消防员", "农民", "工人", "司机", "厨师", "服务员", "售货员",
+    "运动员", "舞蹈家", "画家", "音乐家", "科学家", "工程师",
+    "律师", "法官", "记者", "园丁", "清洁工", "邮递员", "教练",
+    "男孩", "女孩", "小朋友", "孩子", "小孩",
+    "男人", "女人", "人物", "人", "卡通人物", "动漫人物",
+    "动物", "植物",
 }
 
 DEFAULT_POLICY = {
     "reuse_level": "medium",
     "asset_category": "unknown",
-    "core_constraints": [],
+    "constraints": [],
     "generic_support_allowed": True,
 }
 
-SCORE_DERIVED_REUSE_THRESHOLDS = {
-    "strict_score": 0.78,
-    "loose_score": 0.72,
-    "factual_risk_score": 0.70,
-    "visual_guard_score": 0.55,
-    "medium_specificity_score": 0.55,
-    "strict_specificity_score": 0.70,
-    "risk_required_score": 0.70,
-    "hard_constraint_score": 0.70,
-    "exact_constraint_score": 0.80,
-    "generic_support_score": 0.62,
-    "asset_category_score": 0.50,
+PAGE_IMAGE_REUSE_THRESHOLDS = {
+    "loose": 0.50,
+    "medium": 0.55,
+    "strict": 0.63,
 }
-
-CATEGORY_THRESHOLDS = {
-    "learning_behavior": 0.40,
-    "generic_tool": 0.40,
-    "generic_diagram": 0.48,
-    "concept_scene": 0.40,
-    "content_specific": 0.58,
-    "character_action": 0.60,
-    "unknown": 0.55,
-}
-REUSE_LEVEL_DELTAS = {
-    "loose": -0.05,
-    "medium": 0.0,
-    "strict": 0.08,
-}
-
-LOW_SCORE_REJECT_MARGIN = 0.08
-CONFIDENT_LOOSE_MARGIN = 0.08
-
-HIGH_RISK_KINDS = {"text", "math", "physics", "count", "relation"}
-STRICT_LEVEL_KINDS = {"text", "math", "physics", "count"}
-DIMENSION_SCORE_KEYS = {
-    "subject_importance_score",
-    "action_importance_score",
-    "emotion_importance_score",
-    "teaching_object_importance_score",
-    "setting_importance_score",
-    "readable_text_score",
-    "count_integrity_score",
-    "exact_relation_score",
-    "unique_referent_score",
-    "generic_support_score",
-}
-VISUAL_GUARD_WEIGHTS = {
-    "subject_importance_score": 0.35,
-    "action_importance_score": 0.30,
-    "emotion_importance_score": 0.20,
-    "teaching_object_importance_score": 0.30,
-    "setting_importance_score": 0.15,
-}
-LLM_REVIEW_REQUIRED_KINDS = {"text", "math", "physics", "count", "relation"}
-VISUAL_SEMANTIC_KINDS = {"entity", "object", "action", "setting", "emotion"}
+BACKGROUND_REUSE_THRESHOLD = 0.38
+LLM_REVIEW_REQUIRED_KINDS = {"text", "math", "physics"}
 CONSTRAINT_EMBEDDING_THRESHOLDS = {
     "entity": (0.92, 0.80),
     "object": (0.92, 0.80),
     "action": (0.86, 0.74),
-    "setting": (0.84, 0.72),
+    "scene": (0.84, 0.72),
     "emotion": (0.84, 0.72),
     "text": (0.90, 0.78),
     "math": (0.90, 0.78),
     "physics": (0.90, 0.78),
-    "count": (0.90, 0.78),
-    "relation": (0.90, 0.78),
 }
-STRICT_CATEGORIES = {"content_specific", "character_action"}
-MEDIUM_CATEGORIES = {"learning_behavior", "generic_tool", "generic_diagram", "concept_scene"}
-GENERIC_CATEGORIES = {"generic_tool", "generic_diagram"}
-CONTENT_PRESERVING_CATEGORIES = {"generic_tool", "generic_diagram", "content_specific", "character_action"}
-SEMANTIC_SCENE_CATEGORIES = {"concept_scene", "character_action"}
 SEMANTIC_SIGNAL_ACCEPT_REASONS = {"embedding_gray_zone", "substring_embedding_gray_zone"}
 SCORE_GATE_LLM_REVIEW_REASONS = {
     "keyword_high_review",
@@ -121,116 +100,241 @@ STRICT_EMBEDDING_REVIEW_THRESHOLD = 0.78
 STRICT_SEMANTIC_GRAY_REVIEW_THRESHOLD = 0.70
 STRICT_SEMANTIC_GRAY_BM25_THRESHOLD = 0.20
 MEDIUM_EMBEDDING_REVIEW_THRESHOLD = 0.80
-AUTO_ACCEPT_EMBEDDING_FLOORS = {
-    "strict": 0.58,
-    "content_specific": 0.58,
-    "character_action": 0.58,
-    "generic_diagram": 0.60,
-    "concept_scene": 0.55,
-    "unknown": 0.55,
-    "generic_tool": 0.50,
-    "learning_behavior": 0.50,
-}
-STRICT_CONTENT_CONTEXT_MARKERS = (
-    "故事情节",
-    "课文情节",
-    "中间情节",
-    "情节节点",
-    "事件节点",
-    "故事结局",
-    "课文结局",
-    "成长结局",
-    "最终场景",
-    "具体情节",
-    "梳理故事",
-    "梳理情节",
-)
-STRICT_CONTENT_VISUAL_MARKERS = (
-    "对话",
-    "遇到",
-    "找到",
-    "变成",
-    "一起",
-    "结局",
-)
-STRICT_CHARACTER_CONTEXT_MARKERS = (
-    "情节时间线",
-    "课文情节",
-    "情节发展",
-    "课文结局",
-    "主人公",
-    "人物情绪",
-    "人物状态",
-    "情绪转变",
-    "母亲心意",
-    "关系缓和",
-    "经典场景",
-)
-STRICT_CHARACTER_VISUAL_MARKERS = (
-    "摔",
-    "说话",
-    "对话",
-    "坐在",
-    "独自",
-    "望",
-    "站在",
-    "轮椅",
-    "瘫痪",
-    "碎",
-    "生气",
-    "激动",
-    "平静",
-    "缓和",
-    "压抑",
-    "暴怒",
-    "痛苦",
-    "绝望",
-    "妹妹",
-    "母亲",
-    "儿子",
-)
-STRICT_EMOTION_TERMS = (
-    "生气",
-    "激动",
-    "平静",
-    "缓和",
-    "压抑",
-    "暴怒",
-    "痛苦",
-    "绝望",
-    "沉静",
-)
+AUTO_ACCEPT_EMBEDDING_FLOORS = {"strict": 0.58}
+@dataclass(frozen=True)
+class ReuseConstraint:
+    """Normalized post-retrieval reuse constraint metadata."""
 
-CATEGORY_COMPATIBILITY = {
-    "learning_behavior": {
-        "full": {"learning_behavior"},
-        "support": {"concept_scene", "generic_diagram", "generic_tool"},
-    },
-    "generic_tool": {
-        "full": {"generic_tool"},
-        "support": {"generic_tool", "generic_diagram"},
-    },
-    "generic_diagram": {
-        "full": {"generic_diagram"},
-        "support": {"generic_diagram", "generic_tool"},
-    },
-    "concept_scene": {
-        "full": {"concept_scene", "character_action"},
-        "support": {"learning_behavior", "generic_diagram", "generic_tool"},
-    },
-    "content_specific": {
-        "full": {"content_specific"},
-        "support": {"generic_tool", "generic_diagram", "concept_scene", "character_action"},
-    },
-    "character_action": {
-        "full": {"character_action", "concept_scene"},
-        "support": {"concept_scene", "learning_behavior"},
-    },
-    "unknown": {
-        "full": set(),
-        "support": {"learning_behavior", "generic_tool", "generic_diagram", "concept_scene"},
-    },
-}
+    kind: str
+    value: str
+    importance: int
+    confidence: float = 0.0
+    evidence: str = ""
+    reason: str = ""
+    subtype: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": self.kind,
+            "subtype": self.subtype,
+            "value": self.value,
+            "importance": self.importance,
+            "confidence": self.confidence,
+            "evidence": self.evidence,
+            "reason": self.reason,
+        }
+
+
+@dataclass(frozen=True)
+class AssetMetadata:
+    """Schema-normalized metadata view for page-image reuse assets."""
+
+    raw: dict[str, Any]
+    asset_category: str
+    constraints: list[dict[str, Any]]
+    reuse_level: str
+    generic_support_allowed: bool
+    duplicate_asset_ids: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "asset_category": self.asset_category,
+            "constraints": [_copy_constraint_dict(item) for item in self.constraints],
+            "reuse_level": self.reuse_level,
+            "generic_support_allowed": self.generic_support_allowed,
+            "duplicate_asset_ids": list(self.duplicate_asset_ids),
+        }
+
+
+def normalize_constraints(value: Any, *, max_items: int = 12) -> list[dict[str, Any]]:
+    """Normalize page-image constraints and discard unsupported constraint fields."""
+
+    if not isinstance(value, list):
+        return []
+
+    constraints: list[dict[str, Any]] = []
+    seen: set[tuple[str, str, int]] = set()
+    for item in value:
+        constraint = _normalize_constraint_item(item)
+        if constraint is None:
+            continue
+        key = (
+            constraint.kind,
+            _normalize_constraint_value(constraint.kind, constraint.value),
+            constraint.importance,
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        constraints.append(constraint.to_dict())
+        if len(constraints) >= max_items:
+            break
+    return constraints
+
+
+def normalize_asset_metadata(raw: dict[str, Any]) -> AssetMetadata:
+    """Return a unified metadata view using the current ``constraints`` schema."""
+
+    asset = raw if isinstance(raw, dict) else {}
+    constraints = normalize_constraints(asset.get("constraints"))
+
+    asset_category = _clean_text(asset.get("asset_category"))
+    if asset_category not in ASSET_CATEGORIES:
+        asset_category = DEFAULT_POLICY["asset_category"]
+
+    reuse_level = derive_reuse_level_from_constraints(constraints, asset_category)
+    generic_support_allowed = reuse_level == "loose"
+    return AssetMetadata(
+        raw=asset,
+        asset_category=asset_category,
+        constraints=constraints,
+        reuse_level=reuse_level,
+        generic_support_allowed=generic_support_allowed,
+        duplicate_asset_ids=_clean_string_list(asset.get("duplicate_asset_ids")),
+    )
+
+
+def _normalize_constraint_item(item: Any) -> ReuseConstraint | None:
+    if not isinstance(item, dict):
+        return None
+    kind = _normalize_constraint_kind(item.get("kind"))
+    raw_value = _clean_text(item.get("value"))
+    if kind not in CONSTRAINT_KINDS or not raw_value:
+        return None
+    if _looks_like_style_or_quality_value(raw_value):
+        return None
+    subtype = _normalize_constraint_subtype(item.get("subtype"))
+    importance = _coerce_importance(item.get("importance"), default=0)
+    subtype, importance = _apply_role_hardcap(kind, raw_value, subtype, importance)
+    return ReuseConstraint(
+        kind=kind,
+        value=raw_value,
+        importance=importance,
+        confidence=_coerce_confidence(item.get("confidence"), default=0.0),
+        evidence=_clean_text(item.get("evidence")),
+        reason=_clean_text(item.get("reason")),
+        subtype=subtype,
+    )
+
+
+def _normalize_constraint_subtype(value: Any) -> str:
+    text = _clean_text(value).casefold()
+    if text in CONSTRAINT_SUBTYPES:
+        return text
+    return ""
+
+
+def _apply_role_hardcap(
+    kind: str,
+    value: str,
+    subtype: str,
+    importance: int,
+) -> tuple[str, int]:
+    """Force role/generic_class subtype + importance<=1 for words in ROLE_HARDCAP_TERMS.
+
+    The exception is when value clearly carries a full proper name (姓+名),
+    in which case it stays as named_individual (e.g. '史铁生'). This protects
+    against the LLM upgrading common roles like '妈妈' to imp=2.
+    """
+
+    if kind != "entity":
+        return subtype, importance
+    normalized = _clean_text(value)
+    if normalized in ROLE_HARDCAP_TERMS:
+        if subtype not in {"role", "generic_class"}:
+            subtype = "role" if importance >= 1 else "generic_class"
+        if importance > 1:
+            importance = 1
+    return subtype, importance
+
+
+def _coerce_importance(value: Any, *, default: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(0, min(2, number))
+
+
+def _coerce_confidence(value: Any, *, default: float) -> float:
+    try:
+        score = float(value)
+    except (TypeError, ValueError):
+        score = default
+    return round(_clamp(score), 4)
+
+
+def _normalize_constraint_kind(value: Any) -> str:
+    return _clean_text(value)
+
+
+def derive_reuse_level_from_constraints(
+    constraints: list[dict[str, Any]],
+    asset_category: str | None = None,
+) -> str:
+    """Derive reuse_level from asset_category + constraints.
+
+    Strictness comes from two narrow signals only:
+      * teaching content (text/math/physics imp=2)
+      * named individual entity (subtype=named_individual/species_instance, imp=2)
+
+    Generic decorative categories are forced to loose. The legacy
+    'three strong constraints -> strict' rule is removed because it
+    over-penalizes role/scene/emotion combinations that are not
+    actually unsafe to reuse.
+    """
+
+    category = _clean_text(asset_category).casefold()
+    if category in FORCED_LOOSE_CATEGORIES:
+        return "loose"
+
+    normalized = normalize_constraints(constraints)
+    strong_constraints = [
+        item for item in normalized if _constraint_importance(item) >= 2
+    ]
+    has_strict_knowledge_constraint = any(
+        _clean_text(item.get("kind")) in STRICT_KNOWLEDGE_CONSTRAINT_KINDS
+        for item in strong_constraints
+    )
+    has_named_individual = any(
+        _clean_text(item.get("kind")) == "entity"
+        and _clean_text(item.get("subtype")).casefold() in NAMED_INDIVIDUAL_SUBTYPES
+        for item in strong_constraints
+    )
+    if has_strict_knowledge_constraint or has_named_individual:
+        return "strict"
+    if strong_constraints:
+        return "medium"
+
+    if any(_constraint_importance(item) >= 1 for item in normalized):
+        return "medium"
+    return "loose"
+
+
+def _copy_constraint_dict(item: dict[str, Any]) -> dict[str, Any]:
+    return dict(item)
+
+
+def _constraint_importance(constraint: dict[str, Any]) -> int:
+    return _coerce_importance(_dict_value(constraint, "importance"), default=0)
+
+
+def _active_constraints(value: Any) -> list[dict[str, Any]]:
+    return [
+        item for item in normalize_constraints(value)
+        if _constraint_importance(item) >= 1
+    ]
+
+
+def _strong_constraints(value: Any) -> list[dict[str, Any]]:
+    return [
+        item for item in normalize_constraints(value)
+        if _constraint_importance(item) >= 2
+    ]
+
+
+def _dict_value(value: Any, key: str) -> Any:
+    return value.get(key) if isinstance(value, dict) else None
 
 
 def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
@@ -240,515 +344,25 @@ def normalize_reuse_policy_fields(asset: dict[str, Any]) -> dict[str, Any]:
         return {
             "reuse_level": "loose",
             "asset_category": "unknown",
-            "core_constraints": [],
+            "constraints": [],
             "generic_support_allowed": True,
         }
 
-    explicit_constraints = normalize_core_constraints(asset.get("core_constraints"))
-    score_policy = derive_reuse_policy_from_scores(asset)
-    if score_policy:
-        if explicit_constraints:
-            score_policy = {
-                **score_policy,
-                "core_constraints": normalize_core_constraints(
-                    [*explicit_constraints, *normalize_core_constraints(score_policy.get("core_constraints"))]
-                ),
-            }
-        asset = {**asset, **score_policy}
-
-    reuse_level = _clean_text(asset.get("reuse_level"))
-    if reuse_level not in REUSE_LEVELS:
-        reuse_level = DEFAULT_POLICY["reuse_level"]
-
-    asset_category = _clean_text(asset.get("asset_category"))
+    metadata = normalize_asset_metadata(asset)
+    constraints = metadata.constraints
+    asset_category = _clean_text(asset.get("asset_category")) or metadata.asset_category
     if asset_category not in ASSET_CATEGORIES:
         asset_category = DEFAULT_POLICY["asset_category"]
 
-    constraints = normalize_core_constraints(asset.get("core_constraints"))
-    reuse_risk = normalize_reuse_risk_fields(asset)
-
-    if not constraints:
-        constraints = _infer_strict_core_constraints(asset, asset_category)
-
-    if _emotion_only_constraints_should_be_loose(asset_category, constraints, reuse_risk, asset):
-        reuse_level = "loose"
-        constraints = []
-    elif _has_strict_reuse_risk(asset_category, constraints, reuse_risk):
-        reuse_level = "strict"
-    elif constraints:
-        reuse_level = "medium"
-    else:
-        reuse_level = "loose"
-
-    if reuse_level == "strict":
-        generic_support_allowed = False
-    elif reuse_level == "medium":
-        generic_support_allowed = False
-    elif reuse_level == "loose":
-        generic_support_allowed = True
-    elif "generic_support_allowed" in asset and isinstance(asset.get("generic_support_allowed"), bool):
-        generic_support_allowed = bool(asset.get("generic_support_allowed"))
-    else:
-        generic_support_allowed = True
-
-    if reuse_level == "loose":
-        constraints = []
+    reuse_level = derive_reuse_level_from_constraints(constraints, asset_category)
+    generic_support_allowed = reuse_level == "loose"
 
     return {
         "reuse_level": reuse_level,
         "asset_category": asset_category,
-        "core_constraints": constraints,
+        "constraints": normalize_constraints(constraints),
         "generic_support_allowed": generic_support_allowed,
     }
-
-
-def normalize_reuse_score_fields(value: Any) -> dict[str, Any]:
-    profile = value if isinstance(value, dict) else {}
-    if not profile:
-        return {}
-
-    category_scores_raw = profile.get("category_scores")
-    if not isinstance(category_scores_raw, dict):
-        category_scores_raw = profile.get("asset_category_scores")
-    category_scores_raw = category_scores_raw if isinstance(category_scores_raw, dict) else {}
-
-    category_scores: dict[str, float] = {}
-    for category in sorted(ASSET_CATEGORIES - {"unknown"}):
-        score = _score_value(
-            category_scores_raw.get(category, profile.get(f"{category}_score"))
-        )
-        if score > 0:
-            category_scores[category] = score
-
-    constraint_scores = _normalize_constraint_score_candidates(
-        profile.get("constraint_scores", profile.get("constraint_candidates"))
-    )
-    dimension_scores = _normalize_dimension_scores(profile, constraint_scores)
-    result: dict[str, Any] = {
-        "strict_score": _score_value(profile.get("strict_score")),
-        "loose_score": _score_value(profile.get("loose_score")),
-        "generic_support_score": _score_value(profile.get("generic_support_score")),
-        "readable_knowledge_score": _score_value(profile.get("readable_knowledge_score")),
-        "unique_referent_score": _score_value(profile.get("unique_referent_score")),
-        "exact_relation_score": _score_value(profile.get("exact_relation_score")),
-        "dimension_scores": dimension_scores,
-        "factual_risk_score": _aggregate_factual_risk_score(dimension_scores),
-        "visual_guard_score": _aggregate_visual_guard_score(dimension_scores),
-        "reuse_specificity_score": _aggregate_reuse_specificity_score(dimension_scores),
-        "category_scores": category_scores,
-        "constraint_scores": constraint_scores,
-        "evidence": _clean_string_list(profile.get("evidence")),
-        "risk_factors": _clean_string_list(profile.get("risk_factors")),
-        "brief_reason": _clean_text(profile.get("brief_reason")),
-    }
-    return result
-
-
-def derive_reuse_policy_from_scores(asset: dict[str, Any]) -> dict[str, Any]:
-    profile = normalize_reuse_score_fields(asset.get("reuse_scores", asset.get("reuse_profile")))
-    if not profile:
-        return {}
-
-    category = _category_from_scores(profile.get("category_scores"))
-    constraints = _constraints_from_scores(profile.get("constraint_scores"))
-    reuse_risk = _reuse_risk_from_scores(profile)
-    reuse_risk_required = {
-        key: _risk_required(value)
-        for key, value in reuse_risk.items()
-    }
-    factual_risk_score = _score_value(profile.get("factual_risk_score"))
-    specificity_score = _score_value(profile.get("reuse_specificity_score"))
-    dimension_scores = profile.get("dimension_scores") if isinstance(profile.get("dimension_scores"), dict) else {}
-    generic_support_score = max(
-        _score_value(profile.get("generic_support_score")),
-        _score_value(dimension_scores.get("generic_support_score")),
-    )
-    generic_support_allowed = generic_support_score >= SCORE_DERIVED_REUSE_THRESHOLDS["generic_support_score"]
-
-    strict_by_score = (
-        factual_risk_score >= SCORE_DERIVED_REUSE_THRESHOLDS["strict_specificity_score"]
-        and _has_high_risk_kind_constraints(constraints)
-    )
-    if _emotion_only_constraints_should_be_loose(category, constraints, reuse_risk_required, asset):
-        reuse_level = "loose"
-        generic_support_allowed = True
-        constraints = []
-    elif _has_strict_reuse_risk(category, constraints, reuse_risk_required) or strict_by_score:
-        reuse_level = "strict"
-        generic_support_allowed = False
-    elif constraints or specificity_score >= SCORE_DERIVED_REUSE_THRESHOLDS["medium_specificity_score"]:
-        reuse_level = "medium"
-        generic_support_allowed = False
-    else:
-        reuse_level = "loose"
-        generic_support_allowed = True
-
-    return {
-        "reuse_level": reuse_level,
-        "asset_category": category,
-        "core_constraints": constraints if reuse_level in {"medium", "strict"} else [],
-        "generic_support_allowed": generic_support_allowed,
-        "reuse_risk": reuse_risk,
-    }
-
-
-def apply_reuse_policy_defaults(asset: dict[str, Any]) -> dict[str, Any]:
-    """Mutate asset with normalized reuse policy fields and return it."""
-
-    asset.update(normalize_reuse_policy_fields(asset))
-    return asset
-
-
-def _infer_strict_core_constraints(asset: dict[str, Any], asset_category: str) -> list[dict[str, Any]]:
-    if asset_category not in STRICT_CATEGORIES:
-        return []
-
-    prompt = _clean_text(asset.get("normalized_prompt")) or _clean_text(asset.get("content_prompt"))
-    if not prompt:
-        return []
-
-    context_text = _join_policy_text(
-        asset.get("context_summary"),
-        asset.get("teaching_intent"),
-        _source_field(asset, "content_points"),
-        _source_field(asset, "page_title"),
-    )
-    prompt_text = _join_policy_text(prompt, asset.get("content_prompt"))
-
-    if asset_category == "content_specific" and _has_any(
-        context_text,
-        STRICT_CONTENT_CONTEXT_MARKERS,
-    ) and _has_any(prompt_text, STRICT_CONTENT_VISUAL_MARKERS):
-        return _strict_relation_constraints(prompt)
-
-    if asset_category == "character_action" and _has_any(
-        context_text,
-        STRICT_CHARACTER_CONTEXT_MARKERS,
-    ) and _has_any(prompt_text, STRICT_CHARACTER_VISUAL_MARKERS):
-        constraints = _strict_relation_constraints(prompt)
-        emotion = _first_marker(prompt_text, STRICT_EMOTION_TERMS)
-        if emotion:
-            constraints.append({"kind": "emotion", "value": emotion, "exact": False, "hard": True})
-        return normalize_core_constraints(constraints)
-
-    return []
-
-
-def _strict_relation_constraints(value: str) -> list[dict[str, Any]]:
-    return normalize_core_constraints(
-        [{"kind": "relation", "value": value, "exact": False, "hard": True}]
-    )
-
-
-def _join_policy_text(*values: Any) -> str:
-    parts: list[str] = []
-    for value in values:
-        if isinstance(value, list):
-            parts.extend(_clean_text(item) for item in value)
-        else:
-            parts.append(_clean_text(value))
-    return " ".join(part for part in parts if part)
-
-
-def _source_field(asset: dict[str, Any], key: str) -> Any:
-    source = asset.get("source")
-    return source.get(key) if isinstance(source, dict) else None
-
-
-def _has_any(text: str, markers: tuple[str, ...]) -> bool:
-    return any(marker and marker in text for marker in markers)
-
-
-def _first_marker(text: str, markers: tuple[str, ...]) -> str:
-    for marker in markers:
-        if marker and marker in text:
-            return marker
-    return ""
-
-
-def normalize_core_constraints(value: Any, *, max_items: int = 12) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        return []
-
-    constraints: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, bool]] = set()
-    for item in value:
-        if not isinstance(item, dict):
-            continue
-        kind = _clean_text(item.get("kind"))
-        raw_value = _clean_text(item.get("value"))
-        if kind not in CONSTRAINT_KINDS or not raw_value:
-            continue
-        if _looks_like_style_or_quality_value(raw_value):
-            continue
-        exact = item.get("exact")
-        if not isinstance(exact, bool):
-            exact = True
-        if kind not in STRICT_LEVEL_KINDS | {"relation"}:
-            exact = False
-        normalized_value = _normalize_constraint_value(kind, raw_value)
-        key = (kind, normalized_value, exact)
-        if key in seen:
-            continue
-        seen.add(key)
-        constraint = {"kind": kind, "value": raw_value, "exact": exact}
-        aliases = _clean_alias_list(item.get("aliases"))
-        if aliases:
-            constraint["aliases"] = aliases
-        if isinstance(item.get("hard"), bool) and item.get("hard"):
-            constraint["hard"] = True
-        constraints.append(constraint)
-        if len(constraints) >= max_items:
-            break
-    return constraints
-
-
-def normalize_reuse_risk_fields(asset: dict[str, Any]) -> dict[str, bool]:
-    score_policy = derive_reuse_policy_from_scores(asset)
-    if score_policy:
-        asset = {**asset, "reuse_risk": score_policy.get("reuse_risk", {})}
-    risk = asset.get("reuse_risk")
-    risk = risk if isinstance(risk, dict) else {}
-    return {
-        "readable_knowledge": _risk_required(
-            risk.get("readable_knowledge", asset.get("readable_knowledge"))
-        ),
-        "unique_referent": _risk_required(risk.get("unique_referent", asset.get("unique_referent"))),
-        "exact_relation": _risk_required(risk.get("exact_relation", asset.get("exact_relation"))),
-    }
-
-
-def _category_from_scores(category_scores: Any) -> str:
-    scores = category_scores if isinstance(category_scores, dict) else {}
-    best_category = "unknown"
-    best_score = 0.0
-    for category, raw_score in scores.items():
-        if category not in ASSET_CATEGORIES or category == "unknown":
-            continue
-        score = _score_value(raw_score)
-        if score > best_score:
-            best_category = category
-            best_score = score
-    if best_score < SCORE_DERIVED_REUSE_THRESHOLDS["asset_category_score"]:
-        return "unknown"
-    return best_category
-
-
-def _normalize_dimension_scores(
-    profile: dict[str, Any],
-    constraint_scores: list[dict[str, Any]],
-) -> dict[str, float]:
-    raw_dimensions = profile.get("dimension_scores")
-    raw_dimensions = raw_dimensions if isinstance(raw_dimensions, dict) else {}
-    dimensions = {
-        key: _score_value(raw_dimensions.get(key, profile.get(key)))
-        for key in DIMENSION_SCORE_KEYS
-    }
-
-    dimensions["generic_support_score"] = max(
-        dimensions["generic_support_score"],
-        _score_value(profile.get("generic_support_score")),
-    )
-    dimensions["readable_text_score"] = max(
-        dimensions["readable_text_score"],
-        _score_value(profile.get("readable_knowledge_score")),
-    )
-    dimensions["exact_relation_score"] = max(
-        dimensions["exact_relation_score"],
-        _score_value(profile.get("exact_relation_score")),
-    )
-
-    for item in constraint_scores:
-        kind = _clean_text(item.get("kind"))
-        importance = _score_value(item.get("importance_score"))
-        exactness = _score_value(item.get("exactness_score"))
-        if kind == "entity":
-            dimensions["subject_importance_score"] = max(dimensions["subject_importance_score"], importance)
-        elif kind == "action":
-            dimensions["action_importance_score"] = max(dimensions["action_importance_score"], importance)
-        elif kind == "emotion":
-            dimensions["emotion_importance_score"] = max(dimensions["emotion_importance_score"], importance)
-        elif kind == "setting":
-            dimensions["setting_importance_score"] = max(dimensions["setting_importance_score"], importance)
-        elif kind == "object":
-            dimensions["teaching_object_importance_score"] = max(
-                dimensions["teaching_object_importance_score"],
-                importance,
-            )
-        elif kind in {"text", "math", "physics"}:
-            dimensions["readable_text_score"] = max(dimensions["readable_text_score"], importance)
-        elif kind == "count":
-            dimensions["count_integrity_score"] = max(dimensions["count_integrity_score"], importance)
-        elif kind == "relation" and exactness >= SCORE_DERIVED_REUSE_THRESHOLDS["exact_constraint_score"]:
-            dimensions["exact_relation_score"] = max(dimensions["exact_relation_score"], importance)
-
-    return {key: round(value, 4) for key, value in dimensions.items() if value > 0}
-
-
-def _aggregate_factual_risk_score(dimension_scores: dict[str, float]) -> float:
-    return round(
-        max(
-            _score_value(dimension_scores.get("readable_text_score")),
-            _score_value(dimension_scores.get("count_integrity_score")),
-            _score_value(dimension_scores.get("exact_relation_score")),
-            _score_value(dimension_scores.get("unique_referent_score")),
-        ),
-        4,
-    )
-
-
-def _aggregate_visual_guard_score(dimension_scores: dict[str, float]) -> float:
-    score = 0.0
-    for key, weight in VISUAL_GUARD_WEIGHTS.items():
-        score += weight * _score_value(dimension_scores.get(key))
-    return round(min(1.0, score), 4)
-
-
-def _aggregate_reuse_specificity_score(dimension_scores: dict[str, float]) -> float:
-    factual_score = _aggregate_factual_risk_score(dimension_scores)
-    visual_score = _aggregate_visual_guard_score(dimension_scores)
-    return round(max(factual_score, visual_score), 4)
-
-
-def _legacy_reuse_risk_from_scores(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    return {
-        "readable_knowledge": _score_risk_item(
-            profile,
-            "readable_knowledge_score",
-            "图片承载可读、可数或可验证的教学内容",
-        ),
-        "unique_referent": _score_risk_item(
-            profile,
-            "unique_referent_score",
-            "图片承载不可替换的唯一对象或具体情节节点",
-        ),
-        "exact_relation": _score_risk_item(
-            profile,
-            "exact_relation_score",
-            "图片承载必须保留的关系、顺序或因果",
-        ),
-    }
-
-
-def _reuse_risk_from_scores(profile: dict[str, Any]) -> dict[str, dict[str, Any]]:
-    dimensions = profile.get("dimension_scores") if isinstance(profile.get("dimension_scores"), dict) else {}
-    readable_profile = {
-        **profile,
-        "readable_knowledge_score": max(
-            _score_value(profile.get("readable_knowledge_score")),
-            _score_value(dimensions.get("readable_text_score")),
-        ),
-    }
-    unique_profile = {
-        **profile,
-        "unique_referent_score": _score_value(dimensions.get("unique_referent_score")),
-    }
-    relation_profile = {
-        **profile,
-        "exact_relation_score": max(
-            _score_value(profile.get("exact_relation_score")),
-            _score_value(dimensions.get("exact_relation_score")),
-        ),
-    }
-    return {
-        "readable_knowledge": _score_risk_item(
-            readable_profile,
-            "readable_knowledge_score",
-            "image carries readable or verifiable teaching content",
-        ),
-        "unique_referent": _score_risk_item(
-            unique_profile,
-            "unique_referent_score",
-            "image carries a named or uniquely referential object",
-        ),
-        "exact_relation": _score_risk_item(
-            relation_profile,
-            "exact_relation_score",
-            "image carries an exact relation, order, or causality",
-        ),
-    }
-
-
-def _score_risk_item(profile: dict[str, Any], key: str, default_evidence: str) -> dict[str, Any]:
-    score = _score_value(profile.get(key))
-    evidence = _clean_string_list(profile.get("evidence"))
-    if score >= SCORE_DERIVED_REUSE_THRESHOLDS["risk_required_score"] and not evidence:
-        evidence = [default_evidence]
-    return {
-        "required": score >= SCORE_DERIVED_REUSE_THRESHOLDS["risk_required_score"],
-        "score": round(score, 4),
-        "evidence": evidence[:4],
-    }
-
-
-def _constraints_from_scores(value: Any) -> list[dict[str, Any]]:
-    constraints: list[dict[str, Any]] = []
-    items = value if isinstance(value, list) else []
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        if _score_value(item.get("importance_score")) < SCORE_DERIVED_REUSE_THRESHOLDS["hard_constraint_score"]:
-            continue
-        kind = _clean_text(item.get("kind"))
-        raw_value = _clean_text(item.get("value"))
-        if kind not in CONSTRAINT_KINDS or not raw_value:
-            continue
-        exact = (
-            kind in STRICT_LEVEL_KINDS | {"relation"}
-            and _score_value(item.get("exactness_score")) >= SCORE_DERIVED_REUSE_THRESHOLDS["exact_constraint_score"]
-        )
-        constraints.append(
-            {
-                "kind": kind,
-                "value": raw_value,
-                "exact": exact,
-                "hard": True,
-                "aliases": _clean_string_list(item.get("aliases")),
-            }
-        )
-    return normalize_core_constraints(constraints)
-
-
-def _normalize_constraint_score_candidates(value: Any) -> list[dict[str, Any]]:
-    items = value if isinstance(value, list) else []
-    results: list[dict[str, Any]] = []
-    seen: set[tuple[str, str]] = set()
-    for item in items:
-        if not isinstance(item, dict):
-            continue
-        kind = _clean_text(item.get("kind"))
-        raw_value = _clean_text(item.get("value"))
-        if kind not in CONSTRAINT_KINDS or not raw_value:
-            continue
-        key = (kind, raw_value)
-        if key in seen:
-            continue
-        seen.add(key)
-        results.append(
-            {
-                "kind": kind,
-                "value": raw_value,
-                "importance_score": _score_value(item.get("importance_score", item.get("score"))),
-                "exactness_score": _score_value(item.get("exactness_score")),
-                "aliases": _clean_string_list(item.get("aliases")),
-                "evidence": _clean_string_list(item.get("evidence")),
-            }
-        )
-        if len(results) >= 12:
-            break
-    return results
-
-
-def _score_value(value: Any) -> float:
-    try:
-        score = float(value)
-    except (TypeError, ValueError):
-        return 0.0
-    if score < 0:
-        return 0.0
-    if score > 1:
-        return 1.0
-    return score
 
 
 def _clean_string_list(value: Any) -> list[str]:
@@ -773,13 +387,12 @@ def reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: float
         except (TypeError, ValueError):
             pass
 
+    if _clean_text(target.get("asset_kind")) == "background":
+        return BACKGROUND_REUSE_THRESHOLD
+
     policy = normalize_reuse_policy_fields(target)
-    category = policy["asset_category"]
     reuse_level = policy["reuse_level"]
-    if _clean_text(target.get("asset_kind")) == "page_image" and reuse_level == "loose":
-        reuse_level = "medium"
-    threshold = CATEGORY_THRESHOLDS.get(category, CATEGORY_THRESHOLDS["unknown"])
-    threshold += REUSE_LEVEL_DELTAS.get(reuse_level, 0.0)
+    threshold = PAGE_IMAGE_REUSE_THRESHOLDS.get(reuse_level, PAGE_IMAGE_REUSE_THRESHOLDS["medium"])
     return round(_clamp(threshold, minimum=0.30, maximum=0.75), 4)
 
 
@@ -835,10 +448,10 @@ def evaluate_reuse_filter(
 
     target_policy = normalize_reuse_policy_fields(target)
     candidate_policy = normalize_reuse_policy_fields(candidate)
-    target_category = target_policy["asset_category"]
-    candidate_category = candidate_policy["asset_category"]
     target_level = target_policy["reuse_level"]
-    candidate_level = candidate_policy["reuse_level"]
+    target_constraints = _active_constraints(target_policy.get("constraints"))
+    candidate_constraints = _active_constraints(candidate_policy.get("constraints"))
+    target_strong_constraints = _strong_constraints(target_policy.get("constraints"))
     semantic_signal = _has_semantic_reuse_signal(score_details, score)
     embedding_score = _embedding_score_from_details(score_details)
     accepted_by = _clean_text(score_details.get("accepted_by"))
@@ -870,16 +483,16 @@ def evaluate_reuse_filter(
     if accepted_by in SCORE_GATE_LLM_REVIEW_REASONS:
         return high_embedding_review_result(accepted_by, threshold_used)
 
-    if target_level != "strict" and candidate_level != "strict":
-        medium_missing, medium_conflicts = compare_core_constraints(
-            target_policy["core_constraints"],
-            candidate_policy["core_constraints"],
+    if target_level != "strict":
+        medium_missing, medium_conflicts = compare_constraints(
+            target_constraints,
+            candidate_constraints,
             strict_target=False,
         )
         if medium_conflicts:
-            _missing, unresolved_conflicts, conflict_reviews = compare_strict_core_constraints(
-                target_policy["core_constraints"],
-                candidate_policy["core_constraints"],
+            _missing, unresolved_conflicts, conflict_reviews = compare_strong_constraints(
+                target_strong_constraints,
+                candidate_constraints,
                 score_details=score_details,
             )
             actionable_reviews = [
@@ -889,7 +502,7 @@ def evaluate_reuse_filter(
             if actionable_reviews:
                 return _result(
                     "llm_review",
-                    "medium_core_constraints_require_llm_review",
+                    "medium_constraints_require_llm_review",
                     review_items=actionable_reviews,
                     confidence=0.55,
                     threshold=threshold_used,
@@ -900,7 +513,7 @@ def evaluate_reuse_filter(
             if unresolved_conflicts:
                 return _result(
                     "reject",
-                    "medium_core_constraints_conflict",
+                    "medium_constraints_conflict",
                     conflicts=unresolved_conflicts,
                     confidence=0.95,
                     threshold=threshold_used,
@@ -911,7 +524,7 @@ def evaluate_reuse_filter(
             if conflict_reviews:
                 return _result(
                     "reject",
-                    "medium_core_constraints_conflict",
+                    "medium_constraints_conflict",
                     conflicts=medium_conflicts,
                     confidence=0.95,
                     threshold=threshold_used,
@@ -919,14 +532,25 @@ def evaluate_reuse_filter(
                     target_policy=target_policy,
                     candidate_policy=candidate_policy,
                 )
-        medium_hard_missing = [item for item in medium_missing if _is_specific_constraint(item)]
-        if medium_hard_missing:
+            if not target_strong_constraints:
+                return _result(
+                    "reject",
+                    "medium_constraints_conflict",
+                    conflicts=medium_conflicts,
+                    confidence=0.85,
+                    threshold=threshold_used,
+                    score_gap=score_gap,
+                    target_policy=target_policy,
+                    candidate_policy=candidate_policy,
+                )
+        medium_strong_missing = [item for item in medium_missing if _is_specific_constraint(item)]
+        if medium_missing and not (semantic_signal and not medium_strong_missing):
             return _result(
                 "llm_review",
-                "medium_core_constraints_require_llm_review",
+                "medium_constraints_require_llm_review",
                 review_items=[
                     _constraint_review_item(item, [], "missing_same_kind", side="target")
-                    for item in medium_hard_missing
+                    for item in medium_missing
                 ],
                 confidence=0.55,
                 threshold=threshold_used,
@@ -965,7 +589,7 @@ def evaluate_reuse_filter(
             candidate_policy=candidate_policy,
         )
 
-    if target_level == "strict" or candidate_level == "strict":
+    if target_level == "strict":
         if score_gap < 0 and not semantic_signal:
             if accepted_by == "strict_semantic_gray_review":
                 return high_embedding_review_result(
@@ -986,7 +610,7 @@ def evaluate_reuse_filter(
                 target_policy=target_policy,
                 candidate_policy=candidate_policy,
             )
-        if not target_policy["core_constraints"] and not candidate_policy["core_constraints"]:
+        if not target_constraints and not candidate_constraints:
             if score_gap >= 0 and _requires_embedding_floor_review(target_policy, candidate_policy, embedding_score):
                 return embedding_floor_review_result("embedding_below_auto_accept_floor")
             return _result(
@@ -998,37 +622,18 @@ def evaluate_reuse_filter(
                 target_policy=target_policy,
                 candidate_policy=candidate_policy,
             )
-        strict_missing: list[dict[str, Any]] = []
-        strict_conflicts: list[dict[str, Any]] = []
-        strict_reviews: list[dict[str, Any]] = []
-        if target_level == "strict":
-            missing, conflicts, reviews = compare_strict_core_constraints(
-                target_policy["core_constraints"],
-                candidate_policy["core_constraints"],
-                score_details=score_details,
-            )
-            strict_missing.extend(missing)
-            strict_conflicts.extend(conflicts)
-            strict_reviews.extend(reviews)
-        if candidate_level == "strict":
-            missing, conflicts, reviews = compare_strict_core_constraints(
-                candidate_policy["core_constraints"],
-                target_policy["core_constraints"],
-                score_details=score_details,
-                side="candidate",
-            )
-            strict_missing.extend(
-                {"kind": item["kind"], "value": item["value"], "exact": item.get("exact", True), "side": "candidate"}
-                for item in missing
-            )
-            strict_conflicts.extend(conflicts)
-            strict_reviews.extend(reviews)
-        strict_conflicts = _dedupe_conflicts(strict_conflicts)
-        strict_reviews = _dedupe_review_items(strict_reviews)
+        missing, conflicts, reviews = compare_strong_constraints(
+            target_strong_constraints,
+            candidate_constraints,
+            score_details=score_details,
+        )
+        strict_missing: list[dict[str, Any]] = list(missing)
+        strict_conflicts: list[dict[str, Any]] = _dedupe_conflicts(conflicts)
+        strict_reviews: list[dict[str, Any]] = _dedupe_review_items(reviews)
         if strict_conflicts:
             return _result(
                 "reject",
-                "strict_core_constraints_conflict",
+                "strict_constraints_conflict",
                 conflicts=strict_conflicts,
                 confidence=0.95,
                 threshold=threshold_used,
@@ -1039,7 +644,7 @@ def evaluate_reuse_filter(
         if strict_reviews:
             return _result(
                 "llm_review",
-                "strict_core_constraints_require_llm_review",
+                "strict_constraints_require_llm_review",
                 review_items=strict_reviews,
                 confidence=0.55,
                 threshold=threshold_used,
@@ -1050,7 +655,7 @@ def evaluate_reuse_filter(
         if strict_missing:
             return _result(
                 "reject",
-                "strict_core_constraints_missing",
+                "strict_constraints_missing",
                 missing=strict_missing,
                 confidence=0.9,
                 threshold=threshold_used,
@@ -1062,170 +667,7 @@ def evaluate_reuse_filter(
             return embedding_floor_review_result("embedding_below_auto_accept_floor")
         return _result(
             "full_match",
-            "strict_core_constraints_covered",
-            confidence=0.9,
-            threshold=threshold_used,
-            score_gap=score_gap,
-            target_policy=target_policy,
-            candidate_policy=candidate_policy,
-        )
-
-    if (
-        target_category == "unknown"
-        and candidate_category == "unknown"
-        and not target_policy["core_constraints"]
-        and not candidate_policy["core_constraints"]
-        and score_gap >= CONFIDENT_LOOSE_MARGIN
-    ):
-        return _result(
-            "full_match",
-            "legacy_unconstrained_metadata_score_match",
-            confidence=0.7,
-            threshold=threshold_used,
-            score_gap=score_gap,
-            target_policy=target_policy,
-            candidate_policy=candidate_policy,
-        )
-
-    compatibility = CATEGORY_COMPATIBILITY.get(target_category, CATEGORY_COMPATIBILITY["unknown"])
-    full_compatible = candidate_category in compatibility["full"]
-    support_compatible = candidate_category in compatibility["support"]
-
-    missing, conflicts = compare_core_constraints(
-        target_policy["core_constraints"],
-        candidate_policy["core_constraints"],
-        strict_target=target_level == "strict",
-    )
-    if conflicts:
-        return _result(
-            "reject",
-            "candidate_core_constraints_conflict",
-            conflicts=conflicts,
-            confidence=0.95,
-            threshold=threshold_used,
-            score_gap=score_gap,
-            target_policy=target_policy,
-            candidate_policy=candidate_policy,
-        )
-
-    hard_missing = [item for item in missing if _is_specific_constraint(item)]
-    categories_semantically_compatible = _semantic_categories_compatible(
-        target_policy,
-        candidate_policy,
-        full_compatible=full_compatible,
-        support_compatible=support_compatible,
-    )
-
-    if score < threshold_used - LOW_SCORE_REJECT_MARGIN and not (
-        semantic_signal and categories_semantically_compatible and not hard_missing
-    ):
-        return _result(
-            "reject",
-            "score_far_below_policy_threshold",
-            missing=missing,
-            confidence=0.9,
-            threshold=threshold_used,
-            score_gap=score_gap,
-            target_policy=target_policy,
-            candidate_policy=candidate_policy,
-        )
-
-    if target_level == "loose":
-        if full_compatible and (score_gap >= 0 or semantic_signal):
-            return _result(
-                "full_match",
-                "loose_category_match",
-                confidence=0.85 if score_gap >= CONFIDENT_LOOSE_MARGIN else 0.7,
-                threshold=threshold_used,
-                score_gap=score_gap,
-                target_policy=target_policy,
-                candidate_policy=candidate_policy,
-            )
-        if candidate_policy["generic_support_allowed"] and (
-            support_compatible or score_gap >= 0 or (semantic_signal and categories_semantically_compatible)
-        ):
-            return _result(
-                "generic_support",
-                "loose_candidate_allowed_as_support",
-                confidence=0.7,
-                threshold=threshold_used,
-                score_gap=score_gap,
-                target_policy=target_policy,
-                candidate_policy=candidate_policy,
-            )
-        return _result(
-            "uncertain",
-            "loose_candidate_not_clearly_compatible",
-            missing=missing,
-            threshold=threshold_used,
-            score_gap=score_gap,
-            target_policy=target_policy,
-            candidate_policy=candidate_policy,
-        )
-
-    if target_level == "medium":
-        if categories_semantically_compatible and not hard_missing and (score_gap >= 0 or semantic_signal):
-            return _result(
-                "full_match",
-                "medium_semantic_match",
-                confidence=0.8,
-                threshold=threshold_used,
-                score_gap=score_gap,
-                target_policy=target_policy,
-                candidate_policy=candidate_policy,
-            )
-        if candidate_policy["generic_support_allowed"] and (
-            support_compatible
-            or candidate_category in GENERIC_CATEGORIES
-            or (semantic_signal and categories_semantically_compatible and not hard_missing)
-        ):
-            return _result(
-                "generic_support",
-                "medium_candidate_allowed_as_generic_support",
-                missing=missing,
-                confidence=0.75,
-                threshold=threshold_used,
-                score_gap=score_gap,
-                target_policy=target_policy,
-                candidate_policy=candidate_policy,
-            )
-        return _result(
-            "uncertain",
-            "medium_constraints_or_category_not_confirmed",
-            missing=missing,
-            threshold=threshold_used,
-            score_gap=score_gap,
-            target_policy=target_policy,
-            candidate_policy=candidate_policy,
-            )
-
-    if not full_compatible and not (semantic_signal and categories_semantically_compatible and not hard_missing):
-        if candidate_policy["generic_support_allowed"] and support_compatible:
-            return _result(
-                "generic_support",
-                "strict_target_candidate_only_supports_context",
-                missing=missing,
-                confidence=0.7,
-                threshold=threshold_used,
-                score_gap=score_gap,
-                target_policy=target_policy,
-                candidate_policy=candidate_policy,
-            )
-        return _result(
-            "reject",
-            "strict_target_category_incompatible",
-            missing=missing,
-            confidence=0.9,
-            threshold=threshold_used,
-            score_gap=score_gap,
-            target_policy=target_policy,
-            candidate_policy=candidate_policy,
-            )
-
-    if not hard_missing:
-        return _result(
-            "full_match",
-            "strict_core_constraints_covered",
+            "strict_constraints_covered",
             confidence=0.9,
             threshold=threshold_used,
             score_gap=score_gap,
@@ -1234,10 +676,9 @@ def evaluate_reuse_filter(
         )
 
     return _result(
-        "uncertain",
-        "strict_core_constraints_missing",
-        missing=hard_missing,
-        confidence=0.4,
+        "full_match" if score_gap >= 0 or semantic_signal else "reject",
+        "constraint_similarity_match" if score_gap >= 0 or semantic_signal else "similarity_below_threshold",
+        confidence=0.75 if score_gap >= 0 or semantic_signal else 0.85,
         threshold=threshold_used,
         score_gap=score_gap,
         target_policy=target_policy,
@@ -1248,31 +689,30 @@ def evaluate_reuse_filter(
 def evaluate_aspect_transform(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
     """Choose a safe transform mode and score penalty for aspect-ratio mismatch."""
 
-    source_label = _clean_text(candidate.get("aspect_ratio"))
+    candidate_label = _clean_text(candidate.get("aspect_ratio"))
     target_label = _clean_text(target.get("aspect_ratio"))
-    source_ratio = _parse_aspect_ratio(source_label)
+    candidate_ratio = _parse_aspect_ratio(candidate_label)
     target_ratio = _parse_aspect_ratio(target_label)
-    if source_ratio <= 0 or target_ratio <= 0:
+    if candidate_ratio <= 0 or target_ratio <= 0:
         return {
             "decision": "accept",
             "mode": "copy",
             "crop_loss": 0.0,
             "transform_penalty": 0.0,
-            "source_aspect_ratio": source_label,
+            "candidate_aspect_ratio": candidate_label,
             "target_aspect_ratio": target_label,
             "reason": "missing_or_invalid_aspect_ratio",
         }
 
-    loss = _crop_loss(source_ratio, target_ratio)
-    reversed_orientation = _orientation(source_ratio) != _orientation(target_ratio) and "square" not in {
-        _orientation(source_ratio),
+    loss = _crop_loss(candidate_ratio, target_ratio)
+    reversed_orientation = _orientation(candidate_ratio) != _orientation(target_ratio) and "square" not in {
+        _orientation(candidate_ratio),
         _orientation(target_ratio),
     }
     target_policy = normalize_reuse_policy_fields(target)
-    category = target_policy["asset_category"]
     reuse_level = target_policy["reuse_level"]
     role = _clean_text(target.get("role") or candidate.get("role"))
-    has_constraints = bool(target_policy["core_constraints"])
+    has_constraints = bool(_active_constraints(target_policy.get("constraints")))
     asset_kind = _clean_text(target.get("asset_kind"))
 
     if loss <= 0.02:
@@ -1281,80 +721,53 @@ def evaluate_aspect_transform(target: dict[str, Any], candidate: dict[str, Any])
             "copy",
             loss,
             0.0,
-            source_label,
+            candidate_label,
             target_label,
             "aspect_ratio_aligned",
         )
 
     if asset_kind == "background":
         if loss <= 0.05:
-            return _transform_result("accept", "micro_stretch", loss, 0.01, source_label, target_label, "background_micro_stretch")
+            return _transform_result("accept", "micro_stretch", loss, 0.01, candidate_label, target_label, "background_micro_stretch")
         if loss <= 0.12:
-            return _transform_result("penalize", "cover_crop", loss, 0.02, source_label, target_label, "background_light_crop")
+            return _transform_result("penalize", "cover_crop", loss, 0.02, candidate_label, target_label, "background_light_crop")
         if loss <= 0.25:
-            return _transform_result("penalize", "blur_pad", loss, 0.06, source_label, target_label, "background_blur_pad")
+            return _transform_result("penalize", "blur_pad", loss, 0.06, candidate_label, target_label, "background_blur_pad")
         if loss <= 0.35 and not reversed_orientation:
-            return _transform_result("penalize", "blur_pad", loss, 0.10, source_label, target_label, "background_high_pad")
-        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "background_aspect_mismatch_too_large")
+            return _transform_result("penalize", "blur_pad", loss, 0.10, candidate_label, target_label, "background_high_pad")
+        return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "background_aspect_mismatch_too_large")
 
     if role == "hero" and loss > 0.25:
-        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "hero_aspect_mismatch_too_large")
+        return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "hero_aspect_mismatch_too_large")
     if role == "hero" and loss > 0.12:
-        return _transform_result("penalize", "contain_pad", loss, 0.10, source_label, target_label, "hero_content_preserving_pad")
+        return _transform_result("penalize", "contain_pad", loss, 0.10, candidate_label, target_label, "hero_content_preserving_pad")
 
     if role == "icon":
         if loss <= 0.12:
-            return _transform_result("penalize", "contain_pad", loss, 0.04, source_label, target_label, "icon_content_preserving_pad")
+            return _transform_result("penalize", "contain_pad", loss, 0.04, candidate_label, target_label, "icon_content_preserving_pad")
         if loss <= 0.25 and not reversed_orientation:
-            return _transform_result("penalize", "contain_pad", loss, 0.09, source_label, target_label, "icon_medium_pad")
-        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "icon_aspect_mismatch_too_large")
+            return _transform_result("penalize", "contain_pad", loss, 0.09, candidate_label, target_label, "icon_medium_pad")
+        return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "icon_aspect_mismatch_too_large")
 
-    if reuse_level == "strict" or category in {"content_specific", "character_action"} or has_constraints:
+    if reuse_level == "strict" or has_constraints:
         if loss <= 0.05:
-            return _transform_result("accept", "copy", loss, 0.0, source_label, target_label, "strict_small_mismatch")
+            return _transform_result("accept", "copy", loss, 0.0, candidate_label, target_label, "strict_small_mismatch")
         if loss <= 0.12 and not reversed_orientation:
-            return _transform_result("penalize", "contain_pad", loss, 0.05, source_label, target_label, "strict_content_preserving_pad")
+            return _transform_result("penalize", "contain_pad", loss, 0.05, candidate_label, target_label, "strict_content_preserving_pad")
         if loss <= 0.25 and not reversed_orientation:
-            return _transform_result("penalize", "contain_pad", loss, 0.10, source_label, target_label, "strict_content_preserving_medium_pad")
-        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "strict_aspect_mismatch_too_large")
-
-    if category in {"generic_tool", "generic_diagram"}:
-        if loss <= 0.05:
-            return _transform_result("accept", "copy", loss, 0.0, source_label, target_label, "generic_structure_small_mismatch")
-        if loss <= 0.12:
-            return _transform_result("penalize", "contain_pad", loss, 0.04, source_label, target_label, "generic_structure_light_pad")
-        if loss <= 0.25 and not reversed_orientation:
-            return _transform_result("penalize", "contain_pad", loss, 0.09, source_label, target_label, "generic_structure_medium_pad")
-        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "generic_structure_aspect_mismatch_too_large")
-
-    if category == "learning_behavior":
-        if loss <= 0.05:
-            return _transform_result("accept", "copy", loss, 0.0, source_label, target_label, "learning_behavior_small_mismatch")
-        if loss <= 0.12:
-            return _transform_result("penalize", "cover_crop", loss, 0.03, source_label, target_label, "learning_behavior_light_crop")
-        if loss <= 0.25 and not reversed_orientation:
-            return _transform_result("penalize", "contain_pad", loss, 0.08, source_label, target_label, "learning_behavior_medium_pad")
-        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "learning_behavior_aspect_mismatch_too_large")
-
-    if category == "concept_scene":
-        if loss <= 0.05:
-            return _transform_result("accept", "copy", loss, 0.0, source_label, target_label, "concept_scene_small_mismatch")
-        if loss <= 0.12:
-            return _transform_result("penalize", "cover_crop", loss, 0.03, source_label, target_label, "concept_scene_light_crop")
-        if loss <= 0.25 and not reversed_orientation:
-            return _transform_result("penalize", "contain_pad", loss, 0.08, source_label, target_label, "concept_scene_medium_pad")
-        return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "concept_scene_aspect_mismatch_too_large")
+            return _transform_result("penalize", "contain_pad", loss, 0.10, candidate_label, target_label, "strict_content_preserving_medium_pad")
+        return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "strict_aspect_mismatch_too_large")
 
     if loss <= 0.05:
-        return _transform_result("accept", "copy", loss, 0.0, source_label, target_label, "unknown_small_mismatch")
+        return _transform_result("accept", "copy", loss, 0.0, candidate_label, target_label, "unknown_small_mismatch")
     if loss <= 0.12:
-        return _transform_result("penalize", "contain_pad", loss, 0.05, source_label, target_label, "unknown_light_pad")
+        return _transform_result("penalize", "contain_pad", loss, 0.05, candidate_label, target_label, "unknown_light_pad")
     if loss <= 0.25 and not reversed_orientation:
-        return _transform_result("penalize", "contain_pad", loss, 0.10, source_label, target_label, "unknown_medium_pad")
-    return _transform_result("reject", "copy", loss, 0.18, source_label, target_label, "unknown_aspect_mismatch_too_large")
+        return _transform_result("penalize", "contain_pad", loss, 0.10, candidate_label, target_label, "unknown_medium_pad")
+    return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "unknown_aspect_mismatch_too_large")
 
 
-def compare_core_constraints(
+def compare_constraints(
     target_constraints: list[dict[str, Any]],
     candidate_constraints: list[dict[str, Any]],
     *,
@@ -1402,7 +815,7 @@ def compare_core_constraints(
     return missing, _dedupe_conflicts(conflicts)
 
 
-def compare_strict_core_constraints(
+def compare_strong_constraints(
     required_constraints: list[dict[str, Any]],
     available_constraints: list[dict[str, Any]],
     *,
@@ -1446,8 +859,11 @@ def compare_strict_core_constraints(
 def _constraints_equivalent(left: dict[str, Any], right: dict[str, Any]) -> bool:
     if left["kind"] != right["kind"]:
         return False
-    if _light_constraint_match_method(left, right):
+    light_method = _light_constraint_match_method(left, right)
+    if light_method:
         return True
+    if _constraint_importance(left) >= 2:
+        return False
     left_value = _normalize_constraint_value(left["kind"], left["value"])
     right_value = _normalize_constraint_value(right["kind"], right["value"])
     return _soft_equivalent(left_value, right_value)
@@ -1483,8 +899,8 @@ def _strict_constraint_match_result(
             decision="llm_review",
         )
 
-    high, low = CONSTRAINT_EMBEDDING_THRESHOLDS.get(kind, (0.88, 0.76))
-    if embedding_score >= high:
+    threshold = _constraint_embedding_threshold(required)
+    if embedding_score >= threshold:
         method = "embedding_high"
         if kind in LLM_REVIEW_REQUIRED_KINDS:
             return _constraint_review_item(
@@ -1496,7 +912,8 @@ def _strict_constraint_match_result(
                 embedding_score=embedding_score,
             )
         return {"decision": "matched", "match_method": method, "embedding_score": embedding_score}
-    if embedding_score >= low:
+    high, low = CONSTRAINT_EMBEDDING_THRESHOLDS.get(kind, (0.88, 0.76))
+    if _constraint_importance(required) == 1 and embedding_score >= min(high, max(low, threshold - 0.04)):
         return _constraint_review_item(
             required,
             [available],
@@ -1520,19 +937,18 @@ def _light_constraint_match_method(left: dict[str, Any], right: dict[str, Any]) 
         return "exact"
     if min(len(left_value), len(right_value)) >= 2 and (left_value in right_value or right_value in left_value):
         return "contains"
-    left_aliases = {
-        _normalize_constraint_value(kind, alias)
-        for alias in _clean_alias_list(left.get("aliases"))
-    }
-    right_aliases = {
-        _normalize_constraint_value(kind, alias)
-        for alias in _clean_alias_list(right.get("aliases"))
-    }
-    left_terms = {left_value, *left_aliases}
-    right_terms = {right_value, *right_aliases}
-    if left_terms & right_terms:
-        return "alias"
     return ""
+
+
+def _constraint_embedding_threshold(constraint: dict[str, Any]) -> float:
+    kind = _clean_text(constraint.get("kind"))
+    importance = _constraint_importance(constraint)
+    if importance <= 0:
+        return 0.0
+    high, low = CONSTRAINT_EMBEDDING_THRESHOLDS.get(kind, (0.88, 0.76))
+    if importance >= 2:
+        return high
+    return low
 
 
 def _constraint_embedding_score(
@@ -1550,7 +966,7 @@ def _constraint_embedding_score(
         return None
     best: float | None = None
     for item in items:
-        if not isinstance(item, dict) or _clean_text(item.get("kind")) != kind:
+        if not isinstance(item, dict) or _normalize_constraint_kind(item.get("kind")) != kind:
             continue
         left = _normalize_constraint_value(kind, item.get("target"))
         right = _normalize_constraint_value(kind, item.get("candidate"))
@@ -1577,8 +993,7 @@ def _constraint_review_item(
         "decision": decision,
         "kind": required.get("kind"),
         "value": required.get("value"),
-        "exact": required.get("exact", True),
-        "hard": bool(required.get("hard")),
+        "importance": _constraint_importance(required),
         "side": side,
         "reason": reason,
         "candidate_values": [available.get("value") for available in available_constraints],
@@ -1593,7 +1008,7 @@ def _best_review_result(required: dict[str, Any], reviews: list[dict[str, Any]],
         return _constraint_review_item(required, [], "missing_same_kind", side=side)
     def rank(item: dict[str, Any]) -> tuple[int, float]:
         reason = _clean_text(item.get("reason"))
-        reason_rank = {"exact": 4, "contains": 3, "alias": 3, "embedding_high": 2, "embedding_gray": 1}.get(reason, 0)
+        reason_rank = {"exact": 4, "contains": 3, "embedding_high": 2, "embedding_gray": 1}.get(reason, 0)
         try:
             score = float(item.get("embedding_score") or 0.0)
         except (TypeError, ValueError):
@@ -1622,10 +1037,10 @@ def _parse_aspect_ratio(value: Any) -> float:
     return value_float if value_float > 0 else 0.0
 
 
-def _crop_loss(source_ratio: float, target_ratio: float) -> float:
-    if source_ratio <= 0 or target_ratio <= 0:
+def _crop_loss(candidate_ratio: float, target_ratio: float) -> float:
+    if candidate_ratio <= 0 or target_ratio <= 0:
         return 0.25
-    return 1.0 - min(source_ratio, target_ratio) / max(source_ratio, target_ratio)
+    return 1.0 - min(candidate_ratio, target_ratio) / max(candidate_ratio, target_ratio)
 
 
 def _orientation(ratio: float) -> str:
@@ -1641,7 +1056,7 @@ def _transform_result(
     mode: str,
     crop_loss: float,
     penalty: float,
-    source_aspect_ratio: str,
+    candidate_aspect_ratio: str,
     target_aspect_ratio: str,
     reason: str,
 ) -> dict[str, Any]:
@@ -1650,7 +1065,7 @@ def _transform_result(
         "mode": mode,
         "crop_loss": round(_clamp(crop_loss), 4),
         "transform_penalty": round(_clamp(penalty), 4),
-        "source_aspect_ratio": source_aspect_ratio,
+        "candidate_aspect_ratio": candidate_aspect_ratio,
         "target_aspect_ratio": target_aspect_ratio,
         "reason": reason,
     }
@@ -1671,7 +1086,7 @@ def _soft_equivalent(left: str, right: str) -> bool:
 def _normalize_constraint_value(kind: str, value: Any) -> str:
     text = _clean_text(value).casefold()
     text = re.sub(r"^[a-z_ -]{1,24}[:：]\s*", "", text)
-    if kind in {"math", "physics", "text", "relation"}:
+    if kind in {"math", "physics", "text"}:
         text = re.sub(r"\s+", "", text)
     else:
         text = re.sub(r"\s+", " ", text)
@@ -1679,64 +1094,7 @@ def _normalize_constraint_value(kind: str, value: Any) -> str:
 
 
 def _is_specific_constraint(constraint: dict[str, Any]) -> bool:
-    kind = constraint.get("kind")
-    return bool(constraint.get("hard") or kind in HIGH_RISK_KINDS)
-
-
-def _has_high_risk_exact_constraints(constraints: list[dict[str, Any]]) -> bool:
-    return any(_constraint_requires_strict_level(item) for item in constraints)
-
-
-def _has_high_risk_kind_constraints(constraints: list[dict[str, Any]]) -> bool:
-    return any(_constraint_requires_strict_level(item) for item in constraints)
-
-
-def _has_strict_reuse_risk(
-    asset_category: str,
-    constraints: list[dict[str, Any]],
-    reuse_risk: dict[str, bool],
-) -> bool:
-    if _has_high_risk_kind_constraints(constraints):
-        return True
-    if reuse_risk.get("readable_knowledge"):
-        return True
-    if reuse_risk.get("exact_relation"):
-        return any(
-            item.get("kind") == "relation" and item.get("exact")
-            for item in constraints
-        )
-    return False
-
-
-def _constraint_requires_strict_level(constraint: dict[str, Any]) -> bool:
-    kind = _clean_text(constraint.get("kind"))
-    if kind in STRICT_LEVEL_KINDS:
-        return True
-    return kind == "relation" and bool(constraint.get("exact"))
-
-
-def _emotion_only_constraints_should_be_loose(
-    asset_category: str,
-    constraints: list[dict[str, Any]],
-    reuse_risk: dict[str, bool],
-    asset: dict[str, Any],
-) -> bool:
-    if not constraints:
-        return False
-    if any(_clean_text(item.get("kind")) != "emotion" for item in constraints):
-        return False
-    if reuse_risk.get("readable_knowledge") or reuse_risk.get("unique_referent") or reuse_risk.get("exact_relation"):
-        return False
-    profile = normalize_reuse_score_fields(asset.get("reuse_scores", asset.get("reuse_profile")))
-    if _score_value(profile.get("factual_risk_score")) >= SCORE_DERIVED_REUSE_THRESHOLDS["risk_required_score"]:
-        return False
-    return asset_category in {"character_action", "concept_scene", "content_specific", "unknown"}
-
-
-def _risk_required(value: Any) -> bool:
-    if isinstance(value, dict):
-        return bool(value.get("required"))
-    return bool(value)
+    return _constraint_importance(constraint) >= 2
 
 
 def _embedding_score_from_details(score_details: dict[str, Any]) -> float:
@@ -1747,14 +1105,9 @@ def _embedding_score_from_details(score_details: dict[str, Any]) -> float:
 
 
 def _auto_accept_embedding_floor(target_policy: dict[str, Any], candidate_policy: dict[str, Any]) -> float:
-    floors: list[float] = []
     if target_policy.get("reuse_level") == "strict" or candidate_policy.get("reuse_level") == "strict":
-        floors.append(float(AUTO_ACCEPT_EMBEDDING_FLOORS["strict"]))
-    for policy in (target_policy, candidate_policy):
-        category = _clean_text(policy.get("asset_category")) or "unknown"
-        if category in AUTO_ACCEPT_EMBEDDING_FLOORS:
-            floors.append(float(AUTO_ACCEPT_EMBEDDING_FLOORS[category]))
-    return max(floors or [0.0])
+        return float(AUTO_ACCEPT_EMBEDDING_FLOORS["strict"])
+    return 0.0
 
 
 def _requires_embedding_floor_review(
@@ -1783,29 +1136,6 @@ def _has_semantic_reuse_signal(score_details: dict[str, Any], score: float) -> b
     )
 
 
-def _semantic_categories_compatible(
-    target_policy: dict[str, Any],
-    candidate_policy: dict[str, Any],
-    *,
-    full_compatible: bool,
-    support_compatible: bool,
-) -> bool:
-    if full_compatible or support_compatible:
-        return True
-    target_category = target_policy["asset_category"]
-    candidate_category = candidate_policy["asset_category"]
-    if target_category in SEMANTIC_SCENE_CATEGORIES and candidate_category in SEMANTIC_SCENE_CATEGORIES:
-        return True
-    target_has_hard = any(_is_specific_constraint(item) for item in target_policy["core_constraints"])
-    candidate_has_hard = any(_is_specific_constraint(item) for item in candidate_policy["core_constraints"])
-    if target_has_hard or candidate_has_hard:
-        return False
-    return bool(
-        target_category == "content_specific" and candidate_category in SEMANTIC_SCENE_CATEGORIES
-        or candidate_category == "content_specific" and target_category in SEMANTIC_SCENE_CATEGORIES
-    )
-
-
 def _looks_like_style_or_quality_value(value: str) -> bool:
     normalized = _clean_text(value).casefold().replace(" ", "")
     if not normalized:
@@ -1824,6 +1154,17 @@ def _looks_like_style_or_quality_value(value: str) -> bool:
         "composition",
         "palette",
         "color",
+        "插画",
+        "教学插画",
+        "教学配图",
+        "配图",
+        "课堂导入",
+        "适合课堂导入",
+        "页面功能",
+        "高清",
+        "高质量",
+        "画风",
+        "风格",
     )
     return normalized in style_markers
 
@@ -1899,25 +1240,6 @@ def _dedupe_review_items(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(key)
         deduped.append(item)
     return deduped
-
-
-def _clean_alias_list(value: Any, *, max_items: int = 8) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    aliases: list[str] = []
-    seen: set[str] = set()
-    for item in value:
-        text = _clean_text(item)
-        if not text or _looks_like_style_or_quality_value(text):
-            continue
-        key = text.casefold()
-        if key in seen:
-            continue
-        seen.add(key)
-        aliases.append(text)
-        if len(aliases) >= max_items:
-            break
-    return aliases
 
 
 def _clean_text(value: Any) -> str:

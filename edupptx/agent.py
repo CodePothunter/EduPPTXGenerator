@@ -621,7 +621,7 @@ class PPTXAgent:
                             reuse_session_state=reuse_session_state,
                         )
                         if match:
-                            suffix = Path(match["library_image_path"]).suffix.lower() or ".img"
+                            suffix = Path(str(match.get("candidate_image_path") or "")).suffix.lower() or ".img"
                             dest = materials_dir / f"page_{page.page_number:02d}_{slot_key}{suffix}"
                             self._copy_reusable_ai_image(
                                 match,

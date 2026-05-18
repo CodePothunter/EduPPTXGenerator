@@ -542,12 +542,13 @@ def asset_ingest(
             keyword_client=keyword_client,
             keyword_batch_size=keyword_batch_size,
         )
+        report_library_dir = report.get("library_dir") or report.get("asset_root") or str(target_library)
         payload = {
             "ok": True,
             "db_path": str(target),
             "match_index_path": str(target.with_name(DEFAULT_MATCH_INDEX_FILENAME)),
             "output_root": report["output_root"],
-            "library_dir": report["library_dir"],
+            "library_dir": report_library_dir,
             "session_count": report["session_count"],
             "processed_session_count": len(report["processed_sessions"]),
             "failed_session_count": len(report["failed_sessions"]),
@@ -557,7 +558,7 @@ def asset_ingest(
             "keyword_status": keyword_status,
         }
         human = [
-            f"Asset library: {report['library_dir']}",
+            f"Asset library: {report_library_dir}",
             f"Asset DB: {target}",
             f"Match index: {target.with_name(DEFAULT_MATCH_INDEX_FILENAME)}",
             f"Sessions: {len(report['processed_sessions'])}/{report['session_count']}",

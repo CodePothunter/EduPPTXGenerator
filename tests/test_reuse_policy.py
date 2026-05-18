@@ -1,22 +1,177 @@
 from edupptx.materials.ai_image_asset_db import _reuse_acceptance_reason
 from edupptx.materials.reuse_policy import (
     MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
-    SCORE_DERIVED_REUSE_THRESHOLDS,
     STRICT_EMBEDDING_REVIEW_THRESHOLD,
-    derive_reuse_policy_from_scores,
+    derive_reuse_level_from_constraints,
     evaluate_aspect_transform,
     evaluate_reuse_filter,
+    normalize_constraints,
+    normalize_asset_metadata,
     normalize_reuse_policy_fields,
-    normalize_reuse_score_fields,
     reuse_threshold_for_target,
 )
 
 
-def test_reuse_policy_derives_strict_metadata_from_scores():
+def test_normalize_constraints_removes_legacy_constraint_fields():
+    constraints = normalize_constraints(
+        [
+            {
+                "kind": "entity",
+                "value": "小蝌蚪",
+                "importance": 2,
+                "source": "visible",
+                "match_mode": "exact",
+                "filter_threshold": "high",
+                "aliases": ["蝌蚪"],
+                "confidence": 0.9,
+                "evidence": "主体要求",
+                "reason": "核心主体",
+            }
+        ]
+    )
+
+    assert constraints == [
+        {
+            "kind": "entity",
+            "subtype": "",
+            "value": "小蝌蚪",
+            "importance": 2,
+            "confidence": 0.9,
+            "evidence": "主体要求",
+            "reason": "核心主体",
+        }
+    ]
+
+
+def test_normalize_constraints_drops_legacy_fields_and_defaults_optional_values():
+    constraints = normalize_constraints(
+        [
+            {
+                "kind": "entity",
+                "value": "小蝌蚪",
+                "importance": 2,
+                "source": "visible",
+                "match_mode": "exact",
+                "filter_threshold": "high",
+                "aliases": ["蝌蚪"],
+            }
+        ]
+    )
+
+    assert constraints == [
+        {
+            "kind": "entity",
+            "subtype": "",
+            "value": "小蝌蚪",
+            "importance": 2,
+            "confidence": 0.0,
+            "evidence": "",
+            "reason": "",
+        }
+    ]
+
+
+def test_missing_importance_defaults_to_zero_and_is_inactive():
+    constraints = normalize_constraints([{"kind": "entity", "value": "小蝌蚪"}])
+
+    assert constraints[0]["importance"] == 0
+    assert derive_reuse_level_from_constraints(constraints) == "loose"
+
+
+def test_current_constraint_kinds_are_normalized_and_drive_policy():
+    constraints = normalize_constraints(
+        [
+            {"kind": "scene", "value": "池塘边", "importance": 1},
+            {"kind": "math", "value": "三只", "importance": 2},
+            {"kind": "scene", "value": "左右相邻", "importance": 1},
+        ]
+    )
+
+    assert [item["kind"] for item in constraints] == ["scene", "math", "scene"]
+    assert [item["value"] for item in constraints] == ["池塘边", "三只", "左右相邻"]
+    assert derive_reuse_level_from_constraints(constraints) == "strict"
+
+
+def test_reuse_level_derived_from_constraint_importance_counts():
+    loose = normalize_reuse_policy_fields(
+        {"asset_kind": "page_image", "constraints": [{"kind": "action", "value": "读书", "importance": 0}]}
+    )
+    weak = normalize_reuse_policy_fields(
+        {"asset_kind": "page_image", "constraints": [{"kind": "action", "value": "挥手告别", "importance": 1}]}
+    )
+    one_strong = normalize_reuse_policy_fields(
+        {"asset_kind": "page_image", "constraints": [{"kind": "entity", "value": "小蝌蚪", "importance": 2}]}
+    )
+    two_strong = normalize_reuse_policy_fields(
+        {
+            "asset_kind": "page_image",
+            "constraints": [
+                {"kind": "entity", "value": "小蝌蚪", "importance": 2},
+                {"kind": "action", "value": "举旗子", "importance": 2},
+            ],
+        }
+    )
+    three_strong = normalize_reuse_policy_fields(
+        {
+            "asset_kind": "page_image",
+            "constraints": [
+                {"kind": "entity", "subtype": "species_instance", "value": "小蝌蚪", "importance": 2},
+                {"kind": "action", "value": "举旗子", "importance": 2},
+                {"kind": "object", "value": "红色小旗子", "importance": 2},
+            ],
+        }
+    )
+
+    assert loose["reuse_level"] == "loose"
+    assert loose["generic_support_allowed"] is True
+    assert weak["reuse_level"] == "medium"
+    assert weak["generic_support_allowed"] is False
+    assert one_strong["reuse_level"] == "medium"
+    assert one_strong["generic_support_allowed"] is False
+    assert two_strong["reuse_level"] == "medium"
+    assert three_strong["reuse_level"] == "strict"
+    assert three_strong["generic_support_allowed"] is False
+    assert all("focus_dimensions" not in policy for policy in (loose, weak, one_strong, two_strong, three_strong))
+
+
+def test_text_math_physics_importance_two_force_strict():
+    for kind, value in (("text", "比"), ("math", "a²+b²=c²"), ("physics", "F=ma")):
+        policy = normalize_reuse_policy_fields(
+            {"asset_kind": "page_image", "constraints": [{"kind": kind, "value": value, "importance": 2}]}
+        )
+        assert policy["reuse_level"] == "strict"
+        assert policy["generic_support_allowed"] is False
+        assert "focus_dimensions" not in policy
+
+
+def test_focus_dimensions_removed_from_policy_metadata_and_background():
+    page_asset = {
+        "asset_kind": "page_image",
+        "focus_dimensions": ["entity"],
+        "constraints": [{"kind": "entity", "value": "小蝌蚪", "importance": 2}],
+    }
+    background_asset = {
+        "asset_kind": "background",
+        "focus_dimensions": ["scene"],
+        "constraints": [{"kind": "scene", "value": "教室", "importance": 2}],
+    }
+
+    page_policy = normalize_reuse_policy_fields(page_asset)
+    page_metadata = normalize_asset_metadata(page_asset).to_dict()
+    background_policy = normalize_reuse_policy_fields(background_asset)
+
+    assert "focus_dimensions" not in page_policy
+    assert "focus_dimensions" not in page_metadata
+    assert background_policy["constraints"] == []
+    assert background_policy["generic_support_allowed"] is True
+    assert "focus_dimensions" not in background_policy
+
+
+def test_reuse_scores_do_not_override_explicit_constraint_policy():
     asset = {
         "asset_kind": "page_image",
         "reuse_scores": {
-            "strict_score": SCORE_DERIVED_REUSE_THRESHOLDS["strict_score"],
+            "strict_score": 0.99,
             "loose_score": 0.0,
             "generic_support_score": 0.1,
             "readable_knowledge_score": 0.92,
@@ -27,24 +182,122 @@ def test_reuse_policy_derives_strict_metadata_from_scores():
                 {
                     "kind": "text",
                     "value": "character: bi",
-                    "importance_score": SCORE_DERIVED_REUSE_THRESHOLDS["hard_constraint_score"],
-                    "exactness_score": SCORE_DERIVED_REUSE_THRESHOLDS["exact_constraint_score"],
+                    "importance_score": 0.99,
+                    "exactness_score": 0.99,
                 }
             ],
         },
     }
 
-    derived = derive_reuse_policy_from_scores(asset)
-    policy = normalize_reuse_policy_fields(asset)
+    policy = normalize_reuse_policy_fields(
+        {
+            **asset,
+            "constraints": [{"kind": "action", "value": "read", "importance": 0}],
+        }
+    )
 
-    assert derived["reuse_level"] == "strict"
-    assert derived["asset_category"] == "content_specific"
-    assert derived["generic_support_allowed"] is False
-    assert derived["reuse_risk"]["readable_knowledge"]["required"] is True
-    assert policy["core_constraints"] == [{"kind": "text", "value": "character: bi", "exact": True, "hard": True}]
+    assert policy["reuse_level"] == "loose"
+    assert policy["generic_support_allowed"] is True
+    assert policy["constraints"][0]["importance"] == 0
 
 
-def test_reuse_policy_derives_loose_metadata_without_core_constraints():
+def test_normalize_asset_metadata_accepts_new_constraints_schema():
+    metadata = normalize_asset_metadata(
+        {
+            "asset_kind": "page_image",
+            "asset_category": "character_action",
+            "constraints": [
+                {
+                    "kind": "entity",
+                    "value": "小猴子",
+                    "importance": 2,
+                    "match_mode": "exact",
+                    "filter_threshold": "low",
+                    "confidence": 0.86,
+                    "source": "visible",
+                    "evidence": "画面主体是小猴子",
+                    "reason": "特定角色需要过滤",
+                }
+            ],
+        }
+    )
+
+    assert metadata.constraints[0]["kind"] == "entity"
+    assert metadata.constraints[0]["importance"] == 2
+    assert metadata.constraints[0]["confidence"] == 0.86
+    assert "source" not in metadata.constraints[0]
+    assert "match_mode" not in metadata.constraints[0]
+    assert "filter_threshold" not in metadata.constraints[0]
+
+
+def test_normalize_asset_metadata_ignores_removed_core_constraints_field():
+    metadata = normalize_asset_metadata(
+        {
+            "asset_kind": "page_image",
+            "core_constraints": [
+                {"kind": "entity", "value": "小猴子", "exact": True},
+                {"kind": "action", "value": "挥手告别", "exact": False},
+            ],
+        }
+    )
+
+    assert metadata.constraints == []
+
+
+def test_normalize_asset_metadata_uses_constraints_when_removed_field_is_present():
+    metadata = normalize_asset_metadata(
+        {
+            "asset_kind": "page_image",
+            "constraints": [
+                {"kind": "object", "value": "田字格", "importance": 2, "match_mode": "exact"}
+            ],
+            "core_constraints": [{"kind": "entity", "value": "旧主体", "exact": True}],
+        }
+    )
+    policy = normalize_reuse_policy_fields(metadata.to_dict())
+
+    assert [item["value"] for item in metadata.constraints] == ["田字格"]
+    assert all(item["value"] != "旧主体" for item in policy["constraints"])
+
+
+def test_normalize_asset_metadata_defaults_empty_constraints():
+    metadata = normalize_asset_metadata({"asset_kind": "page_image"})
+
+    assert metadata.constraints == []
+    assert "focus_dimensions" not in metadata.to_dict()
+
+
+def test_weak_constraints_filter_without_focus_dimensions():
+    policy = normalize_reuse_policy_fields(
+        {
+            "asset_kind": "page_image",
+            "constraints": [
+                {"kind": "action", "value": "瀛︿範", "importance": 1, "match_mode": "semantic"}
+            ],
+        }
+    )
+
+    assert policy["constraints"][0]["importance"] == 1
+    assert policy["reuse_level"] == "medium"
+    assert "focus_dimensions" not in policy
+
+
+def test_focus_dimensions_are_removed_from_metadata():
+    metadata = normalize_asset_metadata(
+        {
+            "asset_kind": "page_image",
+            "constraints": [
+                {"kind": "entity", "value": "小猴子", "importance": 2, "match_mode": "exact"},
+                {"kind": "action", "value": "挥手", "importance": 1, "match_mode": "semantic"},
+                {"kind": "emotion", "value": "开心", "importance": 0, "match_mode": "semantic"},
+            ],
+        }
+    )
+
+    assert "focus_dimensions" not in metadata.to_dict()
+
+
+def test_reuse_policy_derives_loose_metadata_without_constraints():
     asset = {
         "asset_kind": "page_image",
         "reuse_scores": {
@@ -69,14 +322,16 @@ def test_reuse_policy_derives_loose_metadata_without_core_constraints():
     policy = normalize_reuse_policy_fields(asset)
 
     assert policy["reuse_level"] == "loose"
-    assert policy["asset_category"] == "concept_scene"
+    assert policy["asset_category"] == "unknown"
     assert policy["generic_support_allowed"] is True
-    assert policy["core_constraints"] == []
+    assert policy["constraints"] == []
 
 
-def test_reuse_policy_derives_medium_when_visual_constraints_need_filter():
+def test_explicit_visual_constraints_drive_medium_filter():
     asset = {
         "asset_kind": "page_image",
+        "asset_category": "character_action",
+        "constraints": [{"kind": "entity", "value": "cartoon tadpole", "importance": 1}],
         "reuse_scores": {
             "strict_score": 0.35,
             "loose_score": 0.1,
@@ -89,7 +344,7 @@ def test_reuse_policy_derives_medium_when_visual_constraints_need_filter():
                 {
                     "kind": "entity",
                     "value": "cartoon tadpole",
-                    "importance_score": SCORE_DERIVED_REUSE_THRESHOLDS["hard_constraint_score"],
+                    "importance_score": 0.9,
                     "exactness_score": 0.5,
                     "aliases": ["tadpole larva"],
                 }
@@ -102,14 +357,15 @@ def test_reuse_policy_derives_medium_when_visual_constraints_need_filter():
     assert policy["reuse_level"] == "medium"
     assert policy["asset_category"] == "character_action"
     assert policy["generic_support_allowed"] is False
-    assert policy["core_constraints"] == [
-        {"kind": "entity", "value": "cartoon tadpole", "exact": False, "aliases": ["tadpole larva"], "hard": True}
-    ]
+    assert policy["constraints"][0]["kind"] == "entity"
+    assert policy["constraints"][0]["importance"] == 1
+    assert "filter_threshold" not in policy["constraints"][0]
 
 
-def test_dimension_scores_drive_strict_without_legacy_strict_score():
+def test_old_dimension_scores_do_not_drive_strict_policy():
     asset = {
         "asset_kind": "page_image",
+        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2}],
         "reuse_scores": {
             "dimension_scores": {
                 "readable_text_score": 0.92,
@@ -128,18 +384,20 @@ def test_dimension_scores_drive_strict_without_legacy_strict_score():
         },
     }
 
-    scores = normalize_reuse_score_fields(asset["reuse_scores"])
     policy = normalize_reuse_policy_fields(asset)
 
-    assert scores["factual_risk_score"] == 0.92
-    assert scores["reuse_specificity_score"] == 0.92
     assert policy["reuse_level"] == "strict"
-    assert policy["core_constraints"] == [{"kind": "text", "value": "character: bi", "exact": True, "hard": True}]
+    assert policy["constraints"][0]["kind"] == "text"
+    assert policy["constraints"][0]["importance"] == 2
 
 
-def test_dimension_scores_drive_medium_visual_guard_without_strict_score():
+def test_old_dimension_scores_do_not_create_or_override_constraints():
     asset = {
         "asset_kind": "page_image",
+        "constraints": [
+            {"kind": "entity", "value": "mother", "importance": 1},
+            {"kind": "action", "value": "persuade", "importance": 1},
+        ],
         "reuse_scores": {
             "dimension_scores": {
                 "subject_importance_score": 0.85,
@@ -154,19 +412,20 @@ def test_dimension_scores_drive_medium_visual_guard_without_strict_score():
         },
     }
 
-    scores = normalize_reuse_score_fields(asset["reuse_scores"])
     policy = normalize_reuse_policy_fields(asset)
 
-    assert scores["visual_guard_score"] >= SCORE_DERIVED_REUSE_THRESHOLDS["visual_guard_score"]
-    assert scores["reuse_specificity_score"] == scores["visual_guard_score"]
-    assert scores["factual_risk_score"] == 0.0
     assert policy["reuse_level"] == "medium"
-    assert {item["kind"] for item in policy["core_constraints"]} == {"entity", "action"}
+    assert {item["kind"] for item in policy["constraints"]} == {"entity", "action"}
 
 
 def test_high_visual_specificity_without_factual_risk_stays_medium():
     asset = {
         "asset_kind": "page_image",
+        "constraints": [
+            {"kind": "entity", "value": "boy", "importance": 1},
+            {"kind": "action", "value": "throws things", "importance": 1},
+            {"kind": "emotion", "value": "angry", "importance": 1},
+        ],
         "reuse_scores": {
             "dimension_scores": {
                 "subject_importance_score": 1.0,
@@ -183,16 +442,13 @@ def test_high_visual_specificity_without_factual_risk_stays_medium():
         },
     }
 
-    scores = normalize_reuse_score_fields(asset["reuse_scores"])
     policy = normalize_reuse_policy_fields(asset)
 
-    assert scores["reuse_specificity_score"] >= SCORE_DERIVED_REUSE_THRESHOLDS["strict_specificity_score"]
-    assert scores["factual_risk_score"] == 0.0
     assert policy["reuse_level"] == "medium"
-    assert {item["kind"] for item in policy["core_constraints"]} == {"entity", "action", "emotion"}
+    assert {item["kind"] for item in policy["constraints"]} == {"entity", "action", "emotion"}
 
 
-def test_dimension_scores_keep_pure_emotion_expression_loose():
+def test_score_only_emotion_expression_stays_loose_without_explicit_constraints():
     asset = {
         "asset_kind": "page_image",
         "reuse_scores": {
@@ -210,7 +466,7 @@ def test_dimension_scores_keep_pure_emotion_expression_loose():
     policy = normalize_reuse_policy_fields(asset)
 
     assert policy["reuse_level"] == "loose"
-    assert policy["core_constraints"] == []
+    assert policy["constraints"] == []
 
 
 def test_strict_high_embedding_candidate_enters_review_even_when_keyword_score_is_zero():
@@ -218,14 +474,14 @@ def test_strict_high_embedding_candidate_enters_review_even_when_keyword_score_i
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
     }
     candidate = {
         "asset": {
             "asset_kind": "page_image",
             "reuse_level": "strict",
             "asset_category": "content_specific",
-            "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+            "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
         },
         "keyword_score": 0.0,
         "embedding_score": STRICT_EMBEDDING_REVIEW_THRESHOLD,
@@ -240,14 +496,14 @@ def test_medium_high_embedding_candidate_enters_review_even_when_keyword_score_i
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [],
+        "constraints": [],
     }
     candidate = {
         "asset": {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
         },
         "keyword_score": 0.0,
         "embedding_score": MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
@@ -262,14 +518,14 @@ def test_keyword_high_but_embedding_not_high_enters_review():
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [],
+        "constraints": [],
     }
     candidate = {
         "asset": {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
         },
         "keyword_score": 0.62,
         "embedding_score": 0.71,
@@ -284,14 +540,14 @@ def test_keyword_and_embedding_both_high_uses_keyword_high_review_below_original
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [{"kind": "subject", "value": "小蝌蚪", "importance": "high"}],
+        "constraints": [{"kind": "entity", "value": "小蝌蚪", "importance": 1, "match_mode": "synonym"}],
     }
     candidate = {
         "asset": {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [{"kind": "subject", "value": "小蝌蚪", "importance": "high"}],
+            "constraints": [{"kind": "entity", "value": "小蝌蚪", "importance": 1, "match_mode": "synonym"}],
         },
         "keyword_score": 0.62,
         "embedding_score": 0.91,
@@ -319,14 +575,14 @@ def test_original_threshold_pass_bypasses_score_gate_review():
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [{"kind": "subject", "value": "小蝌蚪", "importance": "high"}],
+        "constraints": [{"kind": "entity", "value": "小蝌蚪", "importance": 1, "match_mode": "synonym"}],
     }
     candidate = {
         "asset": {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [{"kind": "subject", "value": "小蝌蚪", "importance": "high"}],
+            "constraints": [{"kind": "entity", "value": "小蝌蚪", "importance": 1, "match_mode": "synonym"}],
         },
         "keyword_score": 0.92,
         "embedding_score": 0.91,
@@ -341,14 +597,14 @@ def test_keyword_threshold_pass_with_low_embedding_does_not_auto_accept():
         "asset_kind": "page_image",
         "reuse_level": "loose",
         "asset_category": "learning_behavior",
-        "core_constraints": [],
+        "constraints": [],
     }
     candidate = {
         "asset": {
             "asset_kind": "page_image",
             "reuse_level": "loose",
             "asset_category": "learning_behavior",
-            "core_constraints": [],
+            "constraints": [],
         },
         "keyword_score": 0.45,
         "embedding_score": 0.20,
@@ -363,14 +619,14 @@ def test_keyword_threshold_pass_with_low_embedding_can_enter_keyword_high_rescue
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [],
+        "constraints": [],
     }
     candidate = {
         "asset": {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
         },
         "keyword_score": 0.62,
         "embedding_score": 0.20,
@@ -385,14 +641,14 @@ def test_gray_score_candidate_enters_review_only_after_dual_threshold_reject():
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [],
+        "constraints": [],
     }
     candidate = {
         "asset": {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
         },
         "keyword_score": 0.32,
         "embedding_score": 0.61,
@@ -407,14 +663,14 @@ def test_transform_reject_blocks_reuse_acceptance_reason():
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [],
+        "constraints": [],
     }
     candidate = {
         "asset": {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
         },
         "keyword_score": 0.95,
         "embedding_score": 0.95,
@@ -431,13 +687,13 @@ def test_reuse_filter_hard_rejects_transform_reject():
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
         },
         {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
         },
         {
             "keyword_score": 0.95,
@@ -457,13 +713,13 @@ def test_score_gate_review_reason_forces_llm_review():
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
         },
         {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
         },
         {
             "keyword_score": 0.62,
@@ -483,10 +739,10 @@ def test_normalize_reuse_policy_fields_forces_strict_for_high_risk_constraints()
             "asset_kind": "page_image",
             "reuse_level": "loose",
             "asset_category": "content_specific",
-            "core_constraints": [
-                {"kind": "text", "value": "character: bi", "exact": True},
-                {"kind": "invalid", "value": "ignored", "exact": True},
-                {"kind": "math", "value": "", "exact": True},
+            "constraints": [
+                {"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"},
+                {"kind": "invalid", "value": "ignored", "importance": 2, "match_mode": "exact"},
+                {"kind": "math", "value": "", "importance": 2, "match_mode": "exact"},
             ],
             "generic_support_allowed": True,
         }
@@ -495,7 +751,8 @@ def test_normalize_reuse_policy_fields_forces_strict_for_high_risk_constraints()
     assert policy["reuse_level"] == "strict"
     assert policy["asset_category"] == "content_specific"
     assert policy["generic_support_allowed"] is False
-    assert policy["core_constraints"] == [{"kind": "text", "value": "character: bi", "exact": True}]
+    assert policy["constraints"][0]["kind"] == "text"
+    assert policy["constraints"][0]["importance"] == 2
 
 
 def test_reuse_policy_rejects_strict_text_conflict():
@@ -503,13 +760,13 @@ def test_reuse_policy_rejects_strict_text_conflict():
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [{"kind": "text", "value": "character: bei", "exact": True}],
+        "constraints": [{"kind": "text", "value": "character: bei", "importance": 2, "match_mode": "exact"}],
     }
 
     result = evaluate_reuse_filter(
@@ -525,7 +782,7 @@ def test_reuse_policy_rejects_strict_text_conflict():
     )
 
     assert result["decision"] == "reject"
-    assert result["reason"] == "strict_core_constraints_conflict"
+    assert result["reason"] == "strict_constraints_conflict"
     assert result["conflicts"][0]["kind"] == "text"
 
 
@@ -534,20 +791,20 @@ def test_reuse_policy_rejects_generic_tool_for_strict_content_target():
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [{"kind": "math", "value": "AB=AC", "exact": True}],
+        "constraints": [{"kind": "math", "value": "AB=AC", "importance": 2, "match_mode": "exact"}],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "generic_tool",
-        "core_constraints": [],
+        "constraints": [],
         "generic_support_allowed": True,
     }
 
     result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.75}, threshold=0.6)
 
     assert result["decision"] == "llm_review"
-    assert result["reason"] == "strict_core_constraints_require_llm_review"
+    assert result["reason"] == "strict_constraints_require_llm_review"
     assert result["review_items"][0]["kind"] == "math"
     assert result["review_items"][0]["reason"] == "missing_same_kind"
 
@@ -558,9 +815,9 @@ def test_normalize_reuse_policy_downgrades_visual_constraints_to_medium():
             "asset_kind": "page_image",
             "reuse_level": "strict",
             "asset_category": "content_specific",
-            "core_constraints": [
-                {"kind": "entity", "value": "visible subject", "exact": True},
-                {"kind": "action", "value": "visible action", "exact": True},
+            "constraints": [
+                {"kind": "entity", "value": "visible subject", "importance": 1, "match_mode": "exact"},
+                {"kind": "action", "value": "visible action", "importance": 1, "match_mode": "exact"},
             ],
             "generic_support_allowed": False,
         }
@@ -572,8 +829,8 @@ def test_normalize_reuse_policy_downgrades_visual_constraints_to_medium():
 
 def test_normalize_reuse_policy_keeps_medium_categories_threshold_based_without_high_risk_constraints():
     expected_constraints = [
-        {"kind": "entity", "value": "visible subject", "exact": False, "hard": True},
-        {"kind": "action", "value": "visible action", "exact": False, "hard": True},
+        {"kind": "entity", "value": "visible subject", "importance": 1, "match_mode": "semantic"},
+        {"kind": "action", "value": "visible action", "importance": 1, "match_mode": "semantic"},
     ]
     policy = normalize_reuse_policy_fields(
         {
@@ -585,14 +842,15 @@ def test_normalize_reuse_policy_keeps_medium_categories_threshold_based_without_
                 "unique_referent": {"required": False, "evidence": []},
                 "exact_relation": {"required": False, "evidence": []},
             },
-            "core_constraints": expected_constraints,
+                "constraints": expected_constraints,
             "generic_support_allowed": False,
         }
     )
 
     assert policy["reuse_level"] == "medium"
     assert policy["generic_support_allowed"] is False
-    assert policy["core_constraints"] == expected_constraints
+    assert {item["kind"] for item in policy["constraints"]} == {"entity", "action"}
+    assert all(item["importance"] == 1 for item in policy["constraints"])
 
 
 def test_normalize_reuse_policy_preserves_high_risk_constraints_in_medium_categories():
@@ -600,15 +858,16 @@ def test_normalize_reuse_policy_preserves_high_risk_constraints_in_medium_catego
         {
             "asset_kind": "page_image",
             "reuse_level": "medium",
-            "asset_category": "generic_tool",
-            "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+            "asset_category": "concept_scene",
+            "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
             "generic_support_allowed": True,
         }
     )
 
     assert policy["reuse_level"] == "strict"
     assert policy["generic_support_allowed"] is False
-    assert policy["core_constraints"] == [{"kind": "text", "value": "character: bi", "exact": True}]
+    assert policy["constraints"][0]["kind"] == "text"
+    assert policy["constraints"][0]["importance"] == 2
 
 
 def test_normalize_reuse_policy_preserves_constraints_for_medium_assets():
@@ -617,48 +876,49 @@ def test_normalize_reuse_policy_preserves_constraints_for_medium_assets():
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "content_specific",
-            "core_constraints": [{"kind": "entity", "value": "ordinary subject", "exact": False}],
+            "constraints": [{"kind": "entity", "value": "ordinary subject", "importance": 1, "match_mode": "semantic"}],
         }
     )
 
     assert policy["reuse_level"] == "medium"
-    assert policy["core_constraints"] == [{"kind": "entity", "value": "ordinary subject", "exact": False}]
+    assert policy["constraints"][0]["kind"] == "entity"
+    assert policy["constraints"][0]["importance"] == 1
 
 
-def test_normalize_reuse_policy_infers_medium_for_specific_story_event():
+def test_normalize_reuse_policy_does_not_infer_constraints_from_story_context():
     policy = normalize_reuse_policy_fields(
         {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "content_specific",
-            "content_prompt": "小蝌蚪和鲤鱼妈妈对话",
-            "context_summary": "呈现课文中间情节，辅助学生梳理故事脉络",
-            "teaching_intent": "帮助学生理解故事情节节点",
-            "core_constraints": [],
+            "content_prompt": "story scene prompt",
+            "context_summary": "specific story context",
+            "teaching_intent": "understand story event",
+            "constraints": [],
         }
     )
 
-    assert policy["reuse_level"] == "medium"
-    assert policy["generic_support_allowed"] is False
-    assert policy["core_constraints"][0]["kind"] == "relation"
-    assert "鲤鱼妈妈" in policy["core_constraints"][0]["value"]
+    assert policy["reuse_level"] == "loose"
+    assert policy["generic_support_allowed"] is True
+    assert policy["constraints"] == []
 
 
-def test_normalize_reuse_policy_infers_medium_for_anchored_character_state():
+def test_normalize_reuse_policy_does_not_infer_constraints_from_character_state():
     policy = normalize_reuse_policy_fields(
         {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "character_action",
-            "content_prompt": "青年生气摔东西的场景，情绪激动",
-            "context_summary": "作为课文情节时间线的插图，展现主人公暴怒状态",
-            "teaching_intent": "帮助学生理解人物情绪转变",
-            "core_constraints": [],
+            "content_prompt": "angry character scene",
+            "context_summary": "anchored character state",
+            "teaching_intent": "understand emotion shift",
+            "constraints": [],
         }
     )
 
-    assert policy["reuse_level"] == "medium"
-    assert {item["kind"] for item in policy["core_constraints"]} == {"relation", "emotion"}
+    assert policy["reuse_level"] == "loose"
+    assert policy["generic_support_allowed"] is True
+    assert policy["constraints"] == []
 
 
 def test_normalize_reuse_policy_makes_unconstrained_decorative_character_action_loose():
@@ -670,12 +930,12 @@ def test_normalize_reuse_policy_makes_unconstrained_decorative_character_action_
             "content_prompt": "卡通小蝌蚪举着小旗子引导学习路线",
             "context_summary": "用于目录页的装饰插图，引导学生了解学习环节顺序",
             "teaching_intent": "降低目录页的枯燥感",
-            "core_constraints": [],
+            "constraints": [],
         }
     )
 
     assert policy["reuse_level"] == "loose"
-    assert policy["core_constraints"] == []
+    assert policy["constraints"] == []
 
 
 def test_normalize_reuse_policy_keeps_hard_visual_subject_in_medium_character_action():
@@ -685,16 +945,15 @@ def test_normalize_reuse_policy_keeps_hard_visual_subject_in_medium_character_ac
             "reuse_level": "medium",
             "asset_category": "character_action",
             "content_prompt": "卡通小蝌蚪举着小旗子带路的插图",
-            "core_constraints": [
-                {"kind": "entity", "value": "小蝌蚪", "exact": False, "hard": True, "aliases": ["蝌蚪幼体"]}
+            "constraints": [
+                {"kind": "entity", "value": "小蝌蚪", "importance": 1, "match_mode": "synonym", "aliases": ["蝌蚪幼体"]}
             ],
         }
     )
 
     assert policy["reuse_level"] == "medium"
-    assert policy["core_constraints"] == [
-        {"kind": "entity", "value": "小蝌蚪", "exact": False, "aliases": ["蝌蚪幼体"], "hard": True}
-    ]
+    assert policy["constraints"][0]["kind"] == "entity"
+    assert policy["constraints"][0]["importance"] == 1
 
 
 def test_normalize_reuse_policy_keeps_unique_visual_referent_medium():
@@ -708,7 +967,7 @@ def test_normalize_reuse_policy_keeps_unique_visual_referent_medium():
                 "unique_referent": {"required": True, "evidence": ["specific identity required"]},
                 "exact_relation": {"required": False, "evidence": []},
             },
-            "core_constraints": [{"kind": "entity", "value": "specific identity", "exact": True, "hard": True}],
+            "constraints": [{"kind": "entity", "value": "specific identity", "importance": 1, "match_mode": "exact"}],
         }
     )
 
@@ -716,7 +975,7 @@ def test_normalize_reuse_policy_keeps_unique_visual_referent_medium():
     assert policy["generic_support_allowed"] is False
 
 
-def test_literary_family_closing_scene_is_medium_not_strict():
+def test_literary_family_closing_scene_score_fields_do_not_drive_policy():
     policy = normalize_reuse_policy_fields(
         {
             "asset_kind": "page_image",
@@ -728,16 +987,18 @@ def test_literary_family_closing_scene_is_medium_not_strict():
                 "exact_relation_score": 0.55,
                 "category_scores": {"content_specific": 0.7, "character_action": 0.6},
                 "constraint_scores": [
-                    {"kind": "entity", "value": "母亲", "importance_score": 0.8, "exactness_score": 0.6},
-                    {"kind": "entity", "value": "孩子", "importance_score": 0.8, "exactness_score": 0.6},
-                    {"kind": "emotion", "value": "温暖", "importance_score": 0.75, "exactness_score": 0.4},
+                    {"kind": "entity", "value": "mother", "importance_score": 0.8, "exactness_score": 0.6},
+                    {"kind": "entity", "value": "child", "importance_score": 0.8, "exactness_score": 0.6},
+                    {"kind": "emotion", "value": "warm", "importance_score": 0.75, "exactness_score": 0.4},
                 ],
             },
         }
     )
 
-    assert policy["reuse_level"] == "medium"
-    assert {item["kind"] for item in policy["core_constraints"]} == {"entity", "emotion"}
+    assert policy["reuse_level"] == "loose"
+    assert policy["asset_category"] == "content_specific"
+    assert policy["generic_support_allowed"] is True
+    assert policy["constraints"] == []
 
 
 def test_generic_emotion_expression_is_loose_not_strict():
@@ -757,12 +1018,12 @@ def test_generic_emotion_expression_is_loose_not_strict():
                     {"kind": "emotion", "value": "喜出望外", "importance_score": 0.9, "exactness_score": 0.6}
                 ],
             },
-            "core_constraints": [{"kind": "emotion", "value": "喜出望外", "exact": False, "hard": True}],
+            "constraints": [{"kind": "emotion", "value": "喜出望外", "importance": 0, "match_mode": "semantic"}],
         }
     )
 
     assert policy["reuse_level"] == "loose"
-    assert policy["core_constraints"] == []
+    assert {item["kind"] for item in policy["constraints"]} == {"emotion"}
 
 
 def test_literary_action_scene_with_overstated_risk_is_medium():
@@ -776,17 +1037,17 @@ def test_literary_action_scene_with_overstated_risk_is_medium():
                 "exact_relation": {"required": True},
                 "readable_knowledge": {"required": False},
             },
-            "core_constraints": [
-                {"kind": "entity", "value": "男孩", "exact": False, "hard": True},
-                {"kind": "action", "value": "摔东西", "exact": False, "hard": True},
-                {"kind": "action", "value": "拒绝出门", "exact": True, "hard": True},
-                {"kind": "emotion", "value": "暴怒", "exact": False, "hard": True},
+            "constraints": [
+                {"kind": "entity", "value": "男孩", "importance": 1, "match_mode": "semantic"},
+                {"kind": "action", "value": "摔东西", "importance": 1, "match_mode": "semantic"},
+                {"kind": "action", "value": "拒绝出门", "importance": 1, "match_mode": "exact"},
+                {"kind": "emotion", "value": "暴怒", "importance": 1, "match_mode": "semantic"},
             ],
         }
     )
 
     assert policy["reuse_level"] == "medium"
-    assert all(item["kind"] != "relation" for item in policy["core_constraints"])
+    assert {item["kind"] for item in policy["constraints"]} == {"entity", "action", "emotion"}
 
 
 def test_medium_semantic_reuse_accepts_embedding_signal_and_missing_soft_constraints():
@@ -794,16 +1055,16 @@ def test_medium_semantic_reuse_accepts_embedding_signal_and_missing_soft_constra
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [
-            {"kind": "entity", "value": "visible subject", "exact": True},
-            {"kind": "action", "value": "visible action", "exact": True},
+        "constraints": [
+            {"kind": "entity", "value": "visible subject", "importance": 0, "match_mode": "exact"},
+            {"kind": "action", "value": "visible action", "importance": 0, "match_mode": "exact"},
         ],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [],
+        "constraints": [],
     }
 
     result = evaluate_reuse_filter(
@@ -823,22 +1084,27 @@ def test_medium_hard_core_subject_conflict_rejects_even_when_scores_pass():
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "character_action",
-            "core_constraints": [
-                {"kind": "entity", "value": "小蝌蚪", "exact": False, "hard": True, "aliases": ["蝌蚪幼体"]}
-            ],
+            "constraints": [{"kind": "entity", "value": "小蝌蚪", "importance": 2}],
         },
         {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "character_action",
-            "core_constraints": [{"kind": "entity", "value": "小松鼠", "exact": False, "hard": True}],
+            "constraints": [{"kind": "entity", "value": "小松鼠", "importance": 2, "match_mode": "synonym"}],
         },
-        {"keyword_score": 0.92, "embedding_score": 0.91, "accepted_by": "bm25_threshold"},
+        {
+            "keyword_score": 0.92,
+            "embedding_score": 0.91,
+            "accepted_by": "bm25_threshold",
+            "constraint_embedding_scores": [
+                {"kind": "entity", "target": "小蝌蚪", "candidate": "小松鼠", "score": 0.2}
+            ],
+        },
         threshold=0.40,
     )
 
     assert result["decision"] == "reject"
-    assert result["reason"] == "medium_core_constraints_conflict"
+    assert result["reason"] == "medium_constraints_conflict"
 
 
 def test_medium_hard_core_subject_missing_requires_llm_review():
@@ -847,22 +1113,22 @@ def test_medium_hard_core_subject_missing_requires_llm_review():
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "character_action",
-            "core_constraints": [
-                {"kind": "entity", "value": "小蝌蚪", "exact": False, "hard": True, "aliases": ["蝌蚪幼体"]}
+            "constraints": [
+                {"kind": "entity", "value": "小蝌蚪", "importance": 2, "match_mode": "synonym", "aliases": ["蝌蚪幼体"]}
             ],
         },
         {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "character_action",
-            "core_constraints": [],
+            "constraints": [],
         },
         {"keyword_score": 0.92, "embedding_score": 0.91, "accepted_by": "bm25_threshold"},
         threshold=0.40,
     )
 
     assert result["decision"] == "llm_review"
-    assert result["reason"] == "medium_core_constraints_require_llm_review"
+    assert result["reason"] == "medium_constraints_require_llm_review"
 
 
 def test_medium_hard_core_subject_match_allows_threshold_accept():
@@ -871,15 +1137,15 @@ def test_medium_hard_core_subject_match_allows_threshold_accept():
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "character_action",
-            "core_constraints": [
-                {"kind": "entity", "value": "小蝌蚪", "exact": False, "hard": True, "aliases": ["蝌蚪幼体"]}
+            "constraints": [
+                {"kind": "entity", "value": "小蝌蚪", "importance": 2, "match_mode": "synonym", "aliases": ["蝌蚪幼体"]}
             ],
         },
         {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "character_action",
-            "core_constraints": [{"kind": "entity", "value": "蝌蚪幼体", "exact": False, "hard": True}],
+            "constraints": [{"kind": "entity", "value": "小蝌蚪", "importance": 2}],
         },
         {"keyword_score": 0.92, "embedding_score": 0.91, "accepted_by": "bm25_threshold"},
         threshold=0.40,
@@ -893,13 +1159,13 @@ def test_medium_filter_requires_llm_when_embedding_high_but_keyword_score_is_zer
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [],
+        "constraints": [],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [],
+        "constraints": [],
     }
 
     result = evaluate_reuse_filter(
@@ -923,13 +1189,13 @@ def test_character_action_and_concept_scene_are_semantically_compatible():
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "character_action",
-        "core_constraints": [{"kind": "action", "value": "visible action", "exact": True}],
+        "constraints": [{"kind": "action", "value": "visible action", "importance": 1, "match_mode": "exact"}],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [{"kind": "action", "value": "visible action", "exact": True}],
+        "constraints": [{"kind": "action", "value": "visible action", "importance": 1, "match_mode": "exact"}],
     }
 
     result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.55, "embedding_score": 0.7}, threshold=0.5)
@@ -937,13 +1203,16 @@ def test_character_action_and_concept_scene_are_semantically_compatible():
     assert result["decision"] == "full_match"
 
 
-def test_reuse_threshold_uses_category_and_level():
+def test_reuse_threshold_uses_derived_level_with_category_forced_loose():
+    """Decorative categories (learning_behavior/generic_tool/generic_diagram) force loose
+    threshold; other categories derive from constraints."""
+
     learning = reuse_threshold_for_target(
         {
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "learning_behavior",
-            "core_constraints": [],
+            "constraints": [],
         }
     )
     generic_tool = reuse_threshold_for_target(
@@ -951,7 +1220,7 @@ def test_reuse_threshold_uses_category_and_level():
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "generic_tool",
-            "core_constraints": [],
+            "constraints": [],
         }
     )
     concept_scene = reuse_threshold_for_target(
@@ -959,7 +1228,7 @@ def test_reuse_threshold_uses_category_and_level():
             "asset_kind": "page_image",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
         }
     )
     loose_concept_scene = reuse_threshold_for_target(
@@ -967,7 +1236,21 @@ def test_reuse_threshold_uses_category_and_level():
             "asset_kind": "page_image",
             "reuse_level": "loose",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
+        }
+    )
+    learning_behavior_with_weak_constraint = reuse_threshold_for_target(
+        {
+            "asset_kind": "page_image",
+            "asset_category": "learning_behavior",
+            "constraints": [{"kind": "action", "value": "read", "importance": 1}],
+        }
+    )
+    medium = reuse_threshold_for_target(
+        {
+            "asset_kind": "page_image",
+            "asset_category": "concept_scene",
+            "constraints": [{"kind": "action", "value": "read", "importance": 1}],
         }
     )
     strict = reuse_threshold_for_target(
@@ -975,13 +1258,15 @@ def test_reuse_threshold_uses_category_and_level():
             "asset_kind": "page_image",
             "reuse_level": "strict",
             "asset_category": "content_specific",
-            "core_constraints": [{"kind": "math", "value": "x+2=5", "exact": True}],
+            "constraints": [{"kind": "math", "value": "x+2=5", "importance": 2, "match_mode": "exact"}],
         }
     )
 
-    assert learning == generic_tool == concept_scene == 0.40
-    assert loose_concept_scene == concept_scene
-    assert strict == 0.66
+    assert learning == generic_tool == concept_scene == loose_concept_scene == 0.5
+    # learning_behavior forces loose even when constraints exist
+    assert learning_behavior_with_weak_constraint == 0.5
+    assert medium == 0.55
+    assert strict == 0.63
 
 
 def test_unconstrained_specific_metadata_falls_back_to_similarity_threshold():
@@ -990,14 +1275,14 @@ def test_unconstrained_specific_metadata_falls_back_to_similarity_threshold():
         "reuse_level": "strict",
         "asset_category": "content_specific",
         "reuse_risk": {"unique_referent": {"required": True, "evidence": ["specific content required"]}},
-        "core_constraints": [],
+        "constraints": [],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
         "reuse_risk": {"unique_referent": {"required": True, "evidence": ["specific content required"]}},
-        "core_constraints": [],
+        "constraints": [],
     }
 
     accepted = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.7, "embedding_score": 0.7}, threshold=0.6)
@@ -1014,13 +1299,13 @@ def test_strict_filter_requires_llm_when_embedding_high_but_keyword_score_below_
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True, "hard": True}],
+        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True, "hard": True}],
+        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
     }
 
     result = evaluate_reuse_filter(
@@ -1038,18 +1323,18 @@ def test_strict_filter_requires_llm_when_embedding_high_but_keyword_score_below_
     assert result["reason"] == "strict_embedding_high_keyword_below_threshold"
 
 
-def test_medium_score_match_requires_llm_when_embedding_below_auto_accept_floor():
+def test_medium_category_no_longer_adds_embedding_floor_review():
     target = {
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "generic_diagram",
-        "core_constraints": [],
+        "constraints": [],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "generic_diagram",
-        "core_constraints": [],
+        "constraints": [],
     }
 
     result = evaluate_reuse_filter(
@@ -1059,25 +1344,24 @@ def test_medium_score_match_requires_llm_when_embedding_below_auto_accept_floor(
         threshold=0.48,
     )
 
-    assert result["decision"] == "llm_review"
-    assert result["reason"] == "embedding_below_auto_accept_floor"
-    assert result["review_items"][0]["threshold"] == 0.6
+    assert result["decision"] == "full_match"
+    assert result["reason"] == "medium_similarity_threshold_match"
 
 
-def test_strict_score_match_requires_llm_when_embedding_below_auto_accept_floor():
+def test_old_strict_metadata_without_constraints_does_not_add_embedding_floor_review():
     target = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
         "reuse_risk": {"unique_referent": {"required": True, "evidence": ["specific content required"]}},
-        "core_constraints": [],
+        "constraints": [],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
         "reuse_risk": {"unique_referent": {"required": True, "evidence": ["specific content required"]}},
-        "core_constraints": [],
+        "constraints": [],
     }
 
     result = evaluate_reuse_filter(
@@ -1087,32 +1371,34 @@ def test_strict_score_match_requires_llm_when_embedding_below_auto_accept_floor(
         threshold=0.66,
     )
 
-    assert result["decision"] == "llm_review"
-    assert result["reason"] == "embedding_below_auto_accept_floor"
-    assert result["review_items"][0]["threshold"] == 0.58
+    assert result["decision"] == "full_match"
+    assert result["reason"] == "medium_similarity_threshold_match"
 
 
-def test_strict_candidate_requires_target_to_cover_candidate_constraints():
+def test_strict_candidate_against_medium_target_uses_target_strictness():
+    """Under target-only strictness, a strict candidate matched against a medium
+    target follows the medium path. The candidate's stricter labels are
+    informational metadata, not a gate on this match."""
+
     target = {
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "concept_scene",
-        "core_constraints": [],
+        "constraints": [],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [
-            {"kind": "text", "value": "character: bi", "exact": True, "hard": True},
+        "constraints": [
+            {"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"},
         ],
     }
 
     result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.9, "embedding_score": 0.7}, threshold=0.5)
 
-    assert result["decision"] == "llm_review"
-    assert result["reason"] == "strict_core_constraints_require_llm_review"
-    assert {item["kind"] for item in result["review_items"]} == {"text"}
+    assert result["decision"] == "full_match"
+    assert result["reason"] == "medium_similarity_threshold_match"
 
 
 def test_strict_candidate_accepts_when_target_covers_structured_constraints():
@@ -1120,37 +1406,37 @@ def test_strict_candidate_accepts_when_target_covers_structured_constraints():
         "asset_kind": "page_image",
         "reuse_level": "medium",
         "asset_category": "character_action",
-        "core_constraints": [
-            {"kind": "text", "value": "character: bi", "exact": True, "hard": True},
+        "constraints": [
+            {"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"},
         ],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [
-            {"kind": "text", "value": "character: bi", "exact": True, "hard": True},
+        "constraints": [
+            {"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"},
         ],
     }
 
     result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.9, "embedding_score": 0.7}, threshold=0.5)
 
     assert result["decision"] == "llm_review"
-    assert result["reason"] == "strict_core_constraints_require_llm_review"
+    assert result["reason"] == "strict_constraints_require_llm_review"
 
 
-def test_strict_visual_constraint_accepts_alias_match():
+def test_visual_constraint_accepts_exact_match():
     target = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [{"kind": "action", "value": "read aloud", "exact": False, "hard": True, "aliases": ["朗读"]}],
+        "constraints": [{"kind": "action", "value": "read aloud", "importance": 2}],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [{"kind": "action", "value": "朗读", "exact": False, "hard": True}],
+        "constraints": [{"kind": "action", "value": "read aloud", "importance": 2}],
     }
 
     result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.9, "embedding_score": 0.7}, threshold=0.6)
@@ -1164,13 +1450,13 @@ def test_strict_visual_constraint_accepts_high_embedding_match():
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [{"kind": "action", "value": "read aloud", "exact": False, "hard": True}],
+        "constraints": [{"kind": "action", "value": "read aloud", "importance": 2, "match_mode": "semantic"}],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [{"kind": "action", "value": "oral reading", "exact": False, "hard": True}],
+        "constraints": [{"kind": "action", "value": "oral reading", "importance": 2, "match_mode": "semantic"}],
     }
 
     result = evaluate_reuse_filter(
@@ -1189,18 +1475,18 @@ def test_strict_visual_constraint_accepts_high_embedding_match():
     assert result["decision"] == "full_match"
 
 
-def test_strict_relation_constraint_requires_llm_after_high_embedding_match():
+def test_scene_constraint_embedding_match():
     target = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [{"kind": "relation", "value": "subject acts on object", "exact": False, "hard": True}],
+        "constraints": [{"kind": "scene", "value": "subject acts on object", "importance": 2, "match_mode": "semantic"}],
     }
     candidate = {
         "asset_kind": "page_image",
         "reuse_level": "strict",
         "asset_category": "content_specific",
-        "core_constraints": [{"kind": "relation", "value": "actor performs action on object", "exact": False, "hard": True}],
+        "constraints": [{"kind": "scene", "value": "actor performs action on object", "importance": 2, "match_mode": "semantic"}],
     }
 
     result = evaluate_reuse_filter(
@@ -1211,7 +1497,7 @@ def test_strict_relation_constraint_requires_llm_after_high_embedding_match():
             "embedding_score": 0.9,
             "constraint_embedding_scores": [
                 {
-                    "kind": "relation",
+                    "kind": "scene",
                     "target": "subject acts on object",
                     "candidate": "actor performs action on object",
                     "score": 0.94,
@@ -1221,8 +1507,7 @@ def test_strict_relation_constraint_requires_llm_after_high_embedding_match():
         threshold=0.6,
     )
 
-    assert result["decision"] == "llm_review"
-    assert result["review_items"][0]["reason"] == "embedding_high"
+    assert result["decision"] == "full_match"
 
 
 def test_aspect_transform_rejects_strict_content_large_mismatch():
@@ -1232,14 +1517,14 @@ def test_aspect_transform_rejects_strict_content_large_mismatch():
             "aspect_ratio": "16:9",
             "reuse_level": "strict",
             "asset_category": "content_specific",
-            "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+            "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
         },
         {
             "asset_kind": "page_image",
             "aspect_ratio": "3:4",
             "reuse_level": "strict",
             "asset_category": "content_specific",
-            "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+            "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
         },
     )
 
@@ -1255,14 +1540,14 @@ def test_aspect_transform_rejects_square_to_wide_hero():
             "aspect_ratio": "16:9",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
         },
         {
             "asset_kind": "page_image",
             "aspect_ratio": "1:1",
             "reuse_level": "medium",
             "asset_category": "concept_scene",
-            "core_constraints": [],
+            "constraints": [],
         },
     )
 
@@ -1277,14 +1562,14 @@ def test_aspect_transform_allows_strict_content_square_to_standard_padding():
             "aspect_ratio": "4:3",
             "reuse_level": "strict",
             "asset_category": "content_specific",
-            "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+            "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
         },
         {
             "asset_kind": "page_image",
             "aspect_ratio": "1:1",
             "reuse_level": "strict",
             "asset_category": "content_specific",
-            "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+            "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
         },
     )
 
@@ -1300,14 +1585,14 @@ def test_aspect_transform_allows_medium_content_shape_padding():
             "aspect_ratio": "4:3",
             "reuse_level": "medium",
             "asset_category": "content_specific",
-            "core_constraints": [{"kind": "entity", "value": "visible subject", "exact": True}],
+            "constraints": [{"kind": "entity", "value": "visible subject", "importance": 1, "match_mode": "exact"}],
         },
         {
             "asset_kind": "page_image",
             "aspect_ratio": "1:1",
             "reuse_level": "medium",
             "asset_category": "content_specific",
-            "core_constraints": [],
+            "constraints": [],
         },
     )
 
@@ -1323,20 +1608,20 @@ def test_aspect_transform_pads_generic_tool_medium_mismatch():
             "aspect_ratio": "4:3",
             "reuse_level": "medium",
             "asset_category": "generic_tool",
-            "core_constraints": [],
+            "constraints": [],
         },
         {
             "asset_kind": "page_image",
             "aspect_ratio": "1:1",
             "reuse_level": "medium",
             "asset_category": "generic_tool",
-            "core_constraints": [],
+            "constraints": [],
         },
     )
 
     assert result["decision"] == "penalize"
     assert result["mode"] == "contain_pad"
-    assert result["transform_penalty"] == 0.09
+    assert result["transform_penalty"] == 0.1
 
 
 def test_aspect_transform_allows_background_blur_pad():
@@ -1348,3 +1633,4 @@ def test_aspect_transform_allows_background_blur_pad():
     assert result["decision"] == "penalize"
     assert result["mode"] == "blur_pad"
     assert result["transform_penalty"] == 0.06
+

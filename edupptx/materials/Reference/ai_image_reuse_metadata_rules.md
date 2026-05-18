@@ -1,344 +1,438 @@
-# AI Image Reuse Metadata Score Rules
+# AI 图像复用元数据规则
 
-本规则用于生成素材复用元数据。LLM 负责输出稳定、可解释的连续分数、结构化视觉字段，以及少量必须参与复用过滤的 `core_constraints`。LLM 不直接输出 `reuse_level`、`asset_category`、`generic_support_allowed`、`reuse_risk`，也不直接判断素材是否应被 strict、medium、loose。
+只返回严格 JSON，顶层必须是 `assets` 数组。每个条目只能包含其 `asset_kind` 允许的字段。
 
-代码会根据固定阈值把分数和 `core_constraints` 确定性转换为内部字段。这样同一份 LLM 输出可以通过调整阈值重新分类，同时保留 LLM 对“哪些元素必须被 filter”的语义判断。
+## 页面图元数据
 
-page_image 的内部复用等级由 `core_constraints` 和风险分数决定：
-- 没有 `core_constraints` 且没有知识/关系/唯一指代强风险时，归为 `loose`，但仍沿用原 medium 阈值，不使用更低阈值。
-- 有主体、动作、对象、情绪、地点等视觉语义 `core_constraints`，但不是文字、数量、公式、固定关系等高风险约束时，归为 `medium`，并进入 deterministic filter。
-- 有可读文字、汉字/拼音、数量、公式、物理量、固定关系、知识点或强唯一指代风险时，归为 `strict`。
-
-不要因为素材来自某篇课文、用于 content 页、写了“课文情节”“主旨”“母爱”“人物形象”等教学用途，就自动提高到 strict。普通文学辅助插图通常是 medium：它可以保护主体、动作或情绪极性，但不要求完全同一张情节图。
-
-普通角色词不是唯一指代：`母亲`、`孩子`、`男孩`、`青年`、`人`、`学生`、`小朋友`通常不是 named entity。它们可以作为 medium 的 `core_constraints`，但不要把 `unique_referent_score` 或 `exact_relation_score` 打到 required，除非画面确实包含名人、专名地点、明确数量、可读文字或固定知识关系。
-
-纯情绪表情示意图通常是 loose：例如“人喜出望外的表情插画”应把“喜出望外”放入 `primary_emotions`，不要放入 `core_constraints`；它可复用于同极性、近似情绪的词语理解场景。只有当情绪与具体主体、动作、情节强绑定时，才用 medium 的 emotion constraint。
-
-## Required Output
-
-每个 asset 必须输出：
-
-- `asset_id`
-- `normalized_prompt`
-- `context_summary`
-- `teaching_intent`
-- `core_keywords`
-- `semantic_aliases`
-- `context_summary_keywords`
-- `primary_subjects`
-- `primary_actions`
-- `primary_emotions`
-- `teaching_objects`
-- `soft_modifiers`
-- `core_constraints`
-- `reuse_scores`
-
-如果 `asset_kind` 是 `background`，只输出：
-- `asset_id`
-- `normalized_prompt`
-- `context_summary`
-- `teaching_intent`
-- `core_keywords`
-- `semantic_aliases`
-- `context_summary_keywords`
-
-背景素材不参与 page_image 的 `loose / medium / strict` 复用等级判断，也不需要输出 `primary_subjects`、`primary_actions`、`primary_emotions`、`teaching_objects`、`soft_modifiers`、`core_constraints`、`reuse_scores`、`reuse_level`、`asset_category`、`generic_support_allowed` 或 `reuse_risk`。背景只用于 BM25、embedding、substring 与颜色倾向匹配。
-
-结构化字段示例：
+对于 `page_image`，只输出：
 
 ```json
 {
-  "primary_subjects": [
-    {"name": "母亲", "strictness": "hard", "aliases": ["妈妈", "母亲角色"]}
-  ],
-  "primary_actions": [
-    {"name": "摔东西", "strictness": "hard", "aliases": ["砸东西", "摔砸物品"]}
-  ],
-  "primary_emotions": [
-    {"name": "暴怒", "strictness": "medium", "polarity": "negative", "aliases": ["愤怒", "情绪失控", "生气"]}
-  ],
-  "teaching_objects": [
-    {"name": "田字格中的“比”字", "strictness": "hard", "aliases": ["比字田字格", "比字笔顺"]}
-  ],
-  "soft_modifiers": ["暖光", "彩色", "虚线"],
-  "core_constraints": [
-    {"kind": "text", "value": "“比”字", "exact": true, "hard": true, "aliases": ["比字"]}
-  ]
+  "asset_id": "",
+  "normalized_prompt": "",
+  "context_summary": "",
+  "teaching_intent": "",
+  "context_summary_keywords": [],
+  "asset_category": "unknown",
+  "constraints": [],
+  "core_keywords": [],
+  "semantic_aliases": {}
 }
 ```
 
-`reuse_scores` 当前必须使用 `dimension_scores`，不要输出 `strict_score` 或 `loose_score`。代码会根据 `dimension_scores` 聚合出 `factual_risk_score`、`visual_guard_score` 和 `reuse_specificity_score`，再按阈值范围确定 loose / medium / strict。
+`constraints` 和 `core_keywords` 都必须直接基于 `content_prompt` 中的可见内容提取。`normalized_prompt` 只是简洁视觉描述，不能作为约束或关键词的唯一来源。
+
+`constraints` 用于复用安全过滤，`core_keywords` 用于 BM25、embedding 和 substring 召回。
+
+允许的 `asset_category` 取值：
+
+`learning_behavior`, `generic_tool`, `generic_diagram`, `concept_scene`, `content_specific`, `character_action`, `emotion_scene`, `symbolic_material`, `unknown`。
+
+`asset_category` 取值会直接影响 reuse 复用级别：
+
+- `learning_behavior`、`generic_tool`、`generic_diagram` 这三类被视为通用装饰素材，**强制 loose**，不参与约束过滤，纯走 BM25 + embedding 召回。
+- 其它类别（`content_specific`、`character_action`、`concept_scene`、`emotion_scene`、`symbolic_material`、`unknown`）由约束自身决定复用级别。
+
+## 约束结构
+
+每个约束必须使用：
 
 ```json
 {
-  "dimension_scores": {
-    "subject_importance_score": 0.0,
-    "action_importance_score": 0.0,
-    "emotion_importance_score": 0.0,
-    "teaching_object_importance_score": 0.0,
-    "setting_importance_score": 0.0,
-    "readable_text_score": 0.0,
-    "count_integrity_score": 0.0,
-    "exact_relation_score": 0.0,
-    "unique_referent_score": 0.0,
-    "generic_support_score": 0.0
-  },
-  "category_scores": {
-    "learning_behavior": 0.0,
-    "generic_tool": 0.0,
-    "generic_diagram": 0.0,
-    "concept_scene": 0.0,
-    "content_specific": 0.0,
-    "character_action": 0.0
-  },
-  "constraint_scores": [
+  "kind": "entity | object | action | scene | emotion | text | math | physics",
+  "subtype": "",
+  "value": "",
+  "importance": 0,
+  "confidence": 0.0,
+  "evidence": "",
+  "reason": ""
+}
+```
+
+约束基本规则：
+
+- 只从 `content_prompt` 中提取约束。
+- `value` 必须是原子级短名词、物体名、可读文字、公式、物理量或短动作短语。
+- 不要使用完整句子，也不要使用包含 `的` 的中文组合短语。
+- 不要把风格、画法、图像质量、课堂用途、页面功能或泛化视觉修饰作为约束。
+
+### kind 类型说明
+
+- `entity`：具名人物、动物、角色或特定主体身份。
+- `object`：关键物体、教学对象、工具、卡片、网格、形状或可见教学载体。
+- `action`：可见动作、姿态、互动或行为。
+- `scene`：地点、空间关系、场景或故事情境。
+- `emotion`：可见情绪状态。
+- `text`：可读汉字、词语、拼音、标签、答案或其他可见文字。
+- `math`：公式、数量、方程、不等式、计数或几何关系。
+- `physics`：物理量、单位、公式、电路标注或实验标注。
+
+### subtype 取值表（决定 importance 上限）
+
+`subtype` 是对**这个 value 这个词**的分类，不是对整张图的分类。一张图通常有多个 constraints，每个独立分类。
+
+| kind | 允许的 subtype | 含义 |
+|---|---|---|
+| entity | `named_individual` | 具名个体：真实人物、虚构角色名、品牌人物（史铁生、爱因斯坦、孙悟空、Elsa） |
+| entity | `species_instance` | 与特定故事/教材绑定的物种实例（"小蝌蚪找妈妈"里的小蝌蚪、"龟兔赛跑"里的乌龟） |
+| entity | `role` | 角色、亲缘称谓、职业（妈妈、老师、医生、警察、农民） |
+| entity | `generic_class` | 泛类生物或角色（小朋友、男孩、女孩、小猴子、动物） |
+| object | `teaching_carrier` | 教学载体、特定教具（田字格、五线谱、坐标轴、量杯、地图） |
+| object | `scene_prop` | 与教学主题关联的物体（讲秋天页面的落叶、讲告别页面的火车） |
+| object | `decorative` | 装饰或场景陪体（桌子、椅子、灯、窗、植物盆栽、文具） |
+| action | `teaching_fact` | 动作本身即教学事实（笔顺、实验步骤、特定操作流程） |
+| action | `generic_motion` | 通用动作（举手、读书、跑步、挥手、捡起） |
+| text/math/physics | `teaching_content` | 教学内容（汉字、公式、单位、标签、可读答案） |
+| text | `decorative_text` | 装饰性文字、品牌水印、无教学意义文字 |
+| scene | `story_scene` | 与故事/教学绑定的具体场景（深夜医院、考场、田径场、教室特写） |
+| scene | `generic_ambient` | 通用氛围场景（草地、天空、室内、户外） |
+| emotion | `narrative_emotion` | 教学叙事关键情绪（着急、思念、愤怒、悲伤、惊讶） |
+| emotion | `generic_ambient` | 通用氛围情绪（开心、温馨、平静） |
+
+### importance 决策表
+
+**默认 importance = 0。** 只有满足下列升级条件之一，才升到 1 或 2。
+
+| subtype | importance |
+|---|---|
+| entity.named_individual | **2** |
+| entity.species_instance | **2** |
+| entity.role | 0（默认）或 1（仅当本页核心叙事就是这个角色，例如"母亲深夜送孩子求医"页里的妈妈） |
+| entity.generic_class | 0（默认）或 1（仅当本页核心就是这个泛类，例如"动物分类"页里的"动物"） |
+| object.teaching_carrier | **2** |
+| object.scene_prop | 1（与教学主题强相关）或 0 |
+| object.decorative | **0** |
+| action.teaching_fact | **2** |
+| action.generic_motion | 1（页面动作核心，如"挥手告别"页里的挥手）或 **0**（背景动作） |
+| text/math/physics.teaching_content | **2** |
+| text.decorative_text | **0** |
+| scene.story_scene | 1 |
+| scene.generic_ambient | **0** |
+| emotion.narrative_emotion | 1 |
+| emotion.generic_ambient | **0** |
+
+importance 等级语义：
+
+- `importance=0`：软语义描述，**不参与确定性 filter**，只作为 embedding/BM25 召回信号。
+- `importance=1`：有教学方向但可替换；embedding 高直接通过，灰区或低分**交由 LLM review**，永不直接 reject。
+- `importance=2`：不可替换的硬事实；embedding 低或缺同 kind 约束**直接 reject**；text/math/physics 仍走 LLM 复核。
+
+### importance 自检：可替换性判别
+
+判断 importance 时用这个判别问题：
+
+> 如果把这个 value 换成同 kind 的同类词，本页教学还**完全讲得通吗**？
+
+- 完全讲得通（例如"小朋友读书"图里把小朋友换成另一个小朋友） → imp=0
+- 部分讲不通，需要看上下文（例如亲情主题页里的"妈妈"换成"老师"） → imp=1
+- 讲不通（例如"$E=mc^2$"换成另一个公式、"史铁生"换成"鲁迅"） → imp=2
+
+写 `reason` 字段时建议显式包含这个判别结论，例如："角色可替换为任意成年女性，imp=0"。
+
+### 角色/亲缘/职业硬性兜底词表
+
+如果 `value` 命中以下词表，`entity.subtype` 强制为 `role` 或 `generic_class`，`importance` 上限为 1。**不允许**这些词单独升到 imp=2。
+
+```
+亲缘称谓：爸爸 妈妈 爹 娘 父亲 母亲 妈 爸 爷爷 奶奶 外公 外婆 姥爷 姥姥
+        叔叔 阿姨 伯伯 舅舅 姑姑 姨妈 哥哥 姐姐 弟弟 妹妹
+        儿子 女儿 孙子 孙女 外孙 宝宝 宝贝
+
+职业角色：老师 教师 学生 同学 医生 护士 警察 消防员 农民 工人 司机
+        厨师 服务员 售货员 运动员 舞蹈家 画家 音乐家 科学家 工程师
+        律师 法官 记者 园丁 清洁工 邮递员 教练
+
+泛类指代：男孩 女孩 小朋友 孩子 小孩 男人 女人 人物 人 卡通人物
+        动漫人物 动物 植物
+```
+
+例外：当 value 是"完整专有名字"（含姓氏+名字，例如"史铁生"、"爱因斯坦"）时，subtype 走 `named_individual`，imp=2，不受词表限制。
+
+## 页面图召回关键词
+
+`core_keywords` 必须由 LLM 直接从 `content_prompt` 的可见内容中提取：
+
+- 只包含少量、可见、有区分度、适合召回的原子级关键词。
+- 实体、物体、动作、状态尽量拆开写。
+- 建议 3-8 个；如果画面只有一个明确主体，可以少于 3 个。
+- 不要输出整句式短语。
+- 不要输出包含 `的` 的组合短语。
+- 不要输出风格、画法、用途、页面功能、课堂属性或质量描述。
+- 不要把修饰语和主体合并成硬绑定短语。
+
+`semantic_aliases` 必须在 `core_keywords` 之后生成。每个 key 必须来自 `core_keywords`，value 是等价或近义短语，不得引入新的核心语义。
+
+## 背景图元数据
+
+对于 `background`，只输出：
+
+```json
+{
+  "asset_id": "",
+  "normalized_prompt": "",
+  "context_summary": "",
+  "teaching_intent": "",
+  "core_keywords": [],
+  "semantic_aliases": {},
+  "context_summary_keywords": []
+}
+```
+
+背景图的 `core_keywords` 由 LLM 直接从 `content_prompt` 生成，并由代码清洗。它们应描述可复用的背景色彩、情绪、空间、主题和视觉氛围。
+
+## 少样本示例
+
+### 示例 1：卡通小朋友捧课本朗读（learning_behavior，全部 imp=0）
+
+```json
+{
+  "asset_category": "learning_behavior",
+  "constraints": [
     {
       "kind": "entity",
-      "value": "可见主体或约束内容",
-      "importance_score": 0.0,
-      "exactness_score": 0.0,
-      "aliases": [],
-      "evidence": []
+      "subtype": "generic_class",
+      "value": "小朋友",
+      "importance": 0,
+      "confidence": 0.92,
+      "evidence": "通用学习行为插画的主体",
+      "reason": "可替换为任意儿童形象，imp=0"
+    },
+    {
+      "kind": "object",
+      "subtype": "decorative",
+      "value": "课本",
+      "importance": 0,
+      "confidence": 0.86,
+      "evidence": "学习行为的常规陪体",
+      "reason": "可替换为书本、绘本，imp=0"
+    },
+    {
+      "kind": "action",
+      "subtype": "generic_motion",
+      "value": "朗读",
+      "importance": 0,
+      "confidence": 0.85,
+      "evidence": "通用学习动作",
+      "reason": "可替换为读书、看书，imp=0"
     }
   ],
-  "evidence": [],
-  "risk_factors": [],
-  "brief_reason": ""
+  "core_keywords": ["小朋友", "课本", "朗读"],
+  "semantic_aliases": {
+    "小朋友": ["儿童", "学生"],
+    "朗读": ["读书", "诵读"]
+  }
 }
 ```
 
-维度分数含义：
-
-- `subject_importance_score`：主体被替换是否会影响语义；普通母亲/孩子/男孩通常只影响 medium，不应推成 strict。
-- `action_importance_score`：动作缺失或替换是否影响语义。
-- `emotion_importance_score`：情绪极性或近似情绪是否重要；纯表情示意图通常 loose。
-- `teaching_object_importance_score`：教学对象是否需要保护。
-- `setting_importance_score`：地点/场景是否是核心语义。
-- `readable_text_score`：汉字、拼音、公式、标签、可读文本等可验证内容；高分会推 strict。
-- `count_integrity_score`：明确数量、多主体完整性；高分会推 strict。
-- `exact_relation_score`：固定知识关系、顺序、因果或必须精确的关系；高分会推 strict。
-- `unique_referent_score`：名人、专名地点、专名作品对象等真正唯一指代；普通角色词不要给高分。
-- `generic_support_score`：能否作为通用支持图复用。
-
-旧版字段如下仅用于兼容已有素材库，不是新的生成要求：
+### 示例 2：妈妈和孩子在公园（concept_scene，亲情主题，imp=1 为主）
 
 ```json
 {
-  "strict_score": 0.0,
-  "loose_score": 0.0,
-  "generic_support_score": 0.0,
-  "readable_knowledge_score": 0.0,
-  "unique_referent_score": 0.0,
-  "exact_relation_score": 0.0,
-  "category_scores": {
-    "learning_behavior": 0.0,
-    "generic_tool": 0.0,
-    "generic_diagram": 0.0,
-    "concept_scene": 0.0,
-    "content_specific": 0.0,
-    "character_action": 0.0
-  },
-  "constraint_scores": [
+  "asset_category": "concept_scene",
+  "constraints": [
     {
       "kind": "entity",
-      "value": "可见主体或约束内容",
-      "importance_score": 0.0,
-      "exactness_score": 0.0,
-      "aliases": [],
-      "evidence": []
+      "subtype": "role",
+      "value": "妈妈",
+      "importance": 1,
+      "confidence": 0.94,
+      "evidence": "亲情主题页的核心人物",
+      "reason": "本页讲亲子情感，妈妈是叙事主体；同类替换需 LLM 看图判断，imp=1"
+    },
+    {
+      "kind": "entity",
+      "subtype": "generic_class",
+      "value": "孩子",
+      "importance": 1,
+      "confidence": 0.92,
+      "evidence": "亲情主题页的核心配体",
+      "reason": "本页讲亲子情感，孩子是必要参与方，imp=1"
+    },
+    {
+      "kind": "scene",
+      "subtype": "generic_ambient",
+      "value": "公园",
+      "importance": 0,
+      "confidence": 0.86,
+      "evidence": "通用户外氛围",
+      "reason": "可替换为草地、户外，imp=0"
     }
   ],
-  "evidence": [],
-  "risk_factors": [],
-  "brief_reason": ""
+  "core_keywords": ["妈妈", "孩子", "公园"],
+  "semantic_aliases": {
+    "妈妈": ["母亲", "母子"],
+    "孩子": ["儿童", "小孩"]
+  }
 }
 ```
 
-所有 score 必须是 0 到 1 的小数。不要输出离散结论字段，不要输出 yes/no，不要输出 strict/medium/loose/category 的最终选择。
-
-## Score Meaning
-
-`dimension_scores` 是唯一的新评分入口。不要给 loose、medium、strict 分别打可能性分；只判断各语义维度的重要性，代码会加权聚合并按阈值分档。
-
-`subject_importance_score`、`action_importance_score`、`emotion_importance_score`、`teaching_object_importance_score`、`setting_importance_score` 会加权形成 `visual_guard_score`。这些维度高，通常只说明素材需要进入 medium filter，保护主体/动作/情绪/对象/地点，不应单独推成 strict。
-
-`readable_text_score`、`count_integrity_score`、`exact_relation_score`、`unique_referent_score` 会形成 `factual_risk_score`。只有可读文字、明确数量、固定知识关系、专名/唯一指代等会造成事实错误的维度高，才允许进入 strict。
-
-`reuse_specificity_score` 由 `factual_risk_score` 和 `visual_guard_score` 聚合得到。低于 medium 阈值且没有 core constraints 时为 loose；达到 medium 阈值或存在 visual core constraints 时为 medium；达到 strict 阈值且存在高风险约束时才为 strict。
-
-`generic_support_score` 表示素材是否能作为泛化支持图、通用视觉辅助、通用学习行为、背景、氛围或通用工具复用。
-
-## Category Scores
-
-为每个候选类别分别打分，代码会选择最高且超过阈值的类别：
-
-- `learning_behavior`：通用学习或课堂行为。
-- `generic_tool`：可复用的视觉辅助、符号工具、标注气泡、图标、抽象支架。
-- `generic_diagram`：不绑定具体知识对象的通用图示。
-- `concept_scene`：可广泛复用的语义场景。
-- `content_specific`：课文或知识点中的特定事件、具体可读内容、固定知识对象、固定顺序、具体对应关系，或关键元素变化会改变含义的图示。
-- `character_action`：人物、角色或形象的身份、动作方向、作用对象、状态、情绪、数量或场景关系不可替换。
-
-## Constraint Scores
-
-`constraint_scores` 用于列出可能成为硬约束的候选元素，并提供连续分数供代码分类。
-
-`kind` 只能是：
-
-- `text`
-- `math`
-- `physics`
-- `entity`
-- `object`
-- `action`
-- `relation`
-- `setting`
-- `emotion`
-- `count`
-
-`importance_score` 表示该元素缺失或替换后造成教学错误的风险。
-
-`exactness_score` 表示该元素是否必须精确一致。文字、数学、物理、数量、固定关系、可验证知识对象通常应给更高 exactness 分数；普通视觉主体、普通姿态、普通场景通常较低。
-
-`aliases` 只放同义或近义表达，不放规则，不放负例。
-
-## Core Constraints
-
-`core_constraints` 是真正进入 deterministic filter 的约束。不要把 `primary_subjects`、`primary_actions`、`teaching_objects`、`primary_emotions` 全量照搬进去；只有当替换或缺失会造成教学语义错误、课文角色错误、知识点错误、数量/关系错误时才放入。
-
-`core_constraints` item 只能包含：
-
-```json
-{"kind": "entity", "value": "小蝌蚪", "exact": false, "hard": true, "aliases": ["蝌蚪幼体"]}
-```
-
-`kind` 必须来自 `Constraint Scores` 的 kind 集合。`hard=true` 表示候选不覆盖该元素时不能自动复用，应 reject 或进入 LLM review。`exact=true` 只用于文字、汉字、拼音、数字、公式、固定数量、固定关系等必须完全一致的对象；普通视觉主体一般用 `exact=false`。
-
-应放入 `core_constraints` 的情况：
-
-- 具体课文角色或动物不能替换：小蝌蚪不能换成松鼠；猴子/兔子/松鼠/公鸡/鸭子/孔雀在对应槽位不能互换。
-- 多主体集合有明确成员或数量：六种动物合影、两个人比高矮、三类动物对比。
-- 教学对象可验证：汉字、拼音、笔顺、田字格字形、发音部位、数量、公式、方向箭头。
-- 核心动作承载教学目标：比高矮、朗读、圈画、摔东西、看窗外、看菊花。
-- 情绪是页面核心语义时，用 `kind=emotion`，通常 `exact=false`，只要求极性或相近情绪。
-
-不应放入 `core_constraints` 的情况：
-
-- 纯装饰或软修饰：暖光、黄裙、彩色、虚线、木门材质、特写、装饰花纹。
-- 难以视觉稳定表达的微动作：点头、恳求、期待、担忧；这些可放入 structured fields 或由 LLM review 判断。
-- 可泛化主体：普通小朋友/学生/儿童在通用学习行为图中通常不需要 hard，除非页面明确要求某个具体人物或性别/年龄。
-
-## Medium Visual Examples
-
-以下素材应保持 medium 或 loose，不要因为来自课文内容页而自动 strict：
-
-- `秋日黄昏，母亲和孩子并肩走在铺满落叶的路上的温暖场景`：母亲、孩子、温暖氛围可作为 medium 约束，但这不是唯一人物或固定情节，不应 required unique/exact relation。
-- `男孩在房间摔东西拒绝出门的场景`：摔东西、拒绝出门、负面情绪可进入 medium 约束；除非画面包含可读课文原句或固定可验证知识，否则不应 strict。
-- `母亲站在床边温柔劝说男孩的场景`：母亲/男孩/劝说/温柔是可保护的视觉语义，但普通床边交流可合理复用，不应因为“课文对应情节”直接 strict。
-- `人喜出望外的表情插画`：纯情绪词表情示意应为 loose，不要把情绪词放进 hard `core_constraints`。
-
-只有以下情况才从 medium 升到 strict：可读文字/汉字/拼音/公式/数量必须准确；多主体成员或数量必须完整；关系是可验证知识关系或 exact relation；地点是专名且缺失会造成事实错误。
-
-## Structured Fields
-
-`primary_subjects` 只保留 `name`、`strictness`、`aliases`。具体人物、具体动物、明确性别角色、承担核心语义的年龄阶段通常是 `hard`；青年、男孩、男人这类非核心年龄/性别差异可以通过 `aliases` 兼容为 `medium`。
-
-`primary_actions` 至少保留 `name`、`strictness`、`aliases`。可见核心动作如摔东西、读书、写字、举旗、比高矮、看菊花通常是 `hard` 或 `medium`；点头、恳求、期待、担忧这类可由关系或氛围推断的动作通常是 `soft` 或 `medium`。
-
-`primary_emotions` 保留 `name`、`strictness`、`polarity`、`aliases`。`polarity` 只能是 `positive`、`negative`、`neutral` 或 `mixed`。情绪要求 polarity 一致，但具体情绪名不要求完全一致，例如痛苦绝望可以和落寞、悲伤、低沉近似。
-
-`teaching_objects` 至少保留 `name`、`strictness`、`aliases`。汉字、拼音、田字格、发音部位、笔顺、数量关系等教学对象通常是 `hard`。
-
-`soft_modifiers` 放非核心修饰，例如暖光、彩色、虚线、特写、黄裙、装饰、像伞参照物、门材质等。不要把 soft modifier 抽成硬主体或硬对象。
-
-## Calibration
-
-普通主体、普通动物、普通人物、普通地点、普通单一动作、物种默认外观特征、常见生理特征、普通姿态、普通装饰、普通表情、常见动作和常见持物，通常不应给高事实风险维度分数，也不应给过高 `importance_score`。
-
-如果素材虽然包含具体主体、动作、状态或外观属性，但仍可安全作为普通同主体形象、普通角色形象、普通场景或泛化插图使用，应降低 `readable_text_score`、`count_integrity_score`、`exact_relation_score`、`unique_referent_score`，提高 `generic_support_score` 或相应通用类别分数。
-
-不要因为素材来自某篇课文、服务于知识讲解、展示普通概念、普通实体或普通场景，就自动给高事实风险维度分数。
-
-只有当当前页面教学目标明确依赖某个属性、姿态、动作、数量、关系、可读内容或状态本身时，才提高对应风险分数和约束分数。
-
-信息不足时，保持分数保守：`readable_text_score`、`count_integrity_score`、`exact_relation_score`、`unique_referent_score` 不要给高分；使用 `brief_reason` 说明不确定点。
-
-## Few-Shot Calibration
-
-### 课文角色主体必须一致
-
-目标素材：
+### 示例 3：深夜母亲背孩子奔向医院（character_action，故事场景）
 
 ```json
 {
-  "content_prompt": "卡通小蝌蚪举着小旗子带路的插图",
-  "primary_subjects": [{"name": "小蝌蚪", "strictness": "hard", "aliases": ["蝌蚪幼体"]}],
-  "primary_actions": [{"name": "举旗带路", "strictness": "medium", "aliases": ["持旗引路"]}],
-  "soft_modifiers": ["卡通风格", "小旗子"],
-  "core_constraints": [
-    {"kind": "entity", "value": "小蝌蚪", "exact": false, "hard": true, "aliases": ["蝌蚪幼体"]}
-  ]
-}
-```
-
-理由：小蝌蚪是课文角色，不能被松鼠、猴子等主体替换；举旗带路是目录引导动作，可进入 structured fields，但不必强制 exact。
-
-### 通用学习行为只约束核心动作
-
-```json
-{
-  "content_prompt": "小朋友坐在书桌前读语文书",
-  "primary_subjects": [{"name": "小朋友", "strictness": "medium", "aliases": ["学生", "儿童"]}],
-  "primary_actions": [{"name": "读书", "strictness": "hard", "aliases": ["阅读", "朗读"]}],
-  "teaching_objects": [{"name": "语文书", "strictness": "medium", "aliases": ["语文课本", "课本"]}],
-  "core_constraints": [
-    {"kind": "action", "value": "读书", "exact": false, "hard": true, "aliases": ["阅读", "朗读"]}
-  ]
-}
-```
-
-理由：学生/儿童可泛化，书桌可缺失；页面目标是阅读行为，因此动作需要进入 filter。
-
-### 多主体数量与成员必须保护
-
-```json
-{
-  "content_prompt": "猴子、兔子、松鼠、公鸡、鸭子、孔雀六种动物站在森林比赛场的大合影",
-  "primary_subjects": [
-    {"name": "猴子", "strictness": "hard", "aliases": ["小猴子"]},
-    {"name": "兔子", "strictness": "hard", "aliases": ["小兔子"]},
-    {"name": "松鼠", "strictness": "hard", "aliases": ["小松鼠"]},
-    {"name": "公鸡", "strictness": "hard", "aliases": ["大公鸡"]},
-    {"name": "鸭子", "strictness": "hard", "aliases": ["小鸭子"]},
-    {"name": "孔雀", "strictness": "hard", "aliases": ["孔雀"] }
+  "asset_category": "character_action",
+  "constraints": [
+    {
+      "kind": "entity",
+      "subtype": "role",
+      "value": "母亲",
+      "importance": 1,
+      "confidence": 0.96,
+      "evidence": "故事场景的叙事主角",
+      "reason": "本页讲母爱叙事，母亲是必要主体，imp=1"
+    },
+    {
+      "kind": "scene",
+      "subtype": "story_scene",
+      "value": "深夜医院门口",
+      "importance": 1,
+      "confidence": 0.92,
+      "evidence": "故事关键场景",
+      "reason": "场景指向具体叙事，跨场景复用需 LLM 看图，imp=1"
+    },
+    {
+      "kind": "action",
+      "subtype": "generic_motion",
+      "value": "背孩子",
+      "importance": 1,
+      "confidence": 0.9,
+      "evidence": "本页核心动作",
+      "reason": "动作是叙事载体，imp=1"
+    },
+    {
+      "kind": "emotion",
+      "subtype": "narrative_emotion",
+      "value": "焦急",
+      "importance": 1,
+      "confidence": 0.88,
+      "evidence": "教学叙事关键情绪",
+      "reason": "情绪指向具体叙事，imp=1"
+    }
   ],
-  "core_constraints": [
-    {"kind": "entity", "value": "猴子", "exact": false, "hard": true, "aliases": ["小猴子"]},
-    {"kind": "entity", "value": "兔子", "exact": false, "hard": true, "aliases": ["小兔子"]},
-    {"kind": "entity", "value": "松鼠", "exact": false, "hard": true, "aliases": ["小松鼠"]},
-    {"kind": "entity", "value": "公鸡", "exact": false, "hard": true, "aliases": ["大公鸡"]},
-    {"kind": "entity", "value": "鸭子", "exact": false, "hard": true, "aliases": ["小鸭子"]},
-    {"kind": "entity", "value": "孔雀", "exact": false, "hard": true, "aliases": ["孔雀"]},
-    {"kind": "count", "value": "六种动物", "exact": true, "hard": true, "aliases": ["6种动物"]}
-  ]
+  "core_keywords": ["母亲", "孩子", "医院", "深夜", "背"],
+  "semantic_aliases": {
+    "母亲": ["妈妈"],
+    "医院": ["急诊", "病房"]
+  }
 }
 ```
 
-理由：六动物合影不是泛化动物图，三动物组图不能自动替代。
-
-### 教学文字与笔顺必须精确
+### 示例 4：田字格中的"比"字（content_specific，imp=2 教学事实）
 
 ```json
 {
-  "content_prompt": "田字格中的“比”字，笔顺用不同颜色标注，左窄右宽结构用虚线标出",
-  "teaching_objects": [{"name": "“比”字笔顺", "strictness": "hard", "aliases": ["比字笔顺"]}],
-  "soft_modifiers": ["不同颜色", "虚线", "左窄右宽"],
-  "core_constraints": [
-    {"kind": "text", "value": "“比”字", "exact": true, "hard": true, "aliases": ["比字"]},
-    {"kind": "object", "value": "笔顺", "exact": false, "hard": true, "aliases": ["笔画顺序"]}
-  ]
+  "asset_category": "content_specific",
+  "constraints": [
+    {
+      "kind": "text",
+      "subtype": "teaching_content",
+      "value": "比",
+      "importance": 2,
+      "confidence": 0.98,
+      "evidence": "教学核心是可读汉字'比'",
+      "reason": "可读文字必须高置信匹配，imp=2"
+    },
+    {
+      "kind": "object",
+      "subtype": "teaching_carrier",
+      "value": "田字格",
+      "importance": 2,
+      "confidence": 0.94,
+      "evidence": "汉字书写的特定教学载体",
+      "reason": "田字格不可替换为普通方格，imp=2"
+    },
+    {
+      "kind": "action",
+      "subtype": "teaching_fact",
+      "value": "笔顺",
+      "importance": 2,
+      "confidence": 0.9,
+      "evidence": "画面呈现笔顺信息",
+      "reason": "笔顺是教学事实，不可替换，imp=2"
+    }
+  ],
+  "core_keywords": ["比", "田字格", "笔顺"],
+  "semantic_aliases": {
+    "比": ["比字"],
+    "笔顺": ["书写顺序"]
+  }
 }
 ```
 
-理由：汉字本身不能错；彩色、虚线、结构提示是修饰或辅助标注，不能因为缺少这些修饰直接 hard reject。
+### 示例 5：史铁生肖像（content_specific，命名个体）
+
+```json
+{
+  "asset_category": "content_specific",
+  "constraints": [
+    {
+      "kind": "entity",
+      "subtype": "named_individual",
+      "value": "史铁生",
+      "importance": 2,
+      "confidence": 0.96,
+      "evidence": "画面要求特定作者肖像",
+      "reason": "命名个体不可替换，imp=2"
+    }
+  ],
+  "core_keywords": ["史铁生", "肖像"],
+  "semantic_aliases": {
+    "史铁生": ["史铁生作者"]
+  }
+}
+```
+
+### 示例 6：小蝌蚪举旗子（character_action，故事绑定物种）
+
+```json
+{
+  "asset_category": "character_action",
+  "constraints": [
+    {
+      "kind": "entity",
+      "subtype": "species_instance",
+      "value": "小蝌蚪",
+      "importance": 2,
+      "confidence": 0.95,
+      "evidence": "画面主体是'小蝌蚪找妈妈'故事里的小蝌蚪",
+      "reason": "故事绑定物种不可跨物种替换，imp=2"
+    },
+    {
+      "kind": "action",
+      "subtype": "generic_motion",
+      "value": "举旗子",
+      "importance": 1,
+      "confidence": 0.86,
+      "evidence": "动作是本页主要语义",
+      "reason": "页面动作核心，imp=1"
+    },
+    {
+      "kind": "object",
+      "subtype": "decorative",
+      "value": "旗子",
+      "importance": 0,
+      "confidence": 0.84,
+      "evidence": "旗子是动作的伴随物",
+      "reason": "可替换为标语牌、横幅，imp=0"
+    }
+  ],
+  "core_keywords": ["小蝌蚪", "举旗子", "旗子"],
+  "semantic_aliases": {
+    "小蝌蚪": ["蝌蚪幼体"],
+    "举旗子": ["挥旗"]
+  }
+}
+```
+
+## 复用级别派生（仅供 LLM 自检）
+
+代码会根据元数据派生 reuse_level：
+
+- `asset_category` ∈ {learning_behavior, generic_tool, generic_diagram} → **loose**（硬置，不参与约束过滤）
+- 存在 text/math/physics 且 imp=2 → **strict**
+- 存在 entity.named_individual 且 imp=2 → **strict**
+- 存在任何 imp=2 约束 → **medium**
+- 存在 ≥2 个 imp=1 约束 → **medium**
+- 其余 → **loose**
+
+LLM 不需要输出 reuse_level；它会由代码根据 constraints 和 asset_category 派生。

@@ -1,6 +1,13 @@
 import json
 
 from edupptx.materials.ai_image_asset_db import (
+    _asset_embedding_text,
+    _build_match_text,
+    _candidate_hybrid_text,
+    _is_strict_semantic_gray_review_candidate,
+    _normalize_asset_for_match,
+    _reuse_gate_profile,
+    _reuse_review_accept_score_threshold,
     _route_match_text,
     _score_reuse_candidate_details,
     build_ai_image_asset_db,
@@ -16,6 +23,7 @@ from edupptx.materials.ai_image_asset_db import (
     update_ai_image_asset_library,
     write_ai_image_asset_db,
 )
+from edupptx.materials.reuse_policy import normalize_reuse_policy_fields
 
 
 def _fake_reuse_review_response(messages):
@@ -23,8 +31,8 @@ def _fake_reuse_review_response(messages):
     request = json.loads(raw[raw.index("{"):])
     if not request.get("reuse_review"):
         return None
-    target_constraints = request.get("target", {}).get("core_constraints") or []
-    candidate_constraints = request.get("candidate", {}).get("core_constraints") or []
+    target_constraints = request.get("target", {}).get("constraints") or []
+    candidate_constraints = request.get("candidate", {}).get("constraints") or []
     for target_constraint in target_constraints:
         same_kind = [
             item
@@ -53,36 +61,520 @@ def _fake_reuse_review_response(messages):
     }
 
 
-def _strict_text_reuse_scores(value="character: bi"):
-    return {
-        "strict_score": 0.96,
-        "loose_score": 0.0,
-        "generic_support_score": 0.0,
-        "readable_knowledge_score": 0.95,
-        "unique_referent_score": 0.72,
-        "exact_relation_score": 0.2,
-        "category_scores": {
-            "learning_behavior": 0.0,
-            "generic_tool": 0.0,
-            "generic_diagram": 0.0,
-            "concept_scene": 0.1,
-            "content_specific": 0.96,
-            "character_action": 0.2,
-        },
-        "constraint_scores": [
+def test_page_image_core_keywords_come_from_llm_payload_and_are_cleaned():
+    class FakeKeywordClient:
+        _model = "fake-keyword-model"
+
+        def chat_json(self, messages, **kwargs):
+            return {
+                "assets": [
+                    {
+                        "asset_id": "page",
+                        "normalized_prompt": "小蝌蚪举旗子",
+                        "context_summary": "目录页引导插图",
+                        "teaching_intent": "引导学习路径",
+                        "asset_category": "character_action",
+                        "constraints": [
+                            {"kind": "entity", "value": "小蝌蚪", "importance": 1},
+                            {"kind": "action", "value": "举旗子", "importance": 1},
+                            {"kind": "object", "value": "旗子", "importance": 1},
+                            {"kind": "scene", "value": "池塘", "importance": 0},
+                        ],
+                        "core_keywords": ["小蝌蚪", "举旗子", "旗子", "池塘的场景", "教学配图", "卡通小蝌蚪插画"],
+                        "semantic_aliases": {"小蝌蚪": ["蝌蚪幼体"], "举旗子": ["挥旗"]},
+                    }
+                ]
+            }
+
+    db = {
+        "schema_version": 1,
+        "assets": [
             {
-                "kind": "text",
-                "value": value,
-                "importance_score": 0.96,
-                "exactness_score": 0.96,
-                "aliases": [],
-                "evidence": ["exact text knowledge"],
+                "asset_id": "page",
+                "asset_kind": "page_image",
+                "image_path": "page.png",
+                "content_prompt": "小蝌蚪举旗子",
             }
         ],
-        "evidence": ["exact text knowledge"],
-        "risk_factors": [],
-        "brief_reason": "specific readable text knowledge",
     }
+
+    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
+
+    asset = db["assets"][0]
+    policy = normalize_reuse_policy_fields(asset)
+    assert asset["core_keywords"] == ["小蝌蚪", "举旗子", "旗子"]
+    assert "池塘" not in asset["core_keywords"]
+    assert asset["semantic_aliases"] == {"小蝌蚪": ["蝌蚪幼体"], "举旗子": ["挥旗"]}
+    assert policy["reuse_level"] == "medium"
+    assert policy["asset_category"] == "character_action"
+
+
+def test_text_math_physics_core_keywords_are_llm_payload_and_constraints_drive_strict_policy():
+    for kind, value in (("text", "比"), ("math", "a²+b²=c²"), ("physics", "F=ma")):
+        constraints = [{"kind": kind, "value": value, "importance": 2}]
+        asset = {
+            "asset_kind": "page_image",
+            "asset_category": "content_specific",
+            "constraints": constraints,
+            "core_keywords": [value],
+        }
+
+        assert value in asset["core_keywords"]
+        assert normalize_reuse_policy_fields(asset)["reuse_level"] == "strict"
+
+
+def test_zero_importance_constraints_make_loose_policy():
+    policy = normalize_reuse_policy_fields(
+        {
+            "asset_kind": "page_image",
+            "asset_category": "learning_behavior",
+            "constraints": [
+                {"kind": "entity", "value": "学生", "importance": 0},
+                {"kind": "action", "value": "读书", "importance": 0},
+            ],
+        }
+    )
+
+    assert policy["reuse_level"] == "loose"
+    assert policy["generic_support_allowed"] is True
+
+
+def test_asset_category_forces_loose_for_decorative_kinds():
+    """learning_behavior / generic_tool / generic_diagram are decorative kinds:
+    they bypass constraint filtering and force loose, even when constraints exist.
+    Other categories derive reuse_level from constraints normally."""
+
+    constraints = [{"kind": "action", "value": "挥手告别", "importance": 1}]
+    learning = normalize_reuse_policy_fields(
+        {"asset_kind": "page_image", "asset_category": "learning_behavior", "constraints": constraints}
+    )
+    content = normalize_reuse_policy_fields(
+        {"asset_kind": "page_image", "asset_category": "content_specific", "constraints": constraints}
+    )
+
+    assert learning["reuse_level"] == "loose"
+    assert learning["generic_support_allowed"] is True
+    assert content["reuse_level"] == "medium"
+    assert content["generic_support_allowed"] is False
+
+
+def test_decorative_category_forces_loose_review_threshold_and_gate_profile():
+    constraints = [{"kind": "action", "value": "挥手告别", "importance": 1}]
+    learning = {"asset_kind": "page_image", "asset_category": "learning_behavior", "constraints": constraints}
+    content = {"asset_kind": "page_image", "asset_category": "content_specific", "constraints": constraints}
+    loose_learning = {"asset_kind": "page_image", "asset_category": "learning_behavior", "constraints": []}
+
+    # learning_behavior is forced loose regardless of constraints
+    assert _reuse_gate_profile(learning) == "loose"
+    assert _reuse_gate_profile(loose_learning) == "loose"
+    # content_specific derives medium from imp=1 constraint
+    assert _reuse_gate_profile(content) == "medium"
+    assert _reuse_review_accept_score_threshold(loose_learning) == 0.60
+
+
+def test_strict_semantic_gray_review_ignores_asset_category():
+    weak_target = {
+        "asset_kind": "page_image",
+        "theme": "同一主题",
+        "asset_category": "content_specific",
+        "constraints": [{"kind": "action", "value": "观察", "importance": 1}],
+    }
+    weak_candidate = {
+        "asset": {
+            "asset_kind": "page_image",
+            "theme": "同一主题",
+            "asset_category": "content_specific",
+            "constraints": [{"kind": "action", "value": "观察", "importance": 1}],
+        }
+    }
+
+    assert not _is_strict_semantic_gray_review_candidate(
+        weak_target,
+        weak_candidate,
+        bm25_score=1.0,
+        embedding_score=1.0,
+        substring_score=1.0,
+    )
+
+    strict_constraints = [{"kind": "text", "value": "比", "importance": 2}]
+    learning_target = {
+        "asset_kind": "page_image",
+        "theme": "同一主题",
+        "asset_category": "learning_behavior",
+        "constraints": strict_constraints,
+    }
+    content_target = {
+        **learning_target,
+        "asset_category": "content_specific",
+    }
+
+    assert _is_strict_semantic_gray_review_candidate(
+        learning_target,
+        weak_candidate,
+        bm25_score=1.0,
+        embedding_score=1.0,
+        substring_score=1.0,
+    )
+    assert _is_strict_semantic_gray_review_candidate(
+        content_target,
+        weak_candidate,
+        bm25_score=1.0,
+        embedding_score=1.0,
+        substring_score=1.0,
+    )
+
+
+def test_style_usage_quality_llm_core_keywords_are_cleaned():
+    class FakeKeywordClient:
+        _model = "fake-keyword-model"
+
+        def chat_json(self, messages, **kwargs):
+            return {
+                "assets": [
+                    {
+                        "asset_id": "page",
+                        "normalized_prompt": "小蝌蚪",
+                        "context_summary": "课堂导入插图",
+                        "teaching_intent": "引导观察",
+                        "asset_category": "character_action",
+                        "constraints": [],
+                        "core_keywords": ["卡通小蝌蚪插画", "教学配图", "适合课堂导入"],
+                    }
+                ]
+            }
+
+    db = {
+        "schema_version": 1,
+        "assets": [
+            {
+                "asset_id": "page",
+                "asset_kind": "page_image",
+                "image_path": "page.png",
+                "content_prompt": "卡通小蝌蚪插画，适合课堂导入",
+            }
+        ],
+    }
+
+    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
+
+    keywords = db["assets"][0]["core_keywords"]
+    assert keywords == ["小蝌蚪"]
+    assert "教学配图" not in keywords
+    assert "适合课堂导入" not in keywords
+
+
+def test_semantic_aliases_preserve_llm_aliases_after_basic_cleaning():
+    class FakeKeywordClient:
+        _model = "fake-keyword-model"
+
+        def chat_json(self, messages, **kwargs):
+            return {
+                "assets": [
+                    {
+                        "asset_id": "page",
+                        "normalized_prompt": "小蝌蚪举旗子",
+                        "context_summary": "目录页引导插图",
+                        "teaching_intent": "引导学习路径",
+                        "asset_category": "character_action",
+                        "constraints": [
+                            {"kind": "entity", "value": "小蝌蚪", "importance": 1},
+                            {"kind": "action", "value": "举旗子", "importance": 1},
+                        ],
+                        "core_keywords": ["小蝌蚪", "举旗子"],
+                        "semantic_aliases": {
+                            "小蝌蚪": ["蝌蚪幼体", "", "蝌蚪幼体"],
+                            "举旗子": ["挥旗"],
+                            "": ["ignored"],
+                            "空值": ["", None],
+                        },
+                    }
+                ]
+            }
+
+    db = {
+        "schema_version": 1,
+        "assets": [
+            {
+                "asset_id": "page",
+                "asset_kind": "page_image",
+                "image_path": "page.png",
+                "content_prompt": "小蝌蚪举旗子",
+            }
+        ],
+    }
+
+    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
+
+    asset = db["assets"][0]
+    assert asset["core_keywords"] == ["小蝌蚪", "举旗子"]
+    assert asset["semantic_aliases"] == {"小蝌蚪": ["蝌蚪幼体"], "举旗子": ["挥旗"]}
+
+
+def test_empty_constraints_do_not_remove_llm_core_keywords():
+    class FakeKeywordClient:
+        _model = "fake-keyword-model"
+
+        def chat_json(self, messages, **kwargs):
+            return {
+                "assets": [
+                    {
+                        "asset_id": "page",
+                        "normalized_prompt": "史铁生肖像",
+                        "context_summary": "作者介绍页素材",
+                        "teaching_intent": "展示作者形象",
+                        "asset_category": "content_specific",
+                        "constraints": [],
+                        "core_keywords": ["史铁生", "肖像"],
+                        "semantic_aliases": {"史铁生": ["史铁生作者"]},
+                    }
+                ]
+            }
+
+    db = {
+        "schema_version": 1,
+        "assets": [
+            {
+                "asset_id": "page",
+                "asset_kind": "page_image",
+                "image_path": "page.png",
+                "content_prompt": "史铁生肖像",
+            }
+        ],
+    }
+
+    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
+
+    asset = db["assets"][0]
+    assert asset["constraints"] == []
+    assert asset["core_keywords"] == ["史铁生", "肖像"]
+    assert asset["semantic_aliases"] == {"史铁生": ["史铁生作者"]}
+    assert normalize_reuse_policy_fields(asset)["reuse_level"] == "loose"
+    match_asset = _normalize_asset_for_match(asset, for_target=True)
+    assert match_asset["core_keywords"] == ["史铁生", "肖像"]
+    assert "史铁生" in _build_match_text(match_asset)
+
+
+def test_constraints_do_not_backfill_empty_llm_core_keywords(caplog):
+    class FakeKeywordClient:
+        _model = "fake-keyword-model"
+
+        def chat_json(self, messages, **kwargs):
+            return {
+                "assets": [
+                    {
+                        "asset_id": "page",
+                        "normalized_prompt": "小蝌蚪举旗子",
+                        "context_summary": "目录页引导插图",
+                        "teaching_intent": "引导学习路径",
+                        "asset_category": "character_action",
+                        "constraints": [
+                            {"kind": "entity", "value": "小蝌蚪", "importance": 1},
+                            {"kind": "action", "value": "举旗子", "importance": 1},
+                        ],
+                        "core_keywords": [],
+                        "semantic_aliases": {"小蝌蚪": ["蝌蚪幼体"]},
+                    }
+                ]
+            }
+
+    caplog.set_level("WARNING", logger="edupptx.materials.ai_image_asset_db")
+    db = {
+        "schema_version": 1,
+        "assets": [
+            {
+                "asset_id": "page",
+                "asset_kind": "page_image",
+                "image_path": "page.png",
+                "content_prompt": "小蝌蚪举旗子",
+            }
+        ],
+    }
+
+    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
+
+    asset = db["assets"][0]
+    assert asset["constraints"]
+    assert asset["core_keywords"] == []
+    assert asset["semantic_aliases"] == {"小蝌蚪": ["蝌蚪幼体"]}
+    assert "page_image_core_keywords_empty" in caplog.text
+
+
+def test_background_keeps_llm_core_keywords_without_constraints_or_category():
+    class FakeKeywordClient:
+        _model = "fake-keyword-model"
+
+        def chat_json(self, messages, **kwargs):
+            return {
+                "assets": [
+                    {
+                        "asset_id": "bg",
+                        "normalized_prompt": "清透蓝色课堂背景",
+                        "context_summary": "低干扰背景",
+                        "teaching_intent": "承载文字内容",
+                        "core_keywords": ["清透蓝色", "课堂背景"],
+                        "semantic_aliases": {"课堂背景": ["教学背景"]},
+                        "context_summary_keywords": ["低干扰"],
+                        "constraints": [{"kind": "scene", "value": "教室", "importance": 2}],
+                        "asset_category": "content_specific",
+                    }
+                ]
+            }
+
+    db = {
+        "schema_version": 1,
+        "assets": [
+            {
+                "asset_id": "bg",
+                "asset_kind": "background",
+                "image_path": "bg.png",
+                "content_prompt": "清透蓝色课堂背景",
+            }
+        ],
+    }
+
+    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
+
+    asset = db["assets"][0]
+    assert asset["core_keywords"] == ["清透蓝色", "课堂背景"]
+    assert asset["semantic_aliases"] == {"课堂背景": ["教学背景"]}
+    assert set(asset) == {
+        "asset_id",
+        "asset_kind",
+        "image_path",
+        "aspect_ratio",
+        "role",
+        "theme",
+        "subject",
+        "grade_norm",
+        "grade_band",
+        "content_prompt",
+        "background_route",
+        "normalized_prompt",
+        "context_summary",
+        "teaching_intent",
+        "core_keywords",
+        "semantic_aliases",
+        "context_summary_keywords",
+    }
+    assert "constraints" not in asset
+    assert "asset_category" not in asset
+
+
+def test_old_policy_fields_and_source_library_are_removed_from_final_asset():
+    class FakeKeywordClient:
+        _model = "fake-keyword-model"
+
+        def chat_json(self, messages, **kwargs):
+            return {
+                "assets": [
+                    {
+                        "asset_id": "page",
+                        "normalized_prompt": "character bi teaching card",
+                        "context_summary": "specific text card",
+                        "teaching_intent": "teach the exact character",
+                        "asset_category": "content_specific",
+                        "constraints": [{"kind": "text", "value": "比", "importance": 2}],
+                        "semantic_aliases": {"比": ["比字"]},
+                    }
+                ]
+            }
+
+    db = {
+        "schema_version": 1,
+        "assets": [
+            {
+                "asset_id": "page",
+                "asset_kind": "page_image",
+                "image_path": "page.png",
+                "content_prompt": "character bi teaching card",
+                "reuse_level": "loose",
+                "generic_support_allowed": True,
+                "strict_score": 0.0,
+                "loose_score": 1.0,
+                "reuse_scores": {"strict_score": 0.0},
+                "reuse_risk": {"unique_referent": {"required": False}},
+                "source": {"session_id": "session_source", "source_output_root": "/tmp/source"},
+                "library": {"source_output_root": "/tmp/library"},
+            }
+        ],
+    }
+
+    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
+
+    asset = db["assets"][0]
+    policy = normalize_reuse_policy_fields(asset)
+    assert policy["reuse_level"] == "strict"
+    for field in (
+        "reuse_level",
+        "generic_support_allowed",
+        "strict_score",
+        "loose_score",
+        "reuse_scores",
+        "reuse_risk",
+        "source",
+        "library",
+    ):
+        assert field not in asset
+    assert set(asset) == {
+        "asset_id",
+        "asset_kind",
+        "image_path",
+        "aspect_ratio",
+        "role",
+        "page_type",
+        "theme",
+        "subject",
+        "grade_norm",
+        "grade_band",
+        "content_prompt",
+        "prompt_route",
+        "normalized_prompt",
+        "context_summary",
+        "teaching_intent",
+        "context_summary_keywords",
+        "asset_category",
+        "constraints",
+        "core_keywords",
+        "semantic_aliases",
+        "duplicate_asset_ids",
+    }
+
+
+def test_asset_construction_path_has_no_finalize_prune_helpers():
+    import edupptx.materials.ai_image_asset_db as asset_db
+
+    for name in (
+        "_finalize_asset_db_for_storage",
+        "_apply_final_field_set",
+        "_PAGE_IMAGE_FINAL_FIELDS",
+        "_BACKGROUND_FINAL_FIELDS",
+        "_filter_semantic_aliases_for_core_keywords",
+        "_filter_semantic_aliases_by_core_keywords",
+    ):
+        assert not hasattr(asset_db, name)
+
+
+def test_retrieval_text_sources_remain_prompt_and_context_rich():
+    asset = {
+        "asset_kind": "page_image",
+        "content_prompt": "史铁生肖像插图",
+        "normalized_prompt": "史铁生肖像",
+        "context_summary": "作者介绍页使用",
+        "teaching_intent": "介绍作者背景",
+        "context_summary_keywords": ["作者介绍"],
+        "constraints": [{"kind": "entity", "value": "史铁生", "importance": 2}],
+        "core_keywords": ["史铁生", "肖像"],
+    }
+
+    match_text = _build_match_text(asset)
+    embedding_text = _asset_embedding_text(asset)
+    hybrid_text = _candidate_hybrid_text(asset)
+
+    assert "史铁生" in asset["core_keywords"]
+    for text in (match_text, embedding_text, hybrid_text):
+        assert "史铁生肖像" in text
+        assert "作者介绍" in text or "作者介绍页使用" in text
+    assert match_text != "史铁生"
 
 
 def test_infers_grade_and_subject_from_plan_context():
@@ -164,6 +656,23 @@ def test_reuse_score_keyword_signals_are_limited_to_core_keywords():
     assert details["score"] > 0
     assert details["core_score"] == 1.0
     assert "main_entity_score" not in details
+
+
+def test_constraints_do_not_enter_primary_match_text():
+    match_text = _build_match_text(
+        {
+            "asset_kind": "page_image",
+            "content_prompt": "ordinary classroom study illustration",
+            "normalized_prompt": "ordinary classroom study illustration",
+            "core_keywords": ["classroom"],
+            "constraints": [
+                {"kind": "entity", "value": "小猴子", "importance": 2, "match_mode": "exact"}
+            ],
+        }
+    )
+
+    assert "classroom" in match_text
+    assert "小猴子" not in match_text
 
 
 def test_background_reuse_score_uses_prompt_and_color_bias_only():
@@ -473,19 +982,19 @@ def test_builds_ai_image_asset_db_from_output_sessions(tmp_path):
     assert prompts == {"淡雅秋日课堂背景", "深秋北海公园菊花盛放的静谧场景"}
     background_asset = next(asset for asset in db["assets"] if asset["asset_kind"] == "background")
     assert background_asset["content_prompt"] == "淡雅秋日课堂背景"
-    assert background_asset["generation_prompt"] == "淡雅秋日课堂背景 配色偏向：偏暖米色和浅棕色，秋日氛围"
     assert background_asset["background_route"]["background_color_bias"] == "偏暖米色和浅棕色，秋日氛围"
     page_asset = next(asset for asset in db["assets"] if asset["asset_kind"] == "page_image")
     assert page_asset["content_prompt"] == "深秋北海公园菊花盛放的静谧场景"
-    assert page_asset["generation_prompt"] == "深秋北海公园菊花盛放的静谧场景，高年级编辑感风格"
     assert page_asset["prompt_route"]["profile_ids"] == ["upper_grade_base"]
     for asset in db["assets"]:
         assert "prompt" not in asset
+        assert "generation_prompt" not in asset
+        assert "source" not in asset
+        assert "library" not in asset
         assert asset["theme"] == "七年级语文《秋天的怀念》课文教学"
-        assert asset["grade"] == "七年级"
+        assert asset["grade_norm"] == "七年级"
         assert asset["subject"] == "语文"
         assert asset["image_path"].startswith("session_20260506_111550/materials/")
-        assert asset["source"]["session_id"] == "session_20260506_111550"
 
 
 def test_default_context_summary_describes_slide_function_not_visible_query(tmp_path):
@@ -551,6 +1060,11 @@ def test_enriches_asset_db_keywords_with_llm_payload():
                         "reuse_scope": "course_specific",
                         "specificity_score": 5,
                         "core_keywords": ["史铁生", "肖像", "插画"],
+                        "asset_category": "content_specific",
+                        "constraints": [
+                            {"kind": "entity", "value": "史铁生", "importance": 2},
+                            {"kind": "object", "value": "肖像", "importance": 1},
+                        ],
                         "context_keywords": ["七年级语文", "秋天的怀念", "作者介绍"],
                         "style_keywords": ["线条简洁", "插画"],
                     },
@@ -561,6 +1075,11 @@ def test_enriches_asset_db_keywords_with_llm_payload():
                         "reuse_scope": "subject_generic",
                         "specificity_score": 2,
                         "core_keywords": ["汉字", "拼音标注", "教学示意"],
+                        "asset_category": "content_specific",
+                        "constraints": [
+                            {"kind": "text", "value": "汉字", "importance": 2},
+                            {"kind": "object", "value": "拼音标注", "importance": 1},
+                        ],
                         "context_keywords": ["七年级语文", "秋天的怀念", "生字词正音"],
                         "style_keywords": ["简洁清晰"],
                     }
@@ -598,7 +1117,7 @@ def test_enriches_asset_db_keywords_with_llm_payload():
 
     author = db["assets"][0]
     pinyin = db["assets"][1]
-    assert db["schema_version"] == 9
+    assert db["schema_version"] == 12
     assert db["keyword_builder"]["method"] == "llm_reuse_metadata_extraction"
     assert db["keyword_builder"]["model"] == "fake-keyword-model"
     assert "reuse_scope" not in author
@@ -606,36 +1125,33 @@ def test_enriches_asset_db_keywords_with_llm_payload():
     assert "specificity_score" not in author
     assert author["core_keywords"] == ["史铁生", "肖像"]
     assert author["semantic_aliases"] == {}
-    assert "page_title" not in author.get("source", {})
+    assert "source" not in author
     assert "context_keywords" not in author
     assert "style_keywords" not in author
     assert "match_key" not in author
 
     assert "reuse_scope" not in pinyin
     assert pinyin["context_summary"] == "生字词正音页的汉字拼音教学示意"
-    assert pinyin["core_keywords"] == ["汉字", "拼音标注", "教学示意"]
+    assert pinyin["core_keywords"] == ["汉字", "拼音标注"]
     assert "context_keywords" not in pinyin
     assert "match_key" not in pinyin
 
 
-def test_keyword_enrichment_uses_same_schema_and_unions_terms():
+def test_keyword_enrichment_uses_same_schema_and_llm_core_keywords():
     class FakeKeywordClient:
         _model = "fake-keyword-model"
 
         def chat_json(self, messages, **kwargs):
             assert "context_summary_keywords" in messages[0]["content"]
-            assert "必须默认使用简体中文" in messages[0]["content"]
-            assert "不要把中文内容翻译成英文" in messages[0]["content"]
-            assert "原子级关键词" in messages[0]["content"]
-            assert "抽取时只保留可见内容的原子语义" in messages[0]["content"]
-            assert "不要套用通用页面类型模板" in messages[0]["content"]
-            assert "AI Image Reuse Metadata Score Rules" in messages[0]["content"]
-            assert "不直接输出 `reuse_level`" in messages[0]["content"]
-            assert "core_constraints" in messages[0]["content"]
-            assert "reuse_scores" in messages[0]["content"]
-            assert "物种默认外观特征" in messages[0]["content"]
+            assert "page_image 结构" in messages[0]["content"]
+            assert "background 结构" in messages[0]["content"]
+            assert "core_keywords" in messages[0]["content"]
+            assert "AI 图像复用元数据规则" in messages[0]["content"]
+            assert "constraints" in messages[0]["content"]
+            assert "reuse_scores" not in messages[0]["content"]
+            assert "primary_subjects" not in messages[0]["content"]
             assert "You are normalizing" not in messages[0]["content"]
-            assert messages[1]["content"].startswith("请规范化以下素材")
+            assert messages[1]["content"].startswith("请按结构规范化以下素材")
             assert "current_context_summary" not in messages[1]["content"]
             assert "fallback summary should not be sent to llm" not in messages[1]["content"]
             assert "generation_prompt" not in messages[1]["content"]
@@ -643,14 +1159,29 @@ def test_keyword_enrichment_uses_same_schema_and_unions_terms():
                 "assets": [
                     {
                         "asset_id": "asset_author",
-                        "normalized_prompt": "author portrait",
-                        "context_summary": "author profile image",
-                        "teaching_intent": "show the author visually",
-                        "core_keywords": ["portrait"],
-                        "semantic_aliases": {"portrait": ["headshot"]},
-                        "context_summary_keywords": ["profile"],
-                        "core_constraints": [
-                            {"kind": "entity", "value": "author", "exact": False, "hard": True}
+                        "normalized_prompt": "作者肖像",
+                        "context_summary": "作者介绍页肖像素材",
+                        "teaching_intent": "展示作者形象",
+                        "core_keywords": ["作者", "肖像", "教学配图"],
+                        "semantic_aliases": {"作者": ["作家"], "肖像": ["人物肖像"]},
+                        "context_summary_keywords": ["作者介绍"],
+                        "constraints": [
+                            {
+                                "kind": "entity",
+                                "value": "作者",
+                                "importance": 2,
+                                "confidence": 0.8,
+                                "evidence": "请求作者肖像",
+                                "reason": "作者身份重要",
+                            },
+                            {
+                                "kind": "object",
+                                "value": "肖像",
+                                "importance": 1,
+                                "confidence": 0.8,
+                                "evidence": "请求肖像素材",
+                                "reason": "肖像形式重要",
+                            }
                         ],
                     }
                 ]
@@ -663,11 +1194,11 @@ def test_keyword_enrichment_uses_same_schema_and_unions_terms():
                 "asset_id": "asset_author",
                 "asset_kind": "page_image",
                 "image_path": "session/materials/page_01_illustration_1.png",
-                "content_prompt": "author portrait",
+                "content_prompt": "作者肖像",
                 "context_summary": "fallback summary should not be sent to llm",
-                "core_keywords": ["author"],
-                "semantic_aliases": {"author": ["writer"]},
-                "context_summary_keywords": ["lesson"],
+                "core_keywords": ["作者"],
+                "semantic_aliases": {"作者": ["作家"]},
+                "context_summary_keywords": ["课程"],
             }
         ],
         "warnings": [],
@@ -676,10 +1207,13 @@ def test_keyword_enrichment_uses_same_schema_and_unions_terms():
     enrich_ai_image_asset_db_keywords(db, FakeKeywordClient(), batch_size=1)
 
     asset = db["assets"][0]
-    assert asset["core_keywords"] == ["author", "portrait"]
-    assert asset["semantic_aliases"] == {"author": ["writer"], "portrait": ["headshot"]}
-    assert asset["context_summary_keywords"] == ["lesson", "profile"]
-    assert asset["core_constraints"] == [{"kind": "entity", "value": "author", "exact": False, "hard": True}]
+    assert asset["core_keywords"] == ["作者", "肖像"]
+    assert asset["semantic_aliases"] == {"作者": ["作家"], "肖像": ["人物肖像"]}
+    assert asset["context_summary_keywords"] == ["课程", "作者介绍"]
+    assert asset["constraints"][0]["importance"] == 2
+    assert "match_mode" not in asset["constraints"][0]
+    assert "filter_threshold" not in asset["constraints"][0]
+    assert "core_constraints" not in asset
 
 
 def test_keyword_enrichment_offline_and_online_keep_same_policy_fields():
@@ -702,7 +1236,6 @@ def test_keyword_enrichment_offline_and_online_keep_same_policy_fields():
                             "semantic_aliases": {"background": ["backdrop"]},
                             "context_summary_keywords": ["low noise"],
                             "primary_subjects": [{"name": "leaf", "strictness": "soft"}],
-                            "core_constraints": [{"kind": "object", "value": "leaf", "exact": False}],
                             "reuse_scores": {"strict_score": 1.0},
                         }
                     )
@@ -713,27 +1246,12 @@ def test_keyword_enrichment_offline_and_online_keep_same_policy_fields():
                             "normalized_prompt": "cartoon tadpole guiding classmates",
                             "context_summary": "directory page guide illustration",
                             "teaching_intent": "show the lesson guide role",
-                            "core_keywords": ["tadpole", "guide"],
-                            "semantic_aliases": {"tadpole": ["larva"]},
                             "context_summary_keywords": ["guide"],
-                            "primary_subjects": [{"name": "tadpole", "strictness": "hard", "aliases": ["larva"]}],
-                            "primary_actions": [{"name": "guide", "strictness": "medium", "aliases": ["lead"]}],
-                            "primary_emotions": [],
-                            "teaching_objects": [],
-                            "soft_modifiers": ["cartoon"],
-                            "core_constraints": [
-                                {"kind": "entity", "value": "tadpole", "exact": False, "hard": True, "aliases": ["larva"]}
+                            "core_keywords": ["tadpole", "guide"],
+                            "constraints": [
+                                {"kind": "entity", "value": "tadpole", "importance": 1},
+                                {"kind": "action", "value": "guide", "importance": 1},
                             ],
-                            "reuse_scores": {
-                                "strict_score": 0.3,
-                                "loose_score": 0.1,
-                                "generic_support_score": 0.2,
-                                "readable_knowledge_score": 0.0,
-                                "unique_referent_score": 0.0,
-                                "exact_relation_score": 0.0,
-                                "category_scores": {"character_action": 0.8},
-                                "constraint_scores": [],
-                            },
                         }
                     )
             return {"assets": assets}
@@ -770,22 +1288,23 @@ def test_keyword_enrichment_offline_and_online_keep_same_policy_fields():
         "core_keywords",
         "semantic_aliases",
         "context_summary_keywords",
-        "primary_subjects",
-        "primary_actions",
-        "core_constraints",
-        "reuse_level",
+        "constraints",
         "asset_category",
-        "generic_support_allowed",
     )
     for field in shared_fields:
         assert online_page.get(field) == offline_page.get(field)
+    assert offline_page["core_keywords"] == ["tadpole", "guide"]
+    assert offline_page["semantic_aliases"] == {}
+    for field in ("primary_subjects", "primary_actions", "primary_emotions", "teaching_objects", "soft_modifiers"):
+        assert field not in offline_page
+        assert field not in online_page
     assert "match_text" not in offline_page
     assert "match_text" in online_page
 
     for db in (offline, online):
         background = next(asset for asset in db["assets"] if asset["asset_id"] == "bg")
         assert background["core_keywords"] == ["warm", "background"]
-        for field in ("primary_subjects", "core_constraints", "reuse_scores", "reuse_level", "asset_category"):
+        for field in ("primary_subjects", "constraints", "core_constraints", "reuse_scores", "reuse_level", "asset_category"):
             assert field not in background
 
 
@@ -871,13 +1390,13 @@ def test_updates_reusable_asset_library_by_copying_images_and_merging_db(tmp_pat
     assert db_path.exists()
     assert db["output_root"] == str(library_dir.resolve())
     assert db["asset_count"] == 2
-    assert db["schema_version"] == 9
+    assert db["schema_version"] == 12
     for asset in db["assets"]:
         copied_path = library_dir / asset["image_path"]
         assert copied_path.exists()
         assert asset["image_path"].startswith("ai_images/")
-        assert asset["source"]["source_output_root"] == str(session_dir.resolve())
-        assert asset["library"]["source_output_root"] == str(session_dir.resolve())
+        assert "source" not in asset
+        assert "library" not in asset
     background = next(asset for asset in db["assets"] if asset["asset_kind"] == "background")
     for field in (
         "primary_subjects",
@@ -885,7 +1404,6 @@ def test_updates_reusable_asset_library_by_copying_images_and_merging_db(tmp_pat
         "primary_emotions",
         "teaching_objects",
         "soft_modifiers",
-        "core_constraints",
         "reuse_scores",
         "reuse_level",
         "asset_category",
@@ -931,6 +1449,8 @@ def test_ingests_output_sessions_into_reusable_asset_library(tmp_path):
     db, db_path, report = ingest_ai_image_asset_library_from_output(output_root, library_dir)
 
     assert db_path == library_dir.resolve() / "ai_image_asset_db.json"
+    assert report["library_dir"] == str(library_dir.resolve())
+    assert report["asset_root"] == str(library_dir.resolve())
     assert report["session_count"] == 2
     assert len(report["processed_sessions"]) == 2
     assert report["failed_sessions"] == []
@@ -938,7 +1458,7 @@ def test_ingests_output_sessions_into_reusable_asset_library(tmp_path):
     index_path = library_dir / "ai_image_match_index.json"
     assert index_path.exists()
     index = json.loads(index_path.read_text(encoding="utf-8"))
-    assert index["source_asset_count"] == 2
+    assert index["input_asset_count"] == 2
     assert index["asset_count"] == 2
     for asset in db["assets"]:
         copied_path = library_dir / asset["image_path"]
@@ -970,6 +1490,11 @@ def test_finds_reusable_asset_with_content_bm25_score(tmp_path):
                         "reuse_scope": "course_specific",
                         "specificity_score": 5,
                         "core_keywords": ["史铁生", "肖像"],
+                        "asset_category": "content_specific",
+                        "constraints": [
+                            {"kind": "entity", "value": "史铁生", "importance": 2},
+                            {"kind": "object", "value": "肖像", "importance": 1},
+                        ],
                         "context_keywords": ["秋天的怀念"],
                         "style_keywords": ["线条简洁"],
                     }
@@ -1000,6 +1525,11 @@ def test_finds_reusable_asset_with_content_bm25_score(tmp_path):
                 "reuse_scope": "course_specific",
                 "specificity_score": 5,
                 "core_keywords": ["史铁生", "肖像"],
+                "asset_category": "content_specific",
+                "constraints": [
+                    {"kind": "entity", "value": "史铁生", "importance": 2},
+                    {"kind": "object", "value": "肖像", "importance": 1},
+                ],
                 "context_keywords": ["秋天的怀念"],
                 "style_keywords": ["线条简洁"],
                 "match_key": "史铁生|肖像|秋天的怀念|语文|七年级",
@@ -1094,11 +1624,11 @@ def test_materialize_reused_ai_image_creates_contain_pad_derivative(tmp_path):
         session_image_path=dest,
         match={
             "asset": {"asset_id": "asset_square", "image_path": "ai_images/square.png"},
-            "library_image_path": str(source),
+            "candidate_image_path": str(source),
             "keyword_score": 0.8,
             "transform_policy": {
                 "mode": "contain_pad",
-                "source_aspect_ratio": "1:1",
+                "candidate_aspect_ratio": "1:1",
                 "target_aspect_ratio": "4:3",
                 "crop_loss": 0.25,
                 "transform_penalty": 0.09,
@@ -1106,14 +1636,12 @@ def test_materialize_reused_ai_image_creates_contain_pad_derivative(tmp_path):
             "reuse_audit": {
                 "target_theme": "lesson",
                 "target_page_number": 1,
-                "source_theme": "lesson",
-                "source_session": "session_source",
-                "source_page_number": 2,
+                "candidate_theme": "lesson",
                 "target_aspect_ratio": "4:3",
                 "candidate_aspect_ratio": "1:1",
                 "same_theme": True,
                 "cross_theme": False,
-                "source_visible_in_current_library": True,
+                "candidate_available": True,
             },
         },
     )
@@ -1124,7 +1652,7 @@ def test_materialize_reused_ai_image_creates_contain_pad_derivative(tmp_path):
     manifest = json.loads((session_dir / "materials" / "ai_image_reuse_manifest.json").read_text(encoding="utf-8"))
     assert manifest["reused_assets"][0]["transform_policy"]["mode"] == "contain_pad"
     assert manifest["reused_assets"][0]["target_theme"] == "lesson"
-    assert manifest["reused_assets"][0]["source_session"] == "session_source"
+    assert manifest["reused_assets"][0]["candidate_theme"] == "lesson"
     assert manifest["reused_assets"][0]["same_theme"] is True
     assert manifest["reused_assets"][0]["reuse_audit"]["target_aspect_ratio"] == "4:3"
 
@@ -1143,12 +1671,12 @@ def test_materialize_reused_ai_image_refuses_transform_reject(tmp_path):
             session_image_path=dest,
             match={
                 "asset": {"asset_id": "asset_square", "image_path": "ai_images/square.png"},
-                "library_image_path": str(source),
+                "candidate_image_path": str(source),
                 "keyword_score": 0.95,
                 "transform_policy": {
                     "decision": "reject",
                     "mode": "copy",
-                    "source_aspect_ratio": "1:1",
+                    "candidate_aspect_ratio": "1:1",
                     "target_aspect_ratio": "16:9",
                     "reason": "hero_aspect_mismatch_too_large",
                 },
@@ -1186,6 +1714,11 @@ def test_match_index_omits_deprecated_constraints_and_normalizes_grade(tmp_path)
                     "教学插画",
                     "无文字水印",
                 ],
+                "asset_category": "content_specific",
+                "constraints": [
+                    {"kind": "entity", "value": "史铁生", "importance": 2},
+                    {"kind": "object", "value": "肖像", "importance": 1},
+                ],
                 "style_keywords": [],
                 "must_match": [],
                 "must_not_conflict": [
@@ -1205,6 +1738,8 @@ def test_match_index_omits_deprecated_constraints_and_normalizes_grade(tmp_path)
     assert asset["grade_norm"] == "七年级"
     assert asset["grade_band"] == "高年级"
     assert asset["core_keywords"] == ["史铁生", "肖像"]
+    assert [item["value"] for item in asset["constraints"]] == ["史铁生", "肖像"]
+    assert "focus_dimensions" not in asset
     assert "reuse_scope" not in asset
     assert "specificity_score" not in asset
     assert asset["role"] == "illustration"
@@ -1251,8 +1786,8 @@ def test_find_reusable_background_prefers_matching_color_bias(tmp_path):
     (image_dir / "asset_cool.png").write_bytes(b"cool")
     (image_dir / "asset_warm.png").write_bytes(b"warm")
     match_index = {
-        "schema_version": 10,
-        "source_asset_count": 0,
+        "schema_version": 12,
+        "input_asset_count": 0,
         "asset_count": 2,
         "assets": [
             {
@@ -1346,13 +1881,12 @@ def test_update_library_writes_slim_match_index(tmp_path):
     assert db["asset_count"] == 1
     assert index_path.exists()
     index = json.loads(index_path.read_text(encoding="utf-8"))
-    assert index["source_asset_count"] == 1
+    assert index["input_asset_count"] == 1
     assert index["asset_count"] == 1
     asset = index["assets"][0]
     assert asset["theme"] == "topic"
-    assert asset["source"]["session_id"] == "session_20260507_150001"
-    assert asset["source"]["page_number"] == 1
-    assert asset["library"]["source_output_root"] == str(session_dir.resolve())
+    assert "source" not in asset
+    assert "library" not in asset
     assert "style_prompt" not in asset
     assert asset["prompt_route"] == {"template_family": "lower", "profile_ids": ["lower_base"]}
 
@@ -1377,6 +1911,8 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
                         "reuse_scope": "course_specific",
                         "specificity_score": 5,
                         "core_keywords": ["author", "portrait"],
+                        "asset_category": "content_specific",
+                        "constraints": [{"kind": "entity", "value": "author", "importance": 2}],
                         "context_keywords": ["lesson"],
                         "style_keywords": [],
                         "main_entities": ["author"],
@@ -1413,8 +1949,8 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
         ],
     }
     match_index = {
-        "schema_version": 10,
-        "source_asset_count": 1,
+        "schema_version": 12,
+        "input_asset_count": 1,
         "asset_count": 1,
         "assets": [
             {
@@ -1431,12 +1967,11 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
                 "context_summary": "author profile image",
                 "teaching_intent": "author profile image",
                 "theme": "lesson",
-                "source": {
-                    "session_id": "session_source",
-                    "page_number": 3,
-                    "source_output_root": "/tmp/output/session_source",
-                    "source_image_path": "materials/page_03_illustration_1.png",
-                },
+                "asset_category": "content_specific",
+                "constraints": [{"kind": "entity", "value": "author", "importance": 2}],
+                "core_keywords": ["author"],
+                "semantic_aliases": {},
+                "context_summary_keywords": [],
                 "duplicate_asset_ids": [],
             }
         ],
@@ -1462,15 +1997,13 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
     assert match is not None
     assert match["asset"]["asset_id"] == "asset_author"
     assert match["reuse_audit"]["target_theme"] == "lesson"
-    assert match["reuse_audit"]["source_theme"] == "lesson"
-    assert match["reuse_audit"]["source_session"] == "session_source"
-    assert match["reuse_audit"]["source_page_number"] == 3
+    assert match["reuse_audit"]["candidate_theme"] == "lesson"
     assert match["reuse_audit"]["same_theme"] is True
     assert match["reuse_audit"]["cross_theme"] is False
     debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
     assert debug["queries"][0]["match_index_path"].endswith("ai_image_match_index.json")
     assert debug["queries"][0]["decision"]["reuse_audit"]["target_theme"] == "lesson"
-    assert debug["queries"][0]["decision"]["reuse_audit"]["source_session"] == "session_source"
+    assert debug["queries"][0]["decision"]["reuse_audit"]["candidate_theme"] == "lesson"
 
 
 def test_reuse_policy_rejects_conflicting_top_candidate_and_accepts_next(tmp_path):
@@ -1494,7 +2027,7 @@ def test_reuse_policy_rejects_conflicting_top_candidate_and_accepts_next(tmp_pat
                         "core_keywords": ["character", "bi"],
                         "semantic_aliases": {},
                         "context_summary_keywords": ["character card"],
-                        "reuse_scores": _strict_text_reuse_scores("character: bi"),
+                        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2}],
                     }
                 ]
             }
@@ -1520,7 +2053,7 @@ def test_reuse_policy_rejects_conflicting_top_candidate_and_accepts_next(tmp_pat
                 "semantic_aliases": {},
                 "reuse_level": "strict",
                 "asset_category": "content_specific",
-                "core_constraints": [{"kind": "text", "value": "character: bei", "exact": True}],
+                "constraints": [{"kind": "text", "value": "character: bei", "importance": 2, "match_mode": "exact"}],
                 "generic_support_allowed": False,
             },
             {
@@ -1534,7 +2067,7 @@ def test_reuse_policy_rejects_conflicting_top_candidate_and_accepts_next(tmp_pat
                 "semantic_aliases": {},
                 "reuse_level": "strict",
                 "asset_category": "content_specific",
-                "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
                 "generic_support_allowed": False,
             },
         ],
@@ -1589,7 +2122,7 @@ def test_summary_debug_records_top_two_candidates_when_no_reuse(tmp_path):
                         "core_keywords": ["character", "bi"],
                         "semantic_aliases": {},
                         "context_summary_keywords": ["character card"],
-                        "reuse_scores": _strict_text_reuse_scores("character: bi"),
+                        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2}],
                     }
                 ]
             }
@@ -1615,7 +2148,7 @@ def test_summary_debug_records_top_two_candidates_when_no_reuse(tmp_path):
                 "semantic_aliases": {},
                 "reuse_level": "strict",
                 "asset_category": "content_specific",
-                "core_constraints": [{"kind": "text", "value": "character: bei", "exact": True}],
+                "constraints": [{"kind": "text", "value": "character: bei", "importance": 2, "match_mode": "exact"}],
                 "generic_support_allowed": False,
             },
             {
@@ -1629,7 +2162,7 @@ def test_summary_debug_records_top_two_candidates_when_no_reuse(tmp_path):
                 "semantic_aliases": {},
                 "reuse_level": "strict",
                 "asset_category": "content_specific",
-                "core_constraints": [{"kind": "text", "value": "character: pi", "exact": True}],
+                "constraints": [{"kind": "text", "value": "character: pi", "importance": 2, "match_mode": "exact"}],
                 "generic_support_allowed": False,
             },
         ],
@@ -1681,7 +2214,7 @@ def test_strict_reuse_session_limit_skips_candidate_after_two_uses(tmp_path):
                         "core_keywords": ["character", "bi"],
                         "semantic_aliases": {},
                         "context_summary_keywords": ["character card"],
-                        "reuse_scores": _strict_text_reuse_scores("character: bi"),
+                        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2}],
                     }
                 ]
             }
@@ -1707,7 +2240,7 @@ def test_strict_reuse_session_limit_skips_candidate_after_two_uses(tmp_path):
                 "semantic_aliases": {},
                 "reuse_level": "strict",
                 "asset_category": "content_specific",
-                "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
                 "generic_support_allowed": False,
             },
             {
@@ -1721,7 +2254,7 @@ def test_strict_reuse_session_limit_skips_candidate_after_two_uses(tmp_path):
                 "semantic_aliases": {},
                 "reuse_level": "strict",
                 "asset_category": "content_specific",
-                "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
                 "generic_support_allowed": False,
             },
         ],
@@ -1779,7 +2312,7 @@ def test_plan_reuse_match_check_does_not_generate_or_ingest_assets(tmp_path):
                         "core_keywords": ["character", "bi"],
                         "semantic_aliases": {},
                         "context_summary_keywords": ["character card"],
-                        "reuse_scores": _strict_text_reuse_scores("character: bi"),
+                        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2}],
                     }
                 ]
             }
@@ -1804,7 +2337,7 @@ def test_plan_reuse_match_check_does_not_generate_or_ingest_assets(tmp_path):
                 "semantic_aliases": {},
                 "reuse_level": "strict",
                 "asset_category": "content_specific",
-                "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
                 "generic_support_allowed": False,
             }
         ],
@@ -1844,7 +2377,7 @@ def test_plan_reuse_match_check_does_not_generate_or_ingest_assets(tmp_path):
     )
 
     assert report["generated_images"] is False
-    assert report["updated_asset_library"] is False
+    assert report["updated_asset_store"] is False
     assert report["check_count"] == 1
     assert report["matched_count"] == 1
     assert report["checks"][0]["asset_id"] == "character"
@@ -1874,7 +2407,7 @@ def test_plan_reuse_match_check_can_copy_matches_to_session(tmp_path):
                         "core_keywords": ["character", "bi"],
                         "semantic_aliases": {},
                         "context_summary_keywords": ["character card"],
-                        "reuse_scores": _strict_text_reuse_scores("character: bi"),
+                        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2}],
                     }
                 ]
             }
@@ -1899,7 +2432,7 @@ def test_plan_reuse_match_check_can_copy_matches_to_session(tmp_path):
                 "semantic_aliases": {},
                 "reuse_level": "strict",
                 "asset_category": "content_specific",
-                "core_constraints": [{"kind": "text", "value": "character: bi", "exact": True}],
+                "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
                 "generic_support_allowed": False,
             }
         ],
@@ -1944,7 +2477,7 @@ def test_plan_reuse_match_check_can_copy_matches_to_session(tmp_path):
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
     assert report["generated_images"] is False
-    assert report["updated_asset_library"] is False
+    assert report["updated_asset_store"] is False
     assert report["materialize_matches"] is True
     assert report["materialized_count"] == 1
     assert report["checks"][0]["asset_id"] == "character"
