@@ -8,7 +8,9 @@ from edupptx.config import Config
 from edupptx.llm_client import (
     DoubaoResponsesClient,
     LLMClient,
+    VLMClient,
     create_llm_client,
+    create_vlm_client,
 )
 
 
@@ -29,6 +31,15 @@ def responses_config():
         llm_model="test-model",
         llm_base_url="https://ark.cn-beijing.volces.com/api/v3",
         llm_provider="responses",
+    )
+
+
+@pytest.fixture
+def vlm_config():
+    return Config(
+        vlm_api_key="test-vlm-key",
+        vlm_model="test-vlm-model",
+        vlm_base_url="https://ark.cn-beijing.volces.com/api/v3",
     )
 
 
@@ -203,6 +214,48 @@ class TestDoubaoResponsesClientChat:
         assert result == {"key": "value"}
 
 
+class TestVLMClient:
+    def test_create_vlm_client_returns_vlm_client(self, vlm_config):
+        client = create_vlm_client(vlm_config)
+        assert isinstance(client, VLMClient)
+
+    @patch("edupptx.llm_client.OpenAI")
+    def test_chat_vlm_json_calls_chat_completions_with_image_messages(self, mock_openai_cls, vlm_config):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content='{"ok": true}'))]
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_openai_cls.return_value = mock_client
+
+        messages = [
+            {"role": "system", "content": "return json"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "metadata"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+                ],
+            },
+        ]
+
+        client = VLMClient(vlm_config)
+        result = client.chat_vlm_json(messages=messages, temperature=0.2, max_tokens=123)
+
+        assert result == {"ok": True}
+        init_kwargs = mock_openai_cls.call_args.kwargs
+        assert init_kwargs["api_key"] == "test-vlm-key"
+        assert init_kwargs["base_url"] == "https://ark.cn-beijing.volces.com/api/v3"
+        assert init_kwargs["timeout"] == 120
+        assert init_kwargs["max_retries"] == 1
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["model"] == "test-vlm-model"
+        assert call_kwargs["messages"] == messages
+        assert call_kwargs["temperature"] == 0.2
+        assert call_kwargs["max_tokens"] == 123
+        assert call_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+
+
 class TestConfigProvider:
     def test_default_provider_is_chat(self):
         config = Config()
@@ -211,3 +264,25 @@ class TestConfigProvider:
     def test_default_web_search_is_false(self):
         config = Config()
         assert config.web_search is False
+
+    def test_from_env_loads_vlm_config(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("VLM_MODEL", raising=False)
+        monkeypatch.delenv("VLM_APIKEY", raising=False)
+        monkeypatch.delenv("VLM_BASE_URL", raising=False)
+        env_path = tmp_path / ".env"
+        env_path.write_text(
+            "\n".join(
+                [
+                    "VLM_MODEL=seed-mini # comment",
+                    "VLM_APIKEY=vlm-key",
+                    "VLM_BASE_URL=https://example.test/api/v3/chat/completions",
+                ]
+            ),
+            encoding="utf-8",
+        )
+
+        config = Config.from_env(env_path)
+
+        assert config.vlm_model == "seed-mini"
+        assert config.vlm_api_key == "vlm-key"
+        assert config.vlm_base_url == "https://example.test/api/v3"

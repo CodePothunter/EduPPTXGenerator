@@ -13,6 +13,7 @@ from edupptx.materials.reuse_policy import (
     normalize_asset_metadata,
     normalize_reuse_policy_fields,
     reuse_threshold_for_target,
+    subject_coverage_undercoverage,
 )
 
 
@@ -2129,4 +2130,5 @@ def test_evaluate_reuse_filter_downgrades_on_extra_teaching_content():
     assert result["decision"] == "llm_review"
     assert result["reason"] == "candidate_extra_teaching_content"
     assert any(item.get("value") == "枚" for item in result["review_items"])
+
 

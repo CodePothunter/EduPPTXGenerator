@@ -354,7 +354,15 @@ def test_empty_constraints_do_not_remove_llm_core_keywords():
     assert "史铁生" in _build_match_text(match_asset)
 
 
-def test_constraints_do_not_backfill_empty_llm_core_keywords(caplog):
+def test_empty_llm_core_keywords_fallback_from_content_prompt(caplog):
+    """When the LLM omits core_keywords, the asset_db must fall back to
+    extracting tokens from content_prompt instead of shipping an empty list.
+
+    An empty core_keywords field breaks BM25/substring recall (see the 3
+    empty 比尾巴 assets in materials_library: aiimg_c217.../c4b2.../8a52...
+    which became unrecallable). The fallback should emit a fallback warning
+    so the failure mode stays visible in logs."""
+
     class FakeKeywordClient:
         _model = "fake-keyword-model"
 
@@ -394,9 +402,10 @@ def test_constraints_do_not_backfill_empty_llm_core_keywords(caplog):
 
     asset = db["assets"][0]
     assert asset["constraints"]
-    assert asset["core_keywords"] == []
+    assert asset["core_keywords"], "fallback should extract tokens from content_prompt"
+    assert "小蝌蚪" in "".join(asset["core_keywords"])
     assert asset["semantic_aliases"] == {"小蝌蚪": ["蝌蚪幼体"]}
-    assert "page_image_core_keywords_empty" in caplog.text
+    assert "page_image_core_keywords_fallback" in caplog.text
 
 
 def test_background_keeps_llm_core_keywords_without_constraints_or_category():

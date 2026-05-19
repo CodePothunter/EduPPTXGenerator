@@ -21,6 +21,11 @@ class Config:
     image_model: str = ""
     image_base_url: str = ""
 
+    # Vision-language model for asset verification/enrichment
+    vlm_api_key: str = ""
+    vlm_model: str = ""
+    vlm_base_url: str = ""
+
     # Image search
     pixabay_api_key: str = ""
     unsplash_access_key: str = ""
@@ -58,6 +63,10 @@ class Config:
         # Seedream uses Volcengine (ark.cn-beijing.volces.com)
         _DEFAULT_IMAGE_BASE = "https://ark.cn-beijing.volces.com/api/v3"
         image_base = os.getenv("VISION_GEN_BASE_URL", "") or _DEFAULT_IMAGE_BASE
+        vlm_base = os.getenv("VLM_BASE_URL", "") or _DEFAULT_IMAGE_BASE
+        vlm_base = vlm_base.rstrip("/")
+        if vlm_base.endswith("/chat/completions"):
+            vlm_base = vlm_base[:-len("/chat/completions")]
 
         return cls(
             llm_api_key=os.getenv("GEN_APIKEY", ""),
@@ -70,6 +79,9 @@ class Config:
             image_api_key=os.getenv("VISION_GEN_APIKEY", ""),
             image_model=os.getenv("VISION_GEN_MODEL", "").split("#")[0].strip(),
             image_base_url=image_base,
+            vlm_api_key=os.getenv("VLM_APIKEY", ""),
+            vlm_model=os.getenv("VLM_MODEL", "").split("#")[0].strip(),
+            vlm_base_url=vlm_base,
             pixabay_api_key=os.getenv("PIXABAY_API_KEY", ""),
             unsplash_access_key=os.getenv("UNSPLASH_ACCESS_KEY", ""),
             tavily_api_key=os.getenv("TAVILY_API_KEY", ""),

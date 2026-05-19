@@ -86,6 +86,9 @@ PAGE_IMAGE_REUSE_THRESHOLDS = {
     "strict": 0.63,
 }
 BACKGROUND_REUSE_THRESHOLD = 0.38
+BACKGROUND_SAME_THEME_THRESHOLD = 0.34
+BACKGROUND_SAME_THEME_HIGH_EMBEDDING_THRESHOLD = 0.30
+BACKGROUND_SAME_THEME_HIGH_EMBEDDING_FLOOR = 0.70
 LLM_REVIEW_REQUIRED_KINDS = {"text", "math", "physics"}
 CONSTRAINT_EMBEDDING_THRESHOLDS = {
     "entity": (0.92, 0.80),
@@ -401,6 +404,61 @@ def extra_teaching_content_constraints(
     return extras
 
 
+def subject_coverage_undercoverage(
+    target_constraints: list[dict[str, Any]],
+    candidate_constraints: list[dict[str, Any]],
+    *,
+    min_group_size: int = 2,
+) -> list[dict[str, Any]]:
+    """Detect target subject groups where candidate covers fewer than ⌈N/2⌉ members.
+
+    Groups target imp>=1 constraints by (kind, importance). When a group has
+    N>=min_group_size members, count how many are covered by a same-kind
+    light-match in the candidate. If matched < ceil(N/2), the candidate is
+    missing too much of the page's intended subject set — the reuse should be
+    rejected rather than sent to LLM review, since LLM review can't fabricate
+    the missing subjects out of an image that doesn't contain them.
+    """
+
+    active = [item for item in normalize_constraints(target_constraints) if _constraint_importance(item) >= 1]
+    if not active:
+        return []
+
+    groups: dict[tuple[str, int], list[dict[str, Any]]] = {}
+    for item in active:
+        key = (item["kind"], _constraint_importance(item))
+        groups.setdefault(key, []).append(item)
+
+    candidates_norm = normalize_constraints(candidate_constraints)
+    undercovered: list[dict[str, Any]] = []
+    for (kind, importance), members in groups.items():
+        if len(members) < min_group_size:
+            continue
+        same_kind = [c for c in candidates_norm if c["kind"] == kind]
+        matched_values: list[str] = []
+        missing_values: list[str] = []
+        for target in members:
+            if any(_light_constraint_match_method(target, c) for c in same_kind):
+                matched_values.append(target["value"])
+            else:
+                missing_values.append(target["value"])
+        required = (len(members) + 1) // 2
+        if len(matched_values) < required:
+            undercovered.append(
+                {
+                    "kind": kind,
+                    "importance": importance,
+                    "target_values": [t["value"] for t in members],
+                    "matched_values": matched_values,
+                    "missing_values": missing_values,
+                    "matched_count": len(matched_values),
+                    "required_count": required,
+                    "group_size": len(members),
+                }
+            )
+    return undercovered
+
+
 def candidate_extra_strong_constraints(
     target_constraints: list[dict[str, Any]],
     candidate_constraints: list[dict[str, Any]],
@@ -612,6 +670,17 @@ def evaluate_reuse_filter(
         )
 
     if target_kind == "background":
+        same_theme = (
+            _clean_text(target.get("theme")) != ""
+            and _clean_text(target.get("theme")) == _clean_text(candidate.get("theme"))
+        )
+        if same_theme:
+            bg_embedding_score = _embedding_score_from_details(score_details)
+            if bg_embedding_score >= BACKGROUND_SAME_THEME_HIGH_EMBEDDING_FLOOR:
+                threshold_used = min(threshold_used, BACKGROUND_SAME_THEME_HIGH_EMBEDDING_THRESHOLD)
+            else:
+                threshold_used = min(threshold_used, BACKGROUND_SAME_THEME_THRESHOLD)
+            score_gap = score - threshold_used
         if score >= threshold_used:
             return _result(
                 "full_match",
@@ -819,6 +888,32 @@ def evaluate_reuse_filter(
                     target_policy=target_policy,
                     candidate_policy=candidate_policy,
                 )
+        undercovered_groups = subject_coverage_undercoverage(
+            target_constraints,
+            candidate_constraints,
+        )
+        if undercovered_groups:
+            return _result(
+                "reject",
+                "subject_coverage_undercoverage",
+                conflicts=[
+                    {
+                        "kind": group["kind"],
+                        "target": "+".join(group["target_values"]),
+                        "candidate_values": group["matched_values"],
+                        "missing_values": group["missing_values"],
+                        "matched_count": group["matched_count"],
+                        "required_count": group["required_count"],
+                        "group_size": group["group_size"],
+                    }
+                    for group in undercovered_groups
+                ],
+                confidence=0.9,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
         medium_strong_missing = [item for item in medium_missing if _is_specific_constraint(item)]
         if medium_missing and not (semantic_signal and not medium_strong_missing):
             return _result(

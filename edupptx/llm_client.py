@@ -165,6 +165,79 @@ def create_llm_client(config: "Config", web_search: bool | None = None) -> LLMCl
     return LLMClient(config)
 
 
+class VLMClient:
+    """OpenAI-compatible vision-language client for image verification."""
+
+    def __init__(self, config: Config):
+        self._client = OpenAI(
+            api_key=config.vlm_api_key,
+            base_url=config.vlm_base_url or None,
+            timeout=120,
+            max_retries=1,
+        )
+        self._model = config.vlm_model
+        self._is_doubao = "volces.com" in (config.vlm_base_url or "")
+
+    def chat_vlm(
+        self,
+        messages: list[dict[str, Any]],
+        temperature: float = 0.1,
+        max_tokens: int = 4096,
+    ) -> str:
+        kwargs: dict[str, Any] = dict(
+            model=self._model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        if self._is_doubao:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        resp = self._client.chat.completions.create(**kwargs)
+        return resp.choices[0].message.content or ""
+
+    def chat_vlm_json(
+        self,
+        messages: list[dict[str, Any]],
+        temperature: float = 0.1,
+        max_tokens: int = 4096,
+        max_retries: int = 1,
+    ) -> dict[str, Any]:
+        """Chat with image-capable messages and parse a JSON object response."""
+        for attempt in range(1 + max_retries):
+            raw = self.chat_vlm(messages, temperature=temperature, max_tokens=max_tokens)
+            text = LLMClient._strip_fences(raw)
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError as exc:
+                try:
+                    import json_repair
+
+                    payload = json_repair.loads(text)
+                except Exception:
+                    if attempt < max_retries:
+                        logger.warning(
+                            "VLM JSON parse failed (attempt {}), retrying: {}",
+                            attempt + 1,
+                            str(exc)[:80],
+                        )
+                        continue
+                    logger.error(
+                        "VLM JSON parse failed after {} attempts, raw length: {} chars",
+                        attempt + 1,
+                        len(raw),
+                    )
+                    raise
+            if not isinstance(payload, dict):
+                raise ValueError("VLM response is not a JSON object")
+            return payload
+        raise RuntimeError("VLM JSON parsing exhausted retries")
+
+
+def create_vlm_client(config: "Config") -> VLMClient:
+    """Create the configured OpenAI-compatible VLM client."""
+    return VLMClient(config)
+
+
 class ImageClient:
     """Thin wrapper around the OpenAI SDK for image generation."""
 

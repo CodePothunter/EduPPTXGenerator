@@ -130,6 +130,18 @@ BACKGROUND_REUSE_THRESHOLD = 0.38
 _EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+_VLM_RICH_ASSET_FIELDS = (
+    "vlm_schema_version",
+    "vlm_verified",
+    "vlm_verified_at",
+    "vlm_model",
+    "vlm_verified_constraints",
+    "vlm_missing_from_prompt",
+    "vlm_visual_aliases",
+    "vlm_visual_style",
+    "vlm_match_quality",
+    "vlm_needs_regeneration",
+)
 _BACKGROUND_ROUTE_FIELDS = (
     "template_family",
     "style_name",
@@ -2096,6 +2108,7 @@ def _apply_keyword_payload(
     *,
     include_match_keywords: bool = False,
 ) -> None:
+    preserved_vlm_fields = _preserve_vlm_fields(asset)
     context_exclusions = _context_exclusions(asset)
     grade_info = normalize_grade_info(asset.get("grade") or asset.get("grade_norm"), asset.get("theme"))
     normalized_prompt = _clean_text(payload.get("normalized_prompt")) or _default_normalized_prompt(asset)
@@ -2121,6 +2134,25 @@ def _apply_keyword_payload(
             exclude=context_exclusions | _GENERIC_CORE_NOISE,
             max_items=12,
         )
+        if not core_keywords:
+            for source in (
+                _asset_content_prompt(asset),
+                _clean_text(payload.get("normalized_prompt")) or _clean_text(asset.get("normalized_prompt")),
+                _clean_text(asset.get("theme")),
+            ):
+                fallback = _fallback_core_keywords_from_text(
+                    source,
+                    exclude=context_exclusions | _GENERIC_CORE_NOISE,
+                    max_items=12,
+                )
+                if fallback:
+                    LOGGER.warning(
+                        "background_core_keywords_fallback asset_id=%s tokens=%s",
+                        _clean_text(asset.get("asset_id")),
+                        fallback,
+                    )
+                    core_keywords = fallback
+                    break
         semantic_aliases = _merge_semantic_aliases(
             _clean_semantic_aliases(asset.get("semantic_aliases")),
             _clean_semantic_aliases(payload.get("semantic_aliases")),
@@ -2158,6 +2190,7 @@ def _apply_keyword_payload(
             "semantic_aliases": semantic_aliases,
             "context_summary_keywords": context_summary_keywords,
         }
+        cleaned.update(preserved_vlm_fields)
         asset.clear()
         asset.update(cleaned)
         if include_match_keywords:
@@ -2175,8 +2208,9 @@ def _apply_keyword_payload(
             "constraints": merged_constraints,
         }
     )["asset_category"]
-    core_keywords = _clean_recall_core_keywords(
-        payload.get("core_keywords"),
+    core_keywords = _resolve_page_core_keywords(
+        asset,
+        payload,
         exclude=context_exclusions | _GENERIC_CORE_NOISE,
         max_items=8,
     )
@@ -2223,6 +2257,7 @@ def _apply_keyword_payload(
         "semantic_aliases": semantic_aliases,
         "duplicate_asset_ids": _dedupe_terms(_as_string_list(asset.get("duplicate_asset_ids"))),
     }
+    cleaned.update(preserved_vlm_fields)
     asset.clear()
     asset.update(cleaned)
     if include_match_keywords:
@@ -2347,6 +2382,110 @@ def _clean_recall_core_keywords(
         if len(results) >= max_items:
             break
     return _dedupe_terms(results)[:max_items]
+
+
+_FALLBACK_TEXT_SPLITTER = re.compile(
+    r"[\s,，。、；;:：!！?？/／()（）\[\]【】「」『』\"'…—\-_"
+    r"的着了和与及或里中上下前后内外"
+    r"各种一些若干许多很多多种各类"
+    r"一只一群一条一头一个其中"
+    r"0123456789０１２３４５６７８９%％]+"
+)
+
+
+def _fallback_core_keywords_from_text(
+    text: str,
+    *,
+    exclude: set[str],
+    max_items: int,
+) -> list[str]:
+    """Last-resort core_keywords extraction from a raw text source.
+
+    Used only when the LLM payload omits core_keywords and the asset would
+    otherwise ship with an empty list (breaking BM25/substring recall).
+    Splits on Chinese particles and punctuation and keeps short atomic
+    fragments that pass the existing recall-keyword filter. This is a safety
+    net, not a real tokenizer.
+    """
+
+    if not text:
+        return []
+    parts = _FALLBACK_TEXT_SPLITTER.split(str(text))
+    results: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        token = _clean_keyword(part)
+        if not token or token in seen:
+            continue
+        compact = token.replace(" ", "")
+        if len(compact) < 2 or len(compact) > 8:
+            continue
+        if not re.search(r"[一-鿿]", compact):
+            continue
+        if _should_skip_recall_core_keyword(token):
+            continue
+        if _is_excluded_keyword(token, exclude):
+            continue
+        seen.add(token)
+        results.append(token)
+        if len(results) >= max_items:
+            break
+    return results
+
+
+def _resolve_page_core_keywords(
+    asset: dict[str, Any],
+    payload: dict[str, Any],
+    *,
+    exclude: set[str],
+    max_items: int,
+) -> list[str]:
+    """Resolve page_image core_keywords with a three-tier fallback.
+
+    Order: (1) LLM payload core_keywords, (2) fallback extracted from
+    content_prompt, (3) fallback extracted from normalized_prompt, (4) theme
+    tokens. Each tier is filtered through the standard recall skip rules and
+    the running exclude set so we never inject grade/subject/style noise.
+    """
+
+    primary = _clean_recall_core_keywords(
+        payload.get("core_keywords"),
+        exclude=exclude,
+        max_items=max_items,
+    )
+    if primary:
+        return primary
+
+    for source in (
+        _asset_content_prompt(asset),
+        _clean_text(payload.get("normalized_prompt")) or _clean_text(asset.get("normalized_prompt")),
+    ):
+        fallback = _fallback_core_keywords_from_text(
+            source,
+            exclude=exclude,
+            max_items=max_items,
+        )
+        if fallback:
+            LOGGER.warning(
+                "page_image_core_keywords_fallback asset_id=%s source=%s tokens=%s",
+                _clean_text(asset.get("asset_id")),
+                "content_prompt" if source == _asset_content_prompt(asset) else "normalized_prompt",
+                fallback,
+            )
+            return fallback
+
+    theme_tokens = _fallback_core_keywords_from_text(
+        _clean_text(asset.get("theme")),
+        exclude=exclude,
+        max_items=max_items,
+    )
+    if theme_tokens:
+        LOGGER.warning(
+            "page_image_core_keywords_fallback asset_id=%s source=theme tokens=%s",
+            _clean_text(asset.get("asset_id")),
+            theme_tokens,
+        )
+    return theme_tokens
 
 
 def _warn_missing_page_core_keywords(asset: dict[str, Any]) -> None:
@@ -2707,6 +2846,7 @@ def _normalize_asset_for_match(
 
 
 def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: bool = False) -> None:
+    preserved_vlm_fields = _preserve_vlm_fields(asset)
     content_prompt = _asset_content_prompt(asset)
     normalized_prompt = _default_normalized_prompt(asset)
     context_summary = _clean_text(asset.get("context_summary")) or _fallback_context_summary(asset)
@@ -2745,6 +2885,7 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
                 exclude=_context_exclusions(asset) | _GENERIC_CORE_NOISE,
             ),
         }
+        cleaned.update(preserved_vlm_fields)
         asset.clear()
         asset.update(cleaned)
         return
@@ -2790,6 +2931,7 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
         "semantic_aliases": semantic_aliases,
         "duplicate_asset_ids": _dedupe_terms(_as_string_list(asset.get("duplicate_asset_ids"))),
     }
+    cleaned.update(preserved_vlm_fields)
     asset.clear()
     asset.update(cleaned)
 
@@ -4804,6 +4946,10 @@ def _as_string_list(value: Any) -> list[str]:
         return [_clean_text(item) for item in value if _clean_text(item)]
     text = _clean_text(value)
     return [text] if text else []
+
+
+def _preserve_vlm_fields(asset: dict[str, Any]) -> dict[str, Any]:
+    return {key: deepcopy(asset[key]) for key in _VLM_RICH_ASSET_FIELDS if key in asset}
 
 
 def _dedupe_warnings(values: list[str]) -> list[str]:

@@ -20,9 +20,19 @@
 }
 ```
 
-`constraints` 和 `core_keywords` 都必须直接基于 `content_prompt` 中的可见内容提取。`normalized_prompt` 只是简洁视觉描述，不能作为约束或关键词的唯一来源。
+`constraints` 和 `core_keywords` 都必须直接基于 `content_prompt` 中的可见内容提取。`normalized_prompt` 只是简洁视觉描述,不能作为约束或关键词的唯一来源。
 
-`constraints` 用于复用安全过滤，`core_keywords` 用于 BM25、embedding 和 substring 召回。
+`constraints` 用于复用安全过滤,`core_keywords` 用于 BM25、embedding 和 substring 召回。
+
+### 非空硬约束
+
+任何 `page_image` 都必须输出至少 **1 条 constraints** 和 **≥3 个 core_keywords**；`asset_category` 不得为 `unknown`（若实在判别不出，选 `concept_scene` 或 `symbolic_material` 兜底）。
+
+封面页（`page_type=cover`）不得因为「主题氛围」「整体装饰」等理由留空 constraints。封面图统一按下面三类拆解：
+
+- **封面主视觉**：抽出画面里可见的主要实体作为 constraint，importance 按下方「entity 三步判别决策」判定。
+- **封面艺术字标题**：标题文字本身按 `text.teaching_content imp=2` 抽——封面是少数允许把页面标题当可见 text 的场景；`core_keywords` 至少包含标题词本身 + 主题词。
+- **封面装饰元素**：按 `object.decorative imp=0` 处理，但仍需出现在 constraints 列表中。
 
 允许的 `asset_category` 取值：
 
@@ -56,6 +66,12 @@
 - 不要使用完整句子，也不要使用包含 `的` 的中文组合短语。
 - 不要把风格、画法、图像质量、课堂用途、页面功能或泛化视觉修饰作为约束。
 
+### 多主体并列拆分
+
+当 `content_prompt` 列出 **N≥2 个并列实体**时，必须**逐个**抽为独立 constraint。**禁止**合并成「一群X」「各种X」「若干X」「多种X」「多个X」这类聚合 value——聚合写法会让复用候选无法逐一对应，任何「含有其中一两项」的候选都会被错误高分匹配。
+
+每条独立 constraint 的 importance 按下方「entity 三步判别决策」独立判定。同一组并列实体可能拥有不同 importance：若是本课要让学生识别／认识的对象，每条都升 species_instance imp=2；若只是氛围装饰，每条保持 generic_class imp=0。
+
 ### kind 类型说明
 
 - `entity`：具名人物、动物、角色或特定主体身份。
@@ -63,7 +79,7 @@
 - `action`：可见动作、姿态、互动或行为。
 - `scene`：地点、空间关系、场景或故事情境。
 - `emotion`：可见情绪状态。
-- `text`：可读汉字、词语、拼音、标签、答案或其他可见文字。
+- `text`：可读汉字、词语、拼音、标签、答案或其他可见文字。**只在 `content_prompt` 明确指示画面「显示／标注／写有」该文字时抽**；仅作为「来源／出处／作品名／教学背景／引用」出现的标题或作品名**不抽**——它们是 metadata 而非画面元素。判别问：如果生成模型不画这几个字，画面看起来还合理吗？合理 → 不抽。**例外**：封面页的艺术字标题属于「画面就是这几个字」的场景，按 `text.teaching_content imp=2` 抽（见上方「非空硬约束」）。
 - `math`：公式、数量、方程、不等式、计数或几何关系。
 - `physics`：物理量、单位、公式、电路标注或实验标注。
 
@@ -74,9 +90,9 @@
 | kind | 允许的 subtype | 含义 |
 |---|---|---|
 | entity | `named_individual` | 具名个体：真实人物、虚构角色名、品牌人物（史铁生、爱因斯坦、孙悟空、Elsa） |
-| entity | `species_instance` | 与特定故事/教材绑定的物种实例（"小蝌蚪找妈妈"里的小蝌蚪、"龟兔赛跑"里的乌龟） |
+| entity | `species_instance` | 不可类替换的具体物种／生物分类／文化符号实体。涵盖三种情形：（a）文学／教材绑定的特定生物；（b）本课目标是让学生识别／认识／区分的真实物种；（c）不可类替换的文化具象符号（龙、凤凰、麒麟） |
 | entity | `role` | 角色、亲缘称谓、职业（妈妈、老师、医生、警察、农民） |
-| entity | `generic_class` | 泛类生物或角色（小朋友、男孩、女孩、小猴子、动物） |
+| entity | `generic_class` | 泛类生物或角色（小朋友、男孩、女孩、动物、植物）——具体物种名是否走这里，由「entity 三步判别决策」决定 |
 | object | `teaching_carrier` | **硬教学载体**：替换会破坏教学事实，且在所教知识体系里有专用名称（田字格、五线谱、坐标轴、量杯、温度计、数轴、地图、笔顺箭头） |
 | object | `layout_container` | **软载体 / 通用排版容器**：承载教学内容但容器本身可替换，替换不改变内容（卡片、表格、边框、纸张、课本、课文、笔、黑板、白板） |
 | object | `scene_prop` | 与教学主题关联的物体（讲秋天页面的落叶、讲告别页面的火车） |
@@ -99,7 +115,7 @@
 | entity.named_individual | **2** |
 | entity.species_instance | **2** |
 | entity.role | 0（默认）或 1（仅当本页核心叙事就是这个角色，例如"母亲深夜送孩子求医"页里的妈妈） |
-| entity.generic_class | 0（默认）或 1（仅当本页核心就是这个泛类，例如"动物分类"页里的"动物"） |
+| entity.generic_class | 0（默认）或 1（仅当本页核心就是这个泛类，例如"动物分类"页里的"动物"）。**例外**：单主体卡通形象图（"X 的卡通形象/头像/特写"），X 即便属 generic_class，importance **不得低于 1**——单主体图换主体等于换图，imp=0 会让 BM25 高分但跨主体的候选直接通过 |
 | object.teaching_carrier | **2** |
 | object.layout_container | **0**（默认；通用容器一律 imp=0，**绝不升 imp=2**）|
 | object.scene_prop | 1（与教学主题强相关）或 0 |
@@ -130,6 +146,54 @@ importance 等级语义：
 - 讲不通（例如"$E=mc^2$"换成另一个公式、"史铁生"换成"鲁迅"） → imp=2
 
 写 `reason` 字段时建议显式包含这个判别结论，例如："角色可替换为任意成年女性，imp=0"。
+
+### entity 三步判别决策
+
+`entity` 子类型（`named_individual` / `species_instance` / `role` / `generic_class`）的选择，**只看"被替换后教学还成立吗"，不看字面词性**。按下面三步：
+
+**第一步：判断"具体身份是否承载教学事实"**
+
+把这个 value 换成同 kind 的另一个具体值（任意同类替换），本页的教学目标还讲得通吗？
+
+- **完全讲不通**（教学事实就是这个具体身份） → 升 imp=2
+- **部分讲不通**（替换改变叙事／情感） → imp=1
+- **完全讲得通**（具体身份是占位） → imp=0
+
+**第二步：在 imp=2 的情况下，决定走 `named_individual` 还是 `species_instance`**
+
+- value 是**专有名／人名／角色名**（含姓氏+名字，或公认的命名个体：史铁生、爱因斯坦、孙悟空、Elsa） → `named_individual` imp=2
+- value 是**具体物种／文化符号／生物分类**，满足下面任一 → `species_instance` imp=2：
+  - 真实存在的特定动物／植物／微生物物种名
+  - 文学／教材作品里有专属设定的角色化物种或生物
+  - 不可类替换的文化具象符号
+
+判别问：**X 的核心识别特征（外形／生态／文化含义）是教学要传授的内容吗？** 是 → species_instance。
+
+**第三步：在 imp<2 的情况下，决定走 `role` 还是 `generic_class`**
+
+- value 是**人物身份／亲缘／职业**（妈妈、医生、学生、邮递员） → `role`
+- value 是**泛类指代**（动物、植物、人物、小朋友、男孩、孩子） → `generic_class`
+
+落到下方「角色／亲缘／职业硬性兜底词表」的，强制 imp≤1，不可升 imp=2。
+
+#### 判别推理对照表（按 value 性质 × 场景类型抽象，不绑定具体课文）
+
+| value 性质 | 场景／教学定位 | subtype | importance |
+|---|---|---|---|
+| 真实物种／植物／微生物名 | 本课目标是识别／认识／区分这个物种 | `species_instance` | 2 |
+| 真实物种／植物／微生物名 | 本课部分依赖其特征（季节符号、文化象征、特定生态） | `species_instance` | 1 |
+| 真实物种／植物／微生物名 | 本课只是通用场景陪体（动物园、田野、水域等氛围） | `generic_class` | 0 |
+| 文学／教材绑定的特定生物 | 故事主线主体 | `species_instance` | 2 |
+| 文学／教材绑定的特定生物 | 通用占位／装饰 | `generic_class` | 0 |
+| 不可类替换的文化具象符号 | 主体或核心装饰 | `species_instance` | 2 |
+| 完整专有名／人名 | 任何场景 | `named_individual` | 2 |
+| 亲缘／职业称谓 | 叙事核心角色 | `role` | 1 |
+| 亲缘／职业称谓 | 通用陪体／占位 | `role` 或 `generic_class` | 0 |
+| 泛类指代（人／动物／植物／儿童） | 本课核心就是这个泛类 | `generic_class` | 1 |
+| 泛类指代 | 通用装饰／陪体 | `generic_class` | 0 |
+| 单主体卡通形象图（"X 的形象／头像／特写"）的主视觉主体 | 任何场景 | 按以上规则但不低于 1 | ≥1 |
+
+阅读方式：先看 value 是哪类（左列），再看本页对它的教学定位（中列），结果就是 subtype + importance。判别不出场景类型时，按"本页教学是否依赖该 value 的特定身份"回退到上方三步判别。
 
 ### object.teaching_carrier vs object.layout_container 判别
 
@@ -179,6 +243,8 @@ importance 等级语义：
 
 例外：当 value 是"完整专有名字"（含姓氏+名字，例如"史铁生"、"爱因斯坦"）时，subtype 走 `named_individual`，imp=2，不受词表限制。
 
+**此词表只为已知 LLM 高频翻车的泛类指代词兜底，不预防性扩展**。新出现的具体物种名、新角色名、新职业名都不应加进来——它们由「entity 三步判别决策」自动分流到正确的 subtype 和 importance。如果观察到 LLM 在某个新词上稳定翻车，再考虑加入；不要凭印象预先加。
+
 ## 页面图召回关键词
 
 `core_keywords` 必须由 LLM 直接从 `content_prompt` 的可见内容中提取：
@@ -213,249 +279,13 @@ importance 等级语义：
 
 ## 少样本示例
 
-### 示例 1：卡通小朋友捧课本朗读（learning_behavior，全部 imp=0）
+少样本只为规则文字讲不清的判别灰区锚定边界，不重复规则已明确的情形。下面两条对应整套规则里最容易出错的两个判别面。
 
-```json
-{
-  "asset_category": "learning_behavior",
-  "constraints": [
-    {
-      "kind": "entity",
-      "subtype": "generic_class",
-      "value": "小朋友",
-      "importance": 0,
-      "confidence": 0.92,
-      "evidence": "通用学习行为插画的主体",
-      "reason": "可替换为任意儿童形象，imp=0"
-    },
-    {
-      "kind": "object",
-      "subtype": "decorative",
-      "value": "课本",
-      "importance": 0,
-      "confidence": 0.86,
-      "evidence": "学习行为的常规陪体",
-      "reason": "可替换为书本、绘本，imp=0"
-    },
-    {
-      "kind": "action",
-      "subtype": "generic_motion",
-      "value": "朗读",
-      "importance": 0,
-      "confidence": 0.85,
-      "evidence": "通用学习动作",
-      "reason": "可替换为读书、看书，imp=0"
-    }
-  ],
-  "core_keywords": ["小朋友", "课本", "朗读"],
-  "semantic_aliases": {
-    "小朋友": ["儿童", "学生"],
-    "朗读": ["读书", "诵读"]
-  }
-}
-```
+### 示例 1：layout_container vs teaching_carrier 的对照
 
-### 示例 2：妈妈和孩子在公园（concept_scene，亲情主题，imp=1 为主）
+`object` kind 下"载体"分两层，是规则里最容易混淆的判别面。同样的可读汉字放在不同容器里，subtype 和 importance 完全不同。
 
-```json
-{
-  "asset_category": "concept_scene",
-  "constraints": [
-    {
-      "kind": "entity",
-      "subtype": "role",
-      "value": "妈妈",
-      "importance": 1,
-      "confidence": 0.94,
-      "evidence": "亲情主题页的核心人物",
-      "reason": "本页讲亲子情感，妈妈是叙事主体；同类替换需 LLM 看图判断，imp=1"
-    },
-    {
-      "kind": "entity",
-      "subtype": "generic_class",
-      "value": "孩子",
-      "importance": 1,
-      "confidence": 0.92,
-      "evidence": "亲情主题页的核心配体",
-      "reason": "本页讲亲子情感，孩子是必要参与方，imp=1"
-    },
-    {
-      "kind": "scene",
-      "subtype": "generic_ambient",
-      "value": "公园",
-      "importance": 0,
-      "confidence": 0.86,
-      "evidence": "通用户外氛围",
-      "reason": "可替换为草地、户外，imp=0"
-    }
-  ],
-  "core_keywords": ["妈妈", "孩子", "公园"],
-  "semantic_aliases": {
-    "妈妈": ["母亲", "母子"],
-    "孩子": ["儿童", "小孩"]
-  }
-}
-```
-
-### 示例 3：深夜母亲背孩子奔向医院（character_action，故事场景）
-
-```json
-{
-  "asset_category": "character_action",
-  "constraints": [
-    {
-      "kind": "entity",
-      "subtype": "role",
-      "value": "母亲",
-      "importance": 1,
-      "confidence": 0.96,
-      "evidence": "故事场景的叙事主角",
-      "reason": "本页讲母爱叙事，母亲是必要主体，imp=1"
-    },
-    {
-      "kind": "scene",
-      "subtype": "story_scene",
-      "value": "深夜医院门口",
-      "importance": 1,
-      "confidence": 0.92,
-      "evidence": "故事关键场景",
-      "reason": "场景指向具体叙事，跨场景复用需 LLM 看图，imp=1"
-    },
-    {
-      "kind": "action",
-      "subtype": "generic_motion",
-      "value": "背孩子",
-      "importance": 1,
-      "confidence": 0.9,
-      "evidence": "本页核心动作",
-      "reason": "动作是叙事载体，imp=1"
-    },
-    {
-      "kind": "emotion",
-      "subtype": "narrative_emotion",
-      "value": "焦急",
-      "importance": 1,
-      "confidence": 0.88,
-      "evidence": "教学叙事关键情绪",
-      "reason": "情绪指向具体叙事，imp=1"
-    }
-  ],
-  "core_keywords": ["母亲", "孩子", "医院", "深夜", "背"],
-  "semantic_aliases": {
-    "母亲": ["妈妈"],
-    "医院": ["急诊", "病房"]
-  }
-}
-```
-
-### 示例 4：田字格中的"比"字（content_specific，imp=2 教学事实）
-
-```json
-{
-  "asset_category": "content_specific",
-  "constraints": [
-    {
-      "kind": "text",
-      "subtype": "teaching_content",
-      "value": "比",
-      "importance": 2,
-      "confidence": 0.98,
-      "evidence": "教学核心是可读汉字'比'",
-      "reason": "可读文字必须高置信匹配，imp=2"
-    },
-    {
-      "kind": "object",
-      "subtype": "teaching_carrier",
-      "value": "田字格",
-      "importance": 2,
-      "confidence": 0.94,
-      "evidence": "汉字书写的特定教学载体",
-      "reason": "田字格不可替换为普通方格，imp=2"
-    },
-    {
-      "kind": "action",
-      "subtype": "teaching_fact",
-      "value": "笔顺",
-      "importance": 2,
-      "confidence": 0.9,
-      "evidence": "画面呈现笔顺信息",
-      "reason": "笔顺是教学事实，不可替换，imp=2"
-    }
-  ],
-  "core_keywords": ["比", "田字格", "笔顺"],
-  "semantic_aliases": {
-    "比": ["比字"],
-    "笔顺": ["书写顺序"]
-  }
-}
-```
-
-### 示例 5：史铁生肖像（content_specific，命名个体）
-
-```json
-{
-  "asset_category": "content_specific",
-  "constraints": [
-    {
-      "kind": "entity",
-      "subtype": "named_individual",
-      "value": "史铁生",
-      "importance": 2,
-      "confidence": 0.96,
-      "evidence": "画面要求特定作者肖像",
-      "reason": "命名个体不可替换，imp=2"
-    }
-  ],
-  "core_keywords": ["史铁生", "肖像"],
-  "semantic_aliases": {
-    "史铁生": ["史铁生作者"]
-  }
-}
-```
-
-### 示例 6：小蝌蚪举旗子（character_action，故事绑定物种）
-
-```json
-{
-  "asset_category": "character_action",
-  "constraints": [
-    {
-      "kind": "entity",
-      "subtype": "species_instance",
-      "value": "小蝌蚪",
-      "importance": 2,
-      "confidence": 0.95,
-      "evidence": "画面主体是'小蝌蚪找妈妈'故事里的小蝌蚪",
-      "reason": "故事绑定物种不可跨物种替换，imp=2"
-    },
-    {
-      "kind": "action",
-      "subtype": "generic_motion",
-      "value": "举旗子",
-      "importance": 1,
-      "confidence": 0.86,
-      "evidence": "动作是本页主要语义",
-      "reason": "页面动作核心，imp=1"
-    },
-    {
-      "kind": "object",
-      "subtype": "decorative",
-      "value": "旗子",
-      "importance": 0,
-      "confidence": 0.84,
-      "evidence": "旗子是动作的伴随物",
-      "reason": "可替换为标语牌、横幅，imp=0"
-    }
-  ],
-  "core_keywords": ["小蝌蚪", "举旗子", "旗子"],
-  "semantic_aliases": {
-    "小蝌蚪": ["蝌蚪幼体"],
-    "举旗子": ["挥旗"]
-  }
-}
-```
-
-### 示例 7：生字卡片图（layout_container 对比 teaching_carrier）
+**A. 普通卡片承载汉字**（容器可类替换 → `layout_container` imp=0）
 
 ```json
 {
@@ -487,25 +317,95 @@ importance 等级语义：
       "confidence": 0.9,
       "evidence": "汉字承载形式",
       "reason": "换成圆形泡、表格行也能讲清，容器可替换，imp=0"
-    },
-    {
-      "kind": "object",
-      "subtype": "layout_container",
-      "value": "边框",
-      "importance": 0,
-      "confidence": 0.85,
-      "evidence": "卡片外框",
-      "reason": "纯排版元素，可替换，imp=0"
     }
   ],
-  "core_keywords": ["枚", "爽", "卡片"],
-  "semantic_aliases": {
-    "卡片": ["字卡"]
-  }
+  "core_keywords": ["枚", "爽", "卡片"]
 }
 ```
 
-**对照**：如果同一张图把"卡片"换成"田字格"（即"田字格里写着'枚'和'爽'"），则"田字格"应标 `teaching_carrier` imp=2，因为田字格不可替换。这就是 layout_container 与 teaching_carrier 的判别面。
+**B. 田字格承载汉字 + 笔顺**（容器本身即教学事实 → `teaching_carrier` imp=2）
+
+```json
+{
+  "asset_category": "content_specific",
+  "constraints": [
+    {
+      "kind": "text",
+      "subtype": "teaching_content",
+      "value": "比",
+      "importance": 2,
+      "confidence": 0.98,
+      "evidence": "教学核心是可读汉字'比'",
+      "reason": "可读文字必须高置信匹配，imp=2"
+    },
+    {
+      "kind": "object",
+      "subtype": "teaching_carrier",
+      "value": "田字格",
+      "importance": 2,
+      "confidence": 0.94,
+      "evidence": "汉字书写的专用教学载体",
+      "reason": "田字格不可替换为普通方格，imp=2"
+    },
+    {
+      "kind": "action",
+      "subtype": "teaching_fact",
+      "value": "笔顺",
+      "importance": 2,
+      "confidence": 0.9,
+      "evidence": "画面呈现笔顺信息",
+      "reason": "笔顺是教学事实，不可替换，imp=2"
+    }
+  ],
+  "core_keywords": ["比", "田字格", "笔顺"]
+}
+```
+
+**判别面**：把容器换成同类的另一个容器，教学事实还成立吗？
+- 成立（卡片 → 圆泡 → 表格行，承载的字不变） → `layout_container` imp=0。
+- 不成立（田字格 → 普通方格，汉字书写规则丢失） → `teaching_carrier` imp=2。
+
+### 示例 2：同一张图里 imp=2 / imp=1 / imp=0 并存
+
+`importance` 是**对每个 value 独立判定**的，不是对整张图统一打分。下例展示 species_instance 主体（imp=2）+ 通用动作（imp=1）+ 装饰道具（imp=0）并存。这是 LLM 实测最容易把全部约束推到同一档的灰区。
+
+```json
+{
+  "asset_category": "character_action",
+  "constraints": [
+    {
+      "kind": "entity",
+      "subtype": "species_instance",
+      "value": "小蝌蚪",
+      "importance": 2,
+      "confidence": 0.95,
+      "evidence": "画面主体是文学绑定的特定生物",
+      "reason": "故事绑定物种不可跨物种替换，imp=2"
+    },
+    {
+      "kind": "action",
+      "subtype": "generic_motion",
+      "value": "举旗子",
+      "importance": 1,
+      "confidence": 0.86,
+      "evidence": "动作是本页主要语义",
+      "reason": "页面动作核心，imp=1"
+    },
+    {
+      "kind": "object",
+      "subtype": "decorative",
+      "value": "旗子",
+      "importance": 0,
+      "confidence": 0.84,
+      "evidence": "旗子是动作的伴随物",
+      "reason": "可替换为标语牌、横幅，imp=0"
+    }
+  ],
+  "core_keywords": ["小蝌蚪", "举旗子", "旗子"]
+}
+```
+
+**判别面**：同一张图里不同 constraint 的 importance 互相独立，每条按"换了讲不讲得通"单独判定，不互相绑定升降。
 
 ## 复用级别派生（仅供 LLM 自检）
 

@@ -578,6 +578,85 @@ def asset_ingest(
         _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
 
 
+@main.command("vlm-enrich")
+@click.argument("library_dir", type=click.Path(file_okay=False))
+@click.option("--asset-id", "asset_ids", multiple=True, help="Only enrich the given asset id; may be repeated")
+@click.option("--force", is_flag=True, help="Re-run assets already marked vlm_verified=True")
+@click.option("--env-file", default=".env", help=".env file path used for VLM_* config")
+@click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
+def vlm_enrich(
+    library_dir: str,
+    asset_ids: tuple[str, ...],
+    force: bool,
+    env_file: str,
+    as_json: bool,
+):
+    """Run VLM verification/enrichment for the AI image asset library."""
+    try:
+        from edupptx.llm_client import create_vlm_client
+        from edupptx.materials.ai_image_asset_db import DEFAULT_DB_FILENAME
+        from edupptx.materials.vlm_asset_enricher import enrich_assets_with_vlm
+
+        config = Config.from_env(env_file)
+        if not config.vlm_api_key or not config.vlm_model:
+            _emit_error(
+                "VLM_APIKEY/VLM_MODEL not configured",
+                as_json=as_json,
+                kind="MissingVlmConfig",
+            )
+
+        root = Path(library_dir).expanduser().resolve()
+        db_path = root / DEFAULT_DB_FILENAME
+        if not db_path.exists():
+            _emit_error(
+                f"Asset DB not found: {db_path}",
+                as_json=as_json,
+                kind="AssetDbNotFound",
+                path=str(db_path),
+            )
+
+        db = json.loads(db_path.read_text(encoding="utf-8"))
+        client = create_vlm_client(config)
+        report = enrich_assets_with_vlm(
+            db,
+            client,
+            skip_verified=not force,
+            image_root=root,
+            asset_ids=asset_ids or None,
+        )
+        written = bool(report.get("processed_count"))
+        if written:
+            db_path.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        payload = {
+            "ok": True,
+            "mode": "vlm-enrich",
+            "library_dir": str(root),
+            "db_path": str(db_path),
+            "model": config.vlm_model,
+            "force": force,
+            "written": written,
+            **report,
+        }
+        human = [
+            f"Asset DB: {db_path}",
+            f"VLM processed: {report['processed_count']}",
+            f"Skipped verified: {report['skipped_verified_count']}",
+            f"Missing images: {report['missing_image_count']}",
+            f"Failed: {report['failed_count']}",
+        ]
+        if report.get("missing_asset_ids"):
+            human.append(f"Missing asset ids: {', '.join(report['missing_asset_ids'])}")
+        if not written:
+            human.append("DB unchanged")
+        _emit_result(payload, as_json=as_json, human_lines=human)
+    except click.ClickException:
+        raise
+    except Exception as e:
+        logger.error("VLM enrichment failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
 _STYLE_DESCRIPTIONS = {
     "edu_emerald": "翠绿主调，自然/生命科学/语文人文",
     "edu_academic": "深蓝学术，物理/数学/严谨理科",
