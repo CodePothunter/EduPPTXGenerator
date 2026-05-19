@@ -77,7 +77,8 @@
 | entity | `species_instance` | 与特定故事/教材绑定的物种实例（"小蝌蚪找妈妈"里的小蝌蚪、"龟兔赛跑"里的乌龟） |
 | entity | `role` | 角色、亲缘称谓、职业（妈妈、老师、医生、警察、农民） |
 | entity | `generic_class` | 泛类生物或角色（小朋友、男孩、女孩、小猴子、动物） |
-| object | `teaching_carrier` | 教学载体、特定教具（田字格、五线谱、坐标轴、量杯、地图） |
+| object | `teaching_carrier` | **硬教学载体**：替换会破坏教学事实，且在所教知识体系里有专用名称（田字格、五线谱、坐标轴、量杯、温度计、数轴、地图、笔顺箭头） |
+| object | `layout_container` | **软载体 / 通用排版容器**：承载教学内容但容器本身可替换，替换不改变内容（卡片、表格、边框、纸张、课本、课文、笔、黑板、白板） |
 | object | `scene_prop` | 与教学主题关联的物体（讲秋天页面的落叶、讲告别页面的火车） |
 | object | `decorative` | 装饰或场景陪体（桌子、椅子、灯、窗、植物盆栽、文具） |
 | action | `teaching_fact` | 动作本身即教学事实（笔顺、实验步骤、特定操作流程） |
@@ -100,6 +101,7 @@
 | entity.role | 0（默认）或 1（仅当本页核心叙事就是这个角色，例如"母亲深夜送孩子求医"页里的妈妈） |
 | entity.generic_class | 0（默认）或 1（仅当本页核心就是这个泛类，例如"动物分类"页里的"动物"） |
 | object.teaching_carrier | **2** |
+| object.layout_container | **0**（默认；通用容器一律 imp=0，**绝不升 imp=2**）|
 | object.scene_prop | 1（与教学主题强相关）或 0 |
 | object.decorative | **0** |
 | action.teaching_fact | **2** |
@@ -128,6 +130,35 @@ importance 等级语义：
 - 讲不通（例如"$E=mc^2$"换成另一个公式、"史铁生"换成"鲁迅"） → imp=2
 
 写 `reason` 字段时建议显式包含这个判别结论，例如："角色可替换为任意成年女性，imp=0"。
+
+### object.teaching_carrier vs object.layout_container 判别
+
+`object` kind 下"载体"分两层。判别问题：
+
+> 如果把这个容器**换成同类的另一个容器**（保持承载的内容不变），教学事实还成立吗？
+
+- 不成立 → `teaching_carrier`，imp=2（容器本身就是教学事实的一部分）
+- 成立 → `layout_container`，imp=0（容器只是承载形式，可替换）
+
+加分准则：`teaching_carrier` 通常在所教知识体系里有专用名称（汉字书写专用、音乐记谱专用、数学专用、计量专用）。`layout_container` 是通用工具或排版形式，跨学科通用。
+
+对照判别示例：
+
+| value | subtype | imp | 判别推理 |
+|---|---|---|---|
+| 田字格 | `teaching_carrier` | 2 | 换成普通方格 → 汉字书写规则丢失，教学事实变 |
+| 卡片 | `layout_container` | 0 | 换成圆形泡 / 表格行 → 承载的字不变，教学等价 |
+| 量杯 | `teaching_carrier` | 2 | 换成普通杯子 → 刻度信息丢失，教学事实变 |
+| 杯子 | `layout_container` | 0 | 内容（液体描述）跟杯子形状无关 |
+| 笔顺箭头 | `teaching_carrier` | 2 | 笔顺方向就是教学事实，不能换 |
+| 笔 | `layout_container` | 0 | 写字过程才是教学，笔本身（铅笔/毛笔/钢笔）可替换 |
+| 五线谱 | `teaching_carrier` | 2 | 音符位置依赖五条线，换网格谱就错 |
+| 表格 | `layout_container` | 0 | 同样数据放在列表 / 树图也能讲清 |
+| 数轴 | `teaching_carrier` | 2 | 数学概念依赖于"有序线性结构"的容器形式 |
+| 课文 | `layout_container` | 0 | 教学内容是字词，载体（课文/段落/材料）可替换 |
+| 黑板 / 白板 | `layout_container` | 0 | 板面只是书写表面，内容才是教学 |
+
+注意：**`layout_container` 默认且永远 imp=0**。即使该容器在页面中很显眼，也不升 imp=1 或 2。容器的"重要性"用 importance=2 的同图教学内容（teaching_content / teaching_fact / teaching_carrier）来承担，而不是把容器自己抬级。
 
 ### 角色/亲缘/职业硬性兜底词表
 
@@ -423,6 +454,58 @@ importance 等级语义：
   }
 }
 ```
+
+### 示例 7：生字卡片图（layout_container 对比 teaching_carrier）
+
+```json
+{
+  "asset_category": "content_specific",
+  "constraints": [
+    {
+      "kind": "text",
+      "subtype": "teaching_content",
+      "value": "枚",
+      "importance": 2,
+      "confidence": 0.98,
+      "evidence": "卡片上的可读汉字",
+      "reason": "可读教学文字，imp=2"
+    },
+    {
+      "kind": "text",
+      "subtype": "teaching_content",
+      "value": "爽",
+      "importance": 2,
+      "confidence": 0.98,
+      "evidence": "卡片上的可读汉字",
+      "reason": "可读教学文字，imp=2"
+    },
+    {
+      "kind": "object",
+      "subtype": "layout_container",
+      "value": "卡片",
+      "importance": 0,
+      "confidence": 0.9,
+      "evidence": "汉字承载形式",
+      "reason": "换成圆形泡、表格行也能讲清，容器可替换，imp=0"
+    },
+    {
+      "kind": "object",
+      "subtype": "layout_container",
+      "value": "边框",
+      "importance": 0,
+      "confidence": 0.85,
+      "evidence": "卡片外框",
+      "reason": "纯排版元素，可替换，imp=0"
+    }
+  ],
+  "core_keywords": ["枚", "爽", "卡片"],
+  "semantic_aliases": {
+    "卡片": ["字卡"]
+  }
+}
+```
+
+**对照**：如果同一张图把"卡片"换成"田字格"（即"田字格里写着'枚'和'爽'"），则"田字格"应标 `teaching_carrier` imp=2，因为田字格不可替换。这就是 layout_container 与 teaching_carrier 的判别面。
 
 ## 复用级别派生（仅供 LLM 自检）
 

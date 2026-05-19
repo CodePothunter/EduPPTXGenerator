@@ -36,6 +36,7 @@ CONSTRAINT_SUBTYPES = {
     "role",
     "generic_class",
     "teaching_carrier",
+    "layout_container",
     "scene_prop",
     "decorative",
     "teaching_fact",
@@ -60,6 +61,16 @@ ROLE_HARDCAP_TERMS = {
     "男孩", "女孩", "小朋友", "孩子", "小孩",
     "男人", "女人", "人物", "人", "卡通人物", "动漫人物",
     "动物", "植物",
+}
+# Subtypes that make a candidate's extra constraint narrative-binding: when
+# candidate carries one of these at imp>=2 but target does not cover it,
+# the candidate is "more specific" than the target and reuse may distort
+# the page's teaching intent. These trigger a reverse-direction LLM review.
+CANDIDATE_EXTRA_STRONG_SUBTYPES = {
+    "named_individual",
+    "species_instance",
+    "teaching_content",
+    "teaching_carrier",
 }
 
 DEFAULT_POLICY = {
@@ -246,6 +257,177 @@ def _apply_role_hardcap(
         if importance > 1:
             importance = 1
     return subtype, importance
+
+
+PRECISION_SIGNAL_DF_RATIO_THRESHOLD = 0.25
+
+
+def has_precision_signal(
+    target: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    keyword_df_ratio: dict[str, float] | None = None,
+    df_ratio_threshold: float = PRECISION_SIGNAL_DF_RATIO_THRESHOLD,
+    keyword_stopwords: set[str] | None = None,
+) -> bool:
+    """Return True when target and candidate share at least one precision signal.
+
+    Precision signal is one of:
+      1. Shared imp>=1 constraint (same kind + light value match) between sides.
+      2. Shared core_keyword that is discriminative — either it is not in the
+         stopword set, or (when ``keyword_df_ratio`` is provided) its
+         library document-frequency ratio is at or below ``df_ratio_threshold``.
+
+    A target with no imp>=1 constraints AND no discriminative shared keyword
+    has no precision signal — score-only matching is unsafe and must defer
+    to LLM review or rejection.
+    """
+
+    target_active = _active_constraints(_dict_value(target, "constraints"))
+    candidate_all = normalize_constraints(_dict_value(candidate, "constraints"))
+    for t in target_active:
+        same_kind = [c for c in candidate_all if c["kind"] == t["kind"]]
+        if any(_light_constraint_match_method(t, c) for c in same_kind):
+            return True
+
+    stopwords = keyword_stopwords or set()
+    target_kw = _normalize_keyword_set(target.get("core_keywords"))
+    candidate_kw = _normalize_keyword_set(candidate.get("core_keywords"))
+    if not target_kw or not candidate_kw:
+        return False
+    shared = target_kw & candidate_kw
+    if not shared:
+        return False
+    for term in shared:
+        if term in stopwords:
+            continue
+        if keyword_df_ratio is not None:
+            ratio = keyword_df_ratio.get(term)
+            if ratio is not None and ratio > df_ratio_threshold:
+                continue
+        return True
+    return False
+
+
+def compute_keyword_df_ratio(
+    assets: list[Any],
+    *,
+    keyword_field: str = "core_keywords",
+    asset_kind_filter: str | None = "page_image",
+) -> dict[str, float]:
+    """Compute document-frequency ratio (df / N) for keywords across a library.
+
+    A term with ratio close to 1.0 appears in most assets and is non-discriminative
+    (e.g. '插画', '教学'). A term with low ratio carries identifying signal.
+    Library scale matters: callers should treat this as advisory unless N is
+    large enough that the statistic is stable (typically N >= 20).
+    """
+
+    if not isinstance(assets, list):
+        return {}
+    df: dict[str, int] = {}
+    n = 0
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        if asset_kind_filter is not None and _clean_text(asset.get("asset_kind")) != asset_kind_filter:
+            continue
+        n += 1
+        seen: set[str] = set()
+        for kw in asset.get(keyword_field) or []:
+            token = _clean_text(kw).casefold()
+            if not token or token in seen:
+                continue
+            seen.add(token)
+            df[token] = df.get(token, 0) + 1
+    if n <= 0:
+        return {}
+    return {term: count / n for term, count in df.items()}
+
+
+def _normalize_keyword_set(value: Any) -> set[str]:
+    if not isinstance(value, (list, tuple)):
+        return set()
+    result: set[str] = set()
+    for item in value:
+        token = _clean_text(item).casefold()
+        if token:
+            result.add(token)
+    return result
+
+
+def extra_teaching_content_constraints(
+    target_constraints: list[dict[str, Any]],
+    candidate_constraints: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return candidate teaching_content constraints not in target's set.
+
+    teaching_content (text/math/physics) is an exact-content constraint:
+    when target requests "字 比" and candidate has "字 枚 + 字 比", the
+    extra "字 枚" must surface as a mismatched_constraint. Otherwise LLM
+    review may approve based on the matching "比" while silently inheriting
+    the extra "枚" into the page. We only check when target has at least
+    one teaching_content constraint (i.e. it's a teaching-fact target).
+    """
+
+    target_norm = normalize_constraints(target_constraints)
+    candidate_norm = normalize_constraints(candidate_constraints)
+    target_tc = [
+        item for item in target_norm
+        if _clean_text(item.get("kind")) in STRICT_KNOWLEDGE_CONSTRAINT_KINDS
+        and _clean_text(item.get("subtype")).casefold() == "teaching_content"
+    ]
+    if not target_tc:
+        return []
+    target_values_by_kind: dict[str, set[str]] = {}
+    for item in target_tc:
+        kind = _clean_text(item.get("kind"))
+        target_values_by_kind.setdefault(kind, set()).add(
+            _normalize_constraint_value(kind, item.get("value"))
+        )
+
+    extras: list[dict[str, Any]] = []
+    for c in candidate_norm:
+        kind = _clean_text(c.get("kind"))
+        if kind not in STRICT_KNOWLEDGE_CONSTRAINT_KINDS:
+            continue
+        if _clean_text(c.get("subtype")).casefold() != "teaching_content":
+            continue
+        target_values = target_values_by_kind.get(kind, set())
+        value_norm = _normalize_constraint_value(kind, c.get("value"))
+        if value_norm in target_values:
+            continue
+        extras.append(c)
+    return extras
+
+
+def candidate_extra_strong_constraints(
+    target_constraints: list[dict[str, Any]],
+    candidate_constraints: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return candidate strong constraints not covered by target.
+
+    "Strong" here means subtype in CANDIDATE_EXTRA_STRONG_SUBTYPES with
+    importance>=2. "Not covered" means target has no same-kind same-value
+    (light_match) constraint at any importance. These extras indicate the
+    candidate is narratively more specific than the target asked for —
+    reusing it would inject content the target didn't request.
+    """
+
+    target_all = normalize_constraints(target_constraints)
+    candidate_norm = normalize_constraints(candidate_constraints)
+    extras: list[dict[str, Any]] = []
+    for c in candidate_norm:
+        if _constraint_importance(c) < 2:
+            continue
+        subtype = _clean_text(c.get("subtype")).casefold()
+        if subtype not in CANDIDATE_EXTRA_STRONG_SUBTYPES:
+            continue
+        same_kind = [t for t in target_all if t["kind"] == c["kind"]]
+        if any(_light_constraint_match_method(t, c) for t in same_kind):
+            continue
+        extras.append(c)
+    return extras
 
 
 def _coerce_importance(value: Any, *, default: int) -> int:
@@ -450,8 +632,13 @@ def evaluate_reuse_filter(
     candidate_policy = normalize_reuse_policy_fields(candidate)
     target_level = target_policy["reuse_level"]
     target_constraints = _active_constraints(target_policy.get("constraints"))
-    candidate_constraints = _active_constraints(candidate_policy.get("constraints"))
+    # Candidate side: keep ALL constraints (including imp=0) so that a target
+    # imp>=1 constraint can match a candidate's imp=0 entry with the same value.
+    # Without this, "candidate has 笔 imp=0" would be invisible to filtering,
+    # producing a spurious "missing/conflict" when target requires 笔 imp=2.
+    candidate_constraints = normalize_constraints(candidate_policy.get("constraints"))
     target_strong_constraints = _strong_constraints(target_policy.get("constraints"))
+    candidate_strong_constraints = _strong_constraints(candidate_policy.get("constraints"))
     semantic_signal = _has_semantic_reuse_signal(score_details, score)
     embedding_score = _embedding_score_from_details(score_details)
     accepted_by = _clean_text(score_details.get("accepted_by"))
@@ -480,8 +667,97 @@ def evaluate_reuse_filter(
         floor = _auto_accept_embedding_floor(target_policy, candidate_policy)
         return high_embedding_review_result(reason, floor)
 
+    def full_match_with_precision_gate(reason: str, *, confidence: float) -> dict[str, Any]:
+        """Build a full_match result, but downgrade to llm_review when
+        score_details.precision_signal is explicitly False.
+
+        precision_signal is set upstream by the scoring stage: True when
+        target and candidate share at least one imp>=1 constraint or
+        discriminative core_keyword, False otherwise. If the flag is absent
+        (None), we trust legacy behavior and don't block."""
+        precision_signal = score_details.get("precision_signal")
+        if precision_signal is False:
+            return _result(
+                "llm_review",
+                "no_precision_signal",
+                review_items=[
+                    {
+                        "decision": "llm_review",
+                        "kind": "precision_signal",
+                        "reason": "no_precision_signal",
+                        "downgraded_from": reason,
+                    }
+                ],
+                confidence=0.5,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
+        return _result(
+            "full_match",
+            reason,
+            confidence=confidence,
+            threshold=threshold_used,
+            score_gap=score_gap,
+            target_policy=target_policy,
+            candidate_policy=candidate_policy,
+        )
+
     if accepted_by in SCORE_GATE_LLM_REVIEW_REASONS:
         return high_embedding_review_result(accepted_by, threshold_used)
+
+    # Decorative loose path: when target asset_category is in
+    # FORCED_LOOSE_CATEGORIES, the asset is by spec decorative — its
+    # constraints are descriptive metadata, not gating requirements. Skip
+    # compare_constraints entirely; still keep candidate_extra_strong (to
+    # prevent injecting named_individual / teaching_content / teaching_carrier
+    # into a decorative slot) and precision_signal gating.
+    target_category = _clean_text(target_policy.get("asset_category")).casefold()
+    target_is_forced_loose = target_category in FORCED_LOOSE_CATEGORIES
+
+    if target_is_forced_loose:
+        extras = candidate_extra_strong_constraints(
+            target_constraints,
+            candidate_constraints,
+        )
+        if extras:
+            return _result(
+                "llm_review",
+                "candidate_extra_strong_constraints",
+                review_items=[
+                    _constraint_review_item(
+                        item,
+                        [],
+                        "candidate_extra_strong",
+                        side="candidate",
+                    )
+                    for item in extras
+                ],
+                confidence=0.55,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
+        if score_gap >= 0 or semantic_signal:
+            if score_gap >= 0 and _requires_embedding_floor_review(
+                target_policy, candidate_policy, embedding_score
+            ):
+                return embedding_floor_review_result("embedding_below_auto_accept_floor")
+            return full_match_with_precision_gate(
+                "decorative_loose_match",
+                confidence=0.75 if score_gap >= 0 else 0.65,
+            )
+        return _result(
+            "reject",
+            "similarity_below_threshold",
+            confidence=0.85,
+            threshold=threshold_used,
+            score_gap=score_gap,
+            target_policy=target_policy,
+            candidate_policy=candidate_policy,
+        )
 
     if target_level != "strict":
         medium_missing, medium_conflicts = compare_constraints(
@@ -558,6 +834,29 @@ def evaluate_reuse_filter(
                 target_policy=target_policy,
                 candidate_policy=candidate_policy,
             )
+        extras = candidate_extra_strong_constraints(
+            target_constraints,
+            candidate_constraints,
+        )
+        if extras:
+            return _result(
+                "llm_review",
+                "candidate_extra_strong_constraints",
+                review_items=[
+                    _constraint_review_item(
+                        item,
+                        [],
+                        "candidate_extra_strong",
+                        side="candidate",
+                    )
+                    for item in extras
+                ],
+                confidence=0.55,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
         if (
             score_gap < 0
             and embedding_score >= MEDIUM_EMBEDDING_REVIEW_THRESHOLD
@@ -570,14 +869,9 @@ def evaluate_reuse_filter(
         if score_gap >= 0 or semantic_signal:
             if score_gap >= 0 and _requires_embedding_floor_review(target_policy, candidate_policy, embedding_score):
                 return embedding_floor_review_result("embedding_below_auto_accept_floor")
-            return _result(
-                "full_match",
+            return full_match_with_precision_gate(
                 "medium_similarity_threshold_match",
                 confidence=0.8 if score_gap >= 0 else 0.7,
-                threshold=threshold_used,
-                score_gap=score_gap,
-                target_policy=target_policy,
-                candidate_policy=candidate_policy,
             )
         return _result(
             "reject",
@@ -613,10 +907,28 @@ def evaluate_reuse_filter(
         if not target_constraints and not candidate_constraints:
             if score_gap >= 0 and _requires_embedding_floor_review(target_policy, candidate_policy, embedding_score):
                 return embedding_floor_review_result("embedding_below_auto_accept_floor")
-            return _result(
-                "full_match",
+            return full_match_with_precision_gate(
                 "strict_unconstrained_similarity_match",
                 confidence=0.75 if score_gap >= 0 else 0.65,
+            )
+        teaching_content_extras = extra_teaching_content_constraints(
+            target_strong_constraints,
+            candidate_constraints,
+        )
+        if teaching_content_extras:
+            return _result(
+                "llm_review",
+                "candidate_extra_teaching_content",
+                review_items=[
+                    _constraint_review_item(
+                        item,
+                        [],
+                        "candidate_extra_teaching_content",
+                        side="candidate",
+                    )
+                    for item in teaching_content_extras
+                ],
+                confidence=0.55,
                 threshold=threshold_used,
                 score_gap=score_gap,
                 target_policy=target_policy,

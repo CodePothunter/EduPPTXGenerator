@@ -2,9 +2,13 @@ from edupptx.materials.ai_image_asset_db import _reuse_acceptance_reason
 from edupptx.materials.reuse_policy import (
     MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
     STRICT_EMBEDDING_REVIEW_THRESHOLD,
+    candidate_extra_strong_constraints,
+    compute_keyword_df_ratio,
     derive_reuse_level_from_constraints,
     evaluate_aspect_transform,
     evaluate_reuse_filter,
+    extra_teaching_content_constraints,
+    has_precision_signal,
     normalize_constraints,
     normalize_asset_metadata,
     normalize_reuse_policy_fields,
@@ -1131,6 +1135,40 @@ def test_medium_hard_core_subject_missing_requires_llm_review():
     assert result["reason"] == "medium_constraints_require_llm_review"
 
 
+def test_target_imp2_value_covered_by_candidate_imp0_same_value_is_not_conflict():
+    """Regression for case 3.1 (笔 / 圈出生字词): target requires '笔' imp=2,
+    candidate has '笔' imp=0 plus other imp=2 objects. The candidate's imp=0
+    entry must not be filtered out before comparison; the value '笔' is
+    present, so this is a covered match, not a conflict."""
+
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "medium",
+        "asset_category": "learning_behavior",
+        "constraints": [{"kind": "object", "value": "笔", "importance": 2}],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "medium",
+        "asset_category": "learning_behavior",
+        "constraints": [
+            {"kind": "object", "value": "笔", "importance": 0},
+            {"kind": "object", "value": "课文", "importance": 2},
+            {"kind": "object", "value": "生字词", "importance": 2},
+        ],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.8, "embedding_score": 0.8, "accepted_by": "bm25_threshold"},
+        threshold=0.5,
+    )
+
+    assert result["decision"] == "full_match"
+    assert "笔" not in str(result.get("conflicts") or [])
+
+
 def test_medium_hard_core_subject_match_allows_threshold_accept():
     result = evaluate_reuse_filter(
         {
@@ -1344,8 +1382,10 @@ def test_medium_category_no_longer_adds_embedding_floor_review():
         threshold=0.48,
     )
 
+    # generic_diagram is in FORCED_LOOSE_CATEGORIES, so the match goes
+    # through the decorative_loose branch instead of the medium branch.
     assert result["decision"] == "full_match"
-    assert result["reason"] == "medium_similarity_threshold_match"
+    assert result["reason"] == "decorative_loose_match"
 
 
 def test_old_strict_metadata_without_constraints_does_not_add_embedding_floor_review():
@@ -1633,4 +1673,460 @@ def test_aspect_transform_allows_background_blur_pad():
     assert result["decision"] == "penalize"
     assert result["mode"] == "blur_pad"
     assert result["transform_penalty"] == 0.06
+
+
+# ------------------------- P0-B' precision signal -------------------------
+
+
+def test_precision_signal_requires_shared_imp1_constraint_or_keyword():
+    """Target with only imp=0 constraints and no shared discriminative
+    keyword has no precision signal — regression for case 2.1."""
+
+    target = {
+        "core_keywords": ["教室"],
+        "constraints": [{"kind": "scene", "value": "教室", "importance": 0}],
+    }
+    candidate = {
+        "core_keywords": ["鸟", "马", "鱼"],
+        "constraints": [{"kind": "entity", "value": "鸟", "importance": 1}],
+    }
+
+    assert has_precision_signal(target, candidate) is False
+
+
+def test_precision_signal_passes_on_shared_imp1_constraint():
+    target = {
+        "core_keywords": [],
+        "constraints": [{"kind": "entity", "value": "母亲", "importance": 1}],
+    }
+    candidate = {
+        "core_keywords": [],
+        "constraints": [{"kind": "entity", "value": "母亲", "importance": 1}],
+    }
+
+    assert has_precision_signal(target, candidate) is True
+
+
+def test_precision_signal_passes_on_shared_discriminative_keyword():
+    """A shared core_keyword passes the gate when its library df_ratio is
+    at or below the threshold (here: 1/3 = 0.33 fails, 1/5 = 0.20 passes)."""
+
+    target = {"core_keywords": ["田字格"], "constraints": []}
+    candidate = {"core_keywords": ["田字格", "笔顺"], "constraints": []}
+
+    # No df_ratio table → falls back to stopword-only filtering; '田字格'
+    # is not a stopword, so the shared term passes.
+    assert has_precision_signal(target, candidate) is True
+
+    # With df_ratio table: '田字格' is rare (low ratio) → passes.
+    assert has_precision_signal(
+        target,
+        candidate,
+        keyword_df_ratio={"田字格": 0.10, "笔顺": 0.50},
+    ) is True
+
+
+def test_precision_signal_blocked_by_high_df_ratio_keyword():
+    """A keyword shared across most of the library is too common to anchor
+    precision — gate stays False."""
+
+    target = {"core_keywords": ["插画", "教室"], "constraints": []}
+    candidate = {"core_keywords": ["插画", "鸟"], "constraints": []}
+
+    assert has_precision_signal(
+        target,
+        candidate,
+        keyword_df_ratio={"插画": 0.95, "教室": 0.05, "鸟": 0.05},
+    ) is False
+
+
+def test_compute_keyword_df_ratio_basic():
+    assets = [
+        {"asset_kind": "page_image", "core_keywords": ["插画", "教室"]},
+        {"asset_kind": "page_image", "core_keywords": ["插画", "卧室"]},
+        {"asset_kind": "page_image", "core_keywords": ["教室"]},
+        {"asset_kind": "background", "core_keywords": ["插画"]},  # filtered
+    ]
+    ratios = compute_keyword_df_ratio(assets)
+
+    assert ratios["插画"] == 2 / 3  # 2 of 3 page_image assets
+    assert ratios["教室"] == 2 / 3
+    assert ratios["卧室"] == 1 / 3
+
+
+def test_precision_gate_downgrades_full_match_to_llm_review():
+    """End-to-end: full_match gets downgraded to llm_review when score_details
+    explicitly carries precision_signal=False — regression for case 2.1."""
+
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "loose",
+        "asset_category": "learning_behavior",
+        "constraints": [],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "loose",
+        "asset_category": "learning_behavior",
+        "constraints": [{"kind": "entity", "value": "鸟", "importance": 1}],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {
+            "keyword_score": 0.56,
+            "embedding_score": 0.56,
+            "accepted_by": "bm25_threshold",
+            "precision_signal": False,
+        },
+        threshold=0.5,
+    )
+
+    assert result["decision"] == "llm_review"
+    assert result["reason"] == "no_precision_signal"
+
+
+def test_precision_gate_allows_full_match_when_signal_true():
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "medium",
+        "asset_category": "concept_scene",
+        "constraints": [{"kind": "entity", "value": "母亲", "importance": 1}],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "medium",
+        "asset_category": "concept_scene",
+        "constraints": [{"kind": "entity", "value": "母亲", "importance": 1}],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {
+            "keyword_score": 0.7,
+            "embedding_score": 0.7,
+            "accepted_by": "bm25_threshold",
+            "precision_signal": True,
+        },
+        threshold=0.5,
+    )
+
+    assert result["decision"] == "full_match"
+
+
+# ------------------------- P1-A candidate extras -------------------------
+
+
+def test_candidate_extra_strong_constraints_flags_uncovered_named_individual():
+    """Regression for case 2.2 (北海菊花 vs 史铁生+轮椅): candidate has a
+    named_individual the target never asked for → flagged as extra."""
+
+    target = [{"kind": "scene", "value": "北海公园", "importance": 1}]
+    candidate = [
+        {"kind": "scene", "value": "北海公园", "importance": 1},
+        {"kind": "entity", "subtype": "named_individual", "value": "史铁生", "importance": 2},
+    ]
+
+    extras = candidate_extra_strong_constraints(target, candidate)
+
+    assert len(extras) == 1
+    assert extras[0]["value"] == "史铁生"
+
+
+def test_candidate_extra_strong_constraints_ignores_covered_values():
+    target = [{"kind": "entity", "subtype": "named_individual", "value": "史铁生", "importance": 2}]
+    candidate = [{"kind": "entity", "subtype": "named_individual", "value": "史铁生", "importance": 2}]
+
+    assert candidate_extra_strong_constraints(target, candidate) == []
+
+
+def test_candidate_extra_strong_constraints_ignores_role_subtype():
+    """Roles/generics are not narrative-binding extras — they don't trigger
+    the candidate-extras gate even when target doesn't cover them."""
+
+    target = [{"kind": "scene", "value": "公园", "importance": 1}]
+    candidate = [
+        {"kind": "scene", "value": "公园", "importance": 1},
+        {"kind": "entity", "subtype": "role", "value": "妈妈", "importance": 1},
+    ]
+
+    assert candidate_extra_strong_constraints(target, candidate) == []
+
+
+def test_evaluate_reuse_filter_downgrades_on_candidate_extra_named_individual():
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "medium",
+        "asset_category": "concept_scene",
+        "constraints": [{"kind": "scene", "value": "北海公园", "importance": 1}],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "strict",
+        "asset_category": "content_specific",
+        "constraints": [
+            {"kind": "scene", "value": "北海公园", "importance": 1},
+            {
+                "kind": "entity",
+                "subtype": "named_individual",
+                "value": "史铁生",
+                "importance": 2,
+            },
+        ],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.8, "embedding_score": 0.8, "precision_signal": True},
+        threshold=0.5,
+    )
+
+    assert result["decision"] == "llm_review"
+    assert result["reason"] == "candidate_extra_strong_constraints"
+    assert any(item.get("value") == "史铁生" for item in result["review_items"])
+
+
+# ------------------------- P1-D teaching content set -------------------------
+
+
+def test_extra_teaching_content_constraints_flags_extra_character():
+    """Regression for case 2.3 (爽 → 枚+爽): candidate has an additional
+    teaching character the target never asked for."""
+
+    target = [
+        {"kind": "text", "subtype": "teaching_content", "value": "爽", "importance": 2},
+    ]
+    candidate = [
+        {"kind": "text", "subtype": "teaching_content", "value": "爽", "importance": 2},
+        {"kind": "text", "subtype": "teaching_content", "value": "枚", "importance": 2},
+    ]
+
+    extras = extra_teaching_content_constraints(target, candidate)
+
+    assert len(extras) == 1
+    assert extras[0]["value"] == "枚"
+
+
+def test_extra_teaching_content_constraints_ignores_non_teaching_content():
+    """Decorative text (subtype=decorative_text) doesn't count as a
+    teaching-fact extra."""
+
+    target = [
+        {"kind": "text", "subtype": "teaching_content", "value": "爽", "importance": 2},
+    ]
+    candidate = [
+        {"kind": "text", "subtype": "teaching_content", "value": "爽", "importance": 2},
+        {"kind": "text", "subtype": "decorative_text", "value": "练习册", "importance": 0},
+    ]
+
+    assert extra_teaching_content_constraints(target, candidate) == []
+
+
+def test_extra_teaching_content_constraints_skips_when_target_has_no_teaching_content():
+    """Only applies when target itself carries teaching_content — otherwise
+    candidate's teaching_content is governed by other rules."""
+
+    target = [{"kind": "entity", "value": "小蝌蚪", "importance": 2}]
+    candidate = [
+        {"kind": "text", "subtype": "teaching_content", "value": "字", "importance": 2},
+    ]
+
+    assert extra_teaching_content_constraints(target, candidate) == []
+
+
+# ------------------------- Issue 1 forced_loose path -------------------------
+
+
+def test_forced_loose_target_skips_constraint_comparison():
+    """Regression for case 3.1: a learning_behavior target with an imp=2
+    constraint that is not covered by candidate's imp>=1 constraints used to
+    trigger medium_constraints_conflict. Under the new decorative_loose
+    branch, the constraint comparison is skipped entirely — the asset's
+    constraints are descriptive metadata, not gating requirements."""
+
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "loose",
+        "asset_category": "learning_behavior",
+        "constraints": [
+            {"kind": "object", "value": "笔", "importance": 2},
+        ],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "loose",
+        "asset_category": "learning_behavior",
+        "constraints": [
+            {"kind": "object", "value": "课文", "importance": 1},
+            {"kind": "object", "value": "生字词", "importance": 1},
+        ],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {
+            "keyword_score": 0.7,
+            "embedding_score": 0.7,
+            "accepted_by": "bm25_threshold",
+            "precision_signal": True,
+        },
+        threshold=0.5,
+    )
+
+    assert result["decision"] == "full_match"
+    assert result["reason"] == "decorative_loose_match"
+
+
+def test_forced_loose_target_still_rejects_candidate_named_individual():
+    """The decorative_loose branch keeps candidate_extra_strong active —
+    a learning_behavior target must not accept a candidate that smuggles
+    in a named_individual the target didn't request."""
+
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "loose",
+        "asset_category": "learning_behavior",
+        "constraints": [],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "strict",
+        "asset_category": "content_specific",
+        "constraints": [
+            {
+                "kind": "entity",
+                "subtype": "named_individual",
+                "value": "史铁生",
+                "importance": 2,
+            },
+        ],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.7, "embedding_score": 0.7, "precision_signal": True},
+        threshold=0.5,
+    )
+
+    assert result["decision"] == "llm_review"
+    assert result["reason"] == "candidate_extra_strong_constraints"
+
+
+def test_forced_loose_target_rejects_below_threshold():
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "loose",
+        "asset_category": "generic_tool",
+        "constraints": [{"kind": "object", "value": "笔", "importance": 2}],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "loose",
+        "asset_category": "generic_tool",
+        "constraints": [],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.3, "embedding_score": 0.3, "precision_signal": True},
+        threshold=0.5,
+    )
+
+    assert result["decision"] == "reject"
+    assert result["reason"] == "similarity_below_threshold"
+
+
+# ------------------------- Issue 2 layout_container -------------------------
+
+
+def test_layout_container_subtype_is_accepted():
+    """layout_container is a valid subtype; normalize_constraints preserves it."""
+
+    constraints = normalize_constraints(
+        [
+            {
+                "kind": "object",
+                "subtype": "layout_container",
+                "value": "卡片",
+                "importance": 0,
+            }
+        ]
+    )
+
+    assert len(constraints) == 1
+    assert constraints[0]["subtype"] == "layout_container"
+    assert constraints[0]["importance"] == 0
+
+
+def test_layout_container_imp0_does_not_trigger_candidate_extra_strong():
+    """A candidate with layout_container (any value) must not surface as an
+    extra-strong constraint, since layout_container is by definition
+    interchangeable and never reaches imp=2."""
+
+    target = [{"kind": "scene", "value": "教室", "importance": 1}]
+    candidate = [
+        {"kind": "scene", "value": "教室", "importance": 1},
+        {"kind": "object", "subtype": "layout_container", "value": "卡片", "importance": 0},
+        {"kind": "object", "subtype": "layout_container", "value": "边框", "importance": 0},
+    ]
+
+    assert candidate_extra_strong_constraints(target, candidate) == []
+
+
+def test_teaching_carrier_still_triggers_candidate_extra_strong():
+    """Narrowed teaching_carrier (hard carrier like 田字格) still surfaces
+    as candidate-extra when target doesn't ask for it."""
+
+    target = [{"kind": "text", "value": "比", "importance": 2, "subtype": "teaching_content"}]
+    candidate = [
+        {"kind": "text", "value": "比", "importance": 2, "subtype": "teaching_content"},
+        {"kind": "object", "subtype": "teaching_carrier", "value": "田字格", "importance": 2},
+    ]
+
+    extras = candidate_extra_strong_constraints(target, candidate)
+    assert len(extras) == 1
+    assert extras[0]["value"] == "田字格"
+
+
+def test_evaluate_reuse_filter_downgrades_on_extra_teaching_content():
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "strict",
+        "asset_category": "content_specific",
+        "constraints": [
+            {"kind": "text", "subtype": "teaching_content", "value": "爽", "importance": 2},
+        ],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "strict",
+        "asset_category": "content_specific",
+        "constraints": [
+            {"kind": "text", "subtype": "teaching_content", "value": "爽", "importance": 2},
+            {"kind": "text", "subtype": "teaching_content", "value": "枚", "importance": 2},
+        ],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {
+            "keyword_score": 0.8,
+            "embedding_score": 0.8,
+            "constraint_embedding_scores": [
+                {"kind": "text", "target": "爽", "candidate": "爽", "score": 0.99},
+            ],
+        },
+        threshold=0.5,
+    )
+
+    assert result["decision"] == "llm_review"
+    assert result["reason"] == "candidate_extra_teaching_content"
+    assert any(item.get("value") == "枚" for item in result["review_items"])
 
