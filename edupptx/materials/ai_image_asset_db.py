@@ -1828,8 +1828,26 @@ def enrich_ai_image_asset_db_keywords(
             response = _call_keyword_llm(client, batch, include_match_keywords=include_match_keywords)
             by_id = _keyword_payload_by_asset_id(response)
         except Exception as exc:
-            warnings.append(f"keyword batch {start // batch_size + 1} failed: {exc}")
-            continue
+            # Per-asset fallback: a single malformed LLM response otherwise
+            # discards keyword data for the entire batch — a real failure mode
+            # that produced 7 page_image assets with empty core_keywords +
+            # constraints in one observed library build. Retry each asset
+            # singly so one bad apple no longer poisons its neighbors.
+            warnings.append(
+                f"keyword batch {start // batch_size + 1} failed: {exc}; retrying singly"
+            )
+            by_id = {}
+            for asset in batch:
+                asset_id = _clean_text(asset.get("asset_id"))
+                try:
+                    single_response = _call_keyword_llm(
+                        client, [asset], include_match_keywords=include_match_keywords
+                    )
+                    by_id.update(_keyword_payload_by_asset_id(single_response))
+                except Exception as single_exc:
+                    warnings.append(
+                        f"keyword asset {asset_id} failed after single retry: {single_exc}"
+                    )
 
         for asset in batch:
             asset_id = _clean_text(asset.get("asset_id"))
@@ -4321,15 +4339,29 @@ def _reuse_gate_profile(target: dict[str, Any] | None) -> str:
     if _clean_text(target.get("asset_kind")) == "background":
         return "background"
     policy = normalize_reuse_policy_fields(_dict(target))
+    constraint_kinds = {
+        _clean_text(item.get("kind"))
+        for item in policy.get("constraints", [])
+        if isinstance(item, dict)
+        and int(item.get("importance") or 0) >= 2
+    }
+    has_strict_knowledge = bool(constraint_kinds & {"text", "math", "physics"})
+    # Background-like page_image slot: when the slot's role or page_type
+    # declares it serves as backdrop, treat it like a background asset for
+    # LLM-review purposes — its function is ambience, not precise content,
+    # so the 二次评审 should match background expectations rather than the
+    # stricter page_image expectations. Guarded by the absence of strict
+    # knowledge (text/math/physics) constraints so a "background_1 with
+    # 写字" slot still keeps strict review.
+    role = _clean_text(_dict(target).get("role")).casefold()
+    page_type = _clean_text(_dict(target).get("page_type")).casefold()
+    background_like = "background" in role or "background" in page_type
+    if background_like and not has_strict_knowledge:
+        return "loose"
+
     level = _clean_text(policy.get("reuse_level")) or "medium"
     if level == "strict":
-        constraint_kinds = {
-            _clean_text(item.get("kind"))
-            for item in policy.get("constraints", [])
-            if isinstance(item, dict)
-            and int(item.get("importance") or 0) >= 2
-        }
-        if constraint_kinds & {"text", "math", "physics"}:
+        if has_strict_knowledge:
             return "strict_knowledge"
         return "strict_literary"
     return level if level in {"loose", "medium"} else "medium"
@@ -4392,9 +4424,21 @@ def _reuse_review_accept_score_threshold(
     transform_policy = _dict(policy_result).get("transform_policy")
     if isinstance(transform_policy, dict) and _clean_text(transform_policy.get("decision")) == "reject":
         return 1.0
+    # When the policy stage has confirmed that every imp>=2 target constraint
+    # is exact-covered by candidate metadata but kept LLM review on text-bound
+    # kinds for visual confirmation, the LLM only needs to verify the glyph
+    # is visible — not judge prose suitability. Drop the bar accordingly.
+    reason = _clean_text(_dict(policy_result).get("reason"))
+    if reason == "strict_text_exact_covered_review":
+        return 0.58
     profile = _reuse_gate_profile(target)
     if profile == "loose":
-        return 0.60
+        # Loose covers decorative tools, learning behaviors, and
+        # background-like page_image slots (see _reuse_gate_profile). None of
+        # these carry exact-content gating, so the LLM review only needs to
+        # confirm visual plausibility — 0.55 keeps the bar above noise without
+        # rejecting near-correct ambience images.
+        return 0.55
     if profile == "medium":
         return 0.64
     if profile == "strict_literary":

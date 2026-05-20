@@ -169,7 +169,10 @@ def test_decorative_category_forces_loose_review_threshold_and_gate_profile():
     assert _reuse_gate_profile(loose_learning) == "loose"
     # content_specific derives medium from imp=1 constraint
     assert _reuse_gate_profile(content) == "medium"
-    assert _reuse_review_accept_score_threshold(loose_learning) == 0.60
+    # Loose threshold lowered from 0.60 → 0.55: loose covers decorative and
+    # background-like slots that have no exact-content gating, so 二次评审
+    # only needs to confirm visual plausibility.
+    assert _reuse_review_accept_score_threshold(loose_learning) == 0.55
 
 
 def test_strict_semantic_gray_review_ignores_asset_category():

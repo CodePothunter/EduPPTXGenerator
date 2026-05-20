@@ -48,16 +48,38 @@ CONSTRAINT_SUBTYPES = {
     "narrative_emotion",
 }
 NAMED_INDIVIDUAL_SUBTYPES = {"named_individual", "species_instance"}
+GENERIC_CLASS_SUBTYPES = {"generic_class", "role"}
+# Linguistic quantifier markers that turn an otherwise specific value into a
+# generic class reference. Structural markers, not topic words — they apply
+# regardless of subject matter. Examples covered: "多种小动物", "几只小鸟",
+# "一群人", "若干学生". The reverse (target specific, candidate generic) is
+# intentionally NOT covered: a slide asking for "小猫" cannot be satisfied
+# by an image of "小动物".
+GENERIC_QUANTIFIER_MARKERS = (
+    "多种", "各种", "几只", "几种", "几个", "若干",
+    "一些", "多个", "众多", "成群", "一群", "群",
+)
+# Hardcap word list. Only terms observed to be high-frequency LLM upgrade
+# mistakes (where the three-step entity decision fails to keep imp<=1) belong
+# here. Other role/job terms are left to the three-step decision in the prompt
+# — they classify correctly without a hardcap. Do not add a term unless there
+# is concrete evidence the LLM repeatedly upgrades it to imp=2 by mistake.
 ROLE_HARDCAP_TERMS = {
+    # 亲缘称谓 — narrative-center vs occupant confusion is common
     "爸爸", "妈妈", "爹", "娘", "父亲", "母亲", "妈", "爸",
     "爷爷", "奶奶", "外公", "外婆", "姥爷", "姥姥",
     "叔叔", "阿姨", "伯伯", "舅舅", "姑姑", "姨妈",
     "哥哥", "姐姐", "弟弟", "妹妹",
     "儿子", "女儿", "孙子", "孙女", "外孙", "宝宝", "宝贝",
-    "老师", "教师", "学生", "同学", "医生", "护士", "警察",
-    "消防员", "农民", "工人", "司机", "厨师", "服务员", "售货员",
-    "运动员", "舞蹈家", "画家", "音乐家", "科学家", "工程师",
-    "律师", "法官", "记者", "园丁", "清洁工", "邮递员", "教练",
+    # 教育场景高频职业 — appear in textbook lessons and frequently mis-upgraded.
+    # Other professions (厨师/服务员/售货员/运动员/舞蹈家/画家/音乐家/科学家/
+    # 工程师/律师/法官/记者/园丁/清洁工/邮递员/教练/司机) are removed: the
+    # three-step decision in the prompt classifies them correctly to role
+    # imp<=1 without a hardcap. Re-add only on observed regression.
+    "老师", "教师", "学生", "同学", "医生", "护士",
+    "警察", "消防员", "农民", "工人",
+    # 泛类指代 — "动物/植物/人物/小朋友" are the words LLM most often
+    # erroneously elevates to imp=2 as a "本课主体"
     "男孩", "女孩", "小朋友", "孩子", "小孩",
     "男人", "女人", "人物", "人", "卡通人物", "动漫人物",
     "动物", "植物",
@@ -459,6 +481,37 @@ def subject_coverage_undercoverage(
     return undercovered
 
 
+def strong_constraints_exactly_covered(
+    target_strong_constraints: list[dict[str, Any]],
+    candidate_constraints: list[dict[str, Any]],
+) -> bool:
+    """True iff every imp>=2 target constraint has a same-kind light_match in
+    candidate (exact / contains / generic→specific).
+
+    Stronger signal than embedding similarity: callers can short-circuit
+    score-gated LLM review when this returns True, because the candidate
+    materially carries every gating element the target asked for. This
+    protects exact text/teaching_content / named-individual / strong-action
+    candidates from being rejected on text-metadata similarity alone — the
+    failure mode behind several observed "exact match silently rejected"
+    cases (titled artwork, stroke-order glyph, named-author portrait).
+    """
+
+    target_norm = normalize_constraints(target_strong_constraints)
+    if not target_norm:
+        return False
+    candidate_norm = normalize_constraints(candidate_constraints)
+    for required in target_norm:
+        if _constraint_importance(required) < 2:
+            continue
+        same_kind = [c for c in candidate_norm if c["kind"] == required["kind"]]
+        if not same_kind:
+            return False
+        if not any(_light_constraint_match_method(required, c) for c in same_kind):
+            return False
+    return True
+
+
 def candidate_extra_strong_constraints(
     target_constraints: list[dict[str, Any]],
     candidate_constraints: list[dict[str, Any]],
@@ -772,6 +825,67 @@ def evaluate_reuse_filter(
             target_policy=target_policy,
             candidate_policy=candidate_policy,
         )
+
+    # Strong-constraint exact-cover short-circuit.
+    #
+    # When every imp>=2 target constraint is light-matched (exact / contains /
+    # generic→specific) by the candidate, and the candidate adds no extra
+    # narrative-binding strong constraints the target didn't request, the
+    # candidate materially carries the page's full gating content. The
+    # candidate already passed the retrieval threshold to reach this function,
+    # so we can sidestep the score-gated LLM review (which judges prose
+    # similarity and over-rejects exact-content matches — the failure mode
+    # observed for art-word titles, exact stroke-order glyphs, and
+    # named-individual portraits).
+    #
+    # Carve-out: when any imp>=2 constraint is text/math/physics, do NOT
+    # short-circuit to full_match. These are exact-content kinds where the
+    # downstream VLM-less pipeline can't independently verify the candidate
+    # image actually renders the right glyph/formula. Instead, downgrade the
+    # outcome to llm_review with a distinguished reason so the reviewer
+    # threshold can be relaxed (text metadata is exact-matched; the LLM only
+    # needs to confirm visual presence rather than judge prose suitability).
+    if target_strong_constraints and strong_constraints_exactly_covered(
+        target_strong_constraints, candidate_constraints
+    ):
+        extras_pre = candidate_extra_strong_constraints(
+            target_constraints, candidate_constraints
+        )
+        teaching_extras_pre = extra_teaching_content_constraints(
+            target_strong_constraints, candidate_constraints
+        )
+        if not extras_pre and not teaching_extras_pre:
+            has_strict_knowledge_constraint = any(
+                _clean_text(item.get("kind")) in STRICT_KNOWLEDGE_CONSTRAINT_KINDS
+                for item in target_strong_constraints
+            )
+            if not has_strict_knowledge_constraint:
+                return full_match_with_precision_gate(
+                    "strong_constraints_exact_covered",
+                    confidence=0.85,
+                )
+            return _result(
+                "llm_review",
+                "strict_text_exact_covered_review",
+                review_items=[
+                    {
+                        "decision": "llm_review",
+                        "kind": "strong_cover",
+                        "reason": "strict_text_exact_covered_review",
+                        "covered_kinds": sorted({
+                            _clean_text(item.get("kind"))
+                            for item in target_strong_constraints
+                            if _clean_text(item.get("kind"))
+                            in STRICT_KNOWLEDGE_CONSTRAINT_KINDS
+                        }),
+                    }
+                ],
+                confidence=0.7,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
 
     if accepted_by in SCORE_GATE_LLM_REVIEW_REASONS:
         return high_embedding_review_result(accepted_by, threshold_used)
@@ -1333,6 +1447,16 @@ def _strict_constraint_match_result(
 
 
 def _light_constraint_match_method(left: dict[str, Any], right: dict[str, Any]) -> str:
+    """Asymmetric light match. ``left`` is the side asking (target / required),
+    ``right`` is the side offering (candidate / available).
+
+    Returns one of:
+      * ``"exact"`` / ``"contains"`` — symmetric string overlap.
+      * ``"generic_specific"`` — left is a generic class and right is a
+        concrete instance of the same kind. A slide asking for "小动物"
+        is satisfied by a specific 猫/狗/兔 image; not the reverse.
+    """
+
     kind = _clean_text(left.get("kind"))
     if kind != _clean_text(right.get("kind")):
         return ""
@@ -1344,7 +1468,30 @@ def _light_constraint_match_method(left: dict[str, Any], right: dict[str, Any]) 
         return "exact"
     if min(len(left_value), len(right_value)) >= 2 and (left_value in right_value or right_value in left_value):
         return "contains"
+    if _is_generic_class_constraint(left) and _is_specific_instance_constraint(right):
+        return "generic_specific"
     return ""
+
+
+def _is_generic_class_constraint(constraint: dict[str, Any]) -> bool:
+    """True when the constraint refers to a class rather than a specific instance.
+
+    A constraint is generic if its subtype is generic_class/role OR its value
+    contains a generic quantifier marker (多种/各种/几只/一群/...). The
+    quantifier check is what makes "多种小动物" generic even when the value
+    string happens to also contain a class noun.
+    """
+
+    subtype = _clean_text(constraint.get("subtype")).casefold()
+    if subtype in GENERIC_CLASS_SUBTYPES:
+        return True
+    value = _clean_text(constraint.get("value"))
+    return any(marker in value for marker in GENERIC_QUANTIFIER_MARKERS)
+
+
+def _is_specific_instance_constraint(constraint: dict[str, Any]) -> bool:
+    subtype = _clean_text(constraint.get("subtype")).casefold()
+    return subtype in NAMED_INDIVIDUAL_SUBTYPES
 
 
 def _constraint_embedding_threshold(constraint: dict[str, Any]) -> float:

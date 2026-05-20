@@ -1359,7 +1359,11 @@ def test_strict_filter_requires_llm_when_embedding_high_but_keyword_score_below_
     )
 
     assert result["decision"] == "llm_review"
-    assert result["reason"] == "strict_embedding_high_keyword_below_threshold"
+    # When target's imp>=2 text/math/physics constraints are exact-covered by
+    # candidate metadata, the short-circuit downgrades to a distinguished
+    # llm_review reason so the reviewer threshold can be relaxed for visual
+    # confirmation only (see _reuse_review_accept_score_threshold).
+    assert result["reason"] == "strict_text_exact_covered_review"
 
 
 def test_medium_category_no_longer_adds_embedding_floor_review():
@@ -1463,7 +1467,9 @@ def test_strict_candidate_accepts_when_target_covers_structured_constraints():
     result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.9, "embedding_score": 0.7}, threshold=0.5)
 
     assert result["decision"] == "llm_review"
-    assert result["reason"] == "strict_constraints_require_llm_review"
+    # Strong text constraint exact-cover routes to the relaxed-threshold
+    # review path; the candidate's stricter own labels don't change that.
+    assert result["reason"] == "strict_text_exact_covered_review"
 
 
 def test_visual_constraint_accepts_exact_match():
@@ -1483,7 +1489,9 @@ def test_visual_constraint_accepts_exact_match():
     result = evaluate_reuse_filter(target, candidate, {"keyword_score": 0.9, "embedding_score": 0.7}, threshold=0.6)
 
     assert result["decision"] == "full_match"
-    assert result["reason"] == "medium_similarity_threshold_match"
+    # Non-text strong constraints exact-cover short-circuits directly to
+    # full_match without going through LLM review.
+    assert result["reason"] == "strong_constraints_exact_covered"
 
 
 def test_strict_visual_constraint_accepts_high_embedding_match():
