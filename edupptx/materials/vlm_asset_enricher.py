@@ -17,11 +17,13 @@ VLM_SCHEMA_VERSION = 1
 VLM_SYSTEM_PROMPT = """你是一个素材库的图像验证与增强器。给定一张教学插图和它的 metadata，只返回严格 JSON。
 
 任务：
-1. 逐条验证 constraints 是否在画面里真实存在。
-2. 列出画面里明显存在、但 metadata 没覆盖的实体、物体或动作。
-3. 为每个 core_keyword 给出 1-3 个画面可见的视觉别名。
-4. 提取主色、构图和背景类型。
-5. 给出 prompt 与图像一致性评分 0-1；低于 0.5 时 needs_regeneration=true。
+1. 验证 content_prompt 是否与画面真实内容一致，并把 content_prompt 原文作为 constraint_verification 的第一项。
+2. 若 metadata.constraints 非空，再逐条验证 constraints[].value 是否在画面里真实存在。
+3. theme、subject、grade、grade_band、page_type、context_summary、teaching_intent、topic_refs 只作为上下文参考，不得作为 constraint_verification 项，也不得因为画面未体现课程标题而判 false。
+4. 列出画面里明显存在、但 metadata 没覆盖的实体、物体或动作。
+5. 为每个 core_keyword 给出 1-3 个画面可见的视觉别名。
+6. 提取主色、构图和背景类型。
+7. 给出 content_prompt 与图像一致性评分 0-1；低于 0.5 时 needs_regeneration=true。
 
 输出 schema:
 {
@@ -49,7 +51,6 @@ _METADATA_FIELDS = (
     "grade_norm",
     "grade_band",
     "content_prompt",
-    "normalized_prompt",
     "context_summary",
     "teaching_intent",
     "asset_category",
@@ -57,7 +58,6 @@ _METADATA_FIELDS = (
     "core_keywords",
     "semantic_aliases",
     "context_summary_keywords",
-    "prompt_route",
 )
 
 

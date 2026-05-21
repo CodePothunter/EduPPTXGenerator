@@ -9,7 +9,6 @@
 ```json
 {
   "asset_id": "",
-  "normalized_prompt": "",
   "context_summary": "",
   "teaching_intent": "",
   "context_summary_keywords": [],
@@ -20,9 +19,9 @@
 }
 ```
 
-`constraints` 和 `core_keywords` 都必须直接基于 `content_prompt` 中的可见内容提取。`normalized_prompt` 只是简洁视觉描述,不能作为约束或关键词的唯一来源。
+`constraints` 和 `core_keywords` 都必须直接基于 `content_prompt` 中的可见内容提取。
 
-`constraints` 用于复用安全过滤,`core_keywords` 用于 BM25、embedding 和 substring 召回。
+`constraints` 用于复用安全过滤,`core_keywords` 用于 BM25、embedding 和 substring 召回。page_image **不再输出 `normalized_prompt`**——召回直接用 `content_prompt + core_keywords + semantic_aliases`，不需要中间精简层。
 
 ### 非空硬约束
 
@@ -176,6 +175,35 @@ importance 等级语义：
 
 落到下方「角色／亲缘／职业硬性兜底词表」的，强制 imp≤1，不可升 imp=2。
 
+#### 泛指 vs 特指的语言学判别（避免把具体物种名错标为 generic_class）
+
+`generic_class` 是 entity 子类型里**最容易标错的一个**，常见错误是把口语化的具体物种名（小猴子、小白兔、小蝌蚪、小金鱼……）当成泛类。判别原则：
+
+- **`generic_class` = 纯类别名词**：value 本身就是一个**没有指向任何具体物种／亚类**的抽象类别。换成同 kind 的另一个词,指向的画面会跟着换大类（动物 ↔ 植物 ↔ 人）。例：动物、植物、小朋友、孩子、男孩、女孩、小孩、人物。
+- **`species_instance` = 具体物种／角色化生物**：value 已经指向了一个**特定生物分类或文学绑定生物**。换成同 kind 的另一个词,**指向的是完全不同的画面**。例：小猴子、小白兔、小蝌蚪、丑小鸭、青蛙、鲤鱼。**口语前缀「小」不改变它是具体物种的事实**——「小猴子」=「猴子」=「猕猴 / 金丝猴」等的口语形式,仍然是 species_instance。
+- **量词不是判别面**：「一只小猴子」和「多种小动物」都带量词,但前者是 species_instance（一只指向特定一只猴子）,后者是 generic_class（多种是真正的集合指代）。量词只决定语气,不决定 subtype。
+- **判别问**：把 value 换成同 kind 的另一个词,target 描述的画面会变吗？
+  - 会变（小猴子 → 小白兔,画面变了） → `species_instance`
+  - 不会变（小朋友 → 小孩,画面不变） → `generic_class`
+
+##### 对照示例（针对"口语化具体物种"灰区）
+
+```
+target prompt: "举号码牌的卡通小猴子"
+→ entity.species_instance imp=2
+  理由：「小猴子」是具体物种,本页核心就是它；换成「小白兔」画面完全变了,
+  教学也变了——不允许跨物种复用。
+
+对比 ──
+
+target prompt: "森林里各种小动物比尾巴"
+→ entity.generic_class imp=1
+  理由：「小动物」是纯类别词,本页核心是这个泛类；任何具体动物候选
+  （小猴子／小白兔／小松鼠）都满足这个教学意图。
+```
+
+判别面：value 是不是**已经锁定了某个具体物种**？锁定了 → species_instance（不管词面带不带「小」前缀或量词）；没锁定（真的指任意 X 类成员） → generic_class。
+
 #### 判别推理对照表（按 value 性质 × 场景类型抽象，不绑定具体课文）
 
 | value 性质 | 场景／教学定位 | subtype | importance |
@@ -265,6 +293,7 @@ importance 等级语义：
 {
   "asset_id": "",
   "normalized_prompt": "",
+  "color_temperature": "",
   "context_summary": "",
   "teaching_intent": "",
   "core_keywords": [],
@@ -274,6 +303,34 @@ importance 等级语义：
 ```
 
 背景图的 `core_keywords` 由 LLM 直接从 `content_prompt` 生成，并由代码清洗。它们应描述可复用的背景色彩、情绪、空间、主题和视觉氛围。
+
+### background.normalized_prompt 写法
+
+background 召回的 BM25 和 embedding 文档**只读 `normalized_prompt`**，不再读 `content_prompt`。所以 `normalized_prompt` 必须是结构化、客观的视觉特征清单，按以下四段格式输出：
+
+```
+色调:X; 纹理:Y; 明度:Z; 构图:W
+```
+
+- **色调**：只写背景底色、渐变底色或大面积色块（如 `淡蓝渐变`、`米白`、`深蓝渐变`）。不要把水草、小植物、叶片、线条、气泡等局部纹理/装饰物的颜色拆到色调；这些颜色属于纹理元素，不是背景色调。也不要照抄 `background_route.background_color_bias` 的整句色彩倾向。
+- **纹理**：具体可视元素（梧桐叶、几何线条、圆点、雾光、网格、星辰……），多个用逗号分隔。`模糊`、`叠加`、`柔化`、`渐隐` 等处理方式不要作为独立纹理关键词；纹理颜色只有在不可分割时才保留在纹理名中。
+- **明度**：饱和度+明度档位（如 `低饱和,中明度` / `高对比` / `暗调`）
+- **构图**：分布形态（整体平铺 / 中心放射 / 边角点缀 / 顶部留白）
+
+`color_temperature` 单独输出色温：只允许 `冷`、`暖`、`中性` 或空字符串。**`normalized_prompt` 的任何段落都禁止出现 `冷`、`暖`、`中性`**，避免把色温粗标签混入背景召回文本。
+
+**禁用词**：主观评价词一律去掉——`柔和`、`温暖`、`不突兀`、`不刺眼`、`适合阅读`、`适配氛围`、`温馨`、`大气`。这些词不能在跨样本中稳定匹配。
+
+**示例**：
+
+| content_prompt（原始生成 prompt） | normalized_prompt（清单化输出） |
+|---|---|
+| 低饱和度暖米色调背景，隐约叠加极淡的梧桐叶与银杏叶纹理，整体柔和不突兀… | `色调:米白; 纹理:梧桐叶,银杏叶; 明度:低饱和,中明度; 构图:整体淡纹`，`color_temperature: 暖` |
+| 淡蓝色渐变背景，点缀半透明水波纹、小气泡和浅绿水草剪影，整体通透轻盈 | `色调:淡蓝渐变; 纹理:水波纹,气泡,水草剪影; 明度:低饱和,高明度,半透明; 构图:稀疏点缀`，`color_temperature: 冷` |
+| 淡米白色底，带有极浅的、边缘模糊的灰绿色森林小植物、小松鼠尾巴纹样 | `色调:米白; 纹理:森林植物,松鼠尾巴纹样; 明度:低饱和,中明度; 构图:小面积稀疏点缀`，`color_temperature: 中性` |
+| 深蓝渐变星空，中心放射光斑，零星亮点点缀 | `色调:深蓝渐变; 纹理:星辰,光斑; 明度:暗调,高对比; 构图:中心放射`，`color_temperature: 冷` |
+
+某段如果原 prompt 里压根没有相应特征，**整段省略不凑数**，不要写"无"或"未指定"。
 
 ## 少样本示例
 

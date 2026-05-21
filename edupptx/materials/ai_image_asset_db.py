@@ -15,12 +15,15 @@ from pathlib import Path
 from typing import Any
 
 from edupptx.materials.reuse_policy import (
+    DF_RATIO_MIN_LIBRARY_SIZE,
     MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
     STRICT_EMBEDDING_REVIEW_THRESHOLD,
     STRICT_SEMANTIC_GRAY_BM25_THRESHOLD,
     STRICT_SEMANTIC_GRAY_REVIEW_THRESHOLD,
+    compute_keyword_df_ratio,
     evaluate_aspect_transform,
     evaluate_reuse_filter,
+    has_precision_signal,
     normalize_asset_metadata,
     normalize_constraints,
     normalize_reuse_policy_fields,
@@ -28,13 +31,13 @@ from edupptx.materials.reuse_policy import (
 )
 
 SCHEMA_VERSION = 1
-KEYWORD_SCHEMA_VERSION = 12
+KEYWORD_SCHEMA_VERSION = 13
 DEFAULT_DB_FILENAME = "ai_image_asset_db.json"
 DEFAULT_MATCH_INDEX_FILENAME = "ai_image_match_index.json"
 DEFAULT_EMBEDDING_INDEX_FILENAME = "ai_image_embedding_index.npz"
 DEFAULT_EMBEDDING_META_FILENAME = "ai_image_embedding_meta.json"
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
-MATCH_INDEX_SCHEMA_VERSION = 12
+MATCH_INDEX_SCHEMA_VERSION = 13
 EMBEDDING_INDEX_SCHEMA_VERSION = 3
 DEFAULT_KEYWORD_BATCH_SIZE = 12
 DEFAULT_LIBRARY_IMAGE_DIR = "ai_images"
@@ -53,7 +56,33 @@ BM25_GRAY_REUSE_THRESHOLD = 0.23
 EMBEDDING_GRAY_REUSE_THRESHOLD = 0.72
 STRICT_REUSE_MAX_PER_SESSION = 2
 REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD = 0.70
+# Per-query LLM review budget. Caps the number of llm_review calls made
+# for a single target so a noisy candidate pool can't burn the LLM on a
+# long tail of equivalent-quality candidates after the top contender has
+# already been judged. Empirically 7/26 reviewed queries triggered ≥3
+# LLM calls and only the first or second usually contains the accepted
+# match; raising K beyond 3 yields diminishing returns.
+MAX_LLM_REVIEWS_PER_QUERY = 3
+# Policy reasons under which the LLM review rules deterministically yield
+# score ≤ accept_threshold. Skipping the LLM call here saves budget with
+# no information loss — the structural conflict that triggered the review
+# is also what the LLM scoring rules would penalize, and the LLM has no
+# extra evidence available beyond the constraints already inspected by
+# the deterministic gate. See ai_image_reuse_review_score_rules.md for
+# the matching scoring caps (candidate extra teaching content ≤ 0.55,
+# missing exact text/math/physics fact necessarily low-score, etc).
+DETERMINISTIC_LLM_REJECT_REASONS = frozenset({
+    "candidate_extra_teaching_content",
+    "candidate_extra_strong_constraints",
+})
 LOGGER = logging.getLogger(__name__)
+
+# Process-wide DF-ratio cache. Keyed by (library_root_str, db_mtime_ns) so
+# the cache invalidates automatically when the on-disk database is
+# regenerated. Library traversal is O(N keywords) — cheap once but adds
+# up across the dozens of reuse queries in a single PPT generation, so
+# the cache pays for itself within the first session.
+_DF_RATIO_CACHE: dict[tuple[str, int], dict[str, float]] = {}
 
 BACKGROUND_REUSE_GATE_THRESHOLDS = {
     "keyword_min": 0.10,
@@ -117,8 +146,8 @@ PAGE_IMAGE_SCORE_GATE_REVIEW_REASONS = {
     "embedding_led_gray_review",
 }
 
-CONTENT_PROMPT_REUSE_WEIGHT = 0.80
-ROUTE_REUSE_WEIGHT = 0.10
+CONTENT_PROMPT_REUSE_WEIGHT = 0.85
+ROUTE_REUSE_WEIGHT = 0.05
 ASPECT_REUSE_WEIGHT = 0.05
 LIGHT_CONTEXT_REUSE_WEIGHT = 0.05
 BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT = 0.85
@@ -130,6 +159,40 @@ BACKGROUND_REUSE_THRESHOLD = 0.38
 _EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 
 _IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
+_TOPIC_REF_WRAPPER_RE = re.compile(r"[《〈「『“\"]([^《》〈〉「」『』“”\"']{1,40})[》〉」』”\"]")
+_TOPIC_REF_LEADING_NOISE_RE = re.compile(
+    r"^(?:小学|初中|高中)?(?:[一二三四五六七八九十\d]+年级|高[一二三\d]|初[一二三\d]|小[一二三四五六\d])"
+)
+_TOPIC_REF_SUBJECT_PREFIXES = (
+    "语文",
+    "数学",
+    "英语",
+    "物理",
+    "化学",
+    "生物",
+    "历史",
+    "地理",
+    "政治",
+    "道德与法治",
+    "科学",
+    "信息技术",
+)
+_TOPIC_REF_TRAILING_NOISE = (
+    "课文教学",
+    "教学课件",
+    "课件",
+    "教学设计",
+    "单元复习",
+    "专题复习",
+    "复习课",
+    "讲解",
+    "导入",
+    "练习",
+    "教学",
+    "课程",
+    "PPT",
+    "ppt",
+)
 _VLM_RICH_ASSET_FIELDS = (
     "vlm_schema_version",
     "vlm_verified",
@@ -209,6 +272,15 @@ _CORE_GENERIC_EXACT = {
     "低年级风格",
     "高年级编辑感",
 }
+# Union of the three existing noise sets, used as the stopword input for
+# has_precision_signal. These terms saturate the library (every asset
+# uses them as a style descriptor), so two assets sharing any one of
+# them does not constitute precision evidence — only sharing a more
+# discriminative keyword does. Casefolded for direct set membership
+# checks against normalized keyword tokens.
+_PRECISION_SIGNAL_STOPWORDS = frozenset(
+    s.casefold() for s in (_GENERIC_CORE_NOISE | _GENERIC_STYLE_NOISE | _CORE_GENERIC_EXACT)
+)
 _CORE_STYLE_MARKERS = (
     "风格",
     "画风",
@@ -697,6 +769,40 @@ def write_ai_image_embedding_index(
     }
 
 
+def _get_library_df_ratio(
+    library_root: Path,
+    db_path: Path,
+    assets: list[Any] | None,
+) -> dict[str, float]:
+    """Return cached keyword DF ratio for the given library.
+
+    Returns an empty dict (≡ "DF unavailable") when the library is below
+    DF_RATIO_MIN_LIBRARY_SIZE so downstream gates fall back to legacy
+    behavior on small libraries where statistics are unreliable. The
+    cache key includes db_path mtime so a library rebuild invalidates
+    stale entries automatically.
+    """
+
+    if not isinstance(assets, list) or not assets:
+        return {}
+    page_image_count = sum(
+        1 for a in assets if isinstance(a, dict) and a.get("asset_kind") == "page_image"
+    )
+    if page_image_count < DF_RATIO_MIN_LIBRARY_SIZE:
+        return {}
+    try:
+        mtime_ns = db_path.stat().st_mtime_ns if db_path.exists() else 0
+    except OSError:
+        mtime_ns = 0
+    key = (str(library_root), mtime_ns)
+    cached = _DF_RATIO_CACHE.get(key)
+    if cached is not None:
+        return cached
+    ratio = compute_keyword_df_ratio(assets)
+    _DF_RATIO_CACHE[key] = ratio
+    return ratio
+
+
 def find_reusable_ai_image_asset(
     *,
     library_dir: str | Path,
@@ -861,9 +967,17 @@ def find_reusable_ai_image_asset(
     if not candidates:
         return finish("no_candidate_above_reuse_threshold")
 
+    df_ratio_lookup = _get_library_df_ratio(library_root, db_path, assets)
+    precision_stopwords = _PRECISION_SIGNAL_STOPWORDS
+    debug_record["df_ratio_library_size"] = sum(
+        1 for a in assets if isinstance(a, dict) and a.get("asset_kind") == "page_image"
+    )
+    debug_record["df_ratio_active"] = bool(df_ratio_lookup)
+
     accepted_candidates: list[dict[str, Any]] = []
     rejected_by_policy: list[dict[str, Any]] = []
     rejected_by_occupancy: list[dict[str, Any]] = []
+    llm_reviews_used = 0
     for candidate in candidates:
         score_details = dict(_dict(candidate.get("score_details")))
         for key in (
@@ -883,21 +997,82 @@ def find_reusable_ai_image_asset(
                 target,
                 _dict(candidate.get("asset")),
             )
+        candidate_asset = _dict(candidate.get("asset"))
+        if df_ratio_lookup:
+            score_details["df_ratio_lookup"] = df_ratio_lookup
+            score_details["precision_signal"] = has_precision_signal(
+                target,
+                candidate_asset,
+                keyword_df_ratio=df_ratio_lookup,
+                keyword_stopwords=precision_stopwords,
+            )
         policy_result = evaluate_reuse_filter(
             target,
-            _dict(candidate.get("asset")),
+            candidate_asset,
             score_details,
             threshold=threshold,
         )
         review_decision = _clean_text(policy_result.get("decision"))
         review_reason = _clean_text(policy_result.get("reason"))
-        if review_decision == "llm_review" and llm_review_enabled:
+        # Per-query LLM review budget + deterministic-reject skip + early
+        # stop. These three gates together implement the cost-cutting
+        # measures: (a) reasons where the LLM rules deterministically
+        # yield reject are short-circuited without invoking the LLM, (b)
+        # once an earlier candidate has been accepted the LLM is not
+        # invoked on lower-ranked candidates that will never be returned,
+        # (c) the per-query budget caps tail review on long candidate
+        # lists.
+        deterministic_reject = review_reason in DETERMINISTIC_LLM_REJECT_REASONS
+        budget_exhausted = llm_reviews_used >= MAX_LLM_REVIEWS_PER_QUERY
+        skip_for_existing_accept = bool(accepted_candidates)
+        if review_decision == "llm_review" and (
+            deterministic_reject or budget_exhausted or skip_for_existing_accept
+        ):
+            skip_threshold = _reuse_review_accept_score_threshold(
+                target,
+                candidate_asset,
+                policy_result=policy_result,
+            )
+            if deterministic_reject:
+                skip_brief = "deterministic_reject_skip"
+                skip_decision_reason = (
+                    "strict_deterministic_llm_skip"
+                    if review_reason.startswith("strict_")
+                    else "deterministic_llm_skip"
+                )
+            elif skip_for_existing_accept:
+                skip_brief = "earlier_candidate_accepted"
+                skip_decision_reason = (
+                    "strict_llm_review_skipped_after_accept"
+                    if review_reason.startswith("strict_")
+                    else "llm_review_skipped_after_accept"
+                )
+            else:
+                skip_brief = "per_query_budget_exhausted"
+                skip_decision_reason = (
+                    "strict_llm_review_budget_exhausted"
+                    if review_reason.startswith("strict_")
+                    else "llm_review_budget_exhausted"
+                )
+            policy_result = dict(policy_result)
+            policy_result["llm_review_required"] = True
+            policy_result["llm_review_performed"] = False
+            policy_result["llm_review"] = {
+                "score": 0.0,
+                "threshold": skip_threshold,
+                "decision": "reject",
+                "brief_reason": skip_brief,
+            }
+            policy_result["decision"] = "reject"
+            policy_result["reason"] = skip_decision_reason
+        elif review_decision == "llm_review" and llm_review_enabled:
+            llm_reviews_used += 1
             policy_result = dict(policy_result)
             policy_result["llm_review_required"] = True
             review_result = _review_reuse_candidate_with_llm(
                 keyword_client,
                 target=target,
-                candidate=_dict(candidate.get("asset")),
+                candidate=candidate_asset,
                 policy_result=policy_result,
                 score_details=score_details,
             )
@@ -922,7 +1097,7 @@ def find_reusable_ai_image_asset(
         elif review_decision == "llm_review":
             review_threshold = _reuse_review_accept_score_threshold(
                 target,
-                _dict(candidate.get("asset")),
+                candidate_asset,
                 policy_result=policy_result,
             )
             policy_result = dict(policy_result)
@@ -953,6 +1128,8 @@ def find_reusable_ai_image_asset(
             accepted_candidates.append(candidate)
         else:
             rejected_by_policy.append(candidate)
+    debug_record["llm_reviews_invoked"] = llm_reviews_used
+    debug_record["llm_reviews_budget"] = MAX_LLM_REVIEWS_PER_QUERY
 
     debug_record["policy_candidates"] = [
         _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in candidates
@@ -1289,13 +1466,20 @@ def _reuse_audit_payload(
 
     target_theme = _clean_text(target.get("theme"))
     candidate_theme = _clean_text(candidate.get("theme"))
+    target_topic_refs = _topic_refs_for_asset(target)
+    candidate_topic_refs = _topic_refs_for_asset(candidate)
+    topic_overlap = sorted(set(target_topic_refs) & set(candidate_topic_refs))
     target_page_number = _optional_int(context.get("page_number"))
     same_theme = bool(target_theme and candidate_theme and target_theme == candidate_theme)
     cross_theme = bool(target_theme and candidate_theme and target_theme != candidate_theme)
     return {
         "target_theme": target_theme,
+        "target_topic_refs": target_topic_refs,
         "target_page_number": target_page_number,
         "candidate_theme": candidate_theme,
+        "candidate_topic_refs": candidate_topic_refs,
+        "same_topic_ref": bool(topic_overlap),
+        "topic_ref_overlap": topic_overlap,
         "target_aspect_ratio": _clean_text(target.get("aspect_ratio")) or _clean_text(context.get("aspect_ratio")),
         "candidate_aspect_ratio": _clean_text(candidate.get("aspect_ratio")),
         "transform_policy": transform_policy or {},
@@ -1308,8 +1492,12 @@ def _reuse_audit_payload(
 def _flat_reuse_audit_fields(audit: dict[str, Any]) -> dict[str, Any]:
     keys = (
         "target_theme",
+        "target_topic_refs",
         "target_page_number",
         "candidate_theme",
+        "candidate_topic_refs",
+        "same_topic_ref",
+        "topic_ref_overlap",
         "target_aspect_ratio",
         "candidate_aspect_ratio",
         "same_theme",
@@ -1717,7 +1905,9 @@ def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
         "style_prompt": _asset_style_prompt(asset),
         "prompt_route": _clean_prompt_route(asset.get("prompt_route")),
         "background_route": _clean_background_route(asset.get("background_route")),
+        "color_temperature": _clean_text(asset.get("color_temperature")),
         "theme": _clean_text(asset.get("theme")),
+        "topic_refs": _topic_refs_for_asset(asset),
         "core_keywords": _keyword_list(asset.get("core_keywords"), max_items=16),
         "semantic_aliases": _clean_semantic_aliases(asset.get("semantic_aliases")),
         "context_summary_keywords": _keyword_list(asset.get("context_summary_keywords"), max_items=10),
@@ -2021,7 +2211,7 @@ def _build_keyword_messages(
     system = (
         "只返回严格 JSON，顶层必须是 assets 数组。"
         "每个条目必须使用其 asset_kind 对应的结构。"
-        "page_image 结构：asset_id, normalized_prompt, context_summary, teaching_intent, "
+        "page_image 结构：asset_id, context_summary, teaching_intent, "
         "context_summary_keywords, asset_category, constraints, core_keywords, semantic_aliases. "
         "对于 page_image，constraints 和 core_keywords 都必须直接从 content_prompt 的可见内容中提取；"
         "constraints 用于复用安全过滤，core_keywords 用于 BM25、embedding 和 substring 召回。"
@@ -2030,10 +2220,17 @@ def _build_keyword_messages(
         "importance 默认为 0；只有当 subtype 满足升级条件时才升到 1 或 2。"
         "大多数约束应为 imp=0；只有命名个体、教学事实、教学载体、故事绑定物种才升 imp=2。"
         "角色/亲缘/职业/泛类指代（妈妈、老师、小朋友、医生等）受硬性词表限制，最多 imp=1。"
-        "background 结构：asset_id, normalized_prompt, context_summary, teaching_intent, "
+        "background 结构：asset_id, normalized_prompt, color_temperature, context_summary, teaching_intent, "
         "core_keywords, semantic_aliases, context_summary_keywords. "
         "对于 background，core_keywords 是用于背景复用召回的可见、鲜明检索词。"
-        "normalized_prompt 是简洁的可见内容描述。"
+        "background 的 normalized_prompt 是视觉特征清单（不是描述句），按 "
+        "\"色调:X; 纹理:Y; 明度:Z; 构图:W\" 四段格式输出，缺则省略不凑数。"
+        "每段只用客观视觉词（例：淡蓝/浅青/米白/浅灰；梧桐叶/几何线条/圆点；低饱和,中明度；整体平铺/中心放射/边角点缀）。"
+        "禁止使用主观评价词（柔和/温暖/不突兀/不刺眼/适合阅读/适配氛围 一律去掉）。"
+        "色调段只写背景底色、渐变底色或大面积色块；不要把水草、小植物、叶片、线条、气泡等局部纹理/装饰物的颜色拆到色调。"
+        "冷/暖/中性只能写入 color_temperature 字段，禁止出现在 normalized_prompt 的任何段落。"
+        "不要照抄 background_route.background_color_bias 的整句描述。"
+        "纹理段只写具体可见元素；模糊/叠加/柔化/渐隐等处理方式不要作为独立纹理，纹理颜色只有在不可分割时才保留在纹理名中。"
         "context_summary 用一句短句描述图像在当前页面中的作用。"
         "teaching_intent 说明该图像为什么支持本页教学。"
         "context_summary_keywords 来自教学和使用情境。"
@@ -2130,6 +2327,9 @@ def _apply_keyword_payload(
     context_exclusions = _context_exclusions(asset)
     grade_info = normalize_grade_info(asset.get("grade") or asset.get("grade_norm"), asset.get("theme"))
     normalized_prompt = _clean_text(payload.get("normalized_prompt")) or _default_normalized_prompt(asset)
+    color_temperature = _clean_text(
+        payload.get("color_temperature", payload.get("temperature", payload.get("hue_temperature")))
+    )
     context_summary = _clean_text(payload.get("context_summary")) or _fallback_context_summary(asset)
     teaching_intent = _clean_text(payload.get("teaching_intent")) or _default_teaching_intent(asset)
     if _is_background_asset(asset):
@@ -2199,9 +2399,11 @@ def _apply_keyword_payload(
             "subject": _clean_text(asset.get("subject")),
             "grade_norm": grade_info["grade_norm"] or _clean_text(asset.get("grade_norm")),
             "grade_band": grade_info["grade_band"] or _clean_text(asset.get("grade_band")),
+            "topic_refs": _topic_refs_for_asset(asset),
             "content_prompt": _asset_content_prompt(asset),
             "background_route": _match_background_route(asset.get("background_route")),
             "normalized_prompt": normalized_prompt,
+            "color_temperature": color_temperature or _clean_text(asset.get("color_temperature")),
             "context_summary": context_summary,
             "teaching_intent": teaching_intent,
             "core_keywords": core_keywords,
@@ -2263,9 +2465,8 @@ def _apply_keyword_payload(
         "subject": _clean_text(asset.get("subject")),
         "grade_norm": grade_info["grade_norm"] or _clean_text(asset.get("grade_norm")),
         "grade_band": grade_info["grade_band"] or _clean_text(asset.get("grade_band")),
+        "topic_refs": _topic_refs_for_asset(asset),
         "content_prompt": _asset_content_prompt(asset),
-        "prompt_route": _match_prompt_route(asset.get("prompt_route")),
-        "normalized_prompt": normalized_prompt,
         "context_summary": context_summary,
         "teaching_intent": teaching_intent,
         "context_summary_keywords": context_summary_keywords,
@@ -2355,6 +2556,62 @@ def _merge_semantic_aliases(*items: dict[str, list[str]]) -> dict[str, list[str]
                 continue
             merged[clean_key] = _dedupe_terms([*merged.get(clean_key, []), *values])[:8]
     return merged
+
+
+def extract_topic_refs(*texts: Any) -> list[str]:
+    """Extract compact lesson/knowledge-topic anchors from theme-like text."""
+
+    wrapped: list[str] = []
+    for text in texts:
+        clean = _clean_text(text)
+        if not clean:
+            continue
+        wrapped.extend(_clean_topic_ref(match.group(1)) for match in _TOPIC_REF_WRAPPER_RE.finditer(clean))
+    wrapped = _dedupe_terms([item for item in wrapped if item])
+    if wrapped:
+        return wrapped[:6]
+
+    fallback: list[str] = []
+    for text in texts:
+        topic = _clean_topic_ref(text)
+        if topic:
+            fallback.append(topic)
+    return _dedupe_terms(fallback)[:6]
+
+
+def _topic_refs_for_asset(asset: dict[str, Any]) -> list[str]:
+    explicit = _keyword_list(asset.get("topic_refs"), max_items=6)
+    if explicit:
+        return explicit
+    return extract_topic_refs(asset.get("theme"))
+
+
+def _clean_topic_ref(value: Any) -> str:
+    text = _clean_text(value).strip("《》〈〉「」『』“”\"'()（）[]【】 ")
+    if not text:
+        return ""
+    text = _TOPIC_REF_LEADING_NOISE_RE.sub("", text).strip()
+    changed = True
+    while changed:
+        changed = False
+        for subject in _TOPIC_REF_SUBJECT_PREFIXES:
+            if text.startswith(subject) and len(text) > len(subject):
+                text = text[len(subject):].strip()
+                changed = True
+                break
+    changed = True
+    while changed:
+        changed = False
+        for suffix in _TOPIC_REF_TRAILING_NOISE:
+            if text.endswith(suffix) and len(text) > len(suffix):
+                text = text[: -len(suffix)].strip()
+                changed = True
+                break
+    text = text.strip("：:，,。；;、-_/ ")
+    compact = text.replace(" ", "")
+    if not compact or len(compact) > 40:
+        return ""
+    return text
 
 
 def _context_exclusions(asset: dict[str, Any]) -> set[str]:
@@ -2575,7 +2832,6 @@ def _build_match_text(asset: dict[str, Any]) -> str:
                 *_keyword_list(asset.get("core_keywords"), max_items=16),
                 *_semantic_alias_terms(asset),
                 *_keyword_list(asset.get("context_summary_keywords"), max_items=10),
-                _asset_content_prompt(asset),
                 _clean_text(asset.get("normalized_prompt")),
             ]
         )
@@ -2587,7 +2843,6 @@ def _build_match_text(asset: dict[str, Any]) -> str:
             *_semantic_alias_terms(asset),
             *_keyword_list(asset.get("context_summary_keywords"), max_items=10),
             _asset_content_prompt(asset),
-            _clean_text(asset.get("normalized_prompt")),
             _clean_text(asset.get("context_summary")),
             _clean_text(asset.get("teaching_intent")),
             _route_match_text(asset),
@@ -2599,7 +2854,6 @@ def _build_match_text(asset: dict[str, Any]) -> str:
 def _asset_embedding_text(asset: dict[str, Any]) -> str:
     if _is_background_asset(asset):
         return _join_texts(
-            _asset_content_prompt(asset),
             asset.get("normalized_prompt"),
             " ".join(_keyword_list(asset.get("core_keywords"), max_items=16)),
             " ".join(_semantic_alias_terms(asset)),
@@ -2608,7 +2862,6 @@ def _asset_embedding_text(asset: dict[str, Any]) -> str:
 
     return _join_texts(
         _asset_content_prompt(asset),
-        asset.get("normalized_prompt"),
         asset.get("context_summary"),
         asset.get("teaching_intent"),
         " ".join(_keyword_list(asset.get("core_keywords"), max_items=16)),
@@ -2620,7 +2873,6 @@ def _asset_embedding_text(asset: dict[str, Any]) -> str:
 def _target_embedding_text(asset: dict[str, Any]) -> str:
     if _is_background_asset(asset):
         return _join_texts(
-            _asset_content_prompt(asset),
             asset.get("normalized_prompt"),
             " ".join(_keyword_list(asset.get("core_keywords"), max_items=16)),
             " ".join(_semantic_alias_terms(asset)),
@@ -2628,7 +2880,6 @@ def _target_embedding_text(asset: dict[str, Any]) -> str:
 
     return _join_texts(
         _asset_content_prompt(asset),
-        asset.get("normalized_prompt"),
         asset.get("context_summary"),
         asset.get("teaching_intent"),
         " ".join(_keyword_list(asset.get("core_keywords"), max_items=16)),
@@ -2769,14 +3020,22 @@ def _normalize_constraint_for_match(kind: str, value: Any) -> str:
 
 
 def _build_match_key(asset: dict[str, Any]) -> str:
-    terms = _dedupe_terms(
-        [
-            *_keyword_list(asset.get("core_keywords"), max_items=10),
-            *_semantic_alias_terms(asset),
-            _clean_text(asset.get("normalized_prompt")),
-            _asset_content_prompt(asset),
-        ]
-    )
+    if _is_background_asset(asset):
+        terms = _dedupe_terms(
+            [
+                *_keyword_list(asset.get("core_keywords"), max_items=10),
+                *_semantic_alias_terms(asset),
+                _clean_text(asset.get("normalized_prompt")),
+            ]
+        )
+    else:
+        terms = _dedupe_terms(
+            [
+                *_keyword_list(asset.get("core_keywords"), max_items=10),
+                *_semantic_alias_terms(asset),
+                _asset_content_prompt(asset),
+            ]
+        )
     return "|".join(terms[:12])
 
 
@@ -2808,9 +3067,11 @@ def _normalize_asset_for_match(
             "subject": _clean_text(item.get("subject")),
             "grade_norm": _clean_text(item.get("grade_norm")),
             "grade_band": _clean_text(item.get("grade_band")),
+            "topic_refs": _topic_refs_for_asset(item),
             "content_prompt": _asset_content_prompt(item),
             "background_route": _match_background_route(item.get("background_route")),
             "normalized_prompt": _clean_text(item.get("normalized_prompt")) or _asset_content_prompt(item),
+            "color_temperature": _clean_text(item.get("color_temperature")),
             "context_summary": _clean_text(item.get("context_summary")),
             "teaching_intent": _clean_text(item.get("teaching_intent")),
             "core_keywords": _keyword_list(item.get("core_keywords"), max_items=12),
@@ -2834,9 +3095,8 @@ def _normalize_asset_for_match(
             "subject": _clean_text(item.get("subject")),
             "grade_norm": _clean_text(item.get("grade_norm")),
             "grade_band": _clean_text(item.get("grade_band")),
+            "topic_refs": _topic_refs_for_asset(item),
             "content_prompt": _asset_content_prompt(item),
-            "prompt_route": _match_prompt_route(item.get("prompt_route")),
-            "normalized_prompt": _clean_text(item.get("normalized_prompt")) or _asset_content_prompt(item),
             "context_summary": _clean_text(item.get("context_summary")),
             "teaching_intent": _clean_text(item.get("teaching_intent")),
             "context_summary_keywords": _keyword_list(
@@ -2874,6 +3134,7 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
         background_route = _match_background_route(asset.get("background_route"))
         color_bias = _background_color_bias(asset)
         content_prompt = _strip_background_color_bias_from_prompt(content_prompt, color_bias)
+        color_temperature = _clean_text(asset.get("color_temperature"))
         core_keywords = _clean_recall_core_keywords(
             asset.get("core_keywords"),
             exclude=_context_exclusions(asset) | _GENERIC_CORE_NOISE,
@@ -2890,9 +3151,11 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
             "subject": _clean_text(asset.get("subject")),
             "grade_norm": grade_info["grade_norm"] or _clean_text(asset.get("grade_norm")),
             "grade_band": grade_info["grade_band"] or _clean_text(asset.get("grade_band")),
+            "topic_refs": _topic_refs_for_asset(asset),
             "content_prompt": content_prompt,
             "background_route": background_route,
             "normalized_prompt": normalized_prompt,
+            "color_temperature": color_temperature,
             "context_summary": context_summary,
             "teaching_intent": teaching_intent,
             "core_keywords": core_keywords,
@@ -2933,9 +3196,8 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
         "subject": _clean_text(asset.get("subject")),
         "grade_norm": grade_info["grade_norm"] or _clean_text(asset.get("grade_norm")),
         "grade_band": grade_info["grade_band"] or _clean_text(asset.get("grade_band")),
+        "topic_refs": _topic_refs_for_asset(asset),
         "content_prompt": content_prompt,
-        "prompt_route": _match_prompt_route(asset.get("prompt_route")),
-        "normalized_prompt": normalized_prompt,
         "context_summary": context_summary,
         "teaching_intent": teaching_intent,
         "context_summary_keywords": _keyword_list(
@@ -3222,7 +3484,6 @@ def _route_match_text(asset: dict[str, Any]) -> str:
                 [
                     _asset_role(asset),
                     _route_grade_family(asset),
-                    _asset_page_type(asset),
                 ]
             )
         )
@@ -3370,6 +3631,7 @@ def _build_reuse_target_asset(
         "image_path": "",
         "aspect_ratio": aspect_ratio,
         "theme": _clean_text(theme),
+        "topic_refs": extract_topic_refs(theme),
         "content_prompt": content_prompt,
         "prompt_route": route,
         "background_route": bg_route,
@@ -3706,7 +3968,7 @@ def _score_reuse_candidate_details(
     target_core = _keyword_list(target.get("core_keywords"), max_items=16)
     target_alias_groups = _semantic_alias_groups(target, target_core)
     candidate_content_tokens = _bm25_tokens_from_values(
-        [_asset_content_prompt(candidate), candidate.get("normalized_prompt")]
+        [_asset_content_prompt(candidate)]
     )
     core_score, core_hits, missing_core_groups = _grouped_core_similarity_with_hits(
         target_alias_groups,
@@ -3819,7 +4081,7 @@ def _score_background_reuse_candidate_details(
     )
     local_prompt_substring_score, prompt_substring_hits = _background_substring_similarity(
         _background_prompt_query_terms(target),
-        _join_texts(_asset_content_prompt(candidate), candidate.get("normalized_prompt")),
+        _clean_text(candidate.get("normalized_prompt")),
     )
     prompt_substring = max(_optional_score(prompt_substring_score), local_prompt_substring_score)
     prompt_embedding = _optional_score(prompt_embedding_score)
@@ -3913,7 +4175,7 @@ def _background_prompt_query_terms(asset: dict[str, Any]) -> list[str]:
         [
             *_keyword_list(asset.get("core_keywords"), max_items=16),
             *_semantic_alias_terms(asset),
-            *_background_text_terms(_join_texts(_asset_content_prompt(asset), asset.get("normalized_prompt"))),
+            *_background_text_terms(_clean_text(asset.get("normalized_prompt"))),
         ]
     )
     return terms
@@ -3924,7 +4186,7 @@ def _background_prompt_query_tokens(asset: dict[str, Any]) -> list[str]:
 
 
 def _background_prompt_doc_tokens(asset: dict[str, Any]) -> list[str]:
-    return _bm25_tokens_from_values([_asset_content_prompt(asset), asset.get("normalized_prompt")])
+    return _bm25_tokens_from_values([asset.get("normalized_prompt")])
 
 
 def _background_text_terms(text: str) -> list[str]:
@@ -4025,12 +4287,9 @@ def _route_score_details(target: dict[str, Any], candidate: dict[str, Any]) -> d
     candidate_role = _asset_role(candidate)
     target_grade_family = _route_grade_family(target)
     candidate_grade_family = _route_grade_family(candidate)
-    target_page_type = _asset_page_type(target)
-    candidate_page_type = _asset_page_type(candidate)
 
     role_match = _exact_route_match(target_role, candidate_role)
     grade_family_match = _exact_route_match(target_grade_family, candidate_grade_family)
-    page_type_match = _exact_route_match(target_page_type, candidate_page_type)
     route_hits: list[dict[str, str]] = []
     if role_match:
         route_hits.append({"field": "role", "target": target_role, "candidate": candidate_role})
@@ -4038,21 +4297,16 @@ def _route_score_details(target: dict[str, Any], candidate: dict[str, Any]) -> d
         route_hits.append(
             {"field": "grade_family", "target": target_grade_family, "candidate": candidate_grade_family}
         )
-    if page_type_match:
-        route_hits.append({"field": "page_type", "target": target_page_type, "candidate": candidate_page_type})
 
     return {
-        "route_score": 0.45 * role_match + 0.35 * grade_family_match + 0.20 * page_type_match,
+        "route_score": 0.55 * role_match + 0.45 * grade_family_match,
         "route_hits": route_hits,
         "route_role_match": role_match,
         "route_grade_family_match": grade_family_match,
-        "route_page_type_match": page_type_match,
         "target_route_role": target_role,
         "candidate_route_role": candidate_role,
         "target_route_grade_family": target_grade_family,
         "candidate_route_grade_family": candidate_grade_family,
-        "target_route_page_type": target_page_type,
-        "candidate_route_page_type": candidate_page_type,
     }
 
 
@@ -4094,19 +4348,6 @@ def _semantic_coverage(
     return score, hits, missing
 
 
-def _semantic_intent_score(target: dict[str, Any], candidate: dict[str, Any]) -> tuple[float, list[dict[str, str]]]:
-    target_text = _join_texts(target.get("teaching_intent"), target.get("context_summary"))
-    candidate_text = _join_texts(candidate.get("teaching_intent"), candidate.get("context_summary"))
-    if not target_text:
-        return 1.0, []
-    if not candidate_text:
-        return 0.0, []
-    return _bm25_similarity_with_hits(
-        _bm25_tokens_from_values([target_text]),
-        _bm25_tokens_from_values([candidate_text]),
-    )
-
-
 def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
     score = float(details.get("score") or 0.0)
     return {
@@ -4125,8 +4366,6 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
         "candidate_route_grade_family": _clean_text(details.get("candidate_route_grade_family")),
         "target_route_page_type": _clean_text(details.get("target_route_page_type")),
         "candidate_route_page_type": _clean_text(details.get("candidate_route_page_type")),
-        "intent_score": round(float(details.get("intent_score") or 0.0), 4),
-        "intent_hits": details.get("intent_hits") or [],
         "core_score": round(float(details.get("core_score") or 0.0), 4),
         "core_hits": details.get("core_hits") or [],
         "missing_core_groups": details.get("missing_core_groups") or [],
@@ -4192,7 +4431,12 @@ def _asset_context_text(asset: dict[str, Any]) -> str:
 
 
 def _target_context_summary_terms(asset: dict[str, Any]) -> list[str]:
-    return _keyword_list(asset.get("context_summary_keywords"), max_items=10)
+    return _dedupe_terms(
+        [
+            *_keyword_list(asset.get("context_summary_keywords"), max_items=10),
+            *_topic_refs_for_asset(asset),
+        ]
+    )[:12]
 
 
 def _candidate_context_summary_terms(asset: dict[str, Any]) -> list[str]:
@@ -4206,7 +4450,7 @@ def _target_context_embedding_text(asset: dict[str, Any]) -> str:
 def _candidate_context_embedding_text(asset: dict[str, Any]) -> str:
     if _is_background_asset(asset):
         return ""
-    return _clean_text(asset.get("context_summary"))
+    return _join_texts(_clean_text(asset.get("context_summary")), " ".join(_topic_refs_for_asset(asset)))
 
 
 def _bm25_tokens_from_values(values: list[Any]) -> list[str]:
@@ -4302,7 +4546,6 @@ def _terms_match(left: str, right: str) -> bool:
 def _candidate_hybrid_text(asset: dict[str, Any]) -> str:
     if _is_background_asset(asset):
         return _join_texts(
-            _asset_content_prompt(asset),
             asset.get("normalized_prompt"),
             " ".join(_keyword_list(asset.get("core_keywords"), max_items=16)),
             " ".join(_semantic_alias_terms(asset)),
@@ -4311,7 +4554,6 @@ def _candidate_hybrid_text(asset: dict[str, Any]) -> str:
 
     return _join_texts(
         _asset_content_prompt(asset),
-        asset.get("normalized_prompt"),
         asset.get("context_summary"),
         asset.get("teaching_intent"),
         " ".join(_keyword_list(asset.get("core_keywords"), max_items=16)),
@@ -4851,13 +5093,50 @@ def _are_match_assets_duplicates(left: dict[str, Any], right: dict[str, Any]) ->
     right_hash = _clean_text(right.get("_image_sha256"))
     if left_hash and right_hash and left_hash == right_hash:
         return True
+    if _duplicate_identity_constraints_conflict(left, right):
+        return False
     return _match_asset_similarity(left, right) >= 0.86
 
 
+def _duplicate_identity_constraints_conflict(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_terms = _duplicate_identity_constraint_terms(left)
+    right_terms = _duplicate_identity_constraint_terms(right)
+    for kind in set(left_terms) & set(right_terms):
+        if left_terms[kind] and right_terms[kind] and left_terms[kind].isdisjoint(right_terms[kind]):
+            return True
+    return False
+
+
+def _duplicate_identity_constraint_terms(asset: dict[str, Any]) -> dict[str, set[str]]:
+    terms: dict[str, set[str]] = {}
+    for constraint in normalize_constraints(asset.get("constraints")):
+        try:
+            importance = int(constraint.get("importance") or 0)
+        except (TypeError, ValueError):
+            importance = 0
+        if importance < 2:
+            continue
+        kind = _clean_text(constraint.get("kind"))
+        subtype = _clean_text(constraint.get("subtype")).casefold()
+        if kind in {"text", "math", "physics"} or (
+            kind == "entity" and subtype in {"named_individual", "species_instance"}
+        ):
+            value = _normalize_constraint_for_match(kind, constraint.get("value"))
+            if value:
+                terms.setdefault(kind, set()).add(value)
+    return terms
+
+
 def _match_asset_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
+    if _is_background_asset(left) and _is_background_asset(right):
+        left_doc = [left.get("normalized_prompt")]
+        right_doc = [right.get("normalized_prompt")]
+    else:
+        left_doc = [_asset_content_prompt(left)]
+        right_doc = [_asset_content_prompt(right)]
     prompt, _hits = _bm25_similarity_with_hits(
-        _bm25_tokens_from_values([left.get("normalized_prompt"), _asset_content_prompt(left)]),
-        _bm25_tokens_from_values([right.get("normalized_prompt"), _asset_content_prompt(right)]),
+        _bm25_tokens_from_values(left_doc),
+        _bm25_tokens_from_values(right_doc),
     )
     route, _route_hits = _bm25_similarity_with_hits(
         _bm25_tokens_from_values([_route_match_text(left)]),
@@ -5348,6 +5627,7 @@ def _make_asset(
         page_type=page_type,
     )
     teaching_intent = _default_teaching_intent(asset_kind=asset_kind, page_type=page_type)
+    topic_refs = extract_topic_refs(context.get("theme", ""))
     if asset_kind == "background":
         return {
             "asset_id": asset_id,
@@ -5359,6 +5639,7 @@ def _make_asset(
             "subject": context.get("subject", ""),
             "grade_norm": grade_info["grade_norm"],
             "grade_band": grade_info["grade_band"],
+            "topic_refs": topic_refs,
             "content_prompt": content_prompt,
             "background_route": bg_route,
             "normalized_prompt": normalized_prompt,
@@ -5380,9 +5661,8 @@ def _make_asset(
         "subject": context.get("subject", ""),
         "grade_norm": grade_info["grade_norm"],
         "grade_band": grade_info["grade_band"],
+        "topic_refs": topic_refs,
         "content_prompt": content_prompt,
-        "prompt_route": route,
-        "normalized_prompt": normalized_prompt,
         "context_summary": context_summary,
         "teaching_intent": teaching_intent,
         "context_summary_keywords": [],

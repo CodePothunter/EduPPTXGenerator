@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from dataclasses import dataclass
 import re
 from typing import Any
@@ -94,6 +95,21 @@ CANDIDATE_EXTRA_STRONG_SUBTYPES = {
     "teaching_content",
     "teaching_carrier",
 }
+# Subtypes whose target-side imp>=1 presence binds the page's narrative.
+# When the target carries one of these at imp>=1 but the candidate has no
+# light-match of the same kind, the candidate is materially missing a
+# narrative element the page depends on — even if every imp>=2 target
+# constraint happens to be covered. Used to gate the strong-cover
+# short-circuit so it can't bypass scene/role/story-bound mismatches.
+NARRATIVE_BINDING_SUBTYPES = {
+    "named_individual",
+    "species_instance",
+    "story_scene",
+    "narrative_emotion",
+    "teaching_carrier",
+    "teaching_fact",
+    "teaching_content",
+}
 
 DEFAULT_POLICY = {
     "reuse_level": "medium",
@@ -135,6 +151,28 @@ SEMANTIC_SCORE_FLOOR = 0.18
 STRICT_EMBEDDING_REVIEW_THRESHOLD = 0.78
 STRICT_SEMANTIC_GRAY_REVIEW_THRESHOLD = 0.70
 STRICT_SEMANTIC_GRAY_BM25_THRESHOLD = 0.20
+# DF-ratio thresholds for subtype cross-validation. A value whose library
+# document-frequency ratio is below GENERIC_CLASS_MIN_DF_RATIO cannot
+# reliably be treated as a real generic-class word — most likely the
+# metadata LLM mislabelled a specific term (e.g. "小猴子") as generic_class.
+# At runtime the generic→specific light-match is suppressed for such values.
+# Calibrated against the current 73-asset library where DF ratios peak at
+# ~0.08 and the median is ~0.03; 0.05 corresponds to "used as a core
+# keyword in at least ~3 assets" — a minimum bar for treating a word as
+# library-wide generic. Re-tune when library scale changes meaningfully.
+GENERIC_CLASS_MIN_DF_RATIO = 0.05
+# Library size below which DF statistics are too noisy to trust as a gate.
+# Mirrors compute_keyword_df_ratio's documented stability cutoff.
+DF_RATIO_MIN_LIBRARY_SIZE = 20
+
+# Runtime context: the current library's keyword DF ratio map (term → df/N).
+# Set by ``evaluate_reuse_filter`` for the duration of one candidate
+# evaluation so deep helpers (light_match, has_precision_signal) can
+# consult library statistics without threading the dict through every
+# call site. Always restored on exit so unrelated callers see ``None``.
+_CURRENT_DF_RATIO: ContextVar[dict[str, float] | None] = ContextVar(
+    "edupptx_reuse_df_ratio", default=None
+)
 MEDIUM_EMBEDDING_REVIEW_THRESHOLD = 0.80
 AUTO_ACCEPT_EMBEDDING_FLOORS = {"strict": 0.58}
 @dataclass(frozen=True)
@@ -312,6 +350,9 @@ def has_precision_signal(
     candidate_all = normalize_constraints(_dict_value(candidate, "constraints"))
     for t in target_active:
         same_kind = [c for c in candidate_all if c["kind"] == t["kind"]]
+        # _light_constraint_match_method already consults the DF context
+        # for its generic_specific branch, so a mislabelled generic_class
+        # target value cannot manufacture a precision signal here either.
         if any(_light_constraint_match_method(t, c) for c in same_kind):
             return True
 
@@ -512,6 +553,38 @@ def strong_constraints_exactly_covered(
     return True
 
 
+def target_narrative_undercoverage(
+    target_constraints: list[dict[str, Any]],
+    candidate_constraints: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return target imp>=1 narrative constraints the candidate fails to cover.
+
+    Counterpart to ``candidate_extra_strong_constraints`` for the imp=1 layer
+    on the target side. A constraint counts as narrative-binding when its
+    subtype is in NARRATIVE_BINDING_SUBTYPES (specific entities, story
+    scenes, narrative emotions, teaching carriers/facts/content). When the
+    target requests such a constraint at imp>=1 but the candidate has no
+    same-kind light_match, the candidate is materially missing a narrative
+    element the page depends on. The strong-cover short-circuit must not
+    bypass these mismatches: imp=2 cover does not imply narrative cover.
+    """
+
+    target_norm = normalize_constraints(target_constraints)
+    candidate_norm = normalize_constraints(candidate_constraints)
+    missing: list[dict[str, Any]] = []
+    for t in target_norm:
+        if _constraint_importance(t) < 1:
+            continue
+        subtype = _clean_text(t.get("subtype")).casefold()
+        if subtype not in NARRATIVE_BINDING_SUBTYPES:
+            continue
+        same_kind = [c for c in candidate_norm if c["kind"] == t["kind"]]
+        if any(_light_constraint_match_method(t, c) for c in same_kind):
+            continue
+        missing.append(t)
+    return missing
+
+
 def candidate_extra_strong_constraints(
     target_constraints: list[dict[str, Any]],
     candidate_constraints: list[dict[str, Any]],
@@ -697,6 +770,23 @@ def evaluate_reuse_filter(
     threshold: float | None = None,
 ) -> dict[str, Any]:
     score_details = score_details or {}
+    df_lookup = score_details.get("df_ratio_lookup")
+    df_token = _CURRENT_DF_RATIO.set(df_lookup if isinstance(df_lookup, dict) else None)
+    try:
+        return _evaluate_reuse_filter_impl(
+            target, candidate, score_details, threshold=threshold
+        )
+    finally:
+        _CURRENT_DF_RATIO.reset(df_token)
+
+
+def _evaluate_reuse_filter_impl(
+    target: dict[str, Any],
+    candidate: dict[str, Any],
+    score_details: dict[str, Any],
+    *,
+    threshold: float | None,
+) -> dict[str, Any]:
     target_kind = _clean_text(target.get("asset_kind"))
     candidate_kind = _clean_text(candidate.get("asset_kind"))
     score = _score_from_details(score_details)
@@ -790,27 +880,49 @@ def evaluate_reuse_filter(
         return high_embedding_review_result(reason, floor)
 
     def full_match_with_precision_gate(reason: str, *, confidence: float) -> dict[str, Any]:
-        """Build a full_match result, but downgrade to llm_review when
-        score_details.precision_signal is explicitly False.
+        """Build a full_match result, but block when score_details.precision_signal
+        is explicitly False.
 
         precision_signal is set upstream by the scoring stage: True when
         target and candidate share at least one imp>=1 constraint or
-        discriminative core_keyword, False otherwise. If the flag is absent
-        (None), we trust legacy behavior and don't block."""
+        discriminative core_keyword, False otherwise. Absent (None) →
+        legacy behavior, no block.
+
+        Block behavior depends on target reuse_level:
+          * loose / forced_loose decorative slots → downgrade to llm_review
+            so the LLM can rescue genuine decorative reuse.
+          * medium / strict → reject outright. precision_signal=False here
+            means the shared score is built on non-discriminative
+            keywords (e.g. "插画 教学 卡通") with no concrete constraint
+            overlap; the LLM has no extra evidence to overturn that, so
+            calling it is wasted budget (empirically 4.8% accept rate on
+            these candidates).
+        """
         precision_signal = score_details.get("precision_signal")
         if precision_signal is False:
+            target_level = target_policy.get("reuse_level")
+            if target_level == "loose":
+                return _result(
+                    "llm_review",
+                    "no_precision_signal",
+                    review_items=[
+                        {
+                            "decision": "llm_review",
+                            "kind": "precision_signal",
+                            "reason": "no_precision_signal",
+                            "downgraded_from": reason,
+                        }
+                    ],
+                    confidence=0.5,
+                    threshold=threshold_used,
+                    score_gap=score_gap,
+                    target_policy=target_policy,
+                    candidate_policy=candidate_policy,
+                )
             return _result(
-                "llm_review",
+                "reject",
                 "no_precision_signal",
-                review_items=[
-                    {
-                        "decision": "llm_review",
-                        "kind": "precision_signal",
-                        "reason": "no_precision_signal",
-                        "downgraded_from": reason,
-                    }
-                ],
-                confidence=0.5,
+                confidence=0.85,
                 threshold=threshold_used,
                 score_gap=score_gap,
                 target_policy=target_policy,
@@ -854,6 +966,36 @@ def evaluate_reuse_filter(
         teaching_extras_pre = extra_teaching_content_constraints(
             target_strong_constraints, candidate_constraints
         )
+        # Reverse-direction narrative reflux: even when every imp>=2 target
+        # constraint is covered, the candidate must also reflect the
+        # target's imp=1 narrative bindings (story scene, narrative emotion,
+        # named/species entity, teaching carrier/fact/content). Without this
+        # check the short-circuit silently accepts candidates that match the
+        # central subject but drop the page's surrounding story — e.g.
+        # target "frog catching pests in rice paddy" matched by a generic
+        # frog portrait because only the frog is imp=2.
+        narrative_missing_pre = target_narrative_undercoverage(
+            target_constraints, candidate_constraints
+        )
+        if narrative_missing_pre:
+            return _result(
+                "llm_review",
+                "target_narrative_undercoverage",
+                review_items=[
+                    _constraint_review_item(
+                        item,
+                        [],
+                        "target_narrative_undercoverage",
+                        side="target",
+                    )
+                    for item in narrative_missing_pre
+                ],
+                confidence=0.55,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+            )
         if not extras_pre and not teaching_extras_pre:
             has_strict_knowledge_constraint = any(
                 _clean_text(item.get("kind")) in STRICT_KNOWLEDGE_CONSTRAINT_KINDS
@@ -1455,6 +1597,16 @@ def _light_constraint_match_method(left: dict[str, Any], right: dict[str, Any]) 
       * ``"generic_specific"`` — left is a generic class and right is a
         concrete instance of the same kind. A slide asking for "小动物"
         is satisfied by a specific 猫/狗/兔 image; not the reverse.
+
+    DF-ratio cross-validation: when the candidate generic_specific branch
+    would fire on a left value with a very low library DF ratio (below
+    ``GENERIC_CLASS_MIN_DF_RATIO``), suppress the match. A truly generic
+    class word is widely used across the library (and has a high DF
+    ratio); a rare value labelled ``generic_class`` is almost certainly a
+    metadata-extraction mistake on a specific term (e.g. "小猴子" tagged
+    as generic_class). Without DF data (None) or when the library is too
+    small to be statistically trusted (empty dict), the gate is skipped
+    and legacy behavior preserved.
     """
 
     kind = _clean_text(left.get("kind"))
@@ -1469,8 +1621,41 @@ def _light_constraint_match_method(left: dict[str, Any], right: dict[str, Any]) 
     if min(len(left_value), len(right_value)) >= 2 and (left_value in right_value or right_value in left_value):
         return "contains"
     if _is_generic_class_constraint(left) and _is_specific_instance_constraint(right):
+        if not _df_ratio_supports_generic(left_value):
+            return ""
         return "generic_specific"
     return ""
+
+
+def _df_ratio_supports_generic(value: str) -> bool:
+    """Return True when the current library's DF ratio supports treating
+    ``value`` as a real generic-class word.
+
+    Tri-state semantics:
+      * No DF data at all (None / empty dict) → legacy behavior, return True.
+        Libraries below DF_RATIO_MIN_LIBRARY_SIZE intentionally yield an
+        empty dict from the caller so this branch fires.
+      * Value present in DF map with ratio below GENERIC_CLASS_MIN_DF_RATIO
+        → return False (probable specific term mislabelled as generic_class).
+      * Value present with ratio at/above the threshold → return True.
+      * Value absent from the DF map (the library doesn't use it as a
+        core keyword anywhere) → return False. This catches rare specific
+        terms the metadata LLM may have mislabelled; the false-negative
+        cost (rejecting a truly-generic-but-library-unused word) is nil
+        because no candidate would carry it as a same-kind specific match
+        anyway, so the generic→specific bridge would be vacuous.
+    """
+
+    df_ratio = _CURRENT_DF_RATIO.get(None)
+    if not df_ratio:
+        return True
+    normalized = _clean_text(value).casefold()
+    if not normalized:
+        return True
+    ratio = df_ratio.get(normalized)
+    if ratio is None:
+        return False
+    return ratio >= GENERIC_CLASS_MIN_DF_RATIO
 
 
 def _is_generic_class_constraint(constraint: dict[str, Any]) -> bool:
