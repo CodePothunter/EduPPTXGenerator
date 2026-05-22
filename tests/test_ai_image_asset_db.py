@@ -3,6 +3,7 @@ import json
 from edupptx.materials.ai_image_asset_db import (
     _asset_embedding_text,
     _build_match_text,
+    _build_reuse_target_asset,
     _candidate_hybrid_text,
     _is_strict_semantic_gray_review_candidate,
     _normalize_asset_for_match,
@@ -13,6 +14,7 @@ from edupptx.materials.ai_image_asset_db import (
     build_ai_image_asset_db,
     enrich_ai_image_asset_db_keywords,
     evaluate_ai_image_reuse_matches_from_plan,
+    extract_topic_refs,
     find_reusable_ai_image_asset,
     ingest_ai_image_asset_library_from_output,
     infer_grade,
@@ -20,10 +22,28 @@ from edupptx.materials.ai_image_asset_db import (
     infer_subject,
     materialize_reused_ai_image_asset,
     record_reused_ai_image_asset,
+    read_ai_image_split_match_index,
     update_ai_image_asset_library,
-    write_ai_image_asset_db,
+    write_ai_image_split_match_indexes,
 )
 from edupptx.materials.reuse_policy import normalize_reuse_policy_fields
+
+
+def _patch_embedding_encoder(monkeypatch) -> None:
+    monkeypatch.delenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", raising=False)
+
+    def fake_encode_embedding_texts(texts, **_kwargs):
+        import numpy as np
+
+        return np.asarray(
+            [[float(index + 1), 0.0, 1.0] for index, _text in enumerate(texts)],
+            dtype="float32",
+        )
+
+    monkeypatch.setattr(
+        "edupptx.materials.ai_image_asset_db._encode_embedding_texts",
+        fake_encode_embedding_texts,
+    )
 
 
 def _fake_reuse_review_response(messages):
@@ -59,6 +79,363 @@ def _fake_reuse_review_response(messages):
         "mismatched_constraints": [],
         "missing_constraints": [],
     }
+
+
+def test_reuse_search_routes_page_targets_to_split_reuse_group(tmp_path, monkeypatch):
+    monkeypatch.setenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", "1")
+
+    image_dir = tmp_path / "ai_images"
+    image_dir.mkdir()
+    (image_dir / "general.png").write_bytes(b"general-image")
+    (image_dir / "content.png").write_bytes(b"content-image")
+    general_asset = {
+        "asset_id": "general",
+        "asset_kind": "page_image",
+        "image_path": "ai_images/general.png",
+        "content_prompt": "apple worksheet",
+        "asset_category": "concept_scene",
+        "constraints": [{"kind": "object", "subtype": "teaching_carrier", "value": "apple", "importance": 1}],
+        "core_keywords": ["apple"],
+        "semantic_aliases": {},
+        "strict_reuse_group": "general_reuse",
+    }
+    content_asset = {
+        **general_asset,
+        "asset_id": "content",
+        "image_path": "ai_images/content.png",
+        "strict_reuse_group": "content_reuse",
+    }
+    main_index = {
+        "schema_version": 13,
+        "input_asset_count": 2,
+        "asset_root": str(tmp_path),
+        "assets": [general_asset, content_asset],
+    }
+    (tmp_path / "ai_image_match_index.json").write_text(json.dumps(main_index, ensure_ascii=False), encoding="utf-8")
+    split_dir = tmp_path / "strict_reuse_indexes"
+    split_dir.mkdir()
+    (split_dir / "general_reuse.json").write_text(
+        json.dumps({"schema_version": 13, "asset_root": str(tmp_path), "assets": [general_asset]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (split_dir / "content_reuse.json").write_text(
+        json.dumps({"schema_version": 13, "asset_root": str(tmp_path), "assets": [content_asset]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    class KeywordClient:
+        _model = "fake-keyword-model"
+
+        def chat_json(self, messages, **kwargs):
+            raw = messages[1]["content"]
+            request = json.loads(raw[raw.index("{"):])
+            if request.get("reuse_review"):
+                return _fake_reuse_review_response(messages)
+            asset_id = request["assets"][0]["asset_id"]
+            return {
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "context_summary": "apple worksheet",
+                        "teaching_intent": "identify apple",
+                        "asset_category": "concept_scene",
+                        "constraints": [
+                            {
+                                "kind": "object",
+                                "subtype": "teaching_carrier",
+                                "value": "apple",
+                                "importance": 1,
+                                "confidence": 0.9,
+                                "evidence": "prompt mentions apple",
+                                "reason": "main visual object",
+                            }
+                        ],
+                        "core_keywords": ["apple"],
+                        "semantic_aliases": {},
+                        "strict_reuse_group": "content_reuse",
+                        "strict_reuse_confidence": 0.9,
+                        "strict_reuse_reason": "target needs exact worksheet content",
+                    }
+                ]
+            }
+
+    debug_path = tmp_path / "reuse_debug.json"
+
+    match = find_reusable_ai_image_asset(
+        library_dir=tmp_path,
+        asset_kind="page_image",
+        prompt="apple worksheet",
+        keyword_client=KeywordClient(),
+        debug_path=debug_path,
+        reuse_debug_mode="full",
+    )
+
+    assert match is not None
+    assert match["asset"]["asset_id"] == "content"
+    debug = json.loads(debug_path.read_text(encoding="utf-8"))
+    route = debug["queries"][0]["reuse_group_route"]
+    assert route["strict_reuse_group"] == "content_reuse"
+    assert route["asset_count"] == 1
+
+
+def test_multi_library_reuse_enriches_target_keywords_once(tmp_path, monkeypatch):
+    monkeypatch.setenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", "1")
+
+    roots = [tmp_path / "library_a", tmp_path / "library_b"]
+    for index, root in enumerate(roots):
+        root.mkdir()
+        match_index = {
+            "schema_version": 13,
+            "asset_root": str(root),
+            "assets": [
+                {
+                    "asset_id": f"asset_{index}",
+                    "asset_kind": "page_image",
+                    "image_path": f"ai_images/asset_{index}.png",
+                    "content_prompt": f"unrelated library candidate {index}",
+                    "role": "illustration",
+                    "aspect_ratio": "1:1",
+                    "core_keywords": [f"library-only-{index}"],
+                    "semantic_aliases": {},
+                    "strict_reuse_group": "general_reuse",
+                }
+            ],
+        }
+        (root / "ai_image_match_index.json").write_text(
+            json.dumps(match_index, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    class KeywordClient:
+        _model = "fake-keyword-model"
+
+        def __init__(self):
+            self.keyword_calls = 0
+
+        def chat_json(self, messages, **kwargs):
+            raw = messages[1]["content"]
+            request = json.loads(raw[raw.index("{"):])
+            if request.get("reuse_review"):
+                return {"score": 0.0, "brief_reason": "not used"}
+            self.keyword_calls += 1
+            asset_id = request["assets"][0]["asset_id"]
+            return {
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "context_summary": "target keyword only",
+                        "teaching_intent": "find target keyword",
+                        "asset_category": "concept_scene",
+                        "constraints": [],
+                        "core_keywords": ["target-keyword"],
+                        "semantic_aliases": {},
+                        "strict_reuse_group": "general_reuse",
+                        "strict_reuse_confidence": 0.9,
+                        "strict_reuse_reason": "general visual target",
+                    }
+                ]
+            }
+
+    client = KeywordClient()
+
+    find_reusable_ai_image_asset(
+        library_dir=tuple(roots),
+        asset_kind="page_image",
+        prompt="target keyword only",
+        role="illustration",
+        aspect_ratio="1:1",
+        keyword_client=client,
+    )
+
+    assert client.keyword_calls == 1
+
+
+def test_multi_library_reuse_uses_one_global_llm_review_budget(tmp_path, monkeypatch):
+    from edupptx.materials import ai_image_asset_db as db_mod
+
+    monkeypatch.setenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", "1")
+    review_calls = {"count": 0}
+
+    class KeywordClient:
+        _model = "fake-keyword-model"
+
+        def chat_json(self, messages, **kwargs):
+            raw = messages[1]["content"]
+            request = json.loads(raw[raw.index("{"):])
+            if request.get("reuse_review"):
+                review_calls["count"] += 1
+                return {
+                    "score": 0.05,
+                    "brief_reason": "fake reject",
+                    "evidence": [],
+                    "risk_factors": [],
+                    "matched_constraints": [],
+                    "mismatched_constraints": [],
+                    "missing_constraints": [],
+                }
+            asset_id = request["assets"][0]["asset_id"]
+            return {
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "normalized_prompt": "stub character teaching card",
+                        "context_summary": "exact character card",
+                        "teaching_intent": "teach exact character",
+                        "asset_category": "content_specific",
+                        "constraints": [
+                            {
+                                "kind": "text",
+                                "subtype": "teaching_content",
+                                "value": "stub_char",
+                                "importance": 2,
+                            }
+                        ],
+                        "core_keywords": ["stub_char"],
+                        "semantic_aliases": {},
+                        "strict_reuse_group": "general_reuse",
+                    }
+                ]
+            }
+
+    roots = [tmp_path / "library_a", tmp_path / "library_b"]
+    for library_index, root in enumerate(roots):
+        image_dir = root / "ai_images"
+        image_dir.mkdir(parents=True)
+        assets = []
+        for asset_index in range(3):
+            asset_id = f"asset_{library_index}_{asset_index}"
+            (image_dir / f"{asset_id}.png").write_bytes(asset_id.encode("ascii"))
+            assets.append(
+                {
+                    "asset_id": asset_id,
+                    "asset_kind": "page_image",
+                    "image_path": f"ai_images/{asset_id}.png",
+                    "aspect_ratio": "1:1",
+                    "content_prompt": "stub_char teaching card",
+                    "normalized_prompt": "stub_char teaching card",
+                    "asset_category": "content_specific",
+                    "constraints": [
+                        {
+                            "kind": "text",
+                            "subtype": "teaching_content",
+                            "value": "stub_char",
+                            "importance": 2,
+                        }
+                    ],
+                    "core_keywords": ["stub_char"],
+                    "semantic_aliases": {},
+                    "strict_reuse_group": "general_reuse",
+                }
+            )
+        (root / "ai_image_match_index.json").write_text(
+            json.dumps(
+                {
+                    "schema_version": 13,
+                    "asset_root": str(root),
+                    "input_asset_count": len(assets),
+                    "asset_count": len(assets),
+                    "assets": assets,
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    match = find_reusable_ai_image_asset(
+        library_dir=tuple(roots),
+        asset_kind="page_image",
+        prompt="stub_char teaching card",
+        role="illustration",
+        aspect_ratio="1:1",
+        keyword_client=KeywordClient(),
+        debug_path=tmp_path / "reuse_debug.json",
+        reuse_debug_mode="full",
+    )
+
+    assert match is None
+    assert review_calls["count"] == db_mod.MAX_LLM_REVIEWS_PER_QUERY
+
+
+def test_background_reuse_routes_to_general_split_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", "1")
+
+    image_dir = tmp_path / "ai_images"
+    image_dir.mkdir()
+    (image_dir / "background.png").write_bytes(b"background-image")
+    (image_dir / "content.png").write_bytes(b"content-image")
+    background_asset = {
+        "asset_id": "background",
+        "asset_kind": "background",
+        "image_path": "ai_images/background.png",
+        "content_prompt": "warm classroom background",
+        "normalized_prompt": "色调:暖米色; 纹理:纸张; 明度:中明度; 构图:整体平铺",
+        "background_route": {"background_color_bias": "偏暖米色和浅棕色"},
+        "core_keywords": ["warm classroom", "background"],
+        "semantic_aliases": {},
+        "strict_reuse_group": "general_reuse",
+    }
+    content_asset = {
+        "asset_id": "content",
+        "asset_kind": "page_image",
+        "image_path": "ai_images/content.png",
+        "content_prompt": "visible math problem",
+        "core_keywords": ["math problem"],
+        "semantic_aliases": {},
+        "strict_reuse_group": "content_reuse",
+    }
+    split_dir = tmp_path / "strict_reuse_indexes"
+    split_dir.mkdir()
+    (split_dir / "general_reuse.json").write_text(
+        json.dumps({"schema_version": 13, "asset_root": str(tmp_path), "assets": [background_asset]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (split_dir / "content_reuse.json").write_text(
+        json.dumps({"schema_version": 13, "asset_root": str(tmp_path), "assets": [content_asset]}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    debug_path = tmp_path / "reuse_debug.json"
+
+    find_reusable_ai_image_asset(
+        library_dir=tmp_path,
+        asset_kind="background",
+        prompt="warm classroom background",
+        background_route={"background_color_bias": "偏暖米色和浅棕色"},
+        keyword_client=None,
+        debug_path=debug_path,
+        reuse_debug_mode="full",
+    )
+
+    debug = json.loads(debug_path.read_text(encoding="utf-8"))
+    route = debug["queries"][0]["reuse_group_route"]
+    assert route["strict_reuse_group"] == "general_reuse"
+    assert route["match_index_path"].endswith("general_reuse.json")
+    assert route["asset_count"] == 1
+
+
+def test_extract_topic_refs_from_titles_and_knowledge_topics():
+    assert extract_topic_refs("一年级语文《比尾巴》课文教学") == ["比尾巴"]
+    assert extract_topic_refs("七年级数学三角函数教学") == ["三角函数"]
+
+
+def test_online_reuse_target_extracts_topic_refs_from_theme():
+    target = _build_reuse_target_asset(
+        asset_kind="page_image",
+        prompt="兔子古文字到现代汉字的演变示意图",
+        prompt_route=None,
+        background_route=None,
+        theme="一年级语文《比尾巴》课文教学",
+        grade="一年级",
+        subject="语文",
+        page_title="随文识字",
+        page_type="content",
+        role="illustration",
+        aspect_ratio="1:1",
+    )
+
+    assert target["topic_refs"] == ["比尾巴"]
+    match_target = _normalize_asset_for_match(target, for_target=True)
+    assert match_target["topic_refs"] == ["比尾巴"]
 
 
 def test_page_image_core_keywords_come_from_llm_payload_and_are_cleaned():
@@ -459,9 +836,12 @@ def test_background_keeps_llm_core_keywords_without_constraints_or_category():
         "subject",
         "grade_norm",
         "grade_band",
+        "unit_ref",
+        "topic_refs",
         "content_prompt",
         "background_route",
         "normalized_prompt",
+        "color_temperature",
         "context_summary",
         "teaching_intent",
         "core_keywords",
@@ -538,9 +918,10 @@ def test_old_policy_fields_and_source_library_are_removed_from_final_asset():
         "subject",
         "grade_norm",
         "grade_band",
+        "unit_ref",
+        "topic_refs",
         "content_prompt",
-        "prompt_route",
-        "normalized_prompt",
+        "detail_prompt",
         "context_summary",
         "teaching_intent",
         "context_summary_keywords",
@@ -620,7 +1001,7 @@ def test_route_match_text_uses_route_fields_not_generation_prompt_terms():
 
     assert "illustration" in text
     assert "低年级" in text
-    assert "content" in text
+    assert "content" not in text
     assert "lower" not in text
     assert "profile_a" not in text
     assert "profile style" not in text
@@ -866,11 +1247,10 @@ def test_context_score_does_not_use_target_summary_or_candidate_context_keywords
     assert details["context_hits"] == []
 
 
-def test_route_score_uses_role_grade_family_and_page_type_weights():
+def test_route_score_uses_role_and_grade_family_weights():
     target = {
         "asset_kind": "page_image",
         "content_prompt": "",
-        "normalized_prompt": "",
         "core_keywords": ["author portrait"],
         "role": "hero",
         "page_type": "cover",
@@ -880,7 +1260,6 @@ def test_route_score_uses_role_grade_family_and_page_type_weights():
     candidate = {
         "asset_kind": "page_image",
         "content_prompt": "author portrait",
-        "normalized_prompt": "",
         "role": "hero",
         "page_type": "content",
         "grade_band": "高年级",
@@ -890,10 +1269,10 @@ def test_route_score_uses_role_grade_family_and_page_type_weights():
     details = _score_reuse_candidate_details(target, candidate)
 
     assert details["core_score"] == 1.0
-    assert round(details["route_score"], 4) == 0.8
+    assert round(details["route_score"], 4) == 1.0
     assert details["route_role_match"] == 1.0
     assert details["route_grade_family_match"] == 1.0
-    assert details["route_page_type_match"] == 0.0
+    assert "route_page_type_match" not in details
     assert details["aspect_score"] == 0.6
 
 
@@ -997,13 +1376,15 @@ def test_builds_ai_image_asset_db_from_output_sessions(tmp_path):
     assert background_asset["background_route"]["background_color_bias"] == "偏暖米色和浅棕色，秋日氛围"
     page_asset = next(asset for asset in db["assets"] if asset["asset_kind"] == "page_image")
     assert page_asset["content_prompt"] == "深秋北海公园菊花盛放的静谧场景"
-    assert page_asset["prompt_route"]["profile_ids"] == ["upper_grade_base"]
+    assert "prompt_route" not in page_asset
+    assert "normalized_prompt" not in page_asset
     for asset in db["assets"]:
         assert "prompt" not in asset
         assert "generation_prompt" not in asset
         assert "source" not in asset
         assert "library" not in asset
         assert asset["theme"] == "七年级语文《秋天的怀念》课文教学"
+        assert asset["topic_refs"] == ["秋天的怀念"]
         assert asset["grade_norm"] == "七年级"
         assert asset["subject"] == "语文"
         assert asset["image_path"].startswith("session_20260506_111550/materials/")
@@ -1044,17 +1425,6 @@ def test_default_context_summary_describes_slide_function_not_visible_query(tmp_
     assert asset["context_summary"].startswith("Learning Path")
     assert "学习路径" in asset["context_summary"]
     assert "cartoon tadpole holding a flag" not in asset["context_summary"]
-
-
-def test_write_ai_image_asset_db_defaults_to_output_root(tmp_path):
-    output_root = tmp_path / "output"
-    output_root.mkdir()
-
-    db, target = write_ai_image_asset_db(output_root)
-
-    assert target == output_root / "ai_image_asset_db.json"
-    assert target.exists()
-    assert json.loads(target.read_text(encoding="utf-8"))["asset_count"] == db["asset_count"]
 
 
 def test_enriches_asset_db_keywords_with_llm_payload():
@@ -1129,7 +1499,7 @@ def test_enriches_asset_db_keywords_with_llm_payload():
 
     author = db["assets"][0]
     pinyin = db["assets"][1]
-    assert db["schema_version"] == 12
+    assert db["schema_version"] == 13
     assert db["keyword_builder"]["method"] == "llm_reuse_metadata_extraction"
     assert db["keyword_builder"]["model"] == "fake-keyword-model"
     assert "reuse_scope" not in author
@@ -1300,6 +1670,7 @@ def test_keyword_enrichment_offline_and_online_keep_same_policy_fields():
         "core_keywords",
         "semantic_aliases",
         "context_summary_keywords",
+        "topic_refs",
         "constraints",
         "asset_category",
     )
@@ -1320,7 +1691,9 @@ def test_keyword_enrichment_offline_and_online_keep_same_policy_fields():
             assert field not in background
 
 
-def test_updates_reusable_asset_library_by_copying_images_and_merging_db(tmp_path):
+def test_updates_reusable_asset_library_by_copying_images_and_merging_match_index(tmp_path, monkeypatch):
+    _patch_embedding_encoder(monkeypatch)
+
     class FakeKeywordClient:
         _model = "fake-keyword-model"
 
@@ -1391,18 +1764,23 @@ def test_updates_reusable_asset_library_by_copying_images_and_merging_db(tmp_pat
     }
     (session_dir / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
 
-    db, db_path = update_ai_image_asset_library(
+    db, index_path = update_ai_image_asset_library(
         session_dir,
         library_dir,
         keyword_client=FakeKeywordClient(),
         keyword_batch_size=4,
     )
 
-    assert db_path == library_dir / "ai_image_asset_db.json"
-    assert db_path.exists()
-    assert db["output_root"] == str(library_dir.resolve())
+    assert index_path == library_dir / "strict_reuse_indexes"
+    assert not (library_dir / "ai_image_match_index.json").exists()
+    assert (library_dir / "strict_reuse_indexes" / "general_reuse.json").exists()
+    assert (library_dir / "strict_reuse_indexes" / "content_reuse.json").exists()
+    assert not (library_dir / "ai_image_asset_db.json").exists()
+    assert (library_dir / "ai_image_embedding_index.npz").exists()
+    assert (library_dir / "ai_image_embedding_meta.json").exists()
+    assert db["asset_root"] == str(library_dir.resolve())
     assert db["asset_count"] == 2
-    assert db["schema_version"] == 12
+    assert db["schema_version"] == 13
     for asset in db["assets"]:
         copied_path = library_dir / asset["image_path"]
         assert copied_path.exists()
@@ -1423,12 +1801,18 @@ def test_updates_reusable_asset_library_by_copying_images_and_merging_db(tmp_pat
     ):
         assert field not in background
 
-    persisted = json.loads(db_path.read_text(encoding="utf-8"))
+    split = read_ai_image_split_match_index(library_dir)
+    assert split is not None
+    persisted, _split_dir = split
     assert persisted["asset_count"] == 2
+    embedding_meta = json.loads((library_dir / "ai_image_embedding_meta.json").read_text(encoding="utf-8"))
+    assert embedding_meta["asset_count"] == 2
     assert {asset["asset_id"] for asset in persisted["assets"]} == {asset["asset_id"] for asset in db["assets"]}
 
 
-def test_ingests_output_sessions_into_reusable_asset_library(tmp_path):
+def test_ingests_output_sessions_into_reusable_asset_library(tmp_path, monkeypatch):
+    _patch_embedding_encoder(monkeypatch)
+
     output_root = tmp_path / "output"
     library_dir = tmp_path / "materials_library"
 
@@ -1458,18 +1842,22 @@ def test_ingests_output_sessions_into_reusable_asset_library(tmp_path):
         }
         (session_dir / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
 
-    db, db_path, report = ingest_ai_image_asset_library_from_output(output_root, library_dir)
+    db, index_path, report = ingest_ai_image_asset_library_from_output(output_root, library_dir)
 
-    assert db_path == library_dir.resolve() / "ai_image_asset_db.json"
+    assert index_path == library_dir.resolve() / "strict_reuse_indexes"
+    assert report["match_index_path"] == str(index_path)
     assert report["library_dir"] == str(library_dir.resolve())
     assert report["asset_root"] == str(library_dir.resolve())
     assert report["session_count"] == 2
     assert len(report["processed_sessions"]) == 2
     assert report["failed_sessions"] == []
     assert db["asset_count"] == 2
-    index_path = library_dir / "ai_image_match_index.json"
     assert index_path.exists()
-    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert not (library_dir / "ai_image_match_index.json").exists()
+    assert not (library_dir / "ai_image_asset_db.json").exists()
+    split = read_ai_image_split_match_index(library_dir)
+    assert split is not None
+    index, _split_dir = split
     assert index["input_asset_count"] == 2
     assert index["asset_count"] == 2
     for asset in db["assets"]:
@@ -1477,7 +1865,7 @@ def test_ingests_output_sessions_into_reusable_asset_library(tmp_path):
         assert copied_path.exists()
         assert asset["image_path"].startswith("ai_images/")
 
-    db_again, _db_path, report_again = ingest_ai_image_asset_library_from_output(output_root, library_dir)
+    db_again, _index_path, report_again = ingest_ai_image_asset_library_from_output(output_root, library_dir)
     assert report_again["session_count"] == 2
     assert db_again["asset_count"] == 2
 
@@ -1579,7 +1967,9 @@ def test_finds_reusable_asset_with_content_bm25_score(tmp_path):
     assert debug["queries"][0]["ranked_candidates"][0]["score_details"]["core_score"] >= 0.6
 
 
-def test_reuse_manifest_causes_library_ingest_to_skip_reused_images(tmp_path):
+def test_reuse_manifest_causes_library_ingest_to_skip_reused_images(tmp_path, monkeypatch):
+    _patch_embedding_encoder(monkeypatch)
+
     session_dir = tmp_path / "output" / "session_20260506_111550"
     materials_dir = session_dir / "materials"
     library_dir = tmp_path / "materials_library"
@@ -1715,6 +2105,22 @@ def test_match_index_omits_deprecated_constraints_and_normalizes_grade(tmp_path)
                 "role": "illustration",
                 "aspect_ratio": "4:3",
                 "prompt": "author portrait",
+                "detail_prompt": "author portrait with a plain background",
+                "query_aliases": {"作者肖像": [{"alias": "作家画像", "confidence": 0.9}, {"alias": "author portrait", "confidence": 0.9}]},
+                "transform_advice": {
+                    "safe_crop": True,
+                    "crop_risk": "medium",
+                    "max_safe_crop_pct": {"top": 0.03, "right": "7%", "bottom": 0, "left": 50},
+                    "safe_padding": True,
+                    "padding_capacity": "mid",
+                    "padding_mode": "edge_color",
+                    "card_background_fill_safe": "conditional",
+                    "padding_color_source": "asset_edge_color",
+                    "edge_background_type": "solid",
+                    "edge_color_consistency": "medium",
+                    "requires_card_bg_similarity": True,
+                    "safe_stretch": False,
+                },
                 "grade": "7年级",
                 "subject": "语文",
                 "reuse_scope": "course_specific",
@@ -1750,6 +2156,10 @@ def test_match_index_omits_deprecated_constraints_and_normalizes_grade(tmp_path)
     assert asset["grade_norm"] == "七年级"
     assert asset["grade_band"] == "高年级"
     assert asset["core_keywords"] == ["史铁生", "肖像"]
+    assert asset["detail_prompt"] == "author portrait with a plain background"
+    assert "query_aliases" not in asset
+    assert asset["padding_capacity"] == "mid"
+    assert "transform_advice" not in asset
     assert [item["value"] for item in asset["constraints"]] == ["史铁生", "肖像"]
     assert "focus_dimensions" not in asset
     assert "reuse_scope" not in asset
@@ -1774,6 +2184,7 @@ def test_background_match_index_keeps_only_color_bias_route(tmp_path):
                 "asset_kind": "background",
                 "image_path": "ai_images/asset_bg.png",
                 "content_prompt": "淡雅秋日课堂背景",
+                "detail_prompt": "warm classroom background with decorative leaves",
                 "background_route": {
                     "template_family": "高年级",
                     "style_name": "秋日模板",
@@ -1789,6 +2200,7 @@ def test_background_match_index_keeps_only_color_bias_route(tmp_path):
 
     asset = index["assets"][0]
     assert asset["background_route"] == {"background_color_bias": "偏暖米色和浅棕色，秋日氛围"}
+    assert "detail_prompt" not in asset
 
 
 def test_find_reusable_background_prefers_matching_color_bias(tmp_path):
@@ -1798,7 +2210,7 @@ def test_find_reusable_background_prefers_matching_color_bias(tmp_path):
     (image_dir / "asset_cool.png").write_bytes(b"cool")
     (image_dir / "asset_warm.png").write_bytes(b"warm")
     match_index = {
-        "schema_version": 12,
+        "schema_version": 13,
         "input_asset_count": 0,
         "asset_count": 2,
         "assets": [
@@ -1840,7 +2252,9 @@ def test_find_reusable_background_prefers_matching_color_bias(tmp_path):
     assert match["score_details"]["route_score"] == 0.0
 
 
-def test_update_library_writes_slim_match_index(tmp_path):
+def test_update_library_writes_match_index_and_embedding_sidecars(tmp_path, monkeypatch):
+    _patch_embedding_encoder(monkeypatch)
+
     library_dir = tmp_path / "materials_library"
     session_dir = tmp_path / "output" / "session_20260507_150001"
     materials_dir = session_dir / "materials"
@@ -1889,18 +2303,25 @@ def test_update_library_writes_slim_match_index(tmp_path):
 
     db, _db_path = update_ai_image_asset_library(session_dir, library_dir)
 
-    index_path = library_dir / "ai_image_match_index.json"
+    index_path = library_dir / "strict_reuse_indexes"
     assert db["asset_count"] == 1
     assert index_path.exists()
-    index = json.loads(index_path.read_text(encoding="utf-8"))
+    assert not (library_dir / "ai_image_match_index.json").exists()
+    assert (library_dir / "ai_image_embedding_index.npz").exists()
+    assert (library_dir / "ai_image_embedding_meta.json").exists()
+    split = read_ai_image_split_match_index(library_dir)
+    assert split is not None
+    index, _split_dir = split
     assert index["input_asset_count"] == 1
     assert index["asset_count"] == 1
     asset = index["assets"][0]
     assert asset["theme"] == "topic"
+    assert asset["topic_refs"] == ["topic"]
     assert "source" not in asset
     assert "library" not in asset
     assert "style_prompt" not in asset
-    assert asset["prompt_route"] == {"template_family": "lower", "profile_ids": ["lower_base"]}
+    assert "prompt_route" not in asset
+    assert "normalized_prompt" not in asset
 
 
 def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
@@ -1961,7 +2382,7 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
         ],
     }
     match_index = {
-        "schema_version": 12,
+        "schema_version": 13,
         "input_asset_count": 1,
         "asset_count": 1,
         "assets": [
@@ -1989,7 +2410,7 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
         ],
     }
     (library_dir / "ai_image_asset_db.json").write_text(json.dumps(rich_db, ensure_ascii=False), encoding="utf-8")
-    (library_dir / "ai_image_match_index.json").write_text(json.dumps(match_index, ensure_ascii=False), encoding="utf-8")
+    write_ai_image_split_match_indexes(match_index, library_dir)
 
     match = find_reusable_ai_image_asset(
         library_dir=library_dir,
@@ -2013,9 +2434,106 @@ def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
     assert match["reuse_audit"]["same_theme"] is True
     assert match["reuse_audit"]["cross_theme"] is False
     debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
-    assert debug["queries"][0]["match_index_path"].endswith("ai_image_match_index.json")
+    assert debug["queries"][0]["match_index_path"].endswith("general_reuse.json")
     assert debug["queries"][0]["decision"]["reuse_audit"]["target_theme"] == "lesson"
     assert debug["queries"][0]["decision"]["reuse_audit"]["candidate_theme"] == "lesson"
+
+
+def test_reuse_searches_primary_and_ppt_material_libraries(tmp_path):
+    class FakeReuseClient:
+        _model = "fake-reuse-model"
+
+        def chat_json(self, messages, **kwargs):
+            review = _fake_reuse_review_response(messages)
+            if review is not None:
+                return review
+            raw = messages[1]["content"]
+            request = json.loads(raw[raw.index("{"):])
+            asset_id = request["assets"][0]["asset_id"]
+            return {
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "normalized_prompt": "author portrait",
+                        "context_summary": "author profile image",
+                        "teaching_intent": "author profile image",
+                        "core_keywords": ["author", "portrait"],
+                        "semantic_aliases": {},
+                        "context_summary_keywords": ["lesson"],
+                        "asset_category": "content_specific",
+                        "constraints": [{"kind": "entity", "value": "author", "importance": 2}],
+                    }
+                ]
+            }
+
+    primary_dir = tmp_path / "materials_library"
+    ppt_dir = tmp_path / "materials_library_ppt"
+    (primary_dir / "ai_images").mkdir(parents=True)
+    (ppt_dir / "pptx_images").mkdir(parents=True)
+    (ppt_dir / "pptx_images" / "asset_author.png").write_bytes(b"author")
+    (primary_dir / "ai_image_match_index.json").write_text(
+        json.dumps({"schema_version": 13, "input_asset_count": 0, "asset_count": 0, "assets": []}),
+        encoding="utf-8",
+    )
+    (ppt_dir / "ai_image_match_index.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 13,
+                "input_asset_count": 1,
+                "asset_count": 1,
+                "assets": [
+                    {
+                        "asset_id": "kbpptx_author",
+                        "asset_kind": "page_image",
+                        "image_path": "pptx_images/asset_author.png",
+                        "aspect_ratio": "1:1",
+                        "subject": "lang",
+                        "grade_norm": "7",
+                        "grade_band": "high",
+                        "content_prompt": "author portrait",
+                        "context_summary": "author profile image",
+                        "teaching_intent": "author profile image",
+                        "theme": "lesson",
+                        "asset_category": "content_specific",
+                        "constraints": [{"kind": "entity", "value": "author", "importance": 2}],
+                        "core_keywords": ["author"],
+                        "semantic_aliases": {},
+                        "context_summary_keywords": [],
+                        "duplicate_asset_ids": [],
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    debug_path = tmp_path / "reuse_debug.json"
+    match = find_reusable_ai_image_asset(
+        library_dir=(primary_dir, ppt_dir),
+        asset_kind="page_image",
+        prompt="author portrait",
+        theme="lesson",
+        grade="7",
+        subject="lang",
+        page_title="Author",
+        role="illustration",
+        aspect_ratio="1:1",
+        keyword_client=FakeReuseClient(),
+        debug_path=debug_path,
+        reuse_debug_mode="full",
+    )
+
+    assert match is not None
+    assert match["asset"]["asset_id"] == "kbpptx_author"
+    assert match["library_dir"] == str(ppt_dir.resolve())
+    assert str(match["candidate_image_path"]).endswith("pptx_images\\asset_author.png") or str(
+        match["candidate_image_path"]
+    ).endswith("pptx_images/asset_author.png")
+    debug = json.loads(debug_path.read_text(encoding="utf-8"))
+    assert len(debug["queries"]) == 2
+    assert debug["queries"][0]["asset_count"] == 0
+    assert debug["queries"][1]["asset_count"] == 1
 
 
 def test_reuse_policy_rejects_conflicting_top_candidate_and_accepts_next(tmp_path):

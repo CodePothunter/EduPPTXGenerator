@@ -85,31 +85,81 @@ ROLE_HARDCAP_TERMS = {
     "男人", "女人", "人物", "人", "卡通人物", "动漫人物",
     "动物", "植物",
 }
-# Subtypes that make a candidate's extra constraint narrative-binding: when
-# candidate carries one of these at imp>=2 but target does not cover it,
-# the candidate is "more specific" than the target and reuse may distort
-# the page's teaching intent. These trigger a reverse-direction LLM review.
-CANDIDATE_EXTRA_STRONG_SUBTYPES = {
-    "named_individual",
-    "species_instance",
-    "teaching_content",
-    "teaching_carrier",
+# Single source of truth for "what role does each subtype play in the
+# undercoverage checks". Each property answers one orthogonal question:
+#
+#   candidate_extra_strong:
+#       The candidate carrying this subtype at imp>=2 makes the candidate
+#       materially more specific than what the target requested. If the
+#       target does not cover it, reuse would inject teaching content the
+#       target didn't ask for. Triggers reverse-direction LLM review.
+#
+#   narrative_binding:
+#       The target carrying this subtype at imp>=1 means the page
+#       narratively depends on this element. Even if every imp>=2 target
+#       constraint is covered, a candidate that misses one of these is
+#       materially dropping a page-defining piece. Gates the strong-cover
+#       short-circuit.
+#
+#   forced_loose_teaching_guard:
+#       The target carrying this subtype at imp>=2 must still be covered
+#       even when target.asset_category is in FORCED_LOOSE_CATEGORIES.
+#       Forced-loose otherwise skips constraint comparison entirely,
+#       which would let "标自然段序号" be swapped for "圈词语".
+#
+# Adding a new judgement axis means adding one column to this table, not
+# opening a fourth top-level set.
+SUBTYPE_PROPERTIES: dict[str, dict[str, bool]] = {
+    "named_individual": {
+        "candidate_extra_strong": True,
+        "narrative_binding": True,
+        "forced_loose_teaching_guard": False,
+    },
+    "species_instance": {
+        "candidate_extra_strong": True,
+        "narrative_binding": True,
+        "forced_loose_teaching_guard": False,
+    },
+    "teaching_content": {
+        "candidate_extra_strong": True,
+        "narrative_binding": True,
+        "forced_loose_teaching_guard": True,
+    },
+    "teaching_carrier": {
+        "candidate_extra_strong": True,
+        "narrative_binding": True,
+        "forced_loose_teaching_guard": True,
+    },
+    "teaching_fact": {
+        "candidate_extra_strong": False,
+        "narrative_binding": True,
+        "forced_loose_teaching_guard": True,
+    },
+    "story_scene": {
+        "candidate_extra_strong": False,
+        "narrative_binding": True,
+        "forced_loose_teaching_guard": False,
+    },
+    "narrative_emotion": {
+        "candidate_extra_strong": False,
+        "narrative_binding": True,
+        "forced_loose_teaching_guard": False,
+    },
+    # imp=1 scene props can still be page-defining when they encode the
+    # teaching attribute (e.g. "长尾巴" in 《比尾巴》).
+    "scene_prop": {
+        "candidate_extra_strong": False,
+        "narrative_binding": True,
+        "forced_loose_teaching_guard": False,
+    },
 }
-# Subtypes whose target-side imp>=1 presence binds the page's narrative.
-# When the target carries one of these at imp>=1 but the candidate has no
-# light-match of the same kind, the candidate is materially missing a
-# narrative element the page depends on — even if every imp>=2 target
-# constraint happens to be covered. Used to gate the strong-cover
-# short-circuit so it can't bypass scene/role/story-bound mismatches.
-NARRATIVE_BINDING_SUBTYPES = {
-    "named_individual",
-    "species_instance",
-    "story_scene",
-    "narrative_emotion",
-    "teaching_carrier",
-    "teaching_fact",
-    "teaching_content",
-}
+
+
+def _subtype_has(subtype: Any, property_name: str) -> bool:
+    """Look up one property of a subtype. Unknown subtype → False (safe default)."""
+    text = _clean_text(subtype).casefold()
+    return SUBTYPE_PROPERTIES.get(text, {}).get(property_name, False)
+
 
 DEFAULT_POLICY = {
     "reuse_level": "medium",
@@ -127,6 +177,20 @@ BACKGROUND_REUSE_THRESHOLD = 0.38
 BACKGROUND_SAME_THEME_THRESHOLD = 0.34
 BACKGROUND_SAME_THEME_HIGH_EMBEDDING_THRESHOLD = 0.30
 BACKGROUND_SAME_THEME_HIGH_EMBEDDING_FLOOR = 0.70
+# Color-temperature normalization for background reuse.
+# Library writes Chinese tokens — see metadata_rules.md "background.normalized_prompt 写法":
+# `color_temperature` 只允许 `冷/暖/中性`. Any other value is treated as
+# missing (returns ""), which makes the cross-theme warm/cool filter skip
+# the candidate rather than crash.
+_COLOR_TEMPERATURE_NORMALIZE = {
+    "暖": "warm",
+    "冷": "cool",
+    "中性": "neutral",
+}
+
+
+def _normalize_color_temperature(value: Any) -> str:
+    return _COLOR_TEMPERATURE_NORMALIZE.get(_clean_text(value), "")
 LLM_REVIEW_REQUIRED_KINDS = {"text", "math", "physics"}
 CONSTRAINT_EMBEDDING_THRESHOLDS = {
     "entity": (0.92, 0.80),
@@ -151,6 +215,17 @@ SEMANTIC_SCORE_FLOOR = 0.18
 STRICT_EMBEDDING_REVIEW_THRESHOLD = 0.78
 STRICT_SEMANTIC_GRAY_REVIEW_THRESHOLD = 0.70
 STRICT_SEMANTIC_GRAY_BM25_THRESHOLD = 0.20
+# Per-reason LLM accept threshold overrides. Set on policy_result via
+# `llm_accept_threshold_override` so the downstream dispatcher does not need
+# to special-case reason strings. Profile-default thresholds live in
+# ai_image_asset_db (loose 0.55 / medium 0.64 / strict_literary 0.64 /
+# strict_knowledge 0.72); the values below describe carve-outs from those.
+# Text metadata is exact-matched; the LLM only confirms visibility, relax.
+STRICT_TEXT_EXACT_COVERED_LLM_THRESHOLD = 0.58
+# Target carries imp>=2 teaching signals inside a forced-loose category;
+# tighten above the base loose 0.55 so near-but-different teaching ops are
+# not silently accepted ("圈词语" vs "标自然段序号").
+FORCED_LOOSE_TEACHING_MISSING_LLM_THRESHOLD = 0.65
 # DF-ratio thresholds for subtype cross-validation. A value whose library
 # document-frequency ratio is below GENERIC_CLASS_MIN_DF_RATIO cannot
 # reliably be treated as a real generic-class word — most likely the
@@ -221,13 +296,20 @@ class AssetMetadata:
 
 
 def normalize_constraints(value: Any, *, max_items: int = 12) -> list[dict[str, Any]]:
-    """Normalize page-image constraints and discard unsupported constraint fields."""
+    """Normalize page-image constraints and discard unsupported constraint fields.
+
+    Constraints sharing the same ``(kind, normalized_value)`` collapse to a single
+    entry that keeps the highest ``importance`` and the highest ``confidence``
+    observed across duplicates. This prevents the same semantic value from being
+    counted twice with conflicting importance levels (e.g. once as
+    ``decorative`` and once as ``scene_prop``).
+    """
 
     if not isinstance(value, list):
         return []
 
-    constraints: list[dict[str, Any]] = []
-    seen: set[tuple[str, str, int]] = set()
+    order: list[tuple[str, str]] = []
+    by_key: dict[tuple[str, str], ReuseConstraint] = {}
     for item in value:
         constraint = _normalize_constraint_item(item)
         if constraint is None:
@@ -235,15 +317,37 @@ def normalize_constraints(value: Any, *, max_items: int = 12) -> list[dict[str, 
         key = (
             constraint.kind,
             _normalize_constraint_value(constraint.kind, constraint.value),
-            constraint.importance,
         )
-        if key in seen:
+        if key in by_key:
+            by_key[key] = _merge_constraint_duplicates(by_key[key], constraint)
             continue
-        seen.add(key)
-        constraints.append(constraint.to_dict())
-        if len(constraints) >= max_items:
-            break
-    return constraints
+        if len(order) >= max_items:
+            continue
+        order.append(key)
+        by_key[key] = constraint
+    return [by_key[key].to_dict() for key in order]
+
+
+def _merge_constraint_duplicates(left: ReuseConstraint, right: ReuseConstraint) -> ReuseConstraint:
+    """Pick the stricter of two ``(kind, value)``-equivalent constraints."""
+
+    if right.importance > left.importance:
+        keeper, loser = right, left
+    elif right.importance < left.importance:
+        keeper, loser = left, right
+    elif right.confidence > left.confidence:
+        keeper, loser = right, left
+    else:
+        keeper, loser = left, right
+    return ReuseConstraint(
+        kind=keeper.kind,
+        value=keeper.value,
+        importance=keeper.importance,
+        confidence=max(left.confidence, right.confidence),
+        evidence=keeper.evidence or loser.evidence,
+        reason=keeper.reason or loser.reason,
+        subtype=keeper.subtype or loser.subtype,
+    )
 
 
 def normalize_asset_metadata(raw: dict[str, Any]) -> AssetMetadata:
@@ -271,7 +375,7 @@ def normalize_asset_metadata(raw: dict[str, Any]) -> AssetMetadata:
 def _normalize_constraint_item(item: Any) -> ReuseConstraint | None:
     if not isinstance(item, dict):
         return None
-    kind = _normalize_constraint_kind(item.get("kind"))
+    kind = _clean_text(item.get("kind"))
     raw_value = _clean_text(item.get("value"))
     if kind not in CONSTRAINT_KINDS or not raw_value:
         return None
@@ -553,65 +657,143 @@ def strong_constraints_exactly_covered(
     return True
 
 
+def _constraints_lacking_same_kind_cover(
+    *,
+    target_constraints: list[dict[str, Any]],
+    candidate_constraints: list[dict[str, Any]],
+    loop_side: str,  # "target" or "candidate" — which side we iterate
+    min_importance: int,
+    subtype_property: str,
+) -> list[dict[str, Any]]:
+    """Return constraints from ``loop_side`` that:
+
+      - carry importance >= ``min_importance``,
+      - have a subtype with ``subtype_property`` set in SUBTYPE_PROPERTIES,
+      - and do not have any same-kind light_match on the opposite side.
+
+    ``_light_constraint_match_method`` is asymmetric — left=ask side,
+    right=offer side. To preserve the legacy generic→specific bridge
+    semantics we always call it with target as left and candidate as
+    right, regardless of which side is being iterated.
+
+    Single kernel for the three public wrappers below
+    (candidate_extra_strong / target_narrative_undercoverage /
+    target_strong_teaching_undercoverage). They differ only in loop_side,
+    min_importance, and subtype_property.
+    """
+
+    if loop_side == "target":
+        needles = target_constraints
+        haystack = candidate_constraints
+    elif loop_side == "candidate":
+        needles = candidate_constraints
+        haystack = target_constraints
+    else:
+        raise ValueError(f"loop_side must be 'target' or 'candidate', got {loop_side!r}")
+
+    missing: list[dict[str, Any]] = []
+    for item in needles:
+        if _constraint_importance(item) < min_importance:
+            continue
+        if not _subtype_has(item.get("subtype"), subtype_property):
+            continue
+        same_kind = [other for other in haystack if other["kind"] == item["kind"]]
+        if loop_side == "target":
+            covered = any(_light_constraint_match_method(item, other) for other in same_kind)
+        else:  # "candidate"
+            covered = any(_light_constraint_match_method(other, item) for other in same_kind)
+        if covered:
+            continue
+        missing.append(item)
+    return missing
+
+
 def target_narrative_undercoverage(
     target_constraints: list[dict[str, Any]],
     candidate_constraints: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
     """Return target imp>=1 narrative constraints the candidate fails to cover.
 
-    Counterpart to ``candidate_extra_strong_constraints`` for the imp=1 layer
-    on the target side. A constraint counts as narrative-binding when its
-    subtype is in NARRATIVE_BINDING_SUBTYPES (specific entities, story
-    scenes, narrative emotions, teaching carriers/facts/content). When the
-    target requests such a constraint at imp>=1 but the candidate has no
-    same-kind light_match, the candidate is materially missing a narrative
-    element the page depends on. The strong-cover short-circuit must not
-    bypass these mismatches: imp=2 cover does not imply narrative cover.
+    Narrative-binding subtypes (specific entities, story scenes, narrative
+    emotions, teaching carriers/facts/content, scene_prop) on the target
+    side must still be covered even when every imp>=2 constraint already
+    light-matches — imp=2 cover does not imply narrative cover. Gates the
+    strong-cover short-circuit.
     """
 
-    target_norm = normalize_constraints(target_constraints)
-    candidate_norm = normalize_constraints(candidate_constraints)
-    missing: list[dict[str, Any]] = []
-    for t in target_norm:
-        if _constraint_importance(t) < 1:
-            continue
-        subtype = _clean_text(t.get("subtype")).casefold()
-        if subtype not in NARRATIVE_BINDING_SUBTYPES:
-            continue
-        same_kind = [c for c in candidate_norm if c["kind"] == t["kind"]]
-        if any(_light_constraint_match_method(t, c) for c in same_kind):
-            continue
-        missing.append(t)
-    return missing
+    return _constraints_lacking_same_kind_cover(
+        target_constraints=normalize_constraints(target_constraints),
+        candidate_constraints=normalize_constraints(candidate_constraints),
+        loop_side="target",
+        min_importance=1,
+        subtype_property="narrative_binding",
+    )
+
+
+def target_strong_teaching_undercoverage(
+    target_constraints: list[dict[str, Any]],
+    candidate_constraints: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Return target imp>=2 teaching constraints the candidate fails to cover.
+
+    Used by the forced-loose path so decorative asset_categories that still
+    carry imp>=2 teaching_fact / teaching_content / teaching_carrier signals
+    are not silently swapped for a semantically-near image that teaches a
+    different operation (e.g. "标自然段序号" vs "圈词语").
+    """
+
+    return _constraints_lacking_same_kind_cover(
+        target_constraints=normalize_constraints(target_constraints),
+        candidate_constraints=normalize_constraints(candidate_constraints),
+        loop_side="target",
+        min_importance=2,
+        subtype_property="forced_loose_teaching_guard",
+    )
 
 
 def candidate_extra_strong_constraints(
     target_constraints: list[dict[str, Any]],
     candidate_constraints: list[dict[str, Any]],
 ) -> list[dict[str, Any]]:
-    """Return candidate strong constraints not covered by target.
+    """Return candidate strong constraints (imp>=2, candidate_extra_strong
+    subtype) not light-covered by any target constraint.
 
-    "Strong" here means subtype in CANDIDATE_EXTRA_STRONG_SUBTYPES with
-    importance>=2. "Not covered" means target has no same-kind same-value
-    (light_match) constraint at any importance. These extras indicate the
-    candidate is narratively more specific than the target asked for —
-    reusing it would inject content the target didn't request.
+    Extras here indicate the candidate is narratively more specific than
+    the target asked for — reusing it would inject content the target
+    didn't request.
     """
 
-    target_all = normalize_constraints(target_constraints)
-    candidate_norm = normalize_constraints(candidate_constraints)
-    extras: list[dict[str, Any]] = []
-    for c in candidate_norm:
-        if _constraint_importance(c) < 2:
-            continue
-        subtype = _clean_text(c.get("subtype")).casefold()
-        if subtype not in CANDIDATE_EXTRA_STRONG_SUBTYPES:
-            continue
-        same_kind = [t for t in target_all if t["kind"] == c["kind"]]
-        if any(_light_constraint_match_method(t, c) for t in same_kind):
-            continue
-        extras.append(c)
-    return extras
+    return _constraints_lacking_same_kind_cover(
+        target_constraints=normalize_constraints(target_constraints),
+        candidate_constraints=normalize_constraints(candidate_constraints),
+        loop_side="candidate",
+        min_importance=2,
+        subtype_property="candidate_extra_strong",
+    )
+
+
+# Subtypes whose extra-on-candidate presence makes reuse irrecoverable by
+# the LLM: a candidate carrying a specific named individual or species
+# instance the target did not request cannot be salvaged by visual
+# similarity. Other candidate_extra_strong subtypes (teaching_carrier,
+# teaching_content with synonymous wording) can still be salvaged — the
+# LLM should be invoked rather than short-circuited. Derived from the
+# property table so adding a new "always-irreplaceable" subtype is one
+# line in SUBTYPE_PROPERTIES, not a new sibling constant.
+_LLM_IRREPLACEABLE_SUBTYPES = {"named_individual", "species_instance"}
+
+
+def _extras_are_irreplaceable(extras: list[dict[str, Any]]) -> bool:
+    """True iff any extra constraint carries an irreplaceable subtype.
+
+    Used by the policy to set llm_skip_safe on the result so the LLM
+    dispatcher can hard-skip the review without re-deriving subtype info.
+    """
+    for item in extras:
+        subtype = _clean_text(item.get("subtype")).casefold()
+        if subtype in _LLM_IRREPLACEABLE_SUBTYPES:
+            return True
+    return False
 
 
 def _coerce_importance(value: Any, *, default: int) -> int:
@@ -628,10 +810,6 @@ def _coerce_confidence(value: Any, *, default: float) -> float:
     except (TypeError, ValueError):
         score = default
     return round(_clamp(score), 4)
-
-
-def _normalize_constraint_kind(value: Any) -> str:
-    return _clean_text(value)
 
 
 def derive_reuse_level_from_constraints(
@@ -824,6 +1002,22 @@ def _evaluate_reuse_filter_impl(
             else:
                 threshold_used = min(threshold_used, BACKGROUND_SAME_THEME_THRESHOLD)
             score_gap = score - threshold_used
+        else:
+            # Cross-theme reuse: filter warm↔cool mismatches that the score
+            # alone cannot catch. Neutral or unknown values are not flagged —
+            # the deciding signal is an explicit warm vs cool clash. Example:
+            # 《秋天的怀念》(暖) reused for 《秋天的雨》(冷) scores 0.41 > 0.38
+            # without this guard.
+            target_temp = _normalize_color_temperature(target.get("color_temperature"))
+            candidate_temp = _normalize_color_temperature(candidate.get("color_temperature"))
+            if {target_temp, candidate_temp} == {"warm", "cool"}:
+                return _result(
+                    "reject",
+                    "background_color_temperature_conflict",
+                    confidence=0.9,
+                    threshold=threshold_used,
+                    score_gap=score_gap,
+                )
         if score >= threshold_used:
             return _result(
                 "full_match",
@@ -1027,6 +1221,10 @@ def _evaluate_reuse_filter_impl(
                 score_gap=score_gap,
                 target_policy=target_policy,
                 candidate_policy=candidate_policy,
+                # Text/math/physics metadata is exact-matched at this point;
+                # the LLM only needs to confirm the glyph/formula is visible,
+                # not judge prose suitability. Relaxed bar.
+                llm_accept_threshold_override=STRICT_TEXT_EXACT_COVERED_LLM_THRESHOLD,
             )
 
     if accepted_by in SCORE_GATE_LLM_REVIEW_REASONS:
@@ -1042,6 +1240,38 @@ def _evaluate_reuse_filter_impl(
     target_is_forced_loose = target_category in FORCED_LOOSE_CATEGORIES
 
     if target_is_forced_loose:
+        # Even though target_category is decorative, the target may still
+        # carry imp>=2 teaching_fact / teaching_content / teaching_carrier
+        # signals (e.g. "标自然段序号", "田字格"). These must remain covered;
+        # otherwise the forced-loose short-circuit silently swaps one
+        # teaching operation for another that happens to score similarly.
+        teaching_missing = target_strong_teaching_undercoverage(
+            target_constraints,
+            candidate_constraints,
+        )
+        if teaching_missing:
+            return _result(
+                "llm_review",
+                "forced_loose_target_teaching_missing",
+                review_items=[
+                    _constraint_review_item(
+                        item,
+                        [],
+                        "target_teaching_missing",
+                        side="target",
+                    )
+                    for item in teaching_missing
+                ],
+                confidence=0.55,
+                threshold=threshold_used,
+                score_gap=score_gap,
+                target_policy=target_policy,
+                candidate_policy=candidate_policy,
+                # Target carries imp>=2 teaching signals; raise the LLM bar
+                # above the base loose 0.55 so a near-but-different teaching
+                # operation can't slip through.
+                llm_accept_threshold_override=FORCED_LOOSE_TEACHING_MISSING_LLM_THRESHOLD,
+            )
         extras = candidate_extra_strong_constraints(
             target_constraints,
             candidate_constraints,
@@ -1064,6 +1294,7 @@ def _evaluate_reuse_filter_impl(
                 score_gap=score_gap,
                 target_policy=target_policy,
                 candidate_policy=candidate_policy,
+                llm_skip_safe=_extras_are_irreplaceable(extras),
             )
         if score_gap >= 0 or semantic_signal:
             if score_gap >= 0 and _requires_embedding_floor_review(
@@ -1207,6 +1438,7 @@ def _evaluate_reuse_filter_impl(
                 score_gap=score_gap,
                 target_policy=target_policy,
                 candidate_policy=candidate_policy,
+                llm_skip_safe=_extras_are_irreplaceable(extras),
             )
         if (
             score_gap < 0
@@ -1284,6 +1516,10 @@ def _evaluate_reuse_filter_impl(
                 score_gap=score_gap,
                 target_policy=target_policy,
                 candidate_policy=candidate_policy,
+                # Extra teaching content (a candidate that displays additional
+                # characters / formulas / units the target didn't request) is
+                # never recoverable by reuse — the LLM would always reject.
+                llm_skip_safe=True,
             )
         missing, conflicts, reviews = compare_strong_constraints(
             target_strong_constraints,
@@ -1350,7 +1586,26 @@ def _evaluate_reuse_filter_impl(
 
 
 def evaluate_aspect_transform(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    """Choose a safe transform mode and score penalty for aspect-ratio mismatch."""
+    """Choose a safe transform mode and score penalty for aspect-ratio mismatch.
+
+    Candidate-side ``padding_capacity`` (``"high" | "mid" | "low"``) is a
+    pixel-derived property of the candidate image's edges. It is set at the
+    earliest moment the image lands on disk (annotation / registration) and
+    is independent of any VLM call. The value modulates pad-zone loss
+    thresholds, the preferred pad mode, and the penalty:
+
+      * high (transparent edges): pad is invisible → widen thresholds, prefer
+        contain_pad, drop penalty.
+      * mid (near-white edges): pad blends → keep thresholds, mild penalty cut.
+      * low (colored edges): pad shows a hard seam → tighten thresholds, fall
+        back to cover_crop instead of contain_pad/blur_pad.
+      * missing / unknown: legacy behavior (factor=1.0, mode unchanged).
+
+    The accept/copy boundary (loss <= 0.05) is **not** widened — that bar
+    encodes "PowerPoint can stretch this much without visible distortion",
+    which is a property of the slot not the image. Backgrounds skip
+    modulation entirely (they are full-bleed by design — edges are content).
+    """
 
     candidate_label = _clean_text(candidate.get("aspect_ratio"))
     target_label = _clean_text(target.get("aspect_ratio"))
@@ -1378,6 +1633,10 @@ def evaluate_aspect_transform(target: dict[str, Any], candidate: dict[str, Any])
     has_constraints = bool(_active_constraints(target_policy.get("constraints")))
     asset_kind = _clean_text(target.get("asset_kind"))
 
+    capacity = "" if asset_kind == "background" else _candidate_padding_capacity(candidate)
+    loss_factor = _CAPACITY_LOSS_FACTOR.get(capacity, 1.0)
+    penalty_factor = _CAPACITY_PENALTY_FACTOR.get(capacity, 1.0)
+
     if loss <= 0.02:
         return _transform_result(
             "accept",
@@ -1387,6 +1646,7 @@ def evaluate_aspect_transform(target: dict[str, Any], candidate: dict[str, Any])
             candidate_label,
             target_label,
             "aspect_ratio_aligned",
+            padding_capacity=capacity,
         )
 
     if asset_kind == "background":
@@ -1400,34 +1660,97 @@ def evaluate_aspect_transform(target: dict[str, Any], candidate: dict[str, Any])
             return _transform_result("penalize", "blur_pad", loss, 0.10, candidate_label, target_label, "background_high_pad")
         return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "background_aspect_mismatch_too_large")
 
-    if role == "hero" and loss > 0.25:
-        return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "hero_aspect_mismatch_too_large")
-    if role == "hero" and loss > 0.12:
-        return _transform_result("penalize", "contain_pad", loss, 0.10, candidate_label, target_label, "hero_content_preserving_pad")
+    if role == "hero" and loss > 0.25 * loss_factor:
+        return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "hero_aspect_mismatch_too_large", padding_capacity=capacity)
+    if role == "hero" and loss > 0.12 * loss_factor:
+        return _transform_result(
+            "penalize",
+            _preferred_pad_mode("contain_pad", capacity),
+            loss,
+            0.10 * penalty_factor,
+            candidate_label,
+            target_label,
+            "hero_content_preserving_pad",
+            padding_capacity=capacity,
+        )
 
     if role == "icon":
-        if loss <= 0.12:
-            return _transform_result("penalize", "contain_pad", loss, 0.04, candidate_label, target_label, "icon_content_preserving_pad")
-        if loss <= 0.25 and not reversed_orientation:
-            return _transform_result("penalize", "contain_pad", loss, 0.09, candidate_label, target_label, "icon_medium_pad")
-        return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "icon_aspect_mismatch_too_large")
+        if loss <= 0.12 * loss_factor:
+            return _transform_result(
+                "penalize",
+                _preferred_pad_mode("contain_pad", capacity),
+                loss,
+                0.04 * penalty_factor,
+                candidate_label,
+                target_label,
+                "icon_content_preserving_pad",
+                padding_capacity=capacity,
+            )
+        if loss <= 0.25 * loss_factor and not reversed_orientation:
+            return _transform_result(
+                "penalize",
+                _preferred_pad_mode("contain_pad", capacity),
+                loss,
+                0.09 * penalty_factor,
+                candidate_label,
+                target_label,
+                "icon_medium_pad",
+                padding_capacity=capacity,
+            )
+        return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "icon_aspect_mismatch_too_large", padding_capacity=capacity)
 
     if reuse_level == "strict" or has_constraints:
         if loss <= 0.05:
-            return _transform_result("accept", "copy", loss, 0.0, candidate_label, target_label, "strict_small_mismatch")
-        if loss <= 0.12 and not reversed_orientation:
-            return _transform_result("penalize", "contain_pad", loss, 0.05, candidate_label, target_label, "strict_content_preserving_pad")
-        if loss <= 0.25 and not reversed_orientation:
-            return _transform_result("penalize", "contain_pad", loss, 0.10, candidate_label, target_label, "strict_content_preserving_medium_pad")
-        return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "strict_aspect_mismatch_too_large")
+            return _transform_result("accept", "copy", loss, 0.0, candidate_label, target_label, "strict_small_mismatch", padding_capacity=capacity)
+        if loss <= 0.12 * loss_factor and not reversed_orientation:
+            return _transform_result(
+                "penalize",
+                _preferred_pad_mode("contain_pad", capacity),
+                loss,
+                0.05 * penalty_factor,
+                candidate_label,
+                target_label,
+                "strict_content_preserving_pad",
+                padding_capacity=capacity,
+            )
+        if loss <= 0.25 * loss_factor and not reversed_orientation:
+            return _transform_result(
+                "penalize",
+                _preferred_pad_mode("contain_pad", capacity),
+                loss,
+                0.10 * penalty_factor,
+                candidate_label,
+                target_label,
+                "strict_content_preserving_medium_pad",
+                padding_capacity=capacity,
+            )
+        return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "strict_aspect_mismatch_too_large", padding_capacity=capacity)
 
     if loss <= 0.05:
-        return _transform_result("accept", "copy", loss, 0.0, candidate_label, target_label, "unknown_small_mismatch")
-    if loss <= 0.12:
-        return _transform_result("penalize", "contain_pad", loss, 0.05, candidate_label, target_label, "unknown_light_pad")
-    if loss <= 0.25 and not reversed_orientation:
-        return _transform_result("penalize", "contain_pad", loss, 0.10, candidate_label, target_label, "unknown_medium_pad")
-    return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "unknown_aspect_mismatch_too_large")
+        return _transform_result("accept", "copy", loss, 0.0, candidate_label, target_label, "unknown_small_mismatch", padding_capacity=capacity)
+    if loss <= 0.12 * loss_factor:
+        return _transform_result(
+            "penalize",
+            _preferred_pad_mode("contain_pad", capacity),
+            loss,
+            0.05 * penalty_factor,
+            candidate_label,
+            target_label,
+            "unknown_light_pad",
+            padding_capacity=capacity,
+        )
+    if loss <= 0.25 * loss_factor and not reversed_orientation:
+        return _transform_result(
+            "penalize",
+            _preferred_pad_mode("contain_pad", capacity),
+            loss,
+            0.10 * penalty_factor,
+            candidate_label,
+            target_label,
+            "unknown_medium_pad",
+            padding_capacity=capacity,
+        )
+    return _transform_result("reject", "copy", loss, 0.18, candidate_label, target_label, "unknown_aspect_mismatch_too_large", padding_capacity=capacity)
 
 
 def compare_constraints(
@@ -1705,7 +2028,7 @@ def _constraint_embedding_score(
         return None
     best: float | None = None
     for item in items:
-        if not isinstance(item, dict) or _normalize_constraint_kind(item.get("kind")) != kind:
+        if not isinstance(item, dict) or _clean_text(item.get("kind")) != kind:
             continue
         left = _normalize_constraint_value(kind, item.get("target"))
         right = _normalize_constraint_value(kind, item.get("candidate"))
@@ -1731,6 +2054,7 @@ def _constraint_review_item(
     item: dict[str, Any] = {
         "decision": decision,
         "kind": required.get("kind"),
+        "subtype": _clean_text(required.get("subtype")),
         "value": required.get("value"),
         "importance": _constraint_importance(required),
         "side": side,
@@ -1790,6 +2114,64 @@ def _orientation(ratio: float) -> str:
     return "landscape" if ratio > 1.0 else "portrait"
 
 
+# Capacity factors for loss-threshold widening / penalty scaling. Applied in
+# evaluate_aspect_transform. Missing capacity ("" — assets registered before
+# the pixel snapshot, or images where edge analysis returned nothing) keeps
+# factor 1.0, so any call site that omits the field produces identical
+# behavior to the pre-capacity rules.
+#
+# Numbers chosen so:
+#   * high capacity widens the medium-pad ceiling from 0.25 to ~0.325, which
+#     covers the 4:3 → 16:9 / 1:1 → 4:3 conversions that today get rejected
+#     even when edges are transparent.
+#   * low capacity tightens the same ceiling to ~0.175, so an image with a
+#     colored painted-in border is no longer padded into an obvious seam.
+_CAPACITY_LOSS_FACTOR = {"high": 1.3, "mid": 1.0, "low": 0.7, "": 1.0}
+_CAPACITY_PENALTY_FACTOR = {"high": 0.5, "mid": 0.8, "low": 1.0, "": 1.0}
+
+
+def _candidate_padding_capacity(candidate: dict[str, Any]) -> str:
+    """Return candidate's pixel-derived padding capacity, or "" if absent.
+
+    Only the candidate side is considered — the transform happens to the
+    candidate image, so target-side metadata is irrelevant to whether the
+    pad will look clean.
+
+    Canonical shape: top-level ``candidate["padding_capacity"]`` is the string
+    ``"high"``/``"mid"``/``"low"``. The legacy nested ``transform_advice``
+    dict is still accepted as a read-only fallback for any library JSON
+    that hasn't yet been migrated.
+    """
+
+    if not isinstance(candidate, dict):
+        return ""
+    raw = candidate.get("padding_capacity")
+    if not raw:
+        advice = candidate.get("transform_advice")
+        if isinstance(advice, dict):
+            raw = advice.get("padding_capacity")
+    value = _clean_text(raw).casefold()
+    if value in {"high", "mid", "low"}:
+        return value
+    return ""
+
+
+def _preferred_pad_mode(default_mode: str, capacity: str) -> str:
+    """Override pad-mode selection for low-capacity candidates.
+
+    ``contain_pad`` and ``blur_pad`` both rely on the image's edge color
+    blending with the synthesized pad fill. When ``padding_capacity`` is
+    ``low`` (colored edges), the seam shows; prefer ``cover_crop`` instead —
+    sacrificing composition is less ugly than a hard pad line.
+    """
+
+    if capacity != "low":
+        return default_mode
+    if default_mode in {"contain_pad", "blur_pad"}:
+        return "cover_crop"
+    return default_mode
+
+
 def _transform_result(
     decision: str,
     mode: str,
@@ -1798,8 +2180,10 @@ def _transform_result(
     candidate_aspect_ratio: str,
     target_aspect_ratio: str,
     reason: str,
+    *,
+    padding_capacity: str = "",
 ) -> dict[str, Any]:
-    return {
+    result: dict[str, Any] = {
         "decision": decision,
         "mode": mode,
         "crop_loss": round(_clamp(crop_loss), 4),
@@ -1808,6 +2192,9 @@ def _transform_result(
         "target_aspect_ratio": target_aspect_ratio,
         "reason": reason,
     }
+    if padding_capacity:
+        result["padding_capacity"] = padding_capacity
+    return result
 
 
 def _soft_equivalent(left: str, right: str) -> bool:
@@ -1931,7 +2318,28 @@ def _result(
     score_gap: float = 0.0,
     target_policy: dict[str, Any] | None = None,
     candidate_policy: dict[str, Any] | None = None,
+    llm_skip_safe: bool = False,
+    llm_accept_threshold_override: float | None = None,
 ) -> dict[str, Any]:
+    """Build a policy_result dict.
+
+    The two ``llm_*`` fields let the policy carry side-information that
+    downstream LLM-review dispatch needs, without forcing the dispatcher
+    to re-derive it from ``reason`` literals or to walk ``review_items``:
+
+      - ``llm_skip_safe``: True if the LLM call would deterministically
+        end in reject and may be short-circuited (e.g. candidate carries
+        an irreplaceable named_individual / species_instance / extra
+        teaching_content the target didn't request).
+      - ``llm_accept_threshold_override``: when set, downstream uses this
+        value as the LLM accept threshold instead of the profile-based
+        default. Used to relax the bar for text-exact carve-outs and to
+        tighten it for forced-loose teaching missing.
+
+    Both default to safe values (no skip, no override) so existing call
+    sites that don't set them stay on the profile-default path.
+    """
+
     payload = {
         "decision": decision,
         "reason": reason,
@@ -1941,7 +2349,12 @@ def _result(
         "confidence": _clamp(confidence),
         "threshold_used": round(float(threshold or 0.0), 4),
         "score_gap": round(float(score_gap or 0.0), 4),
+        "llm_skip_safe": bool(llm_skip_safe),
     }
+    if llm_accept_threshold_override is not None:
+        payload["llm_accept_threshold_override"] = round(
+            float(llm_accept_threshold_override), 4
+        )
     if target_policy is not None:
         payload["target_policy"] = target_policy
     if candidate_policy is not None:

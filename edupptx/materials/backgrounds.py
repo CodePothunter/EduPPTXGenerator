@@ -231,9 +231,9 @@ def generate_ai_background(topic: str, resolved: ResolvedStyle, config: Config) 
         from edupptx.llm_client import ImageClient
         client = ImageClient(config)
         prompt = (
-            f"Abstract minimalist academic background illustration for '{topic}'. "
-            f"Soft {resolved.accent_color} tones, clean, professional, suitable as a "
-            f"presentation slide background. No text, no diagrams."
+            f"围绕“{topic}”的抽象极简学术风背景插画。"
+            f"整体使用柔和的 {resolved.accent_color} 色调，画面干净、专业，"
+            "适合作为演示文稿幻灯片背景；不要出现文字，不要出现图表。"
         )
         urls = client.generate(prompt, size="1792x1024", n=1)
         if not urls:

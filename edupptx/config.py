@@ -39,16 +39,23 @@ class Config:
     llm_reasoning_effort: str = ""  # Provider-specific reasoning effort, e.g. low/medium/high
     web_search: bool = False    # 联网搜索 (仅 responses provider 有效)
     llm_concurrency: int = 4    # LLM 并行请求数 (SVG 生成 + Review)
+    materials_concurrency: int = 3
 
     # Paths
+    env_file: Path = field(default_factory=lambda: Path(".env"))
     cache_dir: Path = field(default_factory=lambda: Path("./backgrounds_cache"))
     library_dir: Path = field(default_factory=lambda: Path("./materials_library"))
+    reuse_library_dirs: tuple[Path, ...] = field(default_factory=tuple)
     output_dir: Path = field(default_factory=lambda: Path("./output"))
     styles_dir: Path = field(default_factory=lambda: Path(""))
 
+    # Asset library updates: inline | background | off
+    asset_library_update_mode: str = "inline"
+
     @classmethod
     def from_env(cls, env_path: str | Path | None = None) -> Config:
-        load_dotenv(env_path or ".env")
+        env_file = Path(env_path or ".env")
+        load_dotenv(env_file)
         pkg_dir = Path(__file__).parent
 
         # LLM base URL: try GEN_BASE_URL, then API_BASE_URL, then default Volcengine
@@ -68,6 +75,9 @@ class Config:
         if vlm_base.endswith("/chat/completions"):
             vlm_base = vlm_base[:-len("/chat/completions")]
 
+        library_dir = Path(os.getenv("LIBRARY_DIR", "./materials_library"))
+        reuse_library_dirs = _reuse_library_dirs_from_env(library_dir)
+
         return cls(
             llm_api_key=os.getenv("GEN_APIKEY", ""),
             llm_model=os.getenv("GEN_MODEL", "").split("#")[0].strip(),
@@ -76,6 +86,11 @@ class Config:
             llm_thinking=os.getenv("GEN_THINKING", "").strip(),
             llm_reasoning_effort=os.getenv("GEN_REASONING_EFFORT", "").strip(),
             llm_concurrency=int(os.getenv("LLM_CONCURRENCY", "4")),
+            materials_concurrency=int(
+                os.getenv("EDUPPTX_MATERIALS_CONCURRENCY")
+                or os.getenv("MATERIALS_CONCURRENCY")
+                or "3"
+            ),
             image_api_key=os.getenv("VISION_GEN_APIKEY", ""),
             image_model=os.getenv("VISION_GEN_MODEL", "").split("#")[0].strip(),
             image_base_url=image_base,
@@ -85,8 +100,40 @@ class Config:
             pixabay_api_key=os.getenv("PIXABAY_API_KEY", ""),
             unsplash_access_key=os.getenv("UNSPLASH_ACCESS_KEY", ""),
             tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
+            env_file=env_file,
             cache_dir=Path(os.getenv("CACHE_DIR", "./backgrounds_cache")),
-            library_dir=Path(os.getenv("LIBRARY_DIR", "./materials_library")),
+            library_dir=library_dir,
+            reuse_library_dirs=reuse_library_dirs,
             output_dir=Path(os.getenv("OUTPUT_DIR", "./output")),
             styles_dir=pkg_dir / "design" / "style_templates",
+            asset_library_update_mode=(
+                os.getenv("EDUPPTX_ASSET_LIBRARY_UPDATE_MODE")
+                or os.getenv("ASSET_LIBRARY_UPDATE_MODE")
+                or "inline"
+            ).strip().lower(),
         )
+
+
+def _reuse_library_dirs_from_env(primary_library_dir: Path) -> tuple[Path, ...]:
+    raw = os.getenv("REUSE_LIBRARY_DIRS", "").strip()
+    if raw:
+        paths: list[Path] = []
+        for part in raw.split(","):
+            for item in part.split(os.pathsep):
+                text = item.strip()
+                if text:
+                    paths.append(Path(text))
+        return _dedupe_paths(paths)
+    return _dedupe_paths([primary_library_dir, Path("./materials_library_ppt")])
+
+
+def _dedupe_paths(paths: list[Path]) -> tuple[Path, ...]:
+    result: list[Path] = []
+    seen: set[str] = set()
+    for path in paths:
+        key = str(path.expanduser())
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(path)
+    return tuple(result)

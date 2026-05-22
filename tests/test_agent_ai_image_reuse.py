@@ -62,3 +62,60 @@ def test_phase2_materials_uses_candidate_image_path_for_reuse_suffix(tmp_path, m
     dest = session.dir / "materials" / "page_01_illustration_1.webp"
     assert assets[1].image_paths["illustration_1"] == dest
     assert dest.read_bytes() == b"reused-image"
+
+
+def test_phase2c_asset_library_can_be_disabled(tmp_path, monkeypatch):
+    agent = PPTXAgent(
+        Config(
+            library_dir=tmp_path / "materials_library",
+            output_dir=tmp_path / "output",
+            asset_library_update_mode="off",
+        )
+    )
+    session = Session(tmp_path / "output")
+    calls: list[str] = []
+
+    monkeypatch.setattr(agent, "_update_asset_library_inline", lambda _session: calls.append("inline"))
+    monkeypatch.setattr(agent, "_launch_asset_library_update_worker", lambda _session: calls.append("background"))
+
+    agent._phase2c_asset_library(session)
+
+    assert calls == []
+
+
+def test_phase2c_asset_library_background_starts_worker(tmp_path, monkeypatch):
+    agent = PPTXAgent(
+        Config(
+            library_dir=tmp_path / "materials_library",
+            output_dir=tmp_path / "output",
+            asset_library_update_mode="background",
+        )
+    )
+    session = Session(tmp_path / "output")
+    calls: list[str] = []
+
+    monkeypatch.setattr(agent, "_update_asset_library_inline", lambda _session: calls.append("inline"))
+    monkeypatch.setattr(agent, "_launch_asset_library_update_worker", lambda _session: calls.append("background"))
+
+    agent._phase2c_asset_library(session)
+
+    assert calls == ["background"]
+
+
+def test_phase2c_asset_library_force_inline_overrides_background(tmp_path, monkeypatch):
+    agent = PPTXAgent(
+        Config(
+            library_dir=tmp_path / "materials_library",
+            output_dir=tmp_path / "output",
+            asset_library_update_mode="background",
+        )
+    )
+    session = Session(tmp_path / "output")
+    calls: list[str] = []
+
+    monkeypatch.setattr(agent, "_update_asset_library_inline", lambda _session: calls.append("inline"))
+    monkeypatch.setattr(agent, "_launch_asset_library_update_worker", lambda _session: calls.append("background"))
+
+    agent._phase2c_asset_library(session, force_inline=True)
+
+    assert calls == ["inline"]

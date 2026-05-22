@@ -6,6 +6,7 @@ import asyncio
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import click
 from loguru import logger
@@ -77,7 +78,7 @@ def _run_plan_reuse_match_check(
     debug_path = plan_path.parent / "ai_image_reuse_plan_check_debug.json"
     report = evaluate_ai_image_reuse_matches_from_plan(
         plan_path=plan_path,
-        library_dir=config.library_dir,
+        library_dir=config.reuse_library_dirs or (config.library_dir,),
         keyword_client=keyword_client,
         debug_path=debug_path,
         materialize_matches=materialize_matches,
@@ -292,7 +293,7 @@ def images(topic: str, requirements: str, file_path: str | None, research: bool,
             if materials_dir.exists()
             else 0
         )
-        db_path = Path(config.library_dir) / "ai_image_asset_db.json"
+        match_index_path = Path(config.library_dir) / "strict_reuse_indexes"
         payload = {
             "ok": True,
             "mode": "images",
@@ -300,12 +301,12 @@ def images(topic: str, requirements: str, file_path: str | None, research: bool,
             "plan_path": str(plan_path),
             "materials_dir": str(materials_dir),
             "image_count": image_count,
-            "asset_db_path": str(db_path),
+            "match_index_path": str(match_index_path),
         }
         human = [
             f"Materials: {materials_dir}",
             f"Images: {image_count}",
-            f"Asset DB: {db_path}",
+            f"Split indexes: {match_index_path}",
         ]
         _emit_result(payload, as_json=as_json, human_lines=human)
     except Exception as e:
@@ -330,7 +331,7 @@ def images_from_plan(plan_path: str, env_file: str, as_json: bool):
             if materials_dir.exists()
             else 0
         )
-        db_path = Path(config.library_dir) / "ai_image_asset_db.json"
+        match_index_path = Path(config.library_dir) / "strict_reuse_indexes"
         payload = {
             "ok": True,
             "mode": "images-from-plan",
@@ -338,12 +339,12 @@ def images_from_plan(plan_path: str, env_file: str, as_json: bool):
             "plan_path": str(Path(plan_path)),
             "materials_dir": str(materials_dir),
             "image_count": image_count,
-            "asset_db_path": str(db_path),
+            "match_index_path": str(match_index_path),
         }
         human = [
             f"Materials: {materials_dir}",
             f"Images: {image_count}",
-            f"Asset DB: {db_path}",
+            f"Split indexes: {match_index_path}",
         ]
         _emit_result(payload, as_json=as_json, human_lines=human)
     except Exception as e:
@@ -359,10 +360,8 @@ def images_from_plan(plan_path: str, env_file: str, as_json: bool):
 @click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
 @click.option("--env-file", default=".env", help=".env 文件路径")
 @click.option("--json", "as_json", is_flag=True, help="以 JSON 格式输出结果")
-@click.option("--check-reuse", is_flag=True, help="Check AI image reuse matches after planning and copy matches into the session; no image generation or library update")
-@click.option("--reuse-keywords/--no-reuse-keywords", default=True, show_default=True, help="Use LLM keyword enrichment for reuse targets during --check-reuse")
 def plan(topic: str, requirements: str, file_path: str | None, research: bool,
-         output: str, env_file: str, as_json: bool, check_reuse: bool, reuse_keywords: bool):
+         output: str, env_file: str, as_json: bool):
     """只生成策划稿，不渲染。
 
     \b
@@ -388,31 +387,73 @@ def plan(topic: str, requirements: str, file_path: str | None, research: bool,
             "plan_path": str(plan_path),
         }
         human = [f"Plan: {plan_path}"]
-        if check_reuse:
-            report, report_path, keyword_status = _run_plan_reuse_match_check(
-                plan_path=plan_path,
-                config=config,
-                keywords=reuse_keywords,
-                materialize_matches=True,
-            )
-            payload["reuse_match_check"] = {
-                "report_path": str(report_path),
-                "check_count": report["check_count"],
-                "matched_count": report["matched_count"],
-                "unmatched_count": report["unmatched_count"],
-                "keyword_status": keyword_status,
-                "generated_images": False,
-                "updated_asset_library": False,
-                "materialized_count": report["materialized_count"],
-                "materials_dir": report["materials_dir"],
-            }
-            human.append(
-                f"Reuse check: {report_path} matched={report['matched_count']}/{report['check_count']} "
-                f"copied={report['materialized_count']}"
-            )
         _emit_result(payload, as_json=as_json, human_lines=human)
     except Exception as e:
         logger.error("Planning failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
+@main.command("reuse-check")
+@click.argument("topic")
+@click.option("--requirements", "-r", default="", help="闄勫姞瑕佹眰")
+@click.option("--file", "file_path", default=None, type=click.Path(exists=True), help="杈撳叆鏂囨。")
+@click.option("--research", is_flag=True, help="鍚敤鑱旂綉鎼滅储")
+@click.option("--output", "-o", default="./output", type=click.Path(), help="杈撳嚭鐩綍")
+@click.option("--env-file", default=".env", help=".env file path")
+@click.option("--keywords/--no-keywords", default=True, show_default=True, help="Use LLM keyword enrichment for reuse targets")
+@click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
+def reuse_check(
+    topic: str,
+    requirements: str,
+    file_path: str | None,
+    research: bool,
+    output: str,
+    env_file: str,
+    keywords: bool,
+    as_json: bool,
+):
+    """Generate a plan, then check AI image reuse without image generation or rendering."""
+    try:
+        config = Config.from_env(env_file)
+        config.output_dir = Path(output)
+
+        agent = PPTXAgent(config)
+        session_dir = agent.run(
+            topic,
+            requirements,
+            file_path=file_path,
+            research=research,
+            review=True,
+        )
+        plan_path = session_dir / "plan.json"
+        report, report_path, keyword_status = _run_plan_reuse_match_check(
+            plan_path=plan_path,
+            config=config,
+            keywords=keywords,
+        )
+        payload = {
+            "ok": True,
+            "mode": "reuse-check",
+            "session_dir": str(session_dir),
+            "plan_path": str(plan_path),
+            "report_path": str(report_path),
+            "check_count": report["check_count"],
+            "matched_count": report["matched_count"],
+            "unmatched_count": report["unmatched_count"],
+            "keyword_status": keyword_status,
+            "generated_images": False,
+            "updated_asset_library": False,
+        }
+        human = [
+            f"Plan: {plan_path}",
+            f"Reuse check: {report_path}",
+            f"Matched: {report['matched_count']}/{report['check_count']}",
+            "Images: not generated",
+            "Asset library: not updated",
+        ]
+        _emit_result(payload, as_json=as_json, human_lines=human)
+    except Exception as e:
+        logger.error("Reuse check failed: {}", e)
         _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
 
 
@@ -453,67 +494,12 @@ def reuse_check_plan(plan_path: str, env_file: str, keywords: bool, as_json: boo
         logger.error("Plan reuse check failed: {}", e)
         _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
 
-
-@main.command("asset-db")
-@click.option("--output-root", default="./output", type=click.Path(file_okay=False), help="Output root containing session_* dirs")
-@click.option("--db-path", default=None, type=click.Path(dir_okay=False), help="Where to write the asset DB JSON")
-@click.option("--keywords/--no-keywords", default=True, show_default=True, help="Use the configured LLM to build offline matching keywords")
-@click.option("--keyword-batch-size", default=12, show_default=True, type=click.IntRange(1, 50), help="Assets per LLM keyword batch")
-@click.option("--env-file", default=".env", help=".env file path used by --keywords")
-@click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
-def asset_db(
-    output_root: str,
-    db_path: str | None,
-    keywords: bool,
-    keyword_batch_size: int,
-    env_file: str,
-    as_json: bool,
-):
-    """Build the offline AI-generated image asset database from output sessions."""
-    try:
-        from edupptx.materials.ai_image_asset_db import DEFAULT_MATCH_INDEX_FILENAME, write_ai_image_asset_db
-
-        config = Config.from_env(env_file)
-        keyword_client, keyword_status = _optional_keyword_client(config, enabled=keywords)
-
-        db, target = write_ai_image_asset_db(
-            output_root,
-            db_path,
-            keyword_client=keyword_client,
-            keyword_batch_size=keyword_batch_size,
-        )
-        payload = {
-            "ok": True,
-            "db_path": str(target),
-            "match_index_path": str(target.with_name(DEFAULT_MATCH_INDEX_FILENAME)),
-            "output_root": db["output_root"],
-            "asset_count": db["asset_count"],
-            "warning_count": len(db.get("warnings", [])),
-            "keywords": keyword_status == "enabled",
-            "keyword_status": keyword_status,
-        }
-        human = [
-            f"Asset DB: {target}",
-            f"Match index: {target.with_name(DEFAULT_MATCH_INDEX_FILENAME)}",
-            f"Assets: {db['asset_count']}",
-        ]
-        if keyword_status == "enabled":
-            human.append("Keywords: LLM enriched")
-        elif keyword_status == "missing_config":
-            human.append("Keywords: skipped (GEN_APIKEY/GEN_MODEL not configured)")
-        if db.get("warnings"):
-            human.append(f"Warnings: {len(db['warnings'])}")
-        _emit_result(payload, as_json=as_json, human_lines=human)
-    except Exception as e:
-        logger.error("Asset DB build failed: {}", e)
-        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
-
-
 @main.command("asset-ingest")
 @click.option("--output-root", default="./output", type=click.Path(file_okay=False), help="Output root containing session_* dirs")
 @click.option("--library-dir", default=None, type=click.Path(file_okay=False), help="Reusable material library directory")
 @click.option("--keywords/--no-keywords", default=True, show_default=True, help="Use the configured LLM to build matching keywords while ingesting")
 @click.option("--keyword-batch-size", default=3, show_default=True, type=click.IntRange(1, 50), help="Assets per LLM keyword batch")
+@click.option("--VLM_review", "vlm_review", default=True, show_default=True, type=bool, help="Run VLM review before assets enter the reusable library")
 @click.option("--env-file", default=".env", help=".env file path used by --keywords and LIBRARY_DIR")
 @click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
 def asset_ingest(
@@ -521,32 +507,42 @@ def asset_ingest(
     library_dir: str | None,
     keywords: bool,
     keyword_batch_size: int,
+    vlm_review: bool,
     env_file: str,
     as_json: bool,
 ):
     """Copy AI-generated images from output sessions into the reusable library."""
     try:
-        from edupptx.materials.ai_image_asset_db import (
-            DEFAULT_MATCH_INDEX_FILENAME,
-            ingest_ai_image_asset_library_from_output,
-        )
+        from edupptx.materials.ai_image_asset_db import ingest_ai_image_asset_library_from_output
 
         config = Config.from_env(env_file)
         target_library = Path(library_dir) if library_dir else config.library_dir
 
         keyword_client, keyword_status = _optional_keyword_client(config, enabled=keywords)
+        vlm_client = None
+        if vlm_review:
+            if not config.vlm_api_key or not config.vlm_model:
+                _emit_error(
+                    "VLM_APIKEY/VLM_MODEL not configured",
+                    as_json=as_json,
+                    kind="MissingVlmConfig",
+                )
+            from edupptx.llm_client import create_vlm_client
+
+            vlm_client = create_vlm_client(config)
 
         db, target, report = ingest_ai_image_asset_library_from_output(
             output_root,
             target_library,
             keyword_client=keyword_client,
             keyword_batch_size=keyword_batch_size,
+            vlm_client=vlm_client,
+            vlm_review=vlm_review,
         )
         report_library_dir = report.get("library_dir") or report.get("asset_root") or str(target_library)
         payload = {
             "ok": True,
-            "db_path": str(target),
-            "match_index_path": str(target.with_name(DEFAULT_MATCH_INDEX_FILENAME)),
+            "match_index_path": str(target),
             "output_root": report["output_root"],
             "library_dir": report_library_dir,
             "session_count": report["session_count"],
@@ -556,11 +552,11 @@ def asset_ingest(
             "warning_count": report["warning_count"],
             "keywords": keyword_status == "enabled",
             "keyword_status": keyword_status,
+            "VLM_review": vlm_review,
         }
         human = [
             f"Asset library: {report_library_dir}",
-            f"Asset DB: {target}",
-            f"Match index: {target.with_name(DEFAULT_MATCH_INDEX_FILENAME)}",
+            f"Split indexes: {target}",
             f"Sessions: {len(report['processed_sessions'])}/{report['session_count']}",
             f"Assets: {db.get('asset_count', 0)}",
         ]
@@ -568,6 +564,7 @@ def asset_ingest(
             human.append("Keywords: LLM enriched")
         elif keyword_status == "missing_config":
             human.append("Keywords: skipped (GEN_APIKEY/GEN_MODEL not configured)")
+        human.append(f"VLM review: {'enabled' if vlm_review else 'disabled'}")
         if report["failed_sessions"]:
             human.append(f"Failed sessions: {len(report['failed_sessions'])}")
         if report["warning_count"]:
@@ -578,10 +575,183 @@ def asset_ingest(
         _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
 
 
+@main.command("embedding-build")
+@click.argument("library_dir", type=click.Path(file_okay=False))
+@click.option("--env-file", default=".env", help=".env file path used for embedding model config")
+@click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
+def embedding_build(library_dir: str, env_file: str, as_json: bool):
+    """Build embedding sidecar files for an existing image match index."""
+    try:
+        from edupptx.materials.ai_image_asset_db import (
+            DEFAULT_EMBEDDING_INDEX_FILENAME,
+            DEFAULT_EMBEDDING_META_FILENAME,
+            STRICT_REUSE_INDEX_DIRNAME,
+            read_ai_image_split_match_index,
+            write_ai_image_embedding_index,
+        )
+
+        Config.from_env(env_file)
+        root = Path(library_dir).expanduser().resolve()
+        split_index = read_ai_image_split_match_index(root)
+        if split_index is None:
+            _emit_error(
+                f"Split reuse indexes not found: {root / STRICT_REUSE_INDEX_DIRNAME}",
+                as_json=as_json,
+                kind="MatchIndexNotFound",
+                path=str(root / STRICT_REUSE_INDEX_DIRNAME),
+            )
+
+        index, index_path = split_index
+        report = write_ai_image_embedding_index(index, root)
+        index["embedding_index"] = report
+
+        payload = {
+            "ok": bool(report.get("enabled")),
+            "mode": "embedding-build",
+            "library_dir": str(root),
+            "split_index_dir": str(index_path),
+            "embedding_index_path": str(root / DEFAULT_EMBEDDING_INDEX_FILENAME),
+            "embedding_meta_path": str(root / DEFAULT_EMBEDDING_META_FILENAME),
+            **report,
+        }
+        if not report.get("enabled"):
+            _emit_error(
+                f"Embedding index build failed: {report.get('reason') or 'unknown'}",
+                as_json=as_json,
+                kind="EmbeddingBuildFailed",
+                **payload,
+            )
+
+        human = [
+            f"Split indexes: {index_path}",
+            f"Embedding index: {root / DEFAULT_EMBEDDING_INDEX_FILENAME}",
+            f"Embedding meta: {root / DEFAULT_EMBEDDING_META_FILENAME}",
+            f"Assets: {report.get('asset_count', 0)}",
+            f"Model: {report.get('model', '')}",
+        ]
+        _emit_result(payload, as_json=as_json, human_lines=human)
+    except click.ClickException:
+        raise
+    except Exception as e:
+        logger.error("Embedding index build failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
+@main.command("strict-reuse-classify")
+@click.argument("library_dir", type=click.Path(file_okay=False))
+@click.option("--index-filename", default="ai_image_match_index.json", show_default=True, help="Match index filename")
+@click.option("--dry-run", is_flag=True, help="Classify in memory without writing files")
+@click.option("--write-debug/--no-write-debug", default=True, show_default=True, help="Write debug report and classification review queue")
+@click.option("--split-dir", default="strict_reuse_indexes", show_default=True, type=click.Path(file_okay=False), help="Directory for per-group split indexes")
+@click.option("--from-main-index", is_flag=True, help="Ignore existing split indexes and rebuild from the main match index")
+@click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
+def strict_reuse_classify(
+    library_dir: str,
+    index_filename: str,
+    dry_run: bool,
+    write_debug: bool,
+    split_dir: str | None,
+    from_main_index: bool,
+    as_json: bool,
+):
+    """Normalize material reuse groups for split-library retrieval."""
+    try:
+        from edupptx.materials.strict_reuse_classifier import classify_strict_reuse_library
+
+        report, index_path = classify_strict_reuse_library(
+            library_dir,
+            index_filename=index_filename,
+            dry_run=dry_run,
+            write_debug=write_debug,
+            split_dir=split_dir,
+            prefer_split_index=not from_main_index,
+        )
+        payload = {
+            "ok": True,
+            "mode": "strict-reuse-classify",
+            "dry_run": dry_run,
+            **{key: value for key, value in report.items() if key != "review_items"},
+        }
+        group_counts = report.get("group_counts") or {}
+        human = [
+            f"Source: {report.get('source_index_path', index_path)}",
+            f"Assets: {report.get('asset_count', 0)}",
+            "Groups: "
+            + ", ".join(f"{key}={group_counts.get(key, 0)}" for key in sorted(group_counts)),
+            f"Classification review queue: {report.get('review_required_count', 0)}",
+        ]
+        if dry_run:
+            human.append("Dry run: files unchanged")
+        if report.get("debug_report_path"):
+            human.append(f"Debug report: {report['debug_report_path']}")
+        if report.get("review_queue_path"):
+            human.append(f"Review queue: {report['review_queue_path']}")
+        if report.get("split_indexes"):
+            human.append(f"Split indexes: {report['split_indexes']['split_dir']}")
+        _emit_result(payload, as_json=as_json, human_lines=human)
+    except click.ClickException:
+        raise
+    except Exception as e:
+        logger.error("Strict reuse classification failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
+@main.command("strict-reuse-export-check")
+@click.argument("library_dir", type=click.Path(file_okay=False))
+@click.option("--output-dir", default="strict_reuse_visual_check", show_default=True, type=click.Path(file_okay=False), help="Directory that receives general_reuse/content_reuse image copies")
+@click.option("--index-filename", default="ai_image_match_index.json", show_default=True, help="Match index filename")
+@click.option("--clean/--no-clean", default=True, show_default=True, help="Clean the command-owned general_reuse/content_reuse folders before exporting")
+@click.option("--force", is_flag=True, help="Allow overwriting an existing unrelated manifest in the output directory")
+@click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
+def strict_reuse_export_check(
+    library_dir: str,
+    output_dir: str,
+    index_filename: str,
+    clean: bool,
+    force: bool,
+    as_json: bool,
+):
+    """Export reuse groups into general_reuse/content_reuse folders for visual checking."""
+    try:
+        from edupptx.materials.strict_reuse_classifier import export_strict_reuse_visual_check
+
+        manifest, target_dir = export_strict_reuse_visual_check(
+            library_dir,
+            output_dir,
+            index_filename=index_filename,
+            clean=clean,
+            force=force,
+        )
+        payload = {
+            "ok": True,
+            "mode": "strict-reuse-export-check",
+            "output_dir": str(target_dir),
+            "asset_library_unchanged": True,
+            **{key: value for key, value in manifest.items() if key != "assets"},
+        }
+        group_counts = manifest.get("group_counts") or {}
+        human = [
+            f"Output: {target_dir}",
+            f"general_reuse: {group_counts.get('general_reuse', 0)}",
+            f"content_reuse: {group_counts.get('content_reuse', 0)}",
+            f"Copied: {manifest.get('copied_count', 0)}",
+            f"Missing images: {manifest.get('missing_image_count', 0)}",
+            f"Manifest: {manifest.get('manifest_path')}",
+            f"HTML: {manifest.get('html_path')}",
+            "Asset library: unchanged",
+        ]
+        _emit_result(payload, as_json=as_json, human_lines=human)
+    except click.ClickException:
+        raise
+    except Exception as e:
+        logger.error("Strict reuse visual export failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
 @main.command("vlm-enrich")
 @click.argument("library_dir", type=click.Path(file_okay=False))
 @click.option("--asset-id", "asset_ids", multiple=True, help="Only enrich the given asset id; may be repeated")
-@click.option("--force", is_flag=True, help="Re-run assets already marked vlm_verified=True")
+@click.option("--force", is_flag=True, help="Re-run assets already present in the VLM review sidecar")
 @click.option("--env-file", default=".env", help=".env file path used for VLM_* config")
 @click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
 def vlm_enrich(
@@ -594,7 +764,13 @@ def vlm_enrich(
     """Run VLM verification/enrichment for the AI image asset library."""
     try:
         from edupptx.llm_client import create_vlm_client
-        from edupptx.materials.ai_image_asset_db import DEFAULT_DB_FILENAME
+        from edupptx.materials.ai_image_asset_db import (
+            CONTENT_REUSE_GROUP,
+            GENERAL_REUSE_GROUP,
+            STRICT_REUSE_INDEX_DIRNAME,
+            read_ai_image_split_match_index,
+            write_ai_image_match_index,
+        )
         from edupptx.materials.vlm_asset_enricher import enrich_assets_with_vlm
 
         config = Config.from_env(env_file)
@@ -606,49 +782,79 @@ def vlm_enrich(
             )
 
         root = Path(library_dir).expanduser().resolve()
-        db_path = root / DEFAULT_DB_FILENAME
-        if not db_path.exists():
+        split_index = read_ai_image_split_match_index(root)
+        if split_index is None:
             _emit_error(
-                f"Asset DB not found: {db_path}",
+                f"Split reuse indexes not found: {root / STRICT_REUSE_INDEX_DIRNAME}",
                 as_json=as_json,
-                kind="AssetDbNotFound",
-                path=str(db_path),
+                kind="MatchIndexNotFound",
+                path=str(root / STRICT_REUSE_INDEX_DIRNAME),
             )
 
-        db = json.loads(db_path.read_text(encoding="utf-8"))
+        db, index_path = split_index
         client = create_vlm_client(config)
-        report = enrich_assets_with_vlm(
-            db,
-            client,
-            skip_verified=not force,
-            image_root=root,
-            asset_ids=asset_ids or None,
-        )
+        keyword_client, keyword_status = _optional_keyword_client(config, enabled=True)
+        report: dict[str, Any] = {
+            "processed_count": 0,
+            "skipped_reviewed_count": 0,
+            "missing_image_count": 0,
+            "failed_count": 0,
+            "group_reports": {},
+        }
+        requested = set(asset_ids or ())
+        for group in (GENERAL_REUSE_GROUP, CONTENT_REUSE_GROUP):
+            group_assets = [
+                asset
+                for asset in db.get("assets", [])
+                if isinstance(asset, dict)
+                and str(asset.get("strict_reuse_group") or GENERAL_REUSE_GROUP) == group
+            ]
+            group_db = {**db, "assets": group_assets, "asset_count": len(group_assets)}
+            group_report = enrich_assets_with_vlm(
+                group_db,
+                client,
+                skip_reviewed=not force,
+                image_root=root,
+                asset_ids=asset_ids or None,
+                debug_dir=root / "debug" / group,
+                review_index_path=root / "debug" / f"ai_image_vlm_review_{group}.json",
+                keyword_client=keyword_client,
+            )
+            report["group_reports"][group] = group_report
+            for key in ("processed_count", "skipped_reviewed_count", "missing_image_count", "failed_count"):
+                report[key] += int(group_report.get(key) or 0)
+            if requested:
+                requested -= set(group_report.get("processed_asset_ids") or [])
         written = bool(report.get("processed_count"))
         if written:
-            db_path.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
+            _index, index_path = write_ai_image_match_index(db, root)
 
         payload = {
             "ok": True,
             "mode": "vlm-enrich",
             "library_dir": str(root),
-            "db_path": str(db_path),
+            "split_index_dir": str(index_path),
             "model": config.vlm_model,
             "force": force,
             "written": written,
+            "keyword_status": keyword_status,
             **report,
         }
         human = [
-            f"Asset DB: {db_path}",
+            f"Split indexes: {index_path}",
             f"VLM processed: {report['processed_count']}",
-            f"Skipped verified: {report['skipped_verified_count']}",
+            f"Skipped reviewed: {report['skipped_reviewed_count']}",
             f"Missing images: {report['missing_image_count']}",
             f"Failed: {report['failed_count']}",
         ]
+        if keyword_status == "enabled":
+            human.append("Keywords: LLM rebuilt for rewritten assets")
+        elif keyword_status == "missing_config":
+            human.append("Keywords: skipped (GEN_APIKEY/GEN_MODEL not configured)")
         if report.get("missing_asset_ids"):
             human.append(f"Missing asset ids: {', '.join(report['missing_asset_ids'])}")
         if not written:
-            human.append("DB unchanged")
+            human.append("Match index unchanged")
         _emit_result(payload, as_json=as_json, human_lines=human)
     except click.ClickException:
         raise

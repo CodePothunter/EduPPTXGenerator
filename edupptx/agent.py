@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import json
+import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -181,23 +186,39 @@ class PPTXAgent:
 
         # ── Phase 2: Background Generation ──────────────────
         session.log_step("background", "Generating unified background")
-        bg_path = await self._phase2_background(draft, session)
+        ai_image_reuse_search_context = self._new_ai_image_reuse_search_context()
+        bg_path = await self._phase2_background(
+            draft,
+            session,
+            reuse_search_context=ai_image_reuse_search_context,
+        )
+        defer_asset_library_update = False
 
         # ── Phase 2b: Materials (skipped in debug mode) ─────
         if not debug:
             session.log_step("materials", "Fetching materials")
-            all_assets = await self._phase2_materials(draft, session)
+            all_assets = await self._phase2_materials(
+                draft,
+                session,
+                reuse_search_context=ai_image_reuse_search_context,
+            )
             # Attach background to all assets
             if bg_path:
                 for assets in all_assets.values():
                     assets.background_path = bg_path
             logger.info("Materials ready for {} pages", len(all_assets))
-            session.log_step("asset_library", "Updating reusable AI image asset library")
-            self._phase2c_asset_library(session)
             if stop_after_asset_library:
+                session.log_step("asset_library", "Updating reusable AI image asset library")
+                self._phase2c_asset_library(session, force_inline=True)
                 session.log_step("images_done", "Stopped after reusable AI image asset library update")
                 logger.info("Stopped after planning/image/material library phases: {}", session.dir)
                 return session.dir
+            defer_asset_library_update = self._asset_library_update_mode() == "background"
+            if not defer_asset_library_update:
+                session.log_step("asset_library", "Updating reusable AI image asset library")
+                self._phase2c_asset_library(session)
+            else:
+                logger.info("AI image asset library update deferred until PPTX output")
         else:
             logger.info("Debug mode: skipping material fetch")
             all_assets = {
@@ -236,6 +257,9 @@ class PPTXAgent:
         self._phase5_output(
             svg_paths, session, bg_path=bg_path, speaker_notes=speaker_notes,
         )
+        if defer_asset_library_update:
+            session.log_step("asset_library", "Starting reusable AI image asset library background update")
+            self._phase2c_asset_library(session)
         session.log_step("done", f"Saved {len(svg_paths)} slides to {session.output_path}")
         logger.info("Done! {} slides, output: {}", len(svg_paths), session.output_path)
 
@@ -274,15 +298,29 @@ class PPTXAgent:
                 )
                 design_md_str = None
 
-        bg_path = await self._phase2_background(draft, session)
+        ai_image_reuse_search_context = self._new_ai_image_reuse_search_context()
+        bg_path = await self._phase2_background(
+            draft,
+            session,
+            reuse_search_context=ai_image_reuse_search_context,
+        )
 
+        defer_asset_library_update = False
         if not debug:
-            all_assets = await self._phase2_materials(draft, session)
+            all_assets = await self._phase2_materials(
+                draft,
+                session,
+                reuse_search_context=ai_image_reuse_search_context,
+            )
             if bg_path:
                 for assets in all_assets.values():
                     assets.background_path = bg_path
-            session.log_step("asset_library", "Updating reusable AI image asset library")
-            self._phase2c_asset_library(session)
+            defer_asset_library_update = self._asset_library_update_mode() == "background"
+            if not defer_asset_library_update:
+                session.log_step("asset_library", "Updating reusable AI image asset library")
+                self._phase2c_asset_library(session)
+            else:
+                logger.info("AI image asset library update deferred until PPTX output")
         else:
             all_assets = {
                 p.page_number: SlideAssets(page_number=p.page_number, background_path=bg_path)
@@ -304,6 +342,9 @@ class PPTXAgent:
         self._phase5_output(
             svg_paths, session, bg_path=bg_path, speaker_notes=speaker_notes,
         )
+        if defer_asset_library_update:
+            session.log_step("asset_library", "Starting reusable AI image asset library background update")
+            self._phase2c_asset_library(session)
         logger.info("Rendered {} slides from plan", len(svg_paths))
         return session_dir
 
@@ -320,17 +361,26 @@ class PPTXAgent:
         session = Session.from_existing(plan_path.parent)
         session.save_plan(draft.model_dump())
         session.log_step("background", "Generating unified background")
-        bg_path = await self._phase2_background(draft, session)
+        ai_image_reuse_search_context = self._new_ai_image_reuse_search_context()
+        bg_path = await self._phase2_background(
+            draft,
+            session,
+            reuse_search_context=ai_image_reuse_search_context,
+        )
 
         session.log_step("materials", "Fetching materials")
-        all_assets = await self._phase2_materials(draft, session)
+        all_assets = await self._phase2_materials(
+            draft,
+            session,
+            reuse_search_context=ai_image_reuse_search_context,
+        )
         if bg_path:
             for assets in all_assets.values():
                 assets.background_path = bg_path
         logger.info("Image/material phase ready for {} pages", len(all_assets))
 
         session.log_step("asset_library", "Updating reusable AI image asset library")
-        self._phase2c_asset_library(session)
+        self._phase2c_asset_library(session, force_inline=True)
         session.log_step("images_done", "Stopped after reusable AI image asset library update")
         logger.info("Stopped after image/material library phases: {}", session.dir)
         return session.dir
@@ -540,7 +590,21 @@ class PPTXAgent:
         spec_path.write_text("\n".join(lines), encoding="utf-8")
         logger.info("Design spec saved: {}", spec_path)
 
-    async def _phase2_background(self, draft: PlanningDraft, session: Session):
+    def _new_ai_image_reuse_search_context(self):
+        try:
+            from edupptx.materials.ai_image_asset_db import ReuseSearchContext
+
+            return ReuseSearchContext()
+        except Exception:
+            return None
+
+    async def _phase2_background(
+        self,
+        draft: PlanningDraft,
+        session: Session,
+        *,
+        reuse_search_context=None,
+    ):
         from edupptx.materials.background_generator import build_background_content_prompt, generate_background
 
         prompt = build_background_content_prompt(draft.visual)
@@ -561,6 +625,7 @@ class PPTXAgent:
                 "page_number": None,
                 "slot_key": "background",
             },
+            reuse_search_context=reuse_search_context,
         )
         if match:
             dest = session.dir / "materials" / "background.png"
@@ -575,12 +640,15 @@ class PPTXAgent:
         return await generate_background(draft.visual, self.config, session)
 
     async def _phase2_materials(
-        self, draft: PlanningDraft, session: Session,
+        self,
+        draft: PlanningDraft,
+        session: Session,
+        *,
+        reuse_search_context=None,
     ) -> dict[int, SlideAssets]:
         from edupptx.materials.image_provider import fetch_images
         from edupptx.materials.image_prompt_router import build_routed_image_needs
 
-        all_assets: dict[int, SlideAssets] = {}
         materials_dir = session.dir / "materials"
         materials_dir.mkdir(exist_ok=True)
         keyword_client = self._build_llm_client()
@@ -589,83 +657,94 @@ class PPTXAgent:
             "strict_asset_use_counts": {},
             "strict_asset_used_by": {},
         }
+        page_limit = max(1, int(getattr(self.config, "materials_concurrency", 3) or 3))
+        page_semaphore = asyncio.Semaphore(page_limit)
+        reuse_lock = asyncio.Lock()
 
-        for page in draft.pages:
-            assets = SlideAssets(page_number=page.page_number)
+        async def process_page(page: PagePlan) -> SlideAssets:
+            async with page_semaphore:
+                assets = SlideAssets(page_number=page.page_number)
 
-            # Fetch images if needed
-            if page.material_needs.images:
-                routed_image_needs = build_routed_image_needs(draft, page)
-                pending: list[tuple[str, Any]] = []
-                for slot_key, need in iter_image_slot_keys(routed_image_needs):
-                    if need.source == "ai_generate":
-                        match = self._find_reusable_ai_image(
-                            asset_kind="page_image",
-                            prompt=need.query,
-                            prompt_route=need.prompt_route,
-                            theme=reuse_context["theme"],
-                            grade=reuse_context["grade"],
-                            subject=reuse_context["subject"],
-                            page_title=page.title,
-                            page_type=page.page_type,
-                            role=need.role,
-                            aspect_ratio=need.aspect_ratio,
-                            keyword_client=keyword_client,
-                            debug_path=session.dir / "materials" / "ai_image_reuse_debug.json",
-                            debug_context={
-                                "asset_kind": "page_image",
-                                "page_number": page.page_number,
-                                "slot_key": slot_key,
-                                "aspect_ratio": need.aspect_ratio,
-                            },
-                            reuse_session_state=reuse_session_state,
-                        )
-                        if match:
-                            suffix = Path(str(match.get("candidate_image_path") or "")).suffix.lower() or ".img"
-                            dest = materials_dir / f"page_{page.page_number:02d}_{slot_key}{suffix}"
-                            self._copy_reusable_ai_image(
-                                match,
-                                dest,
-                                session,
-                                reuse_session_state=reuse_session_state,
-                                reuse_context={
-                                    "asset_kind": "page_image",
-                                    "page_number": page.page_number,
-                                    "slot_key": slot_key,
-                                },
-                            )
-                            assets.image_paths[slot_key] = dest
-                            logger.info(
-                                "Reused image asset for page {} {}: {} score={}",
-                                page.page_number,
-                                slot_key,
-                                match["asset"].get("asset_id"),
-                                match.get("keyword_score"),
-                            )
-                            continue
-                    pending.append((slot_key, need))
+                if page.material_needs.images:
+                    routed_image_needs = build_routed_image_needs(draft, page)
+                    pending: list[tuple[str, Any]] = []
+                    for slot_key, need in iter_image_slot_keys(routed_image_needs):
+                        if need.source == "ai_generate":
+                            async with reuse_lock:
+                                loop = asyncio.get_running_loop()
+                                match = await loop.run_in_executor(
+                                    None,
+                                    functools.partial(
+                                        self._find_reusable_ai_image,
+                                        asset_kind="page_image",
+                                        prompt=need.query,
+                                        prompt_route=need.prompt_route,
+                                        theme=reuse_context["theme"],
+                                        grade=reuse_context["grade"],
+                                        subject=reuse_context["subject"],
+                                        page_title=page.title,
+                                        page_type=page.page_type,
+                                        role=need.role,
+                                        aspect_ratio=need.aspect_ratio,
+                                        keyword_client=keyword_client,
+                                        debug_path=session.dir / "materials" / "ai_image_reuse_debug.json",
+                                        debug_context={
+                                            "asset_kind": "page_image",
+                                            "page_number": page.page_number,
+                                            "slot_key": slot_key,
+                                            "aspect_ratio": need.aspect_ratio,
+                                        },
+                                        reuse_session_state=reuse_session_state,
+                                        reuse_search_context=reuse_search_context,
+                                    ),
+                                )
+                                if match:
+                                    suffix = Path(str(match.get("candidate_image_path") or "")).suffix.lower() or ".img"
+                                    dest = materials_dir / f"page_{page.page_number:02d}_{slot_key}{suffix}"
+                                    self._copy_reusable_ai_image(
+                                        match,
+                                        dest,
+                                        session,
+                                        reuse_session_state=reuse_session_state,
+                                        reuse_context={
+                                            "asset_kind": "page_image",
+                                            "page_number": page.page_number,
+                                            "slot_key": slot_key,
+                                        },
+                                    )
+                                    assets.image_paths[slot_key] = dest
+                                    logger.info(
+                                        "Reused image asset for page {} {}: {} score={}",
+                                        page.page_number,
+                                        slot_key,
+                                        match["asset"].get("asset_id"),
+                                        match.get("keyword_score"),
+                                    )
+                                    continue
+                        pending.append((slot_key, need))
 
-                fetched = await fetch_images([need for _slot_key, need in pending], self.config)
-                for (slot_key, _need), result in zip(pending, fetched):
-                    if result and result.local_path and result.local_path.exists():
-                        suffix = result.local_path.suffix.lower() or ".img"
-                        dest = materials_dir / f"page_{page.page_number:02d}_{slot_key}{suffix}"
-                        shutil.copy2(result.local_path, dest)
-                        assets.image_paths[slot_key] = dest
+                    if pending:
+                        fetched = await fetch_images([need for _slot_key, need in pending], self.config)
+                        for (slot_key, _need), result in zip(pending, fetched):
+                            if result and result.local_path and result.local_path.exists():
+                                suffix = result.local_path.suffix.lower() or ".img"
+                                dest = materials_dir / f"page_{page.page_number:02d}_{slot_key}{suffix}"
+                                shutil.copy2(result.local_path, dest)
+                                assets.image_paths[slot_key] = dest
 
-            # Collect icon SVGs
-            if page.material_needs.icons:
-                from edupptx.materials.icons import get_icon_svg
-                for icon_name in page.material_needs.icons:
-                    try:
-                        svg_str = get_icon_svg(icon_name)
-                        assets.icon_svgs[icon_name] = svg_str
-                    except Exception:
-                        logger.warning("Icon not found: {}", icon_name)
+                if page.material_needs.icons:
+                    from edupptx.materials.icons import get_icon_svg
+                    for icon_name in page.material_needs.icons:
+                        try:
+                            svg_str = get_icon_svg(icon_name)
+                            assets.icon_svgs[icon_name] = svg_str
+                        except Exception:
+                            logger.warning("Icon not found: {}", icon_name)
 
-            all_assets[page.page_number] = assets
+                return assets
 
-        return all_assets
+        page_assets = await asyncio.gather(*(process_page(page) for page in draft.pages))
+        return {assets.page_number: assets for assets in page_assets}
 
     def _find_reusable_ai_image(
         self,
@@ -686,12 +765,13 @@ class PPTXAgent:
         debug_context: dict[str, Any] | None = None,
         reuse_session_state: dict[str, Any] | None = None,
         llm_review_enabled: bool = True,
+        reuse_search_context=None,
     ):
         try:
             from edupptx.materials.ai_image_asset_db import find_reusable_ai_image_asset
 
             return find_reusable_ai_image_asset(
-                library_dir=self.config.library_dir,
+                library_dir=self.config.reuse_library_dirs or (self.config.library_dir,),
                 asset_kind=asset_kind,
                 prompt=prompt,
                 prompt_route=prompt_route,
@@ -708,6 +788,7 @@ class PPTXAgent:
                 debug_context=debug_context,
                 reuse_session_state=reuse_session_state,
                 llm_review_enabled=llm_review_enabled,
+                reuse_search_context=reuse_search_context,
             )
         except Exception as exc:
             logger.warning("AI image reuse lookup skipped: {}", str(exc)[:160])
@@ -774,17 +855,58 @@ class PPTXAgent:
         )
         mark_reused_ai_image_asset_in_session(match, reuse_session_state, reuse_context)
 
-    def _phase2c_asset_library(self, session: Session) -> None:
+    def _asset_library_update_mode(self) -> str:
+        raw_mode = getattr(self.config, "asset_library_update_mode", "inline") or "inline"
+        mode = str(raw_mode).strip().lower()
+        aliases = {
+            "async": "background",
+            "deferred": "background",
+            "disabled": "off",
+            "false": "off",
+            "no": "off",
+            "none": "off",
+            "skip": "off",
+            "true": "inline",
+            "yes": "inline",
+        }
+        mode = aliases.get(mode, mode)
+        if mode not in {"inline", "background", "off"}:
+            logger.warning(
+                "Unknown asset library update mode '{}'; falling back to inline",
+                raw_mode,
+            )
+            return "inline"
+        return mode
+
+    def _phase2c_asset_library(self, session: Session, *, force_inline: bool = False) -> None:
         """Ingest this session's newly generated AI images into the reusable library."""
+
+        mode = self._asset_library_update_mode()
+        if mode == "off":
+            logger.info("AI image asset library update skipped by configuration")
+            return
+        if mode == "background" and not force_inline:
+            self._launch_asset_library_update_worker(session)
+            return
+        self._update_asset_library_inline(session)
+
+    def _update_asset_library_inline(self, session: Session) -> None:
+        """Run asset-library ingest in the current process."""
 
         try:
             from edupptx.materials.ai_image_asset_db import update_ai_image_asset_library
+            from edupptx.llm_client import create_vlm_client
 
             keyword_client = self._build_llm_client()
+            vlm_client = None
+            if self.config.vlm_api_key and self.config.vlm_model:
+                vlm_client = create_vlm_client(self.config)
             db, target = update_ai_image_asset_library(
                 session.dir,
                 self.config.library_dir,
                 keyword_client=keyword_client,
+                vlm_client=vlm_client,
+                vlm_review=True,
             )
             logger.info(
                 "AI image asset library updated: {} ({} assets)",
@@ -795,6 +917,64 @@ class PPTXAgent:
                 logger.warning("AI image asset library warnings: {}", len(db["warnings"]))
         except Exception as exc:
             logger.warning("AI image asset library update skipped: {}", str(exc)[:160])
+
+    def _launch_asset_library_update_worker(self, session: Session) -> None:
+        """Start asset-library ingest in a detached Python process."""
+
+        log_path = session.dir / "asset_library_ingest.log"
+        job_path = session.dir / "asset_library_ingest_job.json"
+        command = [
+            sys.executable,
+            "-m",
+            "edupptx.asset_ingest_worker",
+            "--session-dir",
+            str(session.dir),
+            "--library-dir",
+            str(self.config.library_dir),
+            "--env-file",
+            str(getattr(self.config, "env_file", Path(".env"))),
+            "--log-file",
+            str(log_path),
+            "--job-file",
+            str(job_path),
+        ]
+        env = os.environ.copy()
+        env.setdefault("PYTHONIOENCODING", "utf-8")
+        creationflags = 0
+        popen_kwargs: dict[str, Any] = {
+            "cwd": str(Path.cwd()),
+            "env": env,
+            "stdin": subprocess.DEVNULL,
+            "stdout": subprocess.DEVNULL,
+            "stderr": subprocess.DEVNULL,
+            "close_fds": True,
+        }
+        if os.name == "nt":
+            creationflags |= getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            creationflags |= getattr(subprocess, "DETACHED_PROCESS", 0)
+            popen_kwargs["creationflags"] = creationflags
+        else:
+            popen_kwargs["start_new_session"] = True
+
+        try:
+            process = subprocess.Popen(command, **popen_kwargs)
+            job = {
+                "status": "started",
+                "pid": process.pid,
+                "mode": "background",
+                "session_dir": str(session.dir),
+                "library_dir": str(self.config.library_dir),
+                "log_path": str(log_path),
+                "command": command,
+            }
+            job_path.write_text(json.dumps(job, ensure_ascii=False, indent=2), encoding="utf-8")
+            logger.info(
+                "AI image asset library background update started: pid={}, log={}",
+                process.pid,
+                log_path,
+            )
+        except Exception as exc:
+            logger.warning("AI image asset library background update failed to start: {}", str(exc)[:160])
 
     async def _phase3_design(
         self, draft: PlanningDraft,

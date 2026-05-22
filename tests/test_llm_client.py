@@ -1,5 +1,6 @@
 """Tests for LLM client — DoubaoResponsesClient and create_llm_client factory."""
 
+from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -269,6 +270,8 @@ class TestConfigProvider:
         monkeypatch.delenv("VLM_MODEL", raising=False)
         monkeypatch.delenv("VLM_APIKEY", raising=False)
         monkeypatch.delenv("VLM_BASE_URL", raising=False)
+        monkeypatch.delenv("LIBRARY_DIR", raising=False)
+        monkeypatch.delenv("REUSE_LIBRARY_DIRS", raising=False)
         env_path = tmp_path / ".env"
         env_path.write_text(
             "\n".join(
@@ -286,3 +289,15 @@ class TestConfigProvider:
         assert config.vlm_model == "seed-mini"
         assert config.vlm_api_key == "vlm-key"
         assert config.vlm_base_url == "https://example.test/api/v3"
+        assert config.reuse_library_dirs == (config.library_dir, Path("./materials_library_ppt"))
+
+    def test_from_env_loads_asset_library_update_mode(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("EDUPPTX_ASSET_LIBRARY_UPDATE_MODE", raising=False)
+        monkeypatch.delenv("ASSET_LIBRARY_UPDATE_MODE", raising=False)
+        env_path = tmp_path / ".env"
+        env_path.write_text("EDUPPTX_ASSET_LIBRARY_UPDATE_MODE=background\n", encoding="utf-8")
+
+        config = Config.from_env(env_path)
+
+        assert config.env_file == env_path
+        assert config.asset_library_update_mode == "background"

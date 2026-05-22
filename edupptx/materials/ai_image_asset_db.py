@@ -10,13 +10,16 @@ import os
 import re
 import shutil
 from copy import deepcopy
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 from edupptx.materials.reuse_policy import (
+    BACKGROUND_REUSE_THRESHOLD,
     DF_RATIO_MIN_LIBRARY_SIZE,
     MEDIUM_EMBEDDING_REVIEW_THRESHOLD,
+    SCORE_GATE_LLM_REVIEW_REASONS,
     STRICT_EMBEDDING_REVIEW_THRESHOLD,
     STRICT_SEMANTIC_GRAY_BM25_THRESHOLD,
     STRICT_SEMANTIC_GRAY_REVIEW_THRESHOLD,
@@ -28,6 +31,9 @@ from edupptx.materials.reuse_policy import (
     normalize_constraints,
     normalize_reuse_policy_fields,
     reuse_threshold_for_target as policy_reuse_threshold_for_target,
+)
+from edupptx.materials.vlm_metadata_rules import (
+    normalize_padding_capacity,
 )
 
 SCHEMA_VERSION = 1
@@ -71,10 +77,10 @@ MAX_LLM_REVIEWS_PER_QUERY = 3
 # the deterministic gate. See ai_image_reuse_review_score_rules.md for
 # the matching scoring caps (candidate extra teaching content ≤ 0.55,
 # missing exact text/math/physics fact necessarily low-score, etc).
-DETERMINISTIC_LLM_REJECT_REASONS = frozenset({
-    "candidate_extra_teaching_content",
-    "candidate_extra_strong_constraints",
-})
+# Deterministic LLM reject is now signalled directly by the policy via the
+# ``llm_skip_safe`` field on policy_result. This module no longer maintains
+# parallel reason-string / subtype tables; see reuse_policy._result and
+# reuse_policy._extras_are_irreplaceable for the producer side.
 LOGGER = logging.getLogger(__name__)
 
 # Process-wide DF-ratio cache. Keyed by (library_root_str, db_mtime_ns) so
@@ -83,6 +89,23 @@ LOGGER = logging.getLogger(__name__)
 # up across the dozens of reuse queries in a single PPT generation, so
 # the cache pays for itself within the first session.
 _DF_RATIO_CACHE: dict[tuple[str, int], dict[str, float]] = {}
+
+
+@dataclass
+class ReuseSearchContext:
+    """Per-generation cache for repeated AI image reuse lookups.
+
+    A PPT can query the same material libraries dozens of times. Keeping this
+    object for one generation avoids rereading JSON/NPZ sidecars and
+    re-encoding identical target embedding texts for each image slot.
+    """
+
+    library_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    route_index_cache: dict[tuple[str, str], tuple[dict[str, Any], Path, list[Any], str] | None] = field(
+        default_factory=dict
+    )
+    target_keyword_cache: dict[str, Any] = field(default_factory=dict)
+    query_embedding_cache: dict[str, Any] = field(default_factory=dict)
 
 BACKGROUND_REUSE_GATE_THRESHOLDS = {
     "keyword_min": 0.10,
@@ -138,13 +161,9 @@ PAGE_IMAGE_REUSE_GATE_THRESHOLDS = {
 }
 TEXT_OVERLAP_REVIEW_THRESHOLD = 0.15
 TEXT_OVERLAP_EMBEDDING_THRESHOLD = 0.78
-PAGE_IMAGE_SCORE_GATE_REVIEW_REASONS = {
-    "keyword_high_review",
-    "embedding_high_review",
-    "text_overlap_embedding_review",
-    "keyword_led_gray_review",
-    "embedding_led_gray_review",
-}
+# Alias kept for callers that import the local name. Source of truth is
+# reuse_policy.SCORE_GATE_LLM_REVIEW_REASONS.
+PAGE_IMAGE_SCORE_GATE_REVIEW_REASONS = SCORE_GATE_LLM_REVIEW_REASONS
 
 CONTENT_PROMPT_REUSE_WEIGHT = 0.85
 ROUTE_REUSE_WEIGHT = 0.05
@@ -154,7 +173,7 @@ BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT = 0.85
 BACKGROUND_COLOR_BIAS_REUSE_WEIGHT = 0.15
 
 VISUAL_GENERIC_REUSE_THRESHOLD = 0.28
-BACKGROUND_REUSE_THRESHOLD = 0.38
+# BACKGROUND_REUSE_THRESHOLD imported from reuse_policy — single source of truth.
 
 _EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 
@@ -193,17 +212,19 @@ _TOPIC_REF_TRAILING_NOISE = (
     "PPT",
     "ppt",
 )
-_VLM_RICH_ASSET_FIELDS = (
-    "vlm_schema_version",
-    "vlm_verified",
-    "vlm_verified_at",
-    "vlm_model",
-    "vlm_verified_constraints",
-    "vlm_missing_from_prompt",
-    "vlm_visual_aliases",
-    "vlm_visual_style",
+_REVIEW_PASSTHROUGH_FIELDS = (
     "vlm_match_quality",
-    "vlm_needs_regeneration",
+    "regenerate",
+)
+_STRICT_REUSE_PASSTHROUGH_FIELDS = (
+    "strict_reuse_group",
+    "strict_reuse_confidence",
+    "strict_reuse_reason",
+    "strict_reuse_signals",
+)
+_METADATA_PASSTHROUGH_FIELDS = (
+    *_REVIEW_PASSTHROUGH_FIELDS,
+    *_STRICT_REUSE_PASSTHROUGH_FIELDS,
 )
 _BACKGROUND_ROUTE_FIELDS = (
     "template_family",
@@ -219,6 +240,24 @@ _BACKGROUND_ROUTE_FIELDS = (
 _BACKGROUND_ROUTE_MATCH_FIELDS = (
     "background_color_bias",
 )
+_GENERAL_REUSE_GROUP = "general_reuse"
+_CONTENT_REUSE_GROUP = "content_reuse"
+GENERAL_REUSE_GROUP = _GENERAL_REUSE_GROUP
+CONTENT_REUSE_GROUP = _CONTENT_REUSE_GROUP
+STRICT_REUSE_INDEX_DIRNAME = "strict_reuse_indexes"
+STRICT_REUSE_GROUPS = (_GENERAL_REUSE_GROUP, _CONTENT_REUSE_GROUP)
+_GENERAL_REUSE_GROUP_ALIASES = {"", "none", "general", _GENERAL_REUSE_GROUP}
+_CONTENT_REUSE_GROUP_ALIASES = {
+    "non_none",
+    _CONTENT_REUSE_GROUP,
+    "content_specific_reuse",
+    "exact_reuse",
+    "strict_reuse",
+    "math_problem",
+    "physics_problem",
+    "chinese_word_text",
+    "chinese_passage_text",
+}
 _PAGE_TYPE_CONTEXT_SUMMARIES = {
     "cover": "作为封面主视觉，建立课程主题和导入氛围",
     "toc": "作为目录页辅助导览插图，引导学生理解本节课学习路径",
@@ -227,60 +266,31 @@ _PAGE_TYPE_CONTEXT_SUMMARIES = {
     "summary": "作为总结页辅助记忆插图，帮助学生回顾核心内容",
     "closing": "作为结束页辅助插图，形成课程收束氛围",
 }
-_GENERIC_CORE_NOISE = {
-    "插画",
-    "教学插画",
-    "编辑感",
-    "风格",
-    "简洁",
-    "清晰",
-    "简洁清晰",
-    "高清",
-    "背景",
-    "场景",
-    "示意图",
-    "图片",
-}
-_GENERIC_STYLE_NOISE = {
-    "插画",
-    "教学插画",
-    "编辑感",
-    "风格",
-    "高清",
-    "背景",
-    "图片",
-}
-_CORE_GENERIC_EXACT = {
-    "ppt",
-    "ai",
-    "logo",
-    "图标",
-    "插画",
-    "配图",
-    "主图",
-    "背景",
+# Single source of truth for "style / form / usage / quality noise tokens
+# that saturate the library". Two assets sharing any of these does not
+# constitute precision evidence — only sharing a more discriminative
+# keyword does. Should be retired in favor of DF-ratio derived stopwords
+# (compute_keyword_df_ratio) once library scale is stable; the manual list
+# is a bridge while the library is small.
+_NOISE_TOKENS = frozenset({
+    # Form/medium descriptors
+    "插画", "教学插画", "配图", "主图", "图标", "logo",
+    "背景", "场景", "示意图", "图片",
+    # Style/quality descriptors
+    "编辑感", "风格", "风格统一",
+    "简洁", "清晰", "简洁清晰", "高清",
     "背景简洁",
-    "风格统一",
-    "无文字",
-    "无文字水印",
-    "教学插画",
+    # Usage / negative descriptors
+    "无文字", "无文字水印",
     "教学示意",
+    # Audience / subject descriptors
     "语文教学",
-    "高年级",
-    "低年级",
-    "高年级风格",
-    "低年级风格",
-    "高年级编辑感",
-}
-# Union of the three existing noise sets, used as the stopword input for
-# has_precision_signal. These terms saturate the library (every asset
-# uses them as a style descriptor), so two assets sharing any one of
-# them does not constitute precision evidence — only sharing a more
-# discriminative keyword does. Casefolded for direct set membership
-# checks against normalized keyword tokens.
-_PRECISION_SIGNAL_STOPWORDS = frozenset(
-    s.casefold() for s in (_GENERIC_CORE_NOISE | _GENERIC_STYLE_NOISE | _CORE_GENERIC_EXACT)
-)
+    "高年级", "低年级",
+    "高年级风格", "低年级风格", "高年级编辑感",
+    # Tooling
+    "ppt", "ai",
+})
+_PRECISION_SIGNAL_STOPWORDS = frozenset(s.casefold() for s in _NOISE_TOKENS)
 _CORE_STYLE_MARKERS = (
     "风格",
     "画风",
@@ -446,51 +456,41 @@ def build_ai_image_asset_db(output_root: str | Path) -> dict[str, Any]:
     }
 
 
-def write_ai_image_asset_db(
-    output_root: str | Path,
-    db_path: str | Path | None = None,
-    *,
-    keyword_client: Any | None = None,
-    keyword_batch_size: int = DEFAULT_KEYWORD_BATCH_SIZE,
-) -> tuple[dict[str, Any], Path]:
-    """Build and write the database JSON file."""
-
-    root = Path(output_root).expanduser().resolve()
-    target = Path(db_path).expanduser().resolve() if db_path else root / DEFAULT_DB_FILENAME
-    db = build_ai_image_asset_db(root)
-    if keyword_client is not None:
-        enrich_ai_image_asset_db_keywords(
-            db,
-            keyword_client,
-            batch_size=keyword_batch_size,
-        )
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(db, ensure_ascii=False, indent=2), encoding="utf-8")
-    write_ai_image_match_index(db, target.parent)
-    return db, target
-
-
 def update_ai_image_asset_library(
     session_dir: str | Path,
     library_dir: str | Path,
     *,
-    db_filename: str = DEFAULT_DB_FILENAME,
+    db_filename: str = DEFAULT_MATCH_INDEX_FILENAME,
     keyword_client: Any | None = None,
     keyword_batch_size: int = DEFAULT_KEYWORD_BATCH_SIZE,
+    vlm_client: Any | None = None,
+    vlm_review: bool = False,
 ) -> tuple[dict[str, Any], Path]:
-    """Copy a session's AI-generated images into the reusable library and merge metadata.
-
-    The library is append/update only: assets are keyed by asset_id and the
-    central JSON stays at ``library_dir/db_filename``. This does not perform
-    reuse matching; it only ingests newly generated materials for future runs.
-    """
+    """Copy a session's AI-generated images into the reusable library and merge metadata."""
 
     session_root = Path(session_dir).expanduser().resolve()
     library_root = Path(library_dir).expanduser().resolve()
-    db_path = library_root / db_filename
+    index_path = library_root / db_filename
     library_root.mkdir(parents=True, exist_ok=True)
 
+    existing_db, _existing_path = _read_existing_asset_index(library_root, index_path)
+    existing_ids = _asset_ids(existing_db)
     session_db = build_ai_image_asset_db(session_root)
+    if existing_ids:
+        session_assets = session_db.get("assets")
+        if isinstance(session_assets, list):
+            fresh_assets = [
+                asset
+                for asset in session_assets
+                if not (isinstance(asset, dict) and _clean_text(asset.get("asset_id")) in existing_ids)
+            ]
+            skipped_count = len(session_assets) - len(fresh_assets)
+            if skipped_count:
+                session_db.setdefault("warnings", []).append(
+                    f"library ingest skipped {skipped_count} existing asset ids"
+                )
+            session_db["assets"] = fresh_assets
+            session_db["asset_count"] = len(fresh_assets)
     if keyword_client is not None:
         enrich_ai_image_asset_db_keywords(
             session_db,
@@ -503,34 +503,49 @@ def update_ai_image_asset_library(
         session_root=session_root,
         library_root=library_root,
     )
-    existing_db = _read_existing_db(db_path)
+    if vlm_review and vlm_client is not None:
+        vlm_report = _enrich_split_reuse_groups_with_vlm(
+            ingested_db,
+            vlm_client,
+            keyword_client=keyword_client,
+            keyword_batch_size=keyword_batch_size,
+            library_root=library_root,
+        )
+        ingested_db["vlm_review_report"] = vlm_report
+    elif vlm_review:
+        ingested_db.setdefault("warnings", []).append("VLM review skipped: no VLM client configured")
     merged_db = _merge_asset_library_db(
         existing_db,
         ingested_db,
         library_root=library_root,
     )
-    db_path.write_text(json.dumps(merged_db, ensure_ascii=False, indent=2), encoding="utf-8")
-    write_ai_image_match_index(merged_db, library_root)
-    return merged_db, db_path
+    index, index_path = write_ai_image_match_index(
+        merged_db,
+        library_root,
+        index_filename=index_path.name,
+    )
+    return index, index_path
 
 
 def ingest_ai_image_asset_library_from_output(
     output_root: str | Path,
     library_dir: str | Path,
     *,
-    db_filename: str = DEFAULT_DB_FILENAME,
+    db_filename: str = DEFAULT_MATCH_INDEX_FILENAME,
     keyword_client: Any | None = None,
     keyword_batch_size: int = DEFAULT_KEYWORD_BATCH_SIZE,
+    vlm_client: Any | None = None,
+    vlm_review: bool = False,
 ) -> tuple[dict[str, Any], Path, dict[str, Any]]:
     """Ingest all output sessions into the reusable AI image asset library.
 
-    Unlike ``write_ai_image_asset_db()``, this copies images into the central
-    library image directory and merges each session into ``library_dir``.
+    This copies images into the central library image directory and writes the
+    slim match index plus embedding sidecars when embedding is available.
     """
 
     root = Path(output_root).expanduser().resolve()
     library_root = Path(library_dir).expanduser().resolve()
-    db_path = library_root / db_filename
+    index_path = library_root / db_filename
     library_root.mkdir(parents=True, exist_ok=True)
 
     sessions = list(_iter_session_dirs(root))
@@ -538,22 +553,24 @@ def ingest_ai_image_asset_library_from_output(
         "output_root": str(root),
         "library_dir": str(library_root),
         "asset_root": str(library_root),
-        "db_path": str(db_path),
+        "match_index_path": str(library_root / STRICT_REUSE_INDEX_DIRNAME),
         "session_count": len(sessions),
         "processed_sessions": [],
         "failed_sessions": [],
         "warnings": [],
     }
-    merged_db = _read_existing_db(db_path)
+    merged_db, _merged_path = _read_existing_asset_index(library_root, index_path)
 
     for session_dir in sessions:
         try:
-            merged_db, _target = update_ai_image_asset_library(
+            merged_db, index_path = update_ai_image_asset_library(
                 session_dir,
                 library_root,
                 db_filename=db_filename,
                 keyword_client=keyword_client,
                 keyword_batch_size=keyword_batch_size,
+                vlm_client=vlm_client,
+                vlm_review=vlm_review,
             )
         except Exception as exc:
             message = f"{session_dir}: {exc}"
@@ -569,18 +586,79 @@ def ingest_ai_image_asset_library_from_output(
             }
         )
 
-    if not db_path.exists():
+    split_dir = library_root / STRICT_REUSE_INDEX_DIRNAME
+    if not split_dir.exists():
         merged_db = _merge_asset_library_db(
             {},
             {"schema_version": SCHEMA_VERSION, "assets": [], "warnings": []},
             library_root=library_root,
         )
-        db_path.write_text(json.dumps(merged_db, ensure_ascii=False, indent=2), encoding="utf-8")
-        write_ai_image_match_index(merged_db, library_root)
+        merged_db, index_path = write_ai_image_match_index(
+            merged_db,
+            library_root,
+            index_filename=index_path.name,
+        )
 
     report["asset_count"] = int(merged_db.get("asset_count") or 0)
     report["warning_count"] = len(_as_string_list(merged_db.get("warnings"))) + len(report["warnings"])
-    return merged_db, db_path, report
+    return merged_db, index_path, report
+
+
+def _enrich_split_reuse_groups_with_vlm(
+    db: dict[str, Any],
+    vlm_client: Any,
+    *,
+    keyword_client: Any | None,
+    keyword_batch_size: int,
+    library_root: Path,
+) -> dict[str, Any]:
+    from edupptx.materials.vlm_asset_enricher import enrich_assets_with_vlm
+
+    raw_assets = db.get("assets")
+    assets = raw_assets if isinstance(raw_assets, list) else []
+    grouped: dict[str, list[dict[str, Any]]] = {group: [] for group in STRICT_REUSE_GROUPS}
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        group = _normalize_binary_reuse_group(asset.get("strict_reuse_group"), default=_GENERAL_REUSE_GROUP)
+        asset["strict_reuse_group"] = group
+        grouped[group].append(asset)
+
+    report: dict[str, Any] = {
+        "processed_count": 0,
+        "failed_count": 0,
+        "skipped_reviewed_count": 0,
+        "missing_image_count": 0,
+        "manual_review_count": 0,
+        "auto_rewrite_count": 0,
+        "accepted_count": 0,
+        "keyword_rewrite_count": 0,
+        "group_reports": {},
+    }
+    for group in STRICT_REUSE_GROUPS:
+        group_db = {**db, "assets": grouped[group], "asset_count": len(grouped[group])}
+        group_report = enrich_assets_with_vlm(
+            group_db,
+            vlm_client,
+            image_root=library_root,
+            debug_dir=library_root / "debug" / group,
+            review_index_path=library_root / "debug" / f"ai_image_vlm_review_{group}.json",
+            keyword_client=keyword_client,
+            keyword_batch_size=keyword_batch_size,
+        )
+        report["group_reports"][group] = group_report
+        for key in (
+            "processed_count",
+            "failed_count",
+            "skipped_reviewed_count",
+            "missing_image_count",
+            "manual_review_count",
+            "auto_rewrite_count",
+            "accepted_count",
+            "keyword_rewrite_count",
+        ):
+            report[key] += int(group_report.get(key) or 0)
+    return report
 
 
 def build_ai_image_match_index(
@@ -608,9 +686,13 @@ def build_ai_image_match_index(
     for asset in deduped_assets:
         asset.pop("_image_sha256", None)
         asset.pop("_quality_score", None)
+        asset["strict_reuse_group"] = _normalize_binary_reuse_group(
+            asset.get("strict_reuse_group"),
+            default=_GENERAL_REUSE_GROUP,
+        )
 
     now = datetime.now(timezone.utc).isoformat()
-    return {
+    index = {
         "schema_version": MATCH_INDEX_SCHEMA_VERSION,
         "built_at": now,
         "updated_at": now,
@@ -621,6 +703,10 @@ def build_ai_image_match_index(
         "assets": deduped_assets,
         "warnings": _dedupe_warnings(warnings),
     }
+    for key in ("ppt_extractor", "keyword_builder", "keyword_built_at"):
+        if key in db:
+            index[key] = deepcopy(db[key])
+    return index
 
 
 def write_ai_image_match_index(
@@ -628,18 +714,132 @@ def write_ai_image_match_index(
     library_dir: str | Path,
     *,
     index_filename: str = DEFAULT_MATCH_INDEX_FILENAME,
+    write_embedding_index: bool = True,
 ) -> tuple[dict[str, Any], Path]:
-    """Write the slim matching index next to the rich asset database."""
+    """Write the split matching indexes used by image reuse matching."""
 
     root = Path(library_dir).expanduser().resolve()
     index = build_ai_image_match_index(db, library_root=root)
-    embedding_report = write_ai_image_embedding_index(index, root)
-    if embedding_report:
-        index["embedding_index"] = embedding_report
-    target = root / index_filename
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
-    return index, target
+    if write_embedding_index:
+        embedding_report = write_ai_image_embedding_index(index, root)
+        if embedding_report:
+            index["embedding_index"] = embedding_report
+    split_dir = write_ai_image_split_match_indexes(index, root)
+    legacy_target = root / index_filename
+    if legacy_target.exists():
+        legacy_target.unlink()
+    return index, split_dir
+
+
+def write_ai_image_split_match_indexes(
+    match_index: dict[str, Any],
+    library_dir: str | Path,
+    *,
+    split_dirname: str = STRICT_REUSE_INDEX_DIRNAME,
+) -> Path:
+    """Persist only the binary reuse-group JSON indexes."""
+
+    root = Path(library_dir).expanduser().resolve()
+    split_dir = root / split_dirname
+    split_dir.mkdir(parents=True, exist_ok=True)
+    now = datetime.now(timezone.utc).isoformat()
+    raw_assets = match_index.get("assets")
+    assets = raw_assets if isinstance(raw_assets, list) else []
+
+    for group in STRICT_REUSE_GROUPS:
+        group_assets: list[dict[str, Any]] = []
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            normalized_group = _normalize_binary_reuse_group(
+                asset.get("strict_reuse_group"),
+                default=_GENERAL_REUSE_GROUP,
+            )
+            if normalized_group != group:
+                continue
+            copied = deepcopy(asset)
+            copied["strict_reuse_group"] = group
+            group_assets.append(copied)
+        payload = {
+            "schema_version": match_index.get("schema_version", MATCH_INDEX_SCHEMA_VERSION),
+            "strict_reuse_group": group,
+            "built_at": match_index.get("built_at") or now,
+            "updated_at": now,
+            "asset_root": match_index.get("asset_root") or str(root),
+            "asset_count": len(group_assets),
+            "assets": group_assets,
+            "warnings": match_index.get("warnings", []),
+        }
+        for key in ("ppt_extractor", "keyword_builder", "keyword_built_at"):
+            if key in match_index:
+                payload[key] = deepcopy(match_index[key])
+        (split_dir / f"{group}.json").write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    legacy_manifest = split_dir / "strict_reuse_split_manifest.json"
+    if legacy_manifest.exists():
+        legacy_manifest.unlink()
+    return split_dir
+
+
+def read_ai_image_split_match_index(
+    library_dir: str | Path,
+    *,
+    split_dirname: str = STRICT_REUSE_INDEX_DIRNAME,
+) -> tuple[dict[str, Any], Path] | None:
+    """Read the binary reuse-group indexes as one in-memory index."""
+
+    root = Path(library_dir).expanduser().resolve()
+    split_dir = root / split_dirname
+    if not split_dir.exists():
+        return None
+
+    assets: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    source_payloads: list[dict[str, Any]] = []
+    found = False
+    for group in STRICT_REUSE_GROUPS:
+        path = split_dir / f"{group}.json"
+        if not path.exists():
+            continue
+        found = True
+        payload = _read_existing_db(path)
+        source_payloads.append(payload)
+        raw_assets = payload.get("assets")
+        if not isinstance(raw_assets, list):
+            warnings.append(f"split index skipped invalid assets: {path}")
+            continue
+        for item in raw_assets:
+            if not isinstance(item, dict):
+                continue
+            asset = deepcopy(item)
+            asset["strict_reuse_group"] = _normalize_binary_reuse_group(
+                asset.get("strict_reuse_group") or payload.get("strict_reuse_group") or group,
+                default=_GENERAL_REUSE_GROUP,
+            )
+            assets.append(asset)
+        warnings.extend(_as_string_list(payload.get("warnings")))
+    if not found:
+        return None
+
+    now = datetime.now(timezone.utc).isoformat()
+    first_payload = source_payloads[0] if source_payloads else {}
+    index = {
+        "schema_version": MATCH_INDEX_SCHEMA_VERSION,
+        "built_at": first_payload.get("built_at") or now,
+        "updated_at": now,
+        "asset_root": first_payload.get("asset_root") or str(root),
+        "input_asset_count": len(assets),
+        "asset_count": len(assets),
+        "assets": assets,
+        "warnings": _dedupe_warnings(warnings),
+    }
+    for key in ("ppt_extractor", "keyword_builder", "keyword_built_at"):
+        if key in first_payload:
+            index[key] = deepcopy(first_payload[key])
+    return index, split_dir
 
 
 def write_ai_image_embedding_index(
@@ -803,181 +1003,150 @@ def _get_library_df_ratio(
     return ratio
 
 
-def find_reusable_ai_image_asset(
-    *,
-    library_dir: str | Path,
-    asset_kind: str,
-    prompt: str,
-    prompt_route: dict[str, Any] | None = None,
-    background_route: dict[str, Any] | None = None,
-    theme: str = "",
-    grade: str = "",
-    subject: str = "",
-    page_title: str = "",
-    page_type: str = "",
-    role: str = "",
-    aspect_ratio: str = "",
-    keyword_client: Any | None = None,
-    candidate_limit: int = DEFAULT_REUSE_CANDIDATE_LIMIT,
-    min_keyword_score: float | None = DEFAULT_MIN_REUSE_KEYWORD_SCORE,
-    debug_path: str | Path | None = None,
-    debug_context: dict[str, Any] | None = None,
-    reuse_session_state: dict[str, Any] | None = None,
-    llm_review_enabled: bool = True,
-    reuse_debug_mode: str = "",
-) -> dict[str, Any] | None:
-    """Find a reusable AI image asset from the central library.
+def _normalize_reuse_library_dirs(
+    library_dir: str | Path | list[str | Path] | tuple[str | Path, ...],
+) -> list[Path]:
+    if isinstance(library_dir, (str, Path)):
+        values = [library_dir]
+    elif isinstance(library_dir, (list, tuple)):
+        values = list(library_dir)
+    else:
+        values = [library_dir]
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for value in values:
+        root = Path(value).expanduser().resolve()
+        key = str(root)
+        if key in seen:
+            continue
+        seen.add(key)
+        roots.append(root)
+    return roots or [Path("materials_library").resolve()]
 
-    BM25 remains the precision signal, while optional Qwen embedding and
-    substring retrieval provide gray-zone recall through RRF fusion. When a
-    strict reuse policy needs semantic confirmation, the same LLM client can
-    perform a bounded second-stage review.
-    """
 
-    library_root = Path(library_dir).expanduser().resolve()
+def _load_reuse_library_for_search(
+    library_root: Path,
+    reuse_search_context: ReuseSearchContext | None,
+) -> dict[str, Any]:
+    cache_key = str(library_root)
+    if reuse_search_context is not None:
+        cached = reuse_search_context.library_cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+
     db_path = library_root / DEFAULT_DB_FILENAME
     db = _read_existing_db(db_path)
     index, match_index_path = _read_match_index_or_build(library_root, db)
-    assets = index.get("assets")
     embedding_index, embedding_status = _read_ai_image_embedding_index(library_root)
-    reuse_debug_mode = _normalize_reuse_debug_mode(reuse_debug_mode)
+    loaded = {
+        "library_root": library_root,
+        "db_path": db_path,
+        "db": db,
+        "index": index,
+        "match_index_path": match_index_path,
+        "embedding_index": embedding_index,
+        "embedding_status": embedding_status,
+    }
+    if reuse_search_context is not None:
+        reuse_search_context.library_cache[cache_key] = loaded
+    return loaded
 
-    target = _build_reuse_target_asset(
-        asset_kind=asset_kind,
-        prompt=prompt,
-        prompt_route=prompt_route,
-        background_route=background_route,
-        theme=theme,
-        grade=grade,
-        subject=subject,
-        page_title=page_title,
-        page_type=page_type,
-        role=role,
-        aspect_ratio=aspect_ratio,
-    )
 
-    debug_record = _new_reuse_debug_record(
-        library_root=library_root,
-        db_path=db_path,
-        match_index_path=match_index_path,
-        asset_count=len(assets) if isinstance(assets, list) else 0,
-        candidate_limit=candidate_limit,
-        min_keyword_score=min_keyword_score,
-        context=debug_context,
-    )
-    debug_record["embedding_index"] = embedding_status
-    debug_record["llm_review_enabled"] = bool(llm_review_enabled)
-    debug_record["debug_mode"] = reuse_debug_mode
-    debug_record["threshold_used"] = _reuse_threshold_for_target(target, min_keyword_score)
-
-    def finish(reason: str, match: dict[str, Any] | None = None) -> dict[str, Any] | None:
-        debug_record["decision"] = {
-            "reused": match is not None,
-            "reason": reason,
-            "asset_id": _dict(match.get("asset")).get("asset_id") if match else "",
-            "keyword_score": match.get("keyword_score") if match else None,
-            "threshold_used": debug_record.get("threshold_used"),
-            "reuse_policy": match.get("reuse_policy") if match else None,
-            "reuse_audit": match.get("reuse_audit") if match else None,
-            "llm_reuse_review_performed": _match_llm_reuse_review_performed(match) if match else False,
-            "strict_reuse_occupancy": match.get("strict_reuse_occupancy") if match else None,
-        }
-        _append_reuse_debug_record(
-            debug_path,
-            _reuse_debug_record_for_mode(debug_record, mode=reuse_debug_mode, match=match),
-        )
-        return match
-
-    if not isinstance(assets, list) or not assets:
-        debug_record["target"] = _reuse_debug_asset_payload(target)
-        return finish("empty_asset_store")
-
-    if keyword_client is not None:
-        target_db = {"schema_version": SCHEMA_VERSION, "assets": [target], "warnings": []}
-        enrich_ai_image_asset_db_keywords(
-            target_db,
-            keyword_client,
-            batch_size=1,
-            include_match_keywords=True,
-        )
-        target = target_db["assets"][0]
-    target = _normalize_asset_for_match(target, for_target=True) or target
-    threshold = _reuse_threshold_for_target(target, min_keyword_score)
-    debug_record["threshold_used"] = threshold
-    debug_record["target"] = _reuse_debug_asset_payload(target)
-    debug_record["candidate_scores"] = _collect_reuse_candidate_debug(target, assets, library_root)
-
-    pool_limit = max(DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE, int(candidate_limit or DEFAULT_REUSE_CANDIDATE_LIMIT))
-    bm25_ranked_candidates = _rank_reuse_candidates(
-        target,
-        assets,
-        library_root=library_root,
-        limit=pool_limit,
-    )
-    embedding_ranked_candidates = _rank_embedding_candidates(
-        target,
-        assets,
-        library_root=library_root,
-        embedding_index=embedding_index,
-        limit=pool_limit,
-    )
-    substring_ranked_candidates = _rank_substring_candidates(
-        target,
-        assets,
-        library_root=library_root,
-        limit=pool_limit,
-    )
-    ranked_candidates = _rank_hybrid_reuse_candidates(
-        target,
-        assets,
-        library_root=library_root,
-        bm25_ranked=bm25_ranked_candidates,
-        embedding_ranked=embedding_ranked_candidates,
-        substring_ranked=substring_ranked_candidates,
-        threshold=threshold,
-        limit=candidate_limit,
-    )
-    for candidate in ranked_candidates:
-        candidate["reuse_audit"] = _reuse_audit_payload(
+def _route_match_index_for_target_cached(
+    library_root: Path,
+    index: dict[str, Any],
+    match_index_path: Path,
+    target: dict[str, Any],
+    reuse_search_context: ReuseSearchContext | None,
+) -> tuple[dict[str, Any], Path, list[Any], str] | None:
+    if reuse_search_context is None:
+        return _route_match_index_for_target(library_root, index, match_index_path, target)
+    route_group = _normalize_binary_reuse_group(target.get("strict_reuse_group"), default=_GENERAL_REUSE_GROUP)
+    cache_key = (str(library_root), route_group)
+    if cache_key not in reuse_search_context.route_index_cache:
+        reuse_search_context.route_index_cache[cache_key] = _route_match_index_for_target(
+            library_root,
+            index,
+            match_index_path,
             target,
-            _dict(candidate.get("asset")),
-            debug_context,
-            _match_transform_policy(candidate),
         )
-    debug_record["bm25_ranked_candidates"] = [
-        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in bm25_ranked_candidates
-    ]
-    debug_record["embedding_ranked_candidates"] = [
-        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in embedding_ranked_candidates
-    ]
-    debug_record["substring_ranked_candidates"] = [
-        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in substring_ranked_candidates
-    ]
-    debug_record["ranked_candidates"] = [
-        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in ranked_candidates
-    ]
-    candidates = [
-        candidate
-        for candidate in ranked_candidates
-        if _candidate_passes_reuse_threshold(candidate, threshold, target=target)
-    ]
-    debug_record["thresholded_candidates"] = [
-        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in candidates
-    ]
-    if not candidates:
-        return finish("no_candidate_above_reuse_threshold")
+    return reuse_search_context.route_index_cache[cache_key]
 
-    df_ratio_lookup = _get_library_df_ratio(library_root, db_path, assets)
-    precision_stopwords = _PRECISION_SIGNAL_STOPWORDS
-    debug_record["df_ratio_library_size"] = sum(
-        1 for a in assets if isinstance(a, dict) and a.get("asset_kind") == "page_image"
+
+def _select_best_library_reuse_match(matches: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not matches:
+        return None
+
+    def rank(match: dict[str, Any]) -> tuple[float, float, float, float, float]:
+        policy = _dict(match.get("reuse_policy"))
+        decision = _clean_text(policy.get("decision"))
+        decision_rank = 2.0 if decision == "full_match" else 1.0 if decision == "generic_support" else 0.0
+        score_details = _dict(match.get("score_details"))
+        return (
+            decision_rank,
+            float(match.get("keyword_score") or 0.0),
+            float(match.get("hybrid_score") or score_details.get("hybrid_score") or 0.0),
+            float(match.get("embedding_score") or score_details.get("embedding_score") or 0.0),
+            -float(match.get("library_search_order") or 0),
+        )
+
+    return max(matches, key=rank)
+
+
+def _global_reuse_candidate_rank(candidate: dict[str, Any]) -> tuple[float, float, float, float, float]:
+    score_details = _dict(candidate.get("score_details"))
+    return (
+        1.0 if candidate.get("accepted_by") else 0.0,
+        float(candidate.get("hybrid_score") or score_details.get("hybrid_score") or 0.0),
+        float(candidate.get("keyword_score") or score_details.get("score") or 0.0),
+        float(candidate.get("embedding_score") or score_details.get("embedding_score") or 0.0),
+        -float(candidate.get("library_search_order") or 0),
     )
-    debug_record["df_ratio_active"] = bool(df_ratio_lookup)
 
+
+def _enrich_reuse_target_keywords_once(
+    target: dict[str, Any],
+    keyword_client: Any | None,
+    target_keyword_cache: dict[str, Any] | None,
+) -> dict[str, Any]:
+    if keyword_client is None:
+        return target
+    if target_keyword_cache is not None:
+        cached = target_keyword_cache.get("target")
+        if isinstance(cached, dict):
+            return deepcopy(cached)
+
+    target_db = {"schema_version": SCHEMA_VERSION, "assets": [target], "warnings": []}
+    enrich_ai_image_asset_db_keywords(
+        target_db,
+        keyword_client,
+        batch_size=1,
+        include_match_keywords=True,
+    )
+    enriched = target_db["assets"][0]
+    if target_keyword_cache is not None:
+        target_keyword_cache["target"] = deepcopy(enriched)
+    return enriched
+
+
+def _apply_reuse_policy_to_ranked_candidates(
+    target: dict[str, Any],
+    candidates: list[dict[str, Any]],
+    *,
+    threshold: float,
+    embedding_status: dict[str, Any],
+    df_ratio_lookup: dict[str, float],
+    keyword_client: Any | None,
+    reuse_session_state: dict[str, Any] | None,
+    llm_review_enabled: bool,
+    llm_review_budget: int = MAX_LLM_REVIEWS_PER_QUERY,
+) -> dict[str, Any]:
     accepted_candidates: list[dict[str, Any]] = []
     rejected_by_policy: list[dict[str, Any]] = []
     rejected_by_occupancy: list[dict[str, Any]] = []
     llm_reviews_used = 0
+    precision_stopwords = _PRECISION_SIGNAL_STOPWORDS
+
     for candidate in candidates:
         score_details = dict(_dict(candidate.get("score_details")))
         for key in (
@@ -992,18 +1161,22 @@ def find_reusable_ai_image_asset(
         ):
             if key in candidate and key not in score_details:
                 score_details[key] = candidate.get(key)
-        if _dict(embedding_status).get("enabled"):
+        candidate_asset = _dict(candidate.get("asset"))
+        candidate_embedding_status = _dict(candidate.get("_reuse_embedding_status") or embedding_status)
+        if candidate_embedding_status.get("enabled"):
             score_details["constraint_embedding_scores"] = _score_constraint_embedding_pairs(
                 target,
-                _dict(candidate.get("asset")),
+                candidate_asset,
             )
-        candidate_asset = _dict(candidate.get("asset"))
-        if df_ratio_lookup:
-            score_details["df_ratio_lookup"] = df_ratio_lookup
+        candidate_df_ratio_lookup = candidate.get("_reuse_df_ratio_lookup")
+        if not isinstance(candidate_df_ratio_lookup, dict):
+            candidate_df_ratio_lookup = df_ratio_lookup
+        if candidate_df_ratio_lookup:
+            score_details["df_ratio_lookup"] = candidate_df_ratio_lookup
             score_details["precision_signal"] = has_precision_signal(
                 target,
                 candidate_asset,
-                keyword_df_ratio=df_ratio_lookup,
+                keyword_df_ratio=candidate_df_ratio_lookup,
                 keyword_stopwords=precision_stopwords,
             )
         policy_result = evaluate_reuse_filter(
@@ -1014,16 +1187,8 @@ def find_reusable_ai_image_asset(
         )
         review_decision = _clean_text(policy_result.get("decision"))
         review_reason = _clean_text(policy_result.get("reason"))
-        # Per-query LLM review budget + deterministic-reject skip + early
-        # stop. These three gates together implement the cost-cutting
-        # measures: (a) reasons where the LLM rules deterministically
-        # yield reject are short-circuited without invoking the LLM, (b)
-        # once an earlier candidate has been accepted the LLM is not
-        # invoked on lower-ranked candidates that will never be returned,
-        # (c) the per-query budget caps tail review on long candidate
-        # lists.
-        deterministic_reject = review_reason in DETERMINISTIC_LLM_REJECT_REASONS
-        budget_exhausted = llm_reviews_used >= MAX_LLM_REVIEWS_PER_QUERY
+        deterministic_reject = bool(policy_result.get("llm_skip_safe"))
+        budget_exhausted = llm_reviews_used >= llm_review_budget
         skip_for_existing_accept = bool(accepted_candidates)
         if review_decision == "llm_review" and (
             deterministic_reject or budget_exhausted or skip_for_existing_accept
@@ -1082,7 +1247,9 @@ def find_reusable_ai_image_asset(
                 policy_result = dict(policy_result)
                 policy_result["decision"] = "full_match"
                 policy_result["reason"] = (
-                    "strict_llm_score_review_accepted" if review_reason.startswith("strict_") else "llm_score_review_accepted"
+                    "strict_llm_score_review_accepted"
+                    if review_reason.startswith("strict_")
+                    else "llm_score_review_accepted"
                 )
                 policy_result["confidence"] = max(
                     float(policy_result.get("confidence") or 0.0),
@@ -1092,7 +1259,9 @@ def find_reusable_ai_image_asset(
                 policy_result = dict(policy_result)
                 policy_result["decision"] = "reject"
                 policy_result["reason"] = (
-                    "strict_llm_score_review_rejected" if review_reason.startswith("strict_") else "llm_score_review_rejected"
+                    "strict_llm_score_review_rejected"
+                    if review_reason.startswith("strict_")
+                    else "llm_score_review_rejected"
                 )
         elif review_decision == "llm_review":
             review_threshold = _reuse_review_accept_score_threshold(
@@ -1117,6 +1286,7 @@ def find_reusable_ai_image_asset(
             policy_result = dict(policy_result)
             policy_result["llm_review_required"] = False
             policy_result["llm_review_performed"] = False
+
         candidate["reuse_policy"] = policy_result
         decision = _clean_text(policy_result.get("decision"))
         if decision in {"full_match", "generic_support"}:
@@ -1128,8 +1298,378 @@ def find_reusable_ai_image_asset(
             accepted_candidates.append(candidate)
         else:
             rejected_by_policy.append(candidate)
-    debug_record["llm_reviews_invoked"] = llm_reviews_used
-    debug_record["llm_reviews_budget"] = MAX_LLM_REVIEWS_PER_QUERY
+
+    return {
+        "accepted_candidates": accepted_candidates,
+        "rejected_by_policy": rejected_by_policy,
+        "rejected_by_occupancy": rejected_by_occupancy,
+        "llm_reviews_used": llm_reviews_used,
+        "llm_review_budget": llm_review_budget,
+    }
+
+
+def find_reusable_ai_image_asset(
+    *,
+    library_dir: str | Path | list[str | Path] | tuple[str | Path, ...],
+    asset_kind: str,
+    prompt: str,
+    prompt_route: dict[str, Any] | None = None,
+    background_route: dict[str, Any] | None = None,
+    theme: str = "",
+    grade: str = "",
+    subject: str = "",
+    page_title: str = "",
+    page_type: str = "",
+    role: str = "",
+    aspect_ratio: str = "",
+    keyword_client: Any | None = None,
+    candidate_limit: int = DEFAULT_REUSE_CANDIDATE_LIMIT,
+    min_keyword_score: float | None = DEFAULT_MIN_REUSE_KEYWORD_SCORE,
+    debug_path: str | Path | None = None,
+    debug_context: dict[str, Any] | None = None,
+    reuse_session_state: dict[str, Any] | None = None,
+    llm_review_enabled: bool = True,
+    reuse_debug_mode: str = "",
+    reuse_search_context: ReuseSearchContext | None = None,
+    _target_keyword_cache: dict[str, Any] | None = None,
+    _collect_candidates_only: bool = False,
+    _library_search_order: int = 0,
+) -> dict[str, Any] | None:
+    """Find a reusable AI image asset from the central library.
+
+    BM25 remains the precision signal, while optional Qwen embedding and
+    substring retrieval provide gray-zone recall through RRF fusion. When a
+    strict reuse policy needs semantic confirmation, the same LLM client can
+    perform a bounded second-stage review.
+    """
+
+    library_roots = _normalize_reuse_library_dirs(library_dir)
+    if reuse_search_context is None:
+        reuse_search_context = ReuseSearchContext()
+    target_keyword_cache = (
+        _target_keyword_cache
+        if _target_keyword_cache is not None
+        else reuse_search_context.target_keyword_cache
+    )
+    if len(library_roots) > 1:
+        collections: list[dict[str, Any]] = []
+        for order, root in enumerate(library_roots):
+            context = dict(debug_context or {})
+            context["reuse_library_dir"] = str(root)
+            collection = find_reusable_ai_image_asset(
+                library_dir=root,
+                asset_kind=asset_kind,
+                prompt=prompt,
+                prompt_route=prompt_route,
+                background_route=background_route,
+                theme=theme,
+                grade=grade,
+                subject=subject,
+                page_title=page_title,
+                page_type=page_type,
+                role=role,
+                aspect_ratio=aspect_ratio,
+                keyword_client=keyword_client,
+                candidate_limit=candidate_limit,
+                min_keyword_score=min_keyword_score,
+                debug_path=debug_path,
+                debug_context=context,
+                reuse_session_state=reuse_session_state,
+                llm_review_enabled=llm_review_enabled,
+                reuse_debug_mode=reuse_debug_mode,
+                reuse_search_context=reuse_search_context,
+                _target_keyword_cache=target_keyword_cache,
+                _collect_candidates_only=True,
+                _library_search_order=order,
+            )
+            if isinstance(collection, dict) and collection.get("_reuse_candidate_collection"):
+                collections.append(collection)
+        combined_candidates: list[dict[str, Any]] = []
+        target: dict[str, Any] | None = None
+        threshold = _reuse_threshold_for_target(
+            _build_reuse_target_asset(
+                asset_kind=asset_kind,
+                prompt=prompt,
+                prompt_route=prompt_route,
+                background_route=background_route,
+                theme=theme,
+                grade=grade,
+                subject=subject,
+                page_title=page_title,
+                page_type=page_type,
+                role=role,
+                aspect_ratio=aspect_ratio,
+            ),
+            min_keyword_score,
+        )
+        for collection in collections:
+            if target is None:
+                target = _dict(collection.get("target"))
+                threshold = float(collection.get("threshold") or threshold)
+            combined_candidates.extend(collection.get("candidates") or [])
+        if target is None or not combined_candidates:
+            return None
+        combined_candidates.sort(key=_global_reuse_candidate_rank, reverse=True)
+        policy_outcome = _apply_reuse_policy_to_ranked_candidates(
+            target,
+            combined_candidates,
+            threshold=threshold,
+            embedding_status={},
+            df_ratio_lookup={},
+            keyword_client=keyword_client,
+            reuse_session_state=reuse_session_state,
+            llm_review_enabled=llm_review_enabled,
+        )
+        accepted_candidates = policy_outcome["accepted_candidates"]
+        best = accepted_candidates[0] if accepted_candidates else None
+        reason = "no_candidate_after_reuse_policy_or_occupancy"
+        if best:
+            accepted_by = _clean_text(best.get("accepted_by"))
+            policy_decision = _clean_text(_dict(best.get("reuse_policy")).get("decision"))
+            if accepted_by == "background_threshold":
+                reason = "reused_by_background_reuse_score"
+            elif accepted_by == "bm25_threshold":
+                reason = "reused_by_core_score"
+            elif policy_decision == "generic_support":
+                reason = "reused_by_policy_generic_support"
+            else:
+                reason = "reused_by_hybrid_retrieval_score"
+            best["multi_library_reuse_reason"] = reason
+            best["llm_reviews_invoked"] = policy_outcome["llm_reviews_used"]
+            best["llm_reviews_budget"] = policy_outcome["llm_review_budget"]
+
+        rejected_by_policy = policy_outcome["rejected_by_policy"]
+        rejected_by_occupancy = policy_outcome["rejected_by_occupancy"]
+        for collection in collections:
+            collection_candidates = collection.get("candidates") or []
+            collection_candidate_ids = {id(candidate) for candidate in collection_candidates}
+            record = _dict(collection.get("debug_record"))
+            collection_threshold = float(collection.get("threshold") or threshold)
+            record["llm_reviews_invoked"] = policy_outcome["llm_reviews_used"]
+            record["llm_reviews_budget"] = policy_outcome["llm_review_budget"]
+            record["policy_candidates"] = [
+                _reuse_debug_candidate_payload(candidate, threshold=collection_threshold)
+                for candidate in collection_candidates
+            ]
+            record["policy_rejected_candidates"] = [
+                _reuse_debug_candidate_payload(candidate, threshold=collection_threshold)
+                for candidate in rejected_by_policy
+                if id(candidate) in collection_candidate_ids
+            ]
+            record["occupancy_rejected_candidates"] = [
+                _reuse_debug_candidate_payload(candidate, threshold=collection_threshold)
+                for candidate in rejected_by_occupancy
+                if id(candidate) in collection_candidate_ids
+            ]
+            local_match = best if best is not None and id(best) in collection_candidate_ids else None
+            record["decision"] = {
+                "reused": local_match is not None,
+                "reason": reason if local_match else ("reused_from_other_library" if best else reason),
+                "asset_id": _dict(local_match.get("asset")).get("asset_id") if local_match else "",
+                "keyword_score": local_match.get("keyword_score") if local_match else None,
+                "threshold_used": collection_threshold,
+                "reuse_policy": local_match.get("reuse_policy") if local_match else None,
+                "reuse_audit": local_match.get("reuse_audit") if local_match else None,
+                "llm_reuse_review_performed": _match_llm_reuse_review_performed(local_match) if local_match else False,
+                "strict_reuse_occupancy": local_match.get("strict_reuse_occupancy") if local_match else None,
+            }
+            _append_reuse_debug_record(
+                debug_path,
+                _reuse_debug_record_for_mode(record, mode=reuse_debug_mode, match=local_match),
+            )
+
+        return best
+
+    library_root = library_roots[0]
+    loaded_library = _load_reuse_library_for_search(library_root, reuse_search_context)
+    db_path = loaded_library["db_path"]
+    index = loaded_library["index"]
+    match_index_path = loaded_library["match_index_path"]
+    assets = index.get("assets")
+    embedding_index = loaded_library["embedding_index"]
+    embedding_status = loaded_library["embedding_status"]
+    reuse_debug_mode = _normalize_reuse_debug_mode(reuse_debug_mode)
+
+    target = _build_reuse_target_asset(
+        asset_kind=asset_kind,
+        prompt=prompt,
+        prompt_route=prompt_route,
+        background_route=background_route,
+        theme=theme,
+        grade=grade,
+        subject=subject,
+        page_title=page_title,
+        page_type=page_type,
+        role=role,
+        aspect_ratio=aspect_ratio,
+    )
+
+    debug_record = _new_reuse_debug_record(
+        library_root=library_root,
+        db_path=db_path,
+        match_index_path=match_index_path,
+        asset_count=len(assets) if isinstance(assets, list) else 0,
+        candidate_limit=candidate_limit,
+        min_keyword_score=min_keyword_score,
+        context=debug_context,
+    )
+    debug_record["embedding_index"] = embedding_status
+    debug_record["llm_review_enabled"] = bool(llm_review_enabled)
+    debug_record["debug_mode"] = reuse_debug_mode
+    debug_record["threshold_used"] = _reuse_threshold_for_target(target, min_keyword_score)
+
+    def finish(reason: str, match: dict[str, Any] | None = None) -> dict[str, Any] | None:
+        debug_record["decision"] = {
+            "reused": match is not None,
+            "reason": reason,
+            "asset_id": _dict(match.get("asset")).get("asset_id") if match else "",
+            "keyword_score": match.get("keyword_score") if match else None,
+            "threshold_used": debug_record.get("threshold_used"),
+            "reuse_policy": match.get("reuse_policy") if match else None,
+            "reuse_audit": match.get("reuse_audit") if match else None,
+            "llm_reuse_review_performed": _match_llm_reuse_review_performed(match) if match else False,
+            "strict_reuse_occupancy": match.get("strict_reuse_occupancy") if match else None,
+        }
+        _append_reuse_debug_record(
+            debug_path,
+            _reuse_debug_record_for_mode(debug_record, mode=reuse_debug_mode, match=match),
+        )
+        return match
+
+    if not isinstance(assets, list) or not assets:
+        debug_record["target"] = _reuse_debug_asset_payload(target)
+        return finish("empty_asset_store")
+
+    target = _enrich_reuse_target_keywords_once(target, keyword_client, target_keyword_cache)
+    target = _normalize_asset_for_match(target, for_target=True) or target
+    routed = _route_match_index_for_target_cached(
+        library_root,
+        index,
+        match_index_path,
+        target,
+        reuse_search_context,
+    )
+    if routed is not None:
+        index, match_index_path, assets, route_group = routed
+        debug_record["match_index_path"] = str(match_index_path)
+        debug_record["asset_count"] = len(assets) if isinstance(assets, list) else 0
+        debug_record["reuse_group_route"] = {
+            "strict_reuse_group": route_group,
+            "match_index_path": str(match_index_path),
+            "asset_count": debug_record["asset_count"],
+        }
+        if not isinstance(assets, list) or not assets:
+            debug_record["target"] = _reuse_debug_asset_payload(target)
+            return finish("empty_routed_asset_store")
+    threshold = _reuse_threshold_for_target(target, min_keyword_score)
+    debug_record["threshold_used"] = threshold
+    debug_record["target"] = _reuse_debug_asset_payload(target)
+    debug_record["candidate_scores"] = _collect_reuse_candidate_debug(target, assets, library_root)
+
+    pool_limit = max(DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE, int(candidate_limit or DEFAULT_REUSE_CANDIDATE_LIMIT))
+    bm25_ranked_candidates = _rank_reuse_candidates(
+        target,
+        assets,
+        library_root=library_root,
+        limit=pool_limit,
+    )
+    embedding_ranked_candidates = _rank_embedding_candidates(
+        target,
+        assets,
+        library_root=library_root,
+        embedding_index=embedding_index,
+        limit=pool_limit,
+        query_embedding_cache=reuse_search_context.query_embedding_cache if reuse_search_context else None,
+    )
+    substring_ranked_candidates = _rank_substring_candidates(
+        target,
+        assets,
+        library_root=library_root,
+        limit=pool_limit,
+    )
+    ranked_candidates = _rank_hybrid_reuse_candidates(
+        target,
+        assets,
+        library_root=library_root,
+        bm25_ranked=bm25_ranked_candidates,
+        embedding_ranked=embedding_ranked_candidates,
+        substring_ranked=substring_ranked_candidates,
+        threshold=threshold,
+        limit=candidate_limit,
+    )
+    for candidate in ranked_candidates:
+        candidate["reuse_audit"] = _reuse_audit_payload(
+            target,
+            _dict(candidate.get("asset")),
+            debug_context,
+            _match_transform_policy(candidate),
+        )
+    debug_record["bm25_ranked_candidates"] = [
+        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in bm25_ranked_candidates
+    ]
+    debug_record["embedding_ranked_candidates"] = [
+        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in embedding_ranked_candidates
+    ]
+    debug_record["substring_ranked_candidates"] = [
+        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in substring_ranked_candidates
+    ]
+    debug_record["ranked_candidates"] = [
+        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in ranked_candidates
+    ]
+    candidates = [
+        candidate
+        for candidate in ranked_candidates
+        if _candidate_passes_reuse_threshold(candidate, threshold, target=target)
+    ]
+    debug_record["thresholded_candidates"] = [
+        _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in candidates
+    ]
+    if not candidates:
+        return finish("no_candidate_above_reuse_threshold")
+
+    df_ratio_lookup = _get_library_df_ratio(library_root, match_index_path, assets)
+    debug_record["df_ratio_library_size"] = sum(
+        1 for a in assets if isinstance(a, dict) and a.get("asset_kind") == "page_image"
+    )
+    debug_record["df_ratio_active"] = bool(df_ratio_lookup)
+
+    for candidate in candidates:
+        candidate["library_dir"] = str(library_root)
+        candidate["asset_root"] = str(library_root)
+        candidate["library_search_order"] = _library_search_order
+        candidate["_reuse_embedding_status"] = embedding_status
+        candidate["_reuse_df_ratio_lookup"] = df_ratio_lookup
+
+    if _collect_candidates_only:
+        debug_record["decision"] = {
+            "reused": False,
+            "reason": "candidate_collection_only",
+            "threshold_used": debug_record.get("threshold_used"),
+            "thresholded_candidate_count": len(candidates),
+        }
+        return {
+            "_reuse_candidate_collection": True,
+            "target": target,
+            "threshold": threshold,
+            "candidates": candidates,
+            "debug_record": debug_record,
+        }
+
+    policy_outcome = _apply_reuse_policy_to_ranked_candidates(
+        target,
+        candidates,
+        threshold=threshold,
+        embedding_status=embedding_status,
+        df_ratio_lookup=df_ratio_lookup,
+        keyword_client=keyword_client,
+        reuse_session_state=reuse_session_state,
+        llm_review_enabled=llm_review_enabled,
+    )
+    accepted_candidates = policy_outcome["accepted_candidates"]
+    rejected_by_policy = policy_outcome["rejected_by_policy"]
+    rejected_by_occupancy = policy_outcome["rejected_by_occupancy"]
+    debug_record["llm_reviews_invoked"] = policy_outcome["llm_reviews_used"]
+    debug_record["llm_reviews_budget"] = policy_outcome["llm_review_budget"]
 
     debug_record["policy_candidates"] = [
         _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in candidates
@@ -1177,6 +1717,7 @@ def record_reused_ai_image_asset(
         "image_path": rel_image_path,
         "reuse_asset_id": asset.get("asset_id"),
         "candidate_image_path": asset.get("image_path"),
+        "reuse_library_dir": _clean_text(match.get("library_dir") or match.get("asset_root")),
         "keyword_score": match.get("keyword_score"),
         "score_details": match.get("score_details", {}),
         "reuse_policy": match.get("reuse_policy", {}),
@@ -1298,6 +1839,7 @@ def evaluate_ai_image_reuse_matches_from_plan(
     from edupptx.models import PlanningDraft, iter_image_slot_keys
 
     plan_file = Path(plan_path).expanduser().resolve()
+    library_roots = _normalize_reuse_library_dirs(library_dir)
     data = json.loads(plan_file.read_text(encoding="utf-8"))
     draft = PlanningDraft.model_validate(data)
     plan_data = draft.model_dump()
@@ -1431,7 +1973,8 @@ def evaluate_ai_image_reuse_matches_from_plan(
     matched = [item for item in checks if item["matched"]]
     return {
         "schema_version": 1,
-        "asset_root": str(Path(library_dir).expanduser().resolve()),
+        "asset_root": str(library_roots[0]),
+        "asset_roots": [str(root) for root in library_roots],
         "generated_images": False,
         "updated_asset_store": False,
         "materialize_matches": materialize_matches,
@@ -1547,6 +2090,7 @@ def _plan_reuse_check_record(
         "matched": match is not None,
         "asset_id": asset.get("asset_id", ""),
         "candidate_image_path": _clean_text(match.get("candidate_image_path")) if match else "",
+        "reuse_library_dir": _clean_text(match.get("library_dir") or match.get("asset_root")) if match else "",
         "session_image_path": str(session_image_path or ""),
         "keyword_score": match.get("keyword_score") if match else None,
         "accepted_by": match.get("accepted_by") if match else "",
@@ -1907,6 +2451,7 @@ def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
         "background_route": _clean_background_route(asset.get("background_route")),
         "color_temperature": _clean_text(asset.get("color_temperature")),
         "theme": _clean_text(asset.get("theme")),
+        "unit_ref": _unit_ref_for_asset(asset),
         "topic_refs": _topic_refs_for_asset(asset),
         "core_keywords": _keyword_list(asset.get("core_keywords"), max_items=16),
         "semantic_aliases": _clean_semantic_aliases(asset.get("semantic_aliases")),
@@ -1988,6 +2533,7 @@ def enrich_ai_image_asset_db_keywords(
     *,
     batch_size: int = DEFAULT_KEYWORD_BATCH_SIZE,
     include_match_keywords: bool = False,
+    preserve_existing_context_fields: bool = False,
 ) -> dict[str, Any]:
     """Add LLM-built keyword fields to an already scanned asset DB.
 
@@ -2045,7 +2591,12 @@ def enrich_ai_image_asset_db_keywords(
             if payload is None:
                 warnings.append(f"keyword payload missing for {asset_id}")
                 continue
-            _apply_keyword_payload(asset, payload, include_match_keywords=include_match_keywords)
+            _apply_keyword_payload(
+                asset,
+                payload,
+                include_match_keywords=include_match_keywords,
+                preserve_existing_context_fields=preserve_existing_context_fields,
+            )
 
     return db
 
@@ -2212,9 +2763,14 @@ def _build_keyword_messages(
         "只返回严格 JSON，顶层必须是 assets 数组。"
         "每个条目必须使用其 asset_kind 对应的结构。"
         "page_image 结构：asset_id, context_summary, teaching_intent, "
-        "context_summary_keywords, asset_category, constraints, core_keywords, semantic_aliases. "
+        "context_summary_keywords, asset_category, constraints, core_keywords, semantic_aliases, "
+        "strict_reuse_group, strict_reuse_confidence, strict_reuse_reason. "
         "对于 page_image，constraints 和 core_keywords 都必须直接从 content_prompt 的可见内容中提取；"
         "constraints 用于复用安全过滤，core_keywords 用于 BM25、embedding 和 substring 召回。"
+        "strict_reuse_group 只能是 general_reuse 或 content_reuse："
+        "general_reuse 表示普通插画、场景、人物动作、装饰、空白卡片、通用教学活动；"
+        "content_reuse 表示图片里含有必须严格匹配的可见文本、拼音字词、课文段落、题目、公式、表格、数据、标注图、物理/数学题面等内容。"
+        "strict_reuse_confidence 为 0-1，strict_reuse_reason 用一句中文说明依据。"
         "每个 constraint 必须包含 kind, subtype, value, importance, confidence, evidence, reason 七个字段。"
         "subtype 是对 value 这个词的分类（不是对整张图的分类），决定 importance 的上限。"
         "importance 默认为 0；只有当 subtype 满足升级条件时才升到 1 或 2。"
@@ -2300,8 +2856,6 @@ def _strip_fences(text: str) -> str:
 def _keyword_payload_by_asset_id(response: dict[str, Any] | list[Any]) -> dict[str, dict[str, Any]]:
     if isinstance(response, dict):
         items = response.get("assets")
-        if items is None:
-            items = response.get("keywords")
     else:
         items = response
     if not isinstance(items, list):
@@ -2322,34 +2876,45 @@ def _apply_keyword_payload(
     payload: dict[str, Any],
     *,
     include_match_keywords: bool = False,
+    preserve_existing_context_fields: bool = False,
 ) -> None:
-    preserved_vlm_fields = _preserve_vlm_fields(asset)
+    preserved_review_fields = _preserve_review_fields(asset)
     context_exclusions = _context_exclusions(asset)
     grade_info = normalize_grade_info(asset.get("grade") or asset.get("grade_norm"), asset.get("theme"))
     normalized_prompt = _clean_text(payload.get("normalized_prompt")) or _default_normalized_prompt(asset)
-    color_temperature = _clean_text(
-        payload.get("color_temperature", payload.get("temperature", payload.get("hue_temperature")))
-    )
-    context_summary = _clean_text(payload.get("context_summary")) or _fallback_context_summary(asset)
-    teaching_intent = _clean_text(payload.get("teaching_intent")) or _default_teaching_intent(asset)
+    color_temperature = _clean_text(payload.get("color_temperature"))
+    if preserve_existing_context_fields:
+        context_summary = (
+            _clean_text(asset.get("context_summary"))
+            or _clean_text(payload.get("context_summary"))
+            or _fallback_context_summary(asset)
+        )
+        teaching_intent = (
+            _clean_text(asset.get("teaching_intent"))
+            or _clean_text(payload.get("teaching_intent"))
+            or _default_teaching_intent(asset)
+        )
+    else:
+        context_summary = _clean_text(payload.get("context_summary")) or _fallback_context_summary(asset)
+        teaching_intent = _clean_text(payload.get("teaching_intent")) or _default_teaching_intent(asset)
     if _is_background_asset(asset):
         raw_keywords = _dedupe_terms(
             [
                 *_keyword_list(
                     asset.get("core_keywords"),
                     max_items=12,
-                    exclude=context_exclusions | _GENERIC_CORE_NOISE,
+                    exclude=context_exclusions | _NOISE_TOKENS,
                 ),
                 *_keyword_list(
-                    payload.get("core_keywords", payload.get("prompt_keywords", payload.get("content_keywords"))),
+                    payload.get("core_keywords"),
                     max_items=12,
-                    exclude=context_exclusions | _GENERIC_CORE_NOISE,
+                    exclude=context_exclusions | _NOISE_TOKENS,
                 ),
             ]
         )
         core_keywords = _clean_recall_core_keywords(
             raw_keywords,
-            exclude=context_exclusions | _GENERIC_CORE_NOISE,
+            exclude=context_exclusions | _NOISE_TOKENS,
             max_items=12,
         )
         if not core_keywords:
@@ -2360,7 +2925,7 @@ def _apply_keyword_payload(
             ):
                 fallback = _fallback_core_keywords_from_text(
                     source,
-                    exclude=context_exclusions | _GENERIC_CORE_NOISE,
+                    exclude=context_exclusions | _NOISE_TOKENS,
                     max_items=12,
                 )
                 if fallback:
@@ -2380,12 +2945,12 @@ def _apply_keyword_payload(
                 *_keyword_list(
                     asset.get("context_summary_keywords"),
                     max_items=10,
-                    exclude=context_exclusions | _GENERIC_CORE_NOISE,
+                    exclude=context_exclusions | _NOISE_TOKENS,
                 ),
                 *_keyword_list(
                     payload.get("context_summary_keywords"),
                     max_items=10,
-                    exclude=context_exclusions | _GENERIC_CORE_NOISE,
+                    exclude=context_exclusions | _NOISE_TOKENS,
                 ),
             ]
         )[:10]
@@ -2399,6 +2964,7 @@ def _apply_keyword_payload(
             "subject": _clean_text(asset.get("subject")),
             "grade_norm": grade_info["grade_norm"] or _clean_text(asset.get("grade_norm")),
             "grade_band": grade_info["grade_band"] or _clean_text(asset.get("grade_band")),
+            "unit_ref": _unit_ref_for_asset(asset),
             "topic_refs": _topic_refs_for_asset(asset),
             "content_prompt": _asset_content_prompt(asset),
             "background_route": _match_background_route(asset.get("background_route")),
@@ -2410,7 +2976,7 @@ def _apply_keyword_payload(
             "semantic_aliases": semantic_aliases,
             "context_summary_keywords": context_summary_keywords,
         }
-        cleaned.update(preserved_vlm_fields)
+        cleaned.update(preserved_review_fields)
         asset.clear()
         asset.update(cleaned)
         if include_match_keywords:
@@ -2431,7 +2997,7 @@ def _apply_keyword_payload(
     core_keywords = _resolve_page_core_keywords(
         asset,
         payload,
-        exclude=context_exclusions | _GENERIC_CORE_NOISE,
+        exclude=context_exclusions | _NOISE_TOKENS,
         max_items=8,
     )
     if not core_keywords:
@@ -2440,17 +3006,20 @@ def _apply_keyword_payload(
         _clean_semantic_aliases(asset.get("semantic_aliases")),
         _clean_semantic_aliases(payload.get("semantic_aliases")),
     )
+    padding_capacity = normalize_padding_capacity(
+        asset.get("padding_capacity") or asset.get("transform_advice")
+    )
     context_summary_keywords = _dedupe_terms(
         [
             *_keyword_list(
                 asset.get("context_summary_keywords"),
                 max_items=10,
-                exclude=context_exclusions | _GENERIC_CORE_NOISE,
+                exclude=context_exclusions | _NOISE_TOKENS,
             ),
             *_keyword_list(
                 payload.get("context_summary_keywords"),
                 max_items=10,
-                exclude=context_exclusions | _GENERIC_CORE_NOISE,
+                exclude=context_exclusions | _NOISE_TOKENS,
             ),
         ]
     )[:10]
@@ -2465,8 +3034,10 @@ def _apply_keyword_payload(
         "subject": _clean_text(asset.get("subject")),
         "grade_norm": grade_info["grade_norm"] or _clean_text(asset.get("grade_norm")),
         "grade_band": grade_info["grade_band"] or _clean_text(asset.get("grade_band")),
+        "unit_ref": _unit_ref_for_asset(asset),
         "topic_refs": _topic_refs_for_asset(asset),
         "content_prompt": _asset_content_prompt(asset),
+        "detail_prompt": _clean_text(asset.get("detail_prompt")),
         "context_summary": context_summary,
         "teaching_intent": teaching_intent,
         "context_summary_keywords": context_summary_keywords,
@@ -2476,7 +3047,10 @@ def _apply_keyword_payload(
         "semantic_aliases": semantic_aliases,
         "duplicate_asset_ids": _dedupe_terms(_as_string_list(asset.get("duplicate_asset_ids"))),
     }
-    cleaned.update(preserved_vlm_fields)
+    if padding_capacity:
+        cleaned["padding_capacity"] = padding_capacity
+    cleaned.update(preserved_review_fields)
+    _apply_strict_reuse_group_from_payload(cleaned, payload)
     asset.clear()
     asset.update(cleaned)
     if include_match_keywords:
@@ -2586,6 +3160,10 @@ def _topic_refs_for_asset(asset: dict[str, Any]) -> list[str]:
     return extract_topic_refs(asset.get("theme"))
 
 
+def _unit_ref_for_asset(asset: dict[str, Any]) -> str:
+    return _clean_topic_ref(asset.get("unit_ref") or asset.get("unit"))
+
+
 def _clean_topic_ref(value: Any) -> str:
     text = _clean_text(value).strip("《》〈〉「」『』“”\"'()（）[]【】 ")
     if not text:
@@ -2625,6 +3203,7 @@ def _context_exclusions(asset: dict[str, Any]) -> set[str]:
         _clean_text(grade_info.get("grade_norm")),
         _clean_text(grade_info.get("grade_band")),
         subject,
+        _unit_ref_for_asset(asset),
     }
     if grade and subject:
         exclusions.add(f"{grade}{subject}")
@@ -2646,7 +3225,7 @@ def _clean_recall_core_keywords(
         _keyword_list(
             value,
             max_items=max_items * 4,
-            exclude=(exclude or set()) | _GENERIC_CORE_NOISE,
+            exclude=(exclude or set()) | _NOISE_TOKENS,
         )
     )
     results: list[str] = []
@@ -3067,6 +3646,7 @@ def _normalize_asset_for_match(
             "subject": _clean_text(item.get("subject")),
             "grade_norm": _clean_text(item.get("grade_norm")),
             "grade_band": _clean_text(item.get("grade_band")),
+            "unit_ref": _unit_ref_for_asset(item),
             "topic_refs": _topic_refs_for_asset(item),
             "content_prompt": _asset_content_prompt(item),
             "background_route": _match_background_route(item.get("background_route")),
@@ -3079,7 +3659,7 @@ def _normalize_asset_for_match(
             "context_summary_keywords": _keyword_list(
                 item.get("context_summary_keywords"),
                 max_items=10,
-                exclude=_context_exclusions(item) | _GENERIC_CORE_NOISE,
+                exclude=_context_exclusions(item) | _NOISE_TOKENS,
             ),
         }
     else:
@@ -3095,25 +3675,31 @@ def _normalize_asset_for_match(
             "subject": _clean_text(item.get("subject")),
             "grade_norm": _clean_text(item.get("grade_norm")),
             "grade_band": _clean_text(item.get("grade_band")),
+            "unit_ref": _unit_ref_for_asset(item),
             "topic_refs": _topic_refs_for_asset(item),
             "content_prompt": _asset_content_prompt(item),
+            "detail_prompt": _clean_text(item.get("detail_prompt")),
             "context_summary": _clean_text(item.get("context_summary")),
             "teaching_intent": _clean_text(item.get("teaching_intent")),
+            "padding_capacity": normalize_padding_capacity(
+                item.get("padding_capacity") or item.get("transform_advice")
+            ),
             "context_summary_keywords": _keyword_list(
                 item.get("context_summary_keywords"),
                 max_items=10,
-                exclude=_context_exclusions(item) | _GENERIC_CORE_NOISE,
+                exclude=_context_exclusions(item) | _NOISE_TOKENS,
             ),
             "asset_category": normalize_reuse_policy_fields(item)["asset_category"],
             "constraints": metadata.constraints,
             "core_keywords": _clean_recall_core_keywords(
                 item.get("core_keywords"),
-                exclude=_context_exclusions(item) | _GENERIC_CORE_NOISE,
+                exclude=_context_exclusions(item) | _NOISE_TOKENS,
                 max_items=8,
             ),
             "semantic_aliases": _clean_semantic_aliases(item.get("semantic_aliases")),
             "duplicate_asset_ids": metadata.duplicate_asset_ids,
         }
+    match_asset.update(_preserve_review_fields(item))
     if library_root is not None and image_path:
         image_file = _resolve_asset_image_path(library_root, image_path)
         if image_file is not None and image_file.exists():
@@ -3124,7 +3710,7 @@ def _normalize_asset_for_match(
 
 
 def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: bool = False) -> None:
-    preserved_vlm_fields = _preserve_vlm_fields(asset)
+    preserved_review_fields = _preserve_review_fields(asset)
     content_prompt = _asset_content_prompt(asset)
     normalized_prompt = _default_normalized_prompt(asset)
     context_summary = _clean_text(asset.get("context_summary")) or _fallback_context_summary(asset)
@@ -3137,7 +3723,7 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
         color_temperature = _clean_text(asset.get("color_temperature"))
         core_keywords = _clean_recall_core_keywords(
             asset.get("core_keywords"),
-            exclude=_context_exclusions(asset) | _GENERIC_CORE_NOISE,
+            exclude=_context_exclusions(asset) | _NOISE_TOKENS,
             max_items=12,
         )
         semantic_aliases = _clean_semantic_aliases(asset.get("semantic_aliases"))
@@ -3151,6 +3737,7 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
             "subject": _clean_text(asset.get("subject")),
             "grade_norm": grade_info["grade_norm"] or _clean_text(asset.get("grade_norm")),
             "grade_band": grade_info["grade_band"] or _clean_text(asset.get("grade_band")),
+            "unit_ref": _unit_ref_for_asset(asset),
             "topic_refs": _topic_refs_for_asset(asset),
             "content_prompt": content_prompt,
             "background_route": background_route,
@@ -3163,10 +3750,10 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
             "context_summary_keywords": _keyword_list(
                 asset.get("context_summary_keywords"),
                 max_items=10,
-                exclude=_context_exclusions(asset) | _GENERIC_CORE_NOISE,
+                exclude=_context_exclusions(asset) | _NOISE_TOKENS,
             ),
         }
-        cleaned.update(preserved_vlm_fields)
+        cleaned.update(preserved_review_fields)
         asset.clear()
         asset.update(cleaned)
         return
@@ -3174,10 +3761,13 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
     constraints = normalize_constraints(asset.get("constraints"))
     core_keywords = _clean_recall_core_keywords(
         asset.get("core_keywords"),
-        exclude=_context_exclusions(asset) | _GENERIC_CORE_NOISE,
+        exclude=_context_exclusions(asset) | _NOISE_TOKENS,
         max_items=8,
     )
     semantic_aliases = _clean_semantic_aliases(asset.get("semantic_aliases"))
+    padding_capacity = normalize_padding_capacity(
+        asset.get("padding_capacity") or asset.get("transform_advice")
+    )
     policy = normalize_reuse_policy_fields(
         {
             "asset_kind": "page_image",
@@ -3196,14 +3786,16 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
         "subject": _clean_text(asset.get("subject")),
         "grade_norm": grade_info["grade_norm"] or _clean_text(asset.get("grade_norm")),
         "grade_band": grade_info["grade_band"] or _clean_text(asset.get("grade_band")),
+        "unit_ref": _unit_ref_for_asset(asset),
         "topic_refs": _topic_refs_for_asset(asset),
         "content_prompt": content_prompt,
+        "detail_prompt": _clean_text(asset.get("detail_prompt")),
         "context_summary": context_summary,
         "teaching_intent": teaching_intent,
         "context_summary_keywords": _keyword_list(
             asset.get("context_summary_keywords"),
             max_items=10,
-            exclude=_context_exclusions(asset) | _GENERIC_CORE_NOISE,
+            exclude=_context_exclusions(asset) | _NOISE_TOKENS,
         ),
         "asset_category": policy["asset_category"],
         "constraints": constraints,
@@ -3211,7 +3803,9 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
         "semantic_aliases": semantic_aliases,
         "duplicate_asset_ids": _dedupe_terms(_as_string_list(asset.get("duplicate_asset_ids"))),
     }
-    cleaned.update(preserved_vlm_fields)
+    if padding_capacity:
+        cleaned["padding_capacity"] = padding_capacity
+    cleaned.update(preserved_review_fields)
     asset.clear()
     asset.update(cleaned)
 
@@ -3236,7 +3830,7 @@ def _is_generic_core_term(term: str) -> bool:
     normalized = _clean_keyword(term).casefold().replace(" ", "")
     if not normalized:
         return True
-    return normalized in {item.casefold().replace(" ", "") for item in _CORE_GENERIC_EXACT}
+    return normalized in {item.casefold().replace(" ", "") for item in _NOISE_TOKENS}
 
 
 def _looks_like_style_or_usage_term(term: str) -> bool:
@@ -3692,6 +4286,7 @@ def _rank_embedding_candidates(
     library_root: Path,
     embedding_index: dict[str, Any],
     limit: int,
+    query_embedding_cache: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     vectors = embedding_index.get("vectors")
     asset_ids = embedding_index.get("asset_ids")
@@ -3701,8 +4296,16 @@ def _rank_embedding_candidates(
     try:
         import numpy as np
 
-        query_vectors = _encode_embedding_texts([_target_embedding_text(target)], query=True)
-        query_vector = query_vectors[0]
+        def query_vector_for(text: str, purpose: str):
+            cache_key = f"{_embedding_model_name()}:{purpose}:{text}"
+            if query_embedding_cache is not None and cache_key in query_embedding_cache:
+                return query_embedding_cache[cache_key]
+            encoded = _encode_embedding_texts([text], query=True)[0]
+            if query_embedding_cache is not None:
+                query_embedding_cache[cache_key] = encoded
+            return encoded
+
+        query_vector = query_vector_for(_target_embedding_text(target), "target")
         scores = np.asarray(vectors).dot(query_vector)
         background_color_bias_scores_by_id: dict[str, float] = {}
         color_bias_vectors = embedding_index.get("background_color_bias_vectors")
@@ -3715,7 +4318,7 @@ def _rank_embedding_candidates(
             and isinstance(color_bias_asset_ids, list)
             and color_bias_asset_ids
         ):
-            color_query_vector = _encode_embedding_texts([target_color_bias], query=True)[0]
+            color_query_vector = query_vector_for(target_color_bias, "background_color_bias")
             color_scores = np.asarray(color_bias_vectors).dot(color_query_vector)
             background_color_bias_scores_by_id = {
                 _clean_text(asset_id): float(color_scores[idx])
@@ -3732,7 +4335,7 @@ def _rank_embedding_candidates(
             and isinstance(context_asset_ids, list)
             and context_asset_ids
         ):
-            context_query_vector = _encode_embedding_texts([target_context], query=True)[0]
+            context_query_vector = query_vector_for(target_context, "context")
             context_scores = np.asarray(context_vectors).dot(context_query_vector)
             context_scores_by_id = {
                 _clean_text(asset_id): float(context_scores[idx])
@@ -3950,10 +4553,6 @@ def _rank_hybrid_reuse_candidates(
     return results[: max(1, int(limit or DEFAULT_REUSE_CANDIDATE_LIMIT))]
 
 
-def _score_reuse_candidate(target: dict[str, Any], candidate: dict[str, Any]) -> float:
-    return float(_score_reuse_candidate_details(target, candidate).get("score", 0.0))
-
-
 def _score_reuse_candidate_details(
     target: dict[str, Any],
     candidate: dict[str, Any],
@@ -3981,7 +4580,6 @@ def _score_reuse_candidate_details(
     route_details = _route_score_details(target, candidate)
     route_score = float(route_details.get("route_score") or 0.0)
     route_hits = route_details.get("route_hits") or []
-    style_score, style_hits = 0.0, []
     context_details = _context_score_details(
         target,
         candidate,
@@ -4020,10 +4618,7 @@ def _score_reuse_candidate_details(
             "core_score": core_score,
             "core_hits": core_hits,
             "missing_core_groups": missing_core_groups,
-            "scope_score": 0.0,
             "aspect_score": aspect_score,
-            "style_score": style_score,
-            "style_hits": style_hits,
             "context_score": context_score,
             "context_hits": context_hits,
             "transform_policy": transform_policy,
@@ -4046,10 +4641,7 @@ def _score_reuse_candidate_details(
         "core_score": core_score,
         "core_hits": core_hits,
         "missing_core_groups": missing_core_groups,
-        "scope_score": 0.0,
         "aspect_score": aspect_score,
-        "style_score": style_score,
-        "style_hits": style_hits,
         "context_score": context_score,
         "context_hits": context_hits,
         "transform_policy": transform_policy,
@@ -4151,10 +4743,7 @@ def _score_background_reuse_candidate_details(
         "core_score": prompt_bm25_score,
         "core_hits": prompt_bm25_hits,
         "missing_core_groups": [],
-        "scope_score": 0.0,
         "aspect_score": 0.0,
-        "style_score": 0.0,
-        "style_hits": [],
         "context_score": 0.0,
         "context_hits": [],
         "transform_policy": transform_policy,
@@ -4369,15 +4958,12 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
         "core_score": round(float(details.get("core_score") or 0.0), 4),
         "core_hits": details.get("core_hits") or [],
         "missing_core_groups": details.get("missing_core_groups") or [],
-        "scope_score": round(float(details.get("scope_score") or 0.0), 4),
         "aspect_score": round(float(details.get("aspect_score") or 0.0), 4),
         "transform_policy": details.get("transform_policy") or {},
         "raw_score_before_transform_penalty": round(
             float(details.get("raw_score_before_transform_penalty") or 0.0),
             4,
         ),
-        "style_score": round(float(details.get("style_score") or 0.0), 4),
-        "style_hits": details.get("style_hits") or [],
         "context_score": round(float(details.get("context_score") or 0.0), 4),
         "context_hits": details.get("context_hits") or [],
         "context_bm25_score": round(float(details.get("context_bm25_score") or 0.0), 4),
@@ -4426,10 +5012,6 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _asset_context_text(asset: dict[str, Any]) -> str:
-    return _clean_text(asset.get("context_summary"))
-
-
 def _target_context_summary_terms(asset: dict[str, Any]) -> list[str]:
     return _dedupe_terms(
         [
@@ -4437,10 +5019,6 @@ def _target_context_summary_terms(asset: dict[str, Any]) -> list[str]:
             *_topic_refs_for_asset(asset),
         ]
     )[:12]
-
-
-def _candidate_context_summary_terms(asset: dict[str, Any]) -> list[str]:
-    return [_clean_text(asset.get("context_summary"))]
 
 
 def _target_context_embedding_text(asset: dict[str, Any]) -> str:
@@ -4575,6 +5153,40 @@ def _transform_rejects_candidate(candidate: dict[str, Any]) -> bool:
     return _clean_text(transform_policy.get("decision")) == "reject"
 
 
+# Role / page_type values that mark a page_image slot as serving an
+# ambience purpose rather than precise content. Used by
+# ``_target_is_background_like`` instead of substring matching against
+# arbitrary role strings (which previously also matched "background_card",
+# "background_decoration", etc., and missed Chinese forms like "背景图").
+_BACKGROUND_LIKE_ROLE_TOKENS = frozenset({
+    "background",
+    "background_1",
+    "background_2",
+    "backdrop",
+    "ambient",
+    "atmosphere",
+    "背景",
+    "背景图",
+    "背景插画",
+    "氛围",
+})
+
+
+def _target_is_background_like(target: dict[str, Any]) -> bool:
+    """True iff the target's role / page_type declares it as a backdrop slot.
+
+    Single helper so the "background-like" classification has one place to
+    maintain. Matches exact token equality (after casefold), not substring
+    containment, to avoid false-positives like "background_decoration".
+    """
+
+    for field in ("role", "page_type"):
+        value = _clean_text(_dict(target).get(field)).casefold()
+        if value and value in _BACKGROUND_LIKE_ROLE_TOKENS:
+            return True
+    return False
+
+
 def _reuse_gate_profile(target: dict[str, Any] | None) -> str:
     if target is None:
         return "medium"
@@ -4588,17 +5200,11 @@ def _reuse_gate_profile(target: dict[str, Any] | None) -> str:
         and int(item.get("importance") or 0) >= 2
     }
     has_strict_knowledge = bool(constraint_kinds & {"text", "math", "physics"})
-    # Background-like page_image slot: when the slot's role or page_type
-    # declares it serves as backdrop, treat it like a background asset for
-    # LLM-review purposes — its function is ambience, not precise content,
-    # so the 二次评审 should match background expectations rather than the
-    # stricter page_image expectations. Guarded by the absence of strict
-    # knowledge (text/math/physics) constraints so a "background_1 with
-    # 写字" slot still keeps strict review.
-    role = _clean_text(_dict(target).get("role")).casefold()
-    page_type = _clean_text(_dict(target).get("page_type")).casefold()
-    background_like = "background" in role or "background" in page_type
-    if background_like and not has_strict_knowledge:
+    # Background-like page_image slot: declared via role/page_type by
+    # ``_target_is_background_like``. Treated as ambience (loose) rather
+    # than precise content for LLM-review purposes. Guarded by absence of
+    # strict knowledge so a "background_1 with 写字" slot keeps strict.
+    if _target_is_background_like(_dict(target)) and not has_strict_knowledge:
         return "loose"
 
     level = _clean_text(policy.get("reuse_level")) or "medium"
@@ -4657,6 +5263,22 @@ def _reuse_gate_reason(
     return ""
 
 
+# Profile-default LLM accept thresholds. Per-reason carve-outs are carried
+# on policy_result.llm_accept_threshold_override (see reuse_policy._result);
+# the dispatcher prefers that override over the profile default. Re-tune
+# values here when calibration data justifies a profile-wide shift.
+_LLM_PROFILE_ACCEPT_THRESHOLDS = {
+    # Loose covers decorative tools, learning behaviors, and background-like
+    # page_image slots. None of these carry exact-content gating, so the LLM
+    # review only needs to confirm visual plausibility — keep the bar above
+    # noise without rejecting near-correct ambience images.
+    "loose": 0.55,
+    "medium": 0.64,
+    "strict_literary": 0.64,
+    "strict_knowledge": 0.72,
+}
+
+
 def _reuse_review_accept_score_threshold(
     target: dict[str, Any],
     candidate: dict[str, Any] | None = None,
@@ -4666,28 +5288,14 @@ def _reuse_review_accept_score_threshold(
     transform_policy = _dict(policy_result).get("transform_policy")
     if isinstance(transform_policy, dict) and _clean_text(transform_policy.get("decision")) == "reject":
         return 1.0
-    # When the policy stage has confirmed that every imp>=2 target constraint
-    # is exact-covered by candidate metadata but kept LLM review on text-bound
-    # kinds for visual confirmation, the LLM only needs to verify the glyph
-    # is visible — not judge prose suitability. Drop the bar accordingly.
-    reason = _clean_text(_dict(policy_result).get("reason"))
-    if reason == "strict_text_exact_covered_review":
-        return 0.58
+    override = _dict(policy_result).get("llm_accept_threshold_override")
+    if override is not None:
+        try:
+            return float(override)
+        except (TypeError, ValueError):
+            pass
     profile = _reuse_gate_profile(target)
-    if profile == "loose":
-        # Loose covers decorative tools, learning behaviors, and
-        # background-like page_image slots (see _reuse_gate_profile). None of
-        # these carry exact-content gating, so the LLM review only needs to
-        # confirm visual plausibility — 0.55 keeps the bar above noise without
-        # rejecting near-correct ambience images.
-        return 0.55
-    if profile == "medium":
-        return 0.64
-    if profile == "strict_literary":
-        return 0.64
-    if profile == "strict_knowledge":
-        return 0.72
-    return REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD
+    return _LLM_PROFILE_ACCEPT_THRESHOLDS.get(profile, REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD)
 
 
 def _reuse_acceptance_reason(
@@ -4924,8 +5532,23 @@ def _read_existing_db(path: Path) -> dict[str, Any]:
     return data if isinstance(data, dict) else {"warnings": [f"existing library DB is not an object: {path}"]}
 
 
+def _read_existing_asset_index(library_root: Path, index_path: Path) -> tuple[dict[str, Any], Path]:
+    split = read_ai_image_split_match_index(library_root)
+    if split is not None:
+        return split
+    return _read_existing_db(index_path), index_path
+
+
 def _read_match_index_or_build(library_root: Path, db: dict[str, Any]) -> tuple[dict[str, Any], Path]:
     index_path = library_root / DEFAULT_MATCH_INDEX_FILENAME
+    split_index = read_ai_image_split_match_index(library_root)
+    if split_index is not None:
+        index, split_dir = split_index
+        embedding_report = _ensure_ai_image_embedding_index(index, library_root)
+        if embedding_report:
+            index["embedding_index"] = embedding_report
+        return index, split_dir
+
     index = _read_existing_db(index_path)
     index_assets = index.get("assets")
     db_assets = db.get("assets")
@@ -4935,7 +5558,10 @@ def _read_match_index_or_build(library_root: Path, db: dict[str, Any]) -> tuple[
             embedding_report = _ensure_ai_image_embedding_index(index, library_root)
             if embedding_report:
                 index["embedding_index"] = embedding_report
-            return index, index_path
+            split_dir = write_ai_image_split_match_indexes(index, library_root)
+            if index_path.exists():
+                index_path.unlink()
+            return index, split_dir
 
     if isinstance(db_assets, list):
         index = build_ai_image_match_index(db, library_root=library_root)
@@ -4943,12 +5569,35 @@ def _read_match_index_or_build(library_root: Path, db: dict[str, Any]) -> tuple[
             embedding_report = write_ai_image_embedding_index(index, library_root)
             if embedding_report:
                 index["embedding_index"] = embedding_report
-            index_path.write_text(json.dumps(index, ensure_ascii=False, indent=2), encoding="utf-8")
+            split_dir = write_ai_image_split_match_indexes(index, library_root)
+            if index_path.exists():
+                index_path.unlink()
         except Exception:
             pass
-        return index, index_path
+        return index, library_root / STRICT_REUSE_INDEX_DIRNAME
 
-    return {"schema_version": MATCH_INDEX_SCHEMA_VERSION, "asset_count": 0, "assets": []}, index_path
+    return {"schema_version": MATCH_INDEX_SCHEMA_VERSION, "asset_count": 0, "assets": []}, library_root / STRICT_REUSE_INDEX_DIRNAME
+
+
+def _route_match_index_for_target(
+    library_root: Path,
+    index: dict[str, Any],
+    match_index_path: Path,
+    target: dict[str, Any],
+) -> tuple[dict[str, Any], Path, list[Any], str] | None:
+    if not _clean_text(target.get("asset_kind")):
+        return None
+    route_group = _normalize_binary_reuse_group(target.get("strict_reuse_group"), default=_GENERAL_REUSE_GROUP)
+    split_path = library_root / STRICT_REUSE_INDEX_DIRNAME / f"{route_group}.json"
+    if not split_path.exists():
+        return None
+    split_index = _read_existing_db(split_path)
+    split_assets = split_index.get("assets")
+    if not isinstance(split_assets, list):
+        return None
+    split_index = dict(split_index)
+    split_index.setdefault("source_index_dir", str(match_index_path.parent if match_index_path.is_file() else match_index_path))
+    return split_index, split_path, split_assets, route_group
 
 
 def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: Path) -> dict[str, Any]:
@@ -5211,7 +5860,7 @@ def _merge_asset_library_db(
     for asset in incoming.get("assets", []):
         if isinstance(asset, dict):
             asset_id = _clean_text(asset.get("asset_id"))
-            if asset_id:
+            if asset_id and asset_id not in by_id:
                 by_id[asset_id] = asset
 
     assets = []
@@ -5256,6 +5905,20 @@ def _merge_asset_library_db(
     return merged
 
 
+def _asset_ids(db: dict[str, Any]) -> set[str]:
+    ids: set[str] = set()
+    assets = db.get("assets")
+    if not isinstance(assets, list):
+        return ids
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        asset_id = _clean_text(asset.get("asset_id"))
+        if asset_id:
+            ids.add(asset_id)
+    return ids
+
+
 def _resolve_asset_image_path(root: Path, image_path: Any) -> Path | None:
     text = _clean_text(image_path)
     if not text:
@@ -5271,8 +5934,39 @@ def _as_string_list(value: Any) -> list[str]:
     return [text] if text else []
 
 
-def _preserve_vlm_fields(asset: dict[str, Any]) -> dict[str, Any]:
-    return {key: deepcopy(asset[key]) for key in _VLM_RICH_ASSET_FIELDS if key in asset}
+def _preserve_review_fields(asset: dict[str, Any]) -> dict[str, Any]:
+    return {key: deepcopy(asset[key]) for key in _METADATA_PASSTHROUGH_FIELDS if key in asset}
+
+
+def _apply_strict_reuse_group_from_payload(asset: dict[str, Any], payload: dict[str, Any]) -> None:
+    existing_group = _normalize_binary_reuse_group(asset.get("strict_reuse_group"), default="")
+    payload_group = _normalize_binary_reuse_group(payload.get("strict_reuse_group"), default="")
+    group = existing_group or payload_group
+    if not group:
+        return
+
+    asset["strict_reuse_group"] = group
+    confidence = _optional_float(asset.get("strict_reuse_confidence"))
+    if confidence is None:
+        confidence = _optional_float(payload.get("strict_reuse_confidence"))
+    if confidence is None:
+        confidence = 0.8 if payload_group else 0.9
+    asset["strict_reuse_confidence"] = round(max(0.0, min(1.0, confidence)), 4)
+
+    reason = _clean_text(asset.get("strict_reuse_reason")) or _clean_text(payload.get("strict_reuse_reason"))
+    asset["strict_reuse_reason"] = reason or "LLM reuse group classification"
+    signal = "llm_reuse_group" if payload_group and not existing_group else "upstream_reuse_group"
+    signals = _dedupe_terms([*_as_string_list(asset.get("strict_reuse_signals")), signal])
+    asset["strict_reuse_signals"] = signals
+
+
+def _normalize_binary_reuse_group(value: Any, *, default: str = _GENERAL_REUSE_GROUP) -> str:
+    text = _clean_text(value).casefold()
+    if text in _CONTENT_REUSE_GROUP_ALIASES:
+        return _CONTENT_REUSE_GROUP
+    if text in _GENERAL_REUSE_GROUP_ALIASES:
+        return _GENERAL_REUSE_GROUP if default else ""
+    return default
 
 
 def _dedupe_warnings(values: list[str]) -> list[str]:
@@ -5650,7 +6344,12 @@ def _make_asset(
             "context_summary_keywords": [],
         }
 
-    return {
+    # Runtime registration: as soon as a generated page_image lands on disk,
+    # snapshot its edge pixels into padding_capacity. Doing this here decouples
+    # the field from the VLM step — reuse matching that happens before VLM has
+    # run (e.g. same-session matching, or VLM disabled) still sees a real value.
+    padding_capacity = normalize_padding_capacity(None, image_path=image_path)
+    page_image_asset: dict[str, Any] = {
         "asset_id": asset_id,
         "asset_kind": "page_image",
         "image_path": rel_image_path,
@@ -5672,6 +6371,9 @@ def _make_asset(
         "semantic_aliases": {},
         "duplicate_asset_ids": [],
     }
+    if padding_capacity:
+        page_image_asset["padding_capacity"] = padding_capacity
+    return page_image_asset
 
 
 def _relative_path(path: Path, root: Path) -> str:

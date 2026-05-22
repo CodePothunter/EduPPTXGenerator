@@ -1684,6 +1684,198 @@ def test_aspect_transform_allows_background_blur_pad():
     assert result["transform_penalty"] == 0.06
 
 
+# ----------------- candidate.padding_capacity gates -----------------
+
+
+def _aspect_target(reuse_level: str = "medium", role: str = "") -> dict:
+    """Build a page_image target. ``medium`` w/o constraints exercises the
+    unknown-reuse branch; pass ``reuse_level='strict'`` or set ``role`` to
+    hit the role-specific or strict branches.
+    """
+    target: dict = {
+        "asset_kind": "page_image",
+        "aspect_ratio": "16:9",
+        "asset_category": "concept_scene",
+        "constraints": [],
+    }
+    if role:
+        target["role"] = role
+    if reuse_level == "strict":
+        target["constraints"] = [
+            {"kind": "entity", "value": "鲁迅", "importance": 2, "subtype": "named_individual"}
+        ]
+    return target
+
+
+def _aspect_candidate(aspect: str, capacity: str = "") -> dict:
+    cand: dict = {"asset_kind": "page_image", "aspect_ratio": aspect}
+    if capacity:
+        cand["padding_capacity"] = capacity
+    return cand
+
+
+def test_aspect_transform_high_capacity_widens_unknown_medium_pad_ceiling():
+    """4:3 → 16:9 has loss≈0.4375 — without capacity info this is rejected.
+    With padding_capacity=high (transparent edges), the medium-pad ceiling
+    widens to 0.25×1.3 = 0.325 — still rejected at 0.4375. But 16:9 → 5:4
+    (loss≈0.30) was rejected under the old rule, and is now padded."""
+
+    # 16:9 → 5:4: loss = 1 - (5/4)/(16/9) = 1 - 0.703 = 0.297
+    cand = _aspect_candidate("5:4", capacity="high")
+    result = evaluate_aspect_transform(_aspect_target(reuse_level="medium"), cand)
+
+    assert result["decision"] == "penalize"
+    assert result["mode"] == "contain_pad"
+    assert result["reason"] == "unknown_medium_pad"
+    assert result["padding_capacity"] == "high"
+
+
+def test_aspect_transform_low_capacity_tightens_unknown_medium_pad_ceiling():
+    """4:3 → 1:1 has loss=0.25 — under the old rule this is medium-pad
+    accepted. With padding_capacity=low (colored painted-in edges), the
+    medium-pad ceiling tightens to 0.25×0.7 = 0.175, so 0.25 is now
+    rejected."""
+
+    cand = _aspect_candidate("1:1", capacity="low")
+    target = _aspect_target(reuse_level="medium")
+    target["aspect_ratio"] = "4:3"
+    result = evaluate_aspect_transform(target, cand)
+
+    assert result["decision"] == "reject"
+    assert result["reason"] == "unknown_aspect_mismatch_too_large"
+
+
+def test_aspect_transform_low_capacity_swaps_contain_pad_for_cover_crop():
+    """Low-capacity images get cover_crop instead of contain_pad in the
+    light-pad zone, since a hard seam looks worse than a centered crop."""
+
+    # 4:3 → 5:4: loss = 1 - (5/4)/(4/3) = 1 - 0.9375 = 0.0625
+    cand = _aspect_candidate("5:4", capacity="low")
+    target = _aspect_target(reuse_level="medium")
+    target["aspect_ratio"] = "4:3"
+    result = evaluate_aspect_transform(target, cand)
+
+    assert result["decision"] == "penalize"
+    assert result["mode"] == "cover_crop"
+    assert result["reason"] == "unknown_light_pad"
+
+
+def test_aspect_transform_high_capacity_drops_penalty():
+    """High-capacity images get half the transform penalty since pad is
+    invisible."""
+
+    # 4:3 → 5:4: loss=0.0625, falls into unknown_light_pad (base penalty 0.05)
+    cand_default = _aspect_candidate("5:4")
+    cand_high = _aspect_candidate("5:4", capacity="high")
+    target = _aspect_target(reuse_level="medium")
+    target["aspect_ratio"] = "4:3"
+
+    default_result = evaluate_aspect_transform(target, cand_default)
+    high_result = evaluate_aspect_transform(target, cand_high)
+
+    assert default_result["transform_penalty"] == 0.05
+    assert high_result["transform_penalty"] == round(0.05 * 0.5, 4)
+
+
+def test_aspect_transform_strict_high_capacity_extends_medium_pad():
+    """Strict + named_individual would reject 4:3 → 1:1 (loss=0.25 is
+    exactly the legacy ceiling, then > ceiling for any further mismatch).
+    With high capacity, the strict medium-pad ceiling becomes 0.325, so a
+    16:9 → 4:3 case (loss=0.25) stays in pad territory even when there's
+    a tighter strict bar."""
+
+    # 16:9 → 5:4: loss=0.297. Without capacity (factor=1.0), 0.297 > 0.25 → reject.
+    # With high (factor=1.3), 0.297 <= 0.325 → penalize contain_pad.
+    cand = _aspect_candidate("5:4", capacity="high")
+    result = evaluate_aspect_transform(_aspect_target(reuse_level="strict"), cand)
+
+    assert result["decision"] == "penalize"
+    assert result["mode"] == "contain_pad"
+    assert result["reason"] == "strict_content_preserving_medium_pad"
+
+    cand_default = _aspect_candidate("5:4")
+    default_result = evaluate_aspect_transform(_aspect_target(reuse_level="strict"), cand_default)
+    assert default_result["decision"] == "reject"
+
+
+def test_aspect_transform_unknown_capacity_keeps_legacy_behavior():
+    """Missing padding_capacity (e.g. an asset registered before the pixel
+    snapshot, or one where edge analysis returned nothing) must not change
+    any current outcome — factor=1.0, mode unchanged, penalty unchanged."""
+
+    # 4:3 → 1:1: loss=0.25, medium reuse with no constraints → unknown branch.
+    cand = _aspect_candidate("1:1")
+    target = _aspect_target(reuse_level="medium")
+    target["aspect_ratio"] = "4:3"
+    result = evaluate_aspect_transform(target, cand)
+
+    assert result["decision"] == "penalize"
+    assert result["mode"] == "contain_pad"
+    assert result["transform_penalty"] == 0.10
+    assert "padding_capacity" not in result
+
+
+def test_aspect_transform_reads_legacy_nested_transform_advice():
+    """Back-compat: a candidate carrying the old nested
+    ``transform_advice.padding_capacity`` shape (un-migrated library record)
+    must still apply the capacity factor. This lets the reuse policy keep
+    working against library JSON that hasn't been rewritten yet."""
+
+    cand = {
+        "asset_kind": "page_image",
+        "aspect_ratio": "5:4",
+        "transform_advice": {"padding_capacity": "high"},
+    }
+    target = _aspect_target(reuse_level="medium")
+    target["aspect_ratio"] = "16:9"
+    result = evaluate_aspect_transform(target, cand)
+
+    # 16:9 → 5:4, loss=0.297. With high (factor=1.3), 0.297 <= 0.325 → pad.
+    assert result["decision"] == "penalize"
+    assert result["mode"] == "contain_pad"
+    assert result["padding_capacity"] == "high"
+
+
+def test_aspect_transform_background_ignores_padding_capacity():
+    """Backgrounds are full-bleed by design — padding_capacity on a
+    background asset is meaningless and must not modulate thresholds."""
+
+    bg_cand = {
+        "asset_kind": "background",
+        "aspect_ratio": "4:3",
+        "padding_capacity": "low",
+    }
+    result = evaluate_aspect_transform(
+        {"asset_kind": "background", "aspect_ratio": "16:9"},
+        bg_cand,
+    )
+
+    assert result["decision"] == "penalize"
+    assert result["mode"] == "blur_pad"
+    assert result["transform_penalty"] == 0.06
+    assert "padding_capacity" not in result
+
+
+def test_aspect_transform_hero_low_capacity_rejects_what_high_would_pad():
+    """Hero with loss=0.20: without capacity → penalize/contain_pad.
+    With low → still in `loss > 0.12 * 0.7 = 0.084` AND `loss <= 0.25 * 0.7 = 0.175`?
+    Actually 0.20 > 0.175 so falls past → reject. With high → 0.20 <= 0.325
+    so penalize. This test pins both directions in one branch."""
+
+    # 4:3 → 1:1: loss=0.25.
+    target = _aspect_target(reuse_level="medium", role="hero")
+    target["aspect_ratio"] = "4:3"
+
+    low = evaluate_aspect_transform(target, _aspect_candidate("1:1", capacity="low"))
+    high = evaluate_aspect_transform(target, _aspect_candidate("1:1", capacity="high"))
+
+    # loss=0.25 > 0.25*0.7=0.175 → reject for low.
+    assert low["decision"] == "reject"
+    # loss=0.25 > 0.12*1.3=0.156 AND <= 0.25*1.3=0.325 → penalize for high.
+    assert high["decision"] == "penalize"
+    assert high["mode"] == "contain_pad"
+
+
 # ------------------------- P0-B' precision signal -------------------------
 
 
@@ -2139,4 +2331,248 @@ def test_evaluate_reuse_filter_downgrades_on_extra_teaching_content():
     assert result["reason"] == "candidate_extra_teaching_content"
     assert any(item.get("value") == "枚" for item in result["review_items"])
 
+
+# ---- forced-loose target-strong-undercoverage (建议 1) ----
+
+
+def test_forced_loose_target_teaching_carrier_missing_goes_to_llm_review():
+    """Regression for "标自然段序号" vs "圈词语": when a learning_behavior
+    target carries an imp=2 teaching_fact / teaching_carrier that the
+    candidate does not cover, the forced-loose short-circuit must hand the
+    decision to the LLM instead of silently full_match-ing."""
+
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "loose",
+        "asset_category": "learning_behavior",
+        "constraints": [
+            {"kind": "action", "subtype": "teaching_fact",
+             "value": "标自然段序号", "importance": 2},
+        ],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "loose",
+        "asset_category": "learning_behavior",
+        "constraints": [
+            {"kind": "action", "subtype": "teaching_fact",
+             "value": "圈词语", "importance": 2},
+        ],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.7, "embedding_score": 0.7, "precision_signal": True},
+        threshold=0.5,
+    )
+
+    assert result["decision"] == "llm_review"
+    assert result["reason"] == "forced_loose_target_teaching_missing"
+    assert any(item.get("value") == "标自然段序号" for item in result["review_items"])
+
+
+def test_forced_loose_target_teaching_carrier_covered_still_full_match():
+    """Companion to the above: when the candidate DOES cover the target's
+    imp=2 teaching_carrier (田字格), forced-loose should still accept via
+    decorative_loose_match — the new guard must not over-reject."""
+
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "loose",
+        "asset_category": "learning_behavior",
+        "constraints": [
+            {"kind": "object", "subtype": "teaching_carrier",
+             "value": "田字格", "importance": 2},
+        ],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "loose",
+        "asset_category": "learning_behavior",
+        "constraints": [
+            {"kind": "object", "subtype": "teaching_carrier",
+             "value": "田字格", "importance": 2},
+        ],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.7, "embedding_score": 0.7, "precision_signal": True},
+        threshold=0.5,
+    )
+
+    assert result["decision"] == "full_match"
+    # Either reason is acceptable — when the imp=2 teaching_carrier is
+    # covered, the strong-cover short-circuit (strong_constraints_exact_covered)
+    # may fire before the forced-loose branch even runs. The point of this
+    # test is that the new guard does NOT downgrade a properly-covered match.
+    assert result["reason"] in {
+        "decorative_loose_match",
+        "strong_constraints_exact_covered",
+    }
+
+
+# ---- narrative reflux scene_prop (建议 2) ----
+
+
+def test_narrative_reflux_blocks_strong_cover_when_scene_prop_missing():
+    """Regression for 《比尾巴》"长尾巴的猴子" vs "猴子的卡通头像":
+    imp=2 species_instance "猴子" is covered on both sides, but imp=1
+    scene_prop "长尾巴" is missing on candidate. The strong-cover short-
+    circuit must now drop into target_narrative_undercoverage rather than
+    full_match — scene_prop is page-defining for the lesson."""
+
+    target = {
+        "asset_kind": "page_image",
+        "reuse_level": "strict",
+        "asset_category": "content_specific",
+        "constraints": [
+            {"kind": "entity", "subtype": "species_instance",
+             "value": "猴子", "importance": 2},
+            {"kind": "object", "subtype": "scene_prop",
+             "value": "长尾巴", "importance": 1},
+        ],
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "reuse_level": "strict",
+        "asset_category": "content_specific",
+        "constraints": [
+            {"kind": "entity", "subtype": "species_instance",
+             "value": "猴子", "importance": 2},
+        ],
+    }
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.8, "embedding_score": 0.8, "precision_signal": True},
+        threshold=0.63,
+    )
+
+    assert result["decision"] == "llm_review"
+    assert result["reason"] == "target_narrative_undercoverage"
+    assert any(item.get("value") == "长尾巴" for item in result["review_items"])
+
+
+# ---- background cross-theme color_temperature filter (建议 4) ----
+
+
+def _bg(theme, color_temp):
+    asset = {
+        "asset_kind": "background",
+        "theme": theme,
+        "aspect_ratio": "16:9",
+    }
+    if color_temp is not None:
+        asset["color_temperature"] = color_temp
+    return asset
+
+
+def test_background_cross_theme_warm_cool_rejected():
+    """Regression for 《秋天的怀念》(暖) reused for 《秋天的雨》(冷):
+    score above threshold but color temperature conflicts — must reject."""
+
+    target = _bg("三年级语文《秋天的雨》课文教学", "冷")
+    candidate = _bg("七年级语文《秋天的怀念》课文教学", "暖")
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.42, "embedding_score": 0.55},
+        threshold=0.38,
+    )
+
+    assert result["decision"] == "reject"
+    assert result["reason"] == "background_color_temperature_conflict"
+
+
+def test_background_cross_theme_neutral_not_rejected():
+    """Neutral on either side is not a conflict — only warm vs cool gets
+    filtered. Neutral backgrounds remain reusable across themes."""
+
+    target = _bg("Topic A", "中性")
+    candidate = _bg("Topic B", "暖")
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.42, "embedding_score": 0.55},
+        threshold=0.38,
+    )
+
+    assert result["decision"] == "full_match"
+    assert result["reason"] == "background_score_above_threshold"
+
+
+def test_background_cross_theme_missing_temperature_not_rejected():
+    """Backgrounds without color_temperature metadata should not be
+    blocked — the filter only fires on explicit warm↔cool clash."""
+
+    target = _bg("Topic A", None)
+    candidate = _bg("Topic B", "暖")
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.42, "embedding_score": 0.55},
+        threshold=0.38,
+    )
+
+    assert result["decision"] == "full_match"
+    assert result["reason"] == "background_score_above_threshold"
+
+
+def test_role_hardcap_doc_and_code_in_sync():
+    """The ROLE_HARDCAP_TERMS code constant and its mirror in
+    metadata_rules.md must enumerate exactly the same words. Either side
+    drifting silently would mean the LLM sees different rules than the
+    code enforces — exactly the kind of double-source-of-truth bug the
+    refactor is trying to prevent. If you change one, change both."""
+
+    import re
+    from pathlib import Path
+    from edupptx.materials.reuse_policy import ROLE_HARDCAP_TERMS
+
+    doc_path = Path(__file__).resolve().parent.parent / (
+        "edupptx/materials/Reference/ai_image_reuse_metadata_rules.md"
+    )
+    doc = doc_path.read_text(encoding="utf-8")
+    block = re.search(
+        r"### 角色/亲缘/职业硬性兜底词表.*?```\n(.+?)```",
+        doc,
+        re.S,
+    )
+    assert block is not None, "metadata_rules.md missing 角色词表 block"
+    raw = block.group(1)
+    # Drop the 亲缘称谓 / 职业角色 / 泛类指代 section labels (label + ：)
+    cleaned = re.sub(r"[一-鿿]+：", "", raw)
+    doc_terms = {w for w in cleaned.split() if w}
+
+    assert doc_terms == set(ROLE_HARDCAP_TERMS), (
+        f"ROLE_HARDCAP drift detected:\n"
+        f"  code only: {sorted(set(ROLE_HARDCAP_TERMS) - doc_terms)}\n"
+        f"  doc only : {sorted(doc_terms - set(ROLE_HARDCAP_TERMS))}"
+    )
+
+
+def test_background_same_theme_warm_cool_ignored():
+    """Within the same theme, color temperature can legitimately vary
+    (e.g. day vs evening scenes of the same lesson). The filter applies
+    only to cross-theme reuse."""
+
+    target = _bg("Same Topic", "冷")
+    candidate = _bg("Same Topic", "暖")
+
+    result = evaluate_reuse_filter(
+        target,
+        candidate,
+        {"keyword_score": 0.5, "embedding_score": 0.5},
+        threshold=0.38,
+    )
+
+    assert result["decision"] == "full_match"
+    assert result["reason"] == "background_score_above_threshold"
 
