@@ -1104,6 +1104,26 @@ def _global_reuse_candidate_rank(candidate: dict[str, Any]) -> tuple[float, floa
     )
 
 
+def _target_keyword_cache_key(target: dict[str, Any]) -> str:
+    payload = {
+        "asset_kind": _clean_text(target.get("asset_kind")),
+        "content_prompt": _asset_content_prompt(target),
+        "normalized_prompt": _clean_text(target.get("normalized_prompt")),
+        "theme": _clean_text(target.get("theme")),
+        "topic_refs": _topic_refs_for_asset(target),
+        "grade_norm": _clean_text(target.get("grade_norm")),
+        "grade_band": _clean_text(target.get("grade_band")),
+        "subject": _clean_text(target.get("subject")),
+        "role": _asset_role(target),
+        "page_type": _asset_page_type(target),
+        "aspect_ratio": _clean_text(target.get("aspect_ratio")),
+        "prompt_route": _match_prompt_route(target.get("prompt_route")),
+        "background_route": _match_background_route(target.get("background_route")),
+    }
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return "target:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()[:16]
+
+
 def _enrich_reuse_target_keywords_once(
     target: dict[str, Any],
     keyword_client: Any | None,
@@ -1111,8 +1131,9 @@ def _enrich_reuse_target_keywords_once(
 ) -> dict[str, Any]:
     if keyword_client is None:
         return target
+    cache_key = _target_keyword_cache_key(target)
     if target_keyword_cache is not None:
-        cached = target_keyword_cache.get("target")
+        cached = target_keyword_cache.get(cache_key)
         if isinstance(cached, dict):
             return deepcopy(cached)
 
@@ -1125,7 +1146,7 @@ def _enrich_reuse_target_keywords_once(
     )
     enriched = target_db["assets"][0]
     if target_keyword_cache is not None:
-        target_keyword_cache["target"] = deepcopy(enriched)
+        target_keyword_cache[cache_key] = deepcopy(enriched)
     return enriched
 
 
@@ -2767,10 +2788,30 @@ def _build_keyword_messages(
         "strict_reuse_group, strict_reuse_confidence, strict_reuse_reason. "
         "对于 page_image，constraints 和 core_keywords 都必须直接从 content_prompt 的可见内容中提取；"
         "constraints 用于复用安全过滤，core_keywords 用于 BM25、embedding 和 substring 召回。"
-        "strict_reuse_group 只能是 general_reuse 或 content_reuse："
-        "general_reuse 表示普通插画、场景、人物动作、装饰、空白卡片、通用教学活动；"
-        "content_reuse 表示图片里含有必须严格匹配的可见文本、拼音字词、课文段落、题目、公式、表格、数据、标注图、物理/数学题面等内容。"
-        "strict_reuse_confidence 为 0-1，strict_reuse_reason 用一句中文说明依据。"
+        "strict_reuse_group 只能是 general_reuse 或 content_reuse。"
+        "判定时只能读 content_prompt 字段的字面文字，不允许参考你自己同时正在生成的 constraints / core_keywords / asset_category / semantic_aliases / context_summary，"
+        "也不允许参考 page_type / subject / grade / image_role 等路由字段。"
+        "constraints 字段的 importance=2 与 strict_reuse_group=content_reuse 之间没有任何对应关系——"
+        "故事绑定物种、命名个体、关键场景、核心意象、教学载体都可以是 imp=2 的 constraint，"
+        "但只要 content_prompt 没有要求图像本体呈现可读或可精确抄录的教学内容，就不能因此判为 content_reuse。"
+        "strict_reuse_group 是分库路由，不是复用严格度；判别基于图像本体的教学内容形态，不基于课文绑定深度、人物/物种重要性或 reuse_level。"
+        "content_reuse 只覆盖以下五类『图像本身就是题目/字词/段落』的教学素材："
+        "(1) 语文识字——图像就是具体汉字、字形、字源演变、笔顺、识写示范或承载具体字词的字卡/格子；"
+        "(2) 拼音——图像就是拼音字母/声调/拼音字词卡片本身；"
+        "(3) 课文段落——课文原文文字直接印在图上（不是描绘课文情节的插画，是把课文段落作为可读文字呈现）；"
+        "(4) 数学题目——图像就是算式/应用题题面/看图列式/公式方程/带数字的数据表/统计图/票据本身；"
+        "(5) 物理题目——图像就是带具体标号、物理量、公式、单位或元件标识的物理题面、图示、电路、受力分析或实验装置。"
+        "general_reuse 覆盖其余一切情形。关键：以下情形虽然『绑定课文』但仍是 general_reuse："
+        "课文情节场景插画、课文角色画像、具名个体画像、故事道具、核心意象、地点环境、人物动作、情绪氛围、"
+        "通用教具实物、装饰插画、空白卡片和课堂活动场景；只要图像不是可读教学内容本体，就仍属于 general_reuse。"
+        "判别口诀：问自己一句『图像本身是不是字词/段落/题目这种可读教学内容？』"
+        "是 → content_reuse；只是『某主题的插画/场景/角色画像』→ general_reuse。"
+        "原因：『叙事一致性』（课文里讲谁、讲哪里、讲什么情节）由课文文字、标题、caption 承担，不是图像的工作；"
+        "图像层只在『图像本体即可读教学内容』时才需要逐字符匹配。"
+        "strict_reuse_confidence 为 0-1。"
+        "strict_reuse_reason 必须采用以下两种格式之一，不允许写『核心角色』『故事绑定』『教学意象』等泛化措辞："
+        "若判 content_reuse：『属于<五类之一>：<图上具体字词/算式/题面/标号片段>』；"
+        "若判 general_reuse：『属于场景/角色/教具/装饰插画：<被描述的主体>』。"
         "每个 constraint 必须包含 kind, subtype, value, importance, confidence, evidence, reason 七个字段。"
         "subtype 是对 value 这个词的分类（不是对整张图的分类），决定 importance 的上限。"
         "importance 默认为 0；只有当 subtype 满足升级条件时才升到 1 或 2。"
@@ -2798,7 +2839,20 @@ def _build_keyword_messages(
         "下面是 AI 图像复用元数据规则。"
     )
     user = "请按结构规范化以下素材：\n" + json.dumps({"assets": items}, ensure_ascii=False, indent=2)
-    system += "\n\n" + _load_keyword_reuse_rules_reference()
+    system += (
+        "\n\n"
+        + _load_keyword_reuse_rules_reference()
+        + "\n\n## strict_reuse_group 最终路由规则\n"
+        "本节覆盖前文所有可能造成混淆的 reuse_level、importance、asset_category 说明。"
+        "strict_reuse_group 只回答『这张图应进入哪个分库检索』，不回答『约束过滤有多严格』。"
+        "不要因为存在 importance=2、named_individual、species_instance、teaching_carrier、content_specific 或 reuse_level=strict 就判 content_reuse。"
+        "content_reuse 的必要条件是：content_prompt 明确要求图像本体呈现可读、可抄录、可逐项校验的教学内容，"
+        "包括具体文字、字形、拼音、段落、题干、算式、公式、表格数据、标号、单位、物理量或题面结构。"
+        "如果 content_prompt 描述的是主体、角色、人物关系、场景、地点、道具、意象、动作、情绪、氛围、实物或装饰，"
+        "即使这些元素对课程不可替换，也属于 general_reuse。"
+        "当内容同时包含可读教学内容和插画元素时，只要可读教学内容是图像复用必须逐字/逐项一致的主体，就判 content_reuse；"
+        "否则判 general_reuse。"
+    )
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -5939,25 +5993,46 @@ def _preserve_review_fields(asset: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_strict_reuse_group_from_payload(asset: dict[str, Any], payload: dict[str, Any]) -> None:
-    existing_group = _normalize_binary_reuse_group(asset.get("strict_reuse_group"), default="")
-    payload_group = _normalize_binary_reuse_group(payload.get("strict_reuse_group"), default="")
-    group = existing_group or payload_group
-    if not group:
+    payload_has_group = bool(_clean_text(payload.get("strict_reuse_group")))
+    existing_has_group = bool(_clean_text(asset.get("strict_reuse_group")))
+
+    if payload_has_group:
+        group = _normalize_binary_reuse_group(payload.get("strict_reuse_group"))
+    elif existing_has_group:
+        group = _normalize_binary_reuse_group(asset.get("strict_reuse_group"))
+    else:
         return
 
     asset["strict_reuse_group"] = group
-    confidence = _optional_float(asset.get("strict_reuse_confidence"))
-    if confidence is None:
+
+    if payload_has_group:
         confidence = _optional_float(payload.get("strict_reuse_confidence"))
+        if confidence is None:
+            confidence = _optional_float(asset.get("strict_reuse_confidence"))
+    else:
+        confidence = _optional_float(asset.get("strict_reuse_confidence"))
+        if confidence is None:
+            confidence = _optional_float(payload.get("strict_reuse_confidence"))
     if confidence is None:
-        confidence = 0.8 if payload_group else 0.9
+        confidence = 0.8 if payload_has_group else 0.9
     asset["strict_reuse_confidence"] = round(max(0.0, min(1.0, confidence)), 4)
 
-    reason = _clean_text(asset.get("strict_reuse_reason")) or _clean_text(payload.get("strict_reuse_reason"))
+    if payload_has_group:
+        reason = _clean_text(payload.get("strict_reuse_reason")) or _clean_text(asset.get("strict_reuse_reason"))
+    else:
+        reason = _clean_text(asset.get("strict_reuse_reason")) or _clean_text(payload.get("strict_reuse_reason"))
     asset["strict_reuse_reason"] = reason or "LLM reuse group classification"
-    signal = "llm_reuse_group" if payload_group and not existing_group else "upstream_reuse_group"
-    signals = _dedupe_terms([*_as_string_list(asset.get("strict_reuse_signals")), signal])
-    asset["strict_reuse_signals"] = signals
+
+    signal = "llm_reuse_group" if payload_has_group else "upstream_reuse_group"
+    if payload_has_group:
+        prior_signals = [
+            item
+            for item in _as_string_list(asset.get("strict_reuse_signals"))
+            if item != "upstream_reuse_group"
+        ]
+    else:
+        prior_signals = _as_string_list(asset.get("strict_reuse_signals"))
+    asset["strict_reuse_signals"] = _dedupe_terms([*prior_signals, signal])
 
 
 def _normalize_binary_reuse_group(value: Any, *, default: str = _GENERAL_REUSE_GROUP) -> str:

@@ -1,10 +1,12 @@
 import json
 
 from edupptx.materials.ai_image_asset_db import (
+    _apply_strict_reuse_group_from_payload,
     _asset_embedding_text,
     _build_match_text,
     _build_reuse_target_asset,
     _candidate_hybrid_text,
+    _enrich_reuse_target_keywords_once,
     _is_strict_semantic_gray_review_candidate,
     _normalize_asset_for_match,
     _reuse_gate_profile,
@@ -436,6 +438,66 @@ def test_online_reuse_target_extracts_topic_refs_from_theme():
     assert target["topic_refs"] == ["比尾巴"]
     match_target = _normalize_asset_for_match(target, for_target=True)
     assert match_target["topic_refs"] == ["比尾巴"]
+
+
+def test_reuse_target_keyword_cache_is_keyed_by_target_content():
+    class FakeKeywordClient:
+        _model = "fake-keyword-model"
+
+        def __init__(self):
+            self.calls = []
+
+        def chat_json(self, messages, **kwargs):
+            raw = messages[1]["content"]
+            request = json.loads(raw[raw.index("{"):])
+            item = request["assets"][0]
+            prompt = item["content_prompt"]
+            self.calls.append(prompt)
+            keyword = "frog" if "frog" in prompt else "cat"
+            return {
+                "assets": [
+                    {
+                        "asset_id": item["asset_id"],
+                        "context_summary": f"{keyword} context",
+                        "teaching_intent": f"{keyword} intent",
+                        "asset_category": "character_action",
+                        "constraints": [],
+                        "core_keywords": [keyword],
+                        "semantic_aliases": {},
+                        "strict_reuse_group": "general_reuse",
+                        "strict_reuse_confidence": 0.9,
+                        "strict_reuse_reason": f"belongs to scene illustration: {keyword}",
+                    }
+                ]
+            }
+
+    def make_target(prompt: str) -> dict:
+        return _build_reuse_target_asset(
+            asset_kind="page_image",
+            prompt=prompt,
+            prompt_route=None,
+            background_route=None,
+            theme="biology lesson",
+            grade="grade 3",
+            subject="science",
+            page_title="animals",
+            page_type="content",
+            role="illustration",
+            aspect_ratio="1:1",
+        )
+
+    client = FakeKeywordClient()
+    cache = {}
+    frog = _enrich_reuse_target_keywords_once(make_target("frog catches insects"), client, cache)
+    cat = _enrich_reuse_target_keywords_once(make_target("cat reads book"), client, cache)
+    frog_again = _enrich_reuse_target_keywords_once(make_target("frog catches insects"), client, cache)
+
+    assert client.calls == ["frog catches insects", "cat reads book"]
+    assert frog["core_keywords"] == ["frog"]
+    assert cat["core_keywords"] == ["cat"]
+    assert frog_again["core_keywords"] == ["frog"]
+    assert len(cache) == 2
+    assert all(key.startswith("target:") for key in cache)
 
 
 def test_page_image_core_keywords_come_from_llm_payload_and_are_cleaned():
@@ -3017,3 +3079,62 @@ def test_plan_reuse_match_check_can_copy_matches_to_session(tmp_path):
     assert manifest["reused_assets"][0]["reuse_asset_id"] == "character"
     db_after = json.loads(db_path.read_text(encoding="utf-8"))
     assert db_after["asset_count"] == 1
+
+
+def test_apply_strict_reuse_group_payload_overrides_existing():
+    """Re-classifying an asset must apply LLM's new payload over stale values.
+
+    Regression guard for the bug where _apply_strict_reuse_group_from_payload
+    preferred existing values, causing prompt-change re-ingest to silently
+    keep old classifications.
+    """
+    asset = {
+        "asset_id": "story_scene",
+        "strict_reuse_group": "content_reuse",
+        "strict_reuse_confidence": 0.9,
+        "strict_reuse_reason": "old reason: bound to lesson",
+        "strict_reuse_signals": ["llm_reuse_group"],
+    }
+    payload = {
+        "strict_reuse_group": "general_reuse",
+        "strict_reuse_confidence": 0.85,
+        "strict_reuse_reason": "属于课文场景插画：小蝌蚪团聚",
+    }
+
+    _apply_strict_reuse_group_from_payload(asset, payload)
+
+    assert asset["strict_reuse_group"] == "general_reuse"
+    assert asset["strict_reuse_confidence"] == 0.85
+    assert asset["strict_reuse_reason"] == "属于课文场景插画：小蝌蚪团聚"
+    assert "llm_reuse_group" in asset["strict_reuse_signals"]
+
+
+def test_apply_strict_reuse_group_payload_kept_when_missing():
+    """When LLM payload omits strict_reuse_group, existing value must be preserved."""
+    asset = {
+        "asset_id": "stable",
+        "strict_reuse_group": "general_reuse",
+        "strict_reuse_confidence": 0.9,
+        "strict_reuse_reason": "previous LLM classification",
+        "strict_reuse_signals": ["upstream_reuse_group"],
+    }
+    payload: dict = {}
+
+    _apply_strict_reuse_group_from_payload(asset, payload)
+
+    assert asset["strict_reuse_group"] == "general_reuse"
+    assert asset["strict_reuse_confidence"] == 0.9
+    assert asset["strict_reuse_reason"] == "previous LLM classification"
+    assert asset["strict_reuse_signals"] == ["upstream_reuse_group"]
+
+
+def test_apply_strict_reuse_group_payload_noop_when_both_missing():
+    """No-op when neither asset nor payload carries a group."""
+    asset: dict = {"asset_id": "fresh"}
+    payload: dict = {}
+
+    _apply_strict_reuse_group_from_payload(asset, payload)
+
+    assert "strict_reuse_group" not in asset
+    assert "strict_reuse_confidence" not in asset
+    assert "strict_reuse_reason" not in asset

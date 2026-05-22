@@ -361,10 +361,11 @@ def classify_asset_strict_reuse(
 ) -> dict[str, Any]:
     """Normalize one asset's upstream reuse-group decision.
 
-    This function intentionally does not inspect prompt keywords. New assets
-    should be classified by the LLM/VLM stages and written with
-    ``strict_reuse_group`` as ``general_reuse`` or ``content_reuse`` before this
-    normalizer runs. Legacy fine-grained groups are migrated to ``content_reuse``.
+    New assets are classified by the LLM/VLM stages and arrive with
+    ``strict_reuse_group`` already set to ``general_reuse`` or ``content_reuse``.
+    This pass trusts that upstream label and only normalizes its format (legacy
+    fine-grained groups are migrated to ``content_reuse``). Keyword-based rules
+    are used as a fallback only when no upstream label is present.
     """
 
     asset_kind = _clean_text(asset.get("asset_kind"))
