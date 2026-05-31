@@ -22,6 +22,7 @@ import base64
 import hashlib
 import io
 import json
+import math
 import mimetypes
 import posixpath
 import re
@@ -47,19 +48,28 @@ from edupptx.materials.ai_image_asset_db import (
     DEFAULT_MATCH_INDEX_FILENAME,
     enrich_ai_image_asset_db_keywords,
     extract_topic_refs,
-    infer_subject,
     normalize_grade_info,
     read_ai_image_split_match_index,
     write_ai_image_match_index,
 )
-from edupptx.materials.vlm_metadata_rules import (
-    normalize_padding_capacity,
+from edupptx.materials.strict_reuse_classifier import (
+    MATERIAL_CATEGORY_RULES_TEXT,
+    normalize_strict_reuse_group,
 )
 
-PPT_LIBRARY_SCHEMA_VERSION = 9
-EXTRACTOR_VERSION = "ppt_materials_library.v9"
+PPT_LIBRARY_SCHEMA_VERSION = 10
+EXTRACTOR_VERSION = "ppt_materials_library.v10"
 DEFAULT_LIBRARY_DIR = Path("materials_library_ppt")
 DEFAULT_IMAGE_DIR = "pptx_images"
+DEFAULT_ORIGINAL_IMAGE_DIR = "pptx_images_original"
+PPT_ASPECT_MAX_LOSS = 0.50
+PPT_ASPECT_RATIO_PAIRS = {
+    "1:1": (1, 1),
+    "3:4": (3, 4),
+    "4:3": (4, 3),
+    "16:9": (16, 9),
+    "9:16": (9, 16),
+}
 DEFAULT_MIN_SOURCE_WIDTH = 160
 DEFAULT_MIN_SOURCE_HEIGHT = 120
 DEFAULT_MIN_DISPLAY_WIDTH = 120.0
@@ -107,7 +117,7 @@ PPT_VLM_SYSTEM_PROMPT = f"""你是教学课件素材库的图片标注助手。�
   "detail_prompt": "完整的视觉细节描述，保留布局、控件、装饰、配色等",
   "context_summary": "一句 20-40 个汉字的短句，描述画面内容和页面功能",
   "teaching_intent": "该图服务的教学动作或学习目标",
-  "strict_reuse_group": "general_reuse|content_reuse",
+  "strict_reuse_group": "<C00-C99 material category ID>",
   "strict_reuse_confidence": 0.0,
   "strict_reuse_reason": "一句中文判断依据"
 }}
@@ -144,6 +154,17 @@ PPT_VLM_SYSTEM_PROMPT = f"""你是教学课件素材库的图片标注助手。�
 
 13. 结构之外不要输出任何字段。
 """
+
+
+PPT_VLM_SYSTEM_PROMPT += (
+    "\n\nFinal override for the current material-library schema:\n"
+    "- strict_reuse_group must be one of the 7 material category IDs below, not general_reuse/content_reuse.\n"
+    "- C00_strict_text_problem_skip means skip reuse and skip library ingestion.\n"
+    "- Do not output core_keywords, semantic_aliases, constraints, context_summary_keywords, or query_aliases.\n"
+    '- Output "general": false in every JSON object unless the image is clearly reusable across subjects.\n'
+    "- general 必须是布尔值 true 或 false；你是严格保守的跨学科通用复用分类器，模糊时输出 false。\n"
+    + MATERIAL_CATEGORY_RULES_TEXT
+)
 
 
 class _KeywordClientFromVLM:
@@ -251,7 +272,9 @@ def build_ppt_image_materials_library(
     assets_by_id = {
         _clean_text(asset.get("asset_id")): dict(asset)
         for asset in existing_db.get("assets", [])
-        if isinstance(asset, dict) and _clean_text(asset.get("asset_id"))
+        if isinstance(asset, dict)
+        and _clean_text(asset.get("asset_id"))
+        and not _is_skip_material_category(asset.get("strict_reuse_group"))
     }
 
     report: dict[str, Any] = {
@@ -307,9 +330,15 @@ def build_ppt_image_materials_library(
 
             asset_id = _asset_id_for_sha(item.sha256)
             image_rel = f"{DEFAULT_IMAGE_DIR}/{asset_id}.png"
+            original_image_rel = f"{DEFAULT_ORIGINAL_IMAGE_DIR}/{asset_id}.png"
             image_abs = library_root / image_rel
+            original_image_abs = library_root / original_image_rel
             try:
-                _save_png(item.data, image_abs)
+                image_fields = _save_ppt_image_derivatives(
+                    item.data,
+                    original_path=original_image_abs,
+                    runtime_path=image_abs,
+                )
             except Exception as exc:
                 _add_skip(report, _usage_label(item), f"image_save_failed:{type(exc).__name__}")
                 pptx_summary["skipped"] += 1
@@ -317,6 +346,18 @@ def build_ppt_image_materials_library(
 
             ppt_asset_source_by_id[asset_id] = _ppt_asset_source_meta(item)
             if asset_id in assets_by_id:
+                existing_asset = assets_by_id[asset_id]
+                existing_asset.update(image_fields)
+                existing_asset["image_path"] = image_rel
+                existing_asset["original_image_path"] = original_image_rel
+                existing_asset["asset_kind"] = _ppt_asset_kind(item)
+                if existing_asset["asset_kind"] == "background":
+                    existing_asset["asset_category"] = "background"
+                    existing_asset["normalized_prompt"] = _clean_text(
+                        existing_asset.get("normalized_prompt") or existing_asset.get("content_prompt")
+                    )
+                for removed_key in ("aspect_bucket", "role", "padding_capacity"):
+                    existing_asset.pop(removed_key, None)
                 pptx_summary["kept"] += 1
                 report["kept_asset_count"] += 1
                 continue
@@ -327,7 +368,7 @@ def build_ppt_image_materials_library(
                 try:
                     annotation = _annotate_with_vlm(
                         vlm_client=vlm_client,
-                        image_path=image_abs,
+                        image_path=original_image_abs,
                         item=item,
                         meta=meta,
                         context=context,
@@ -339,11 +380,22 @@ def build_ppt_image_materials_library(
             else:
                 annotation = _fallback_annotation(item, meta, context, "vlm_skipped")
 
-            annotation = _normalize_annotation(annotation, item, meta, context, image_path=image_abs)
+            annotation = _normalize_annotation(annotation, item, meta, context, image_path=original_image_abs)
+            if _is_skip_material_category(annotation.get("strict_reuse_group")):
+                _add_skip(report, _usage_label(item), "C00_strict_text_problem_skip")
+                pptx_summary["skipped"] += 1
+                try:
+                    image_abs.unlink(missing_ok=True)
+                    original_image_abs.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                continue
 
             asset = _build_asset_from_annotation(
                 asset_id=asset_id,
                 image_rel=image_rel,
+                original_image_rel=original_image_rel,
+                image_fields=image_fields,
                 item=item,
                 meta=meta,
                 context=context,
@@ -573,19 +625,71 @@ def _inspect_image(data: bytes) -> dict[str, Any]:
         return {"width": 0, "height": 0, "mode": "", "is_corrupt": True, "error": str(exc)}
 
 
-def _save_png(data: bytes, out_path: Path) -> None:
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    if out_path.exists():
-        return
+def _save_ppt_image_derivatives(
+    data: bytes,
+    *,
+    original_path: Path,
+    runtime_path: Path,
+) -> dict[str, int | str]:
+    original_path.parent.mkdir(parents=True, exist_ok=True)
+    runtime_path.parent.mkdir(parents=True, exist_ok=True)
     with Image.open(io.BytesIO(data)) as img:
-        img = img.copy()
-        if img.mode in {"RGBA", "LA"}:
-            img = img.convert("RGBA")
-        elif img.mode == "P" and "transparency" in img.info:
-            img = img.convert("RGBA")
-        else:
-            img = img.convert("RGB")
-        img.save(out_path, format="PNG", optimize=True)
+        rgba = img.convert("RGBA")
+        aspect_ratio = _ppt_aspect_ratio_name(rgba.width, rgba.height)
+        padded = _pad_image_to_ppt_aspect(rgba, aspect_ratio)
+        if not original_path.exists():
+            rgba.save(original_path, format="PNG", optimize=True)
+        if not runtime_path.exists():
+            padded.save(runtime_path, format="PNG", optimize=True)
+        return {
+            "actual_width": rgba.width,
+            "actual_height": rgba.height,
+            "padded_width": padded.width,
+            "padded_height": padded.height,
+            "aspect_ratio": aspect_ratio,
+        }
+
+
+def _ppt_aspect_ratio_name(width: int, height: int) -> str:
+    bucket, loss = _nearest_ppt_aspect_ratio(width, height)
+    return bucket if loss < PPT_ASPECT_MAX_LOSS else "other"
+
+
+def _nearest_ppt_aspect_ratio(width: int, height: int) -> tuple[str, float]:
+    if width <= 0 or height <= 0:
+        return "other", float("inf")
+    ratio = float(width) / float(height)
+    best_bucket = "other"
+    best_loss = float("inf")
+    for bucket, (target_w, target_h) in PPT_ASPECT_RATIO_PAIRS.items():
+        target_ratio = float(target_w) / float(target_h)
+        loss = 1.0 - min(ratio, target_ratio) / max(ratio, target_ratio)
+        if loss < best_loss:
+            best_bucket = bucket
+            best_loss = loss
+    return best_bucket, best_loss
+
+
+def _padded_size_for_ppt_aspect(width: int, height: int, aspect_ratio: str) -> tuple[int, int]:
+    pair = PPT_ASPECT_RATIO_PAIRS.get(aspect_ratio)
+    if not pair:
+        return width, height
+    target_w, target_h = pair
+    k = max(math.ceil(width / target_w), math.ceil(height / target_h))
+    return target_w * k, target_h * k
+
+
+def _pad_image_to_ppt_aspect(img: Image.Image, aspect_ratio: str) -> Image.Image:
+    if aspect_ratio == "other":
+        return img.copy()
+    canvas_width, canvas_height = _padded_size_for_ppt_aspect(img.width, img.height, aspect_ratio)
+    if canvas_width == img.width and canvas_height == img.height:
+        return img.copy()
+    canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
+    left = (canvas_width - img.width) // 2
+    top = (canvas_height - img.height) // 2
+    canvas.paste(img, (left, top), img)
+    return canvas
 
 
 def _repeated_wide_hashes(items: list[RawPptImage]) -> set[str]:
@@ -609,16 +713,23 @@ def _classify_exclusion(item: RawPptImage, wide_repeated: set[str]) -> str:
         return "small_decoration"
     if item.sha256 in wide_repeated:
         return "repeated_wide_decoration"
-    if (
-        bbox["area_ratio"] >= FULL_BACKGROUND_AREA_RATIO
-        and bbox["width"] >= FULL_BACKGROUND_MIN_WIDTH
-        and bbox["height"] >= FULL_BACKGROUND_MIN_HEIGHT
-    ):
-        return "full_slide_background"
     ratio = bbox["width"] / bbox["height"] if bbox["height"] else 0.0
     if ratio >= DECORATIVE_WIDE_RATIO and bbox["height"] <= DECORATIVE_WIDE_MAX_HEIGHT:
         return "wide_banner_decoration"
     return ""
+
+
+def _is_full_slide_background(item: RawPptImage) -> bool:
+    bbox = item.bbox if isinstance(item.bbox, dict) else {}
+    return (
+        float(bbox.get("area_ratio") or 0.0) >= FULL_BACKGROUND_AREA_RATIO
+        and float(bbox.get("width") or 0.0) >= FULL_BACKGROUND_MIN_WIDTH
+        and float(bbox.get("height") or 0.0) >= FULL_BACKGROUND_MIN_HEIGHT
+    )
+
+
+def _ppt_asset_kind(item: RawPptImage) -> str:
+    return "background" if _is_full_slide_background(item) else "page_image"
 
 
 def _ppt_asset_source_meta(item: RawPptImage) -> dict[str, Any]:
@@ -733,33 +844,32 @@ def _are_ppt_near_duplicates(left: dict[str, Any], right: dict[str, Any], librar
 
 
 def _ppt_subject_terms_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    left_terms = _ppt_constraint_terms(left, "entity")
-    right_terms = _ppt_constraint_terms(right, "entity")
+    left_terms = _ppt_content_terms(left)
+    right_terms = _ppt_content_terms(right)
     return bool(left_terms and right_terms and _any_terms_similar(left_terms, right_terms))
 
 
 def _ppt_action_terms_match(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    left_terms = _ppt_constraint_terms(left, "action")
-    right_terms = _ppt_constraint_terms(right, "action")
+    left_terms = _ppt_content_terms(left)
+    right_terms = _ppt_content_terms(right)
     if not left_terms and not right_terms:
         return True
     return bool(left_terms and right_terms and _any_terms_similar(left_terms, right_terms))
 
 
-def _ppt_constraint_terms(asset: dict[str, Any], kind: str) -> list[str]:
-    constraints = asset.get("constraints")
-    if not isinstance(constraints, list):
+def _ppt_content_terms(asset: dict[str, Any]) -> list[str]:
+    text = _clean_text(asset.get("content_prompt"))
+    if not text:
         return []
     terms: list[str] = []
-    for constraint in constraints:
-        if not isinstance(constraint, dict):
-            continue
-        if _clean_text(constraint.get("kind")) != kind:
-            continue
-        term = _normalized_near_duplicate_term(constraint.get("value"))
+    terms.append(_normalized_near_duplicate_term(text))
+    terms.extend(re.findall(r"[A-Za-z0-9]+|[\u4e00-\u9fff]{2,}", text.casefold()))
+    cleaned: list[str] = []
+    for term in terms:
+        term = _normalized_near_duplicate_term(term)
         if term:
-            terms.append(term)
-    return _dedupe(terms)
+            cleaned.append(term)
+    return _dedupe(cleaned)[:8]
 
 
 def _any_terms_similar(left_terms: list[str], right_terms: list[str]) -> bool:
@@ -842,21 +952,12 @@ def _safe_float(value: Any) -> float:
         return 0.0
 
 
-def _normalize_binary_reuse_group(value: Any) -> str:
-    text = _clean_text(value).casefold()
-    if text in {
-        "content_reuse",
-        "non_none",
-        "content_specific_reuse",
-        "exact_reuse",
-        "strict_reuse",
-        "math_problem",
-        "physics_problem",
-        "chinese_word_text",
-        "chinese_passage_text",
-    }:
-        return "content_reuse"
-    return "general_reuse"
+def _normalize_material_category(value: Any) -> str:
+    return normalize_strict_reuse_group(value, default="C06_generic_scene_activity")
+
+
+def _is_skip_material_category(value: Any) -> bool:
+    return _normalize_material_category(value) == "C00_strict_text_problem_skip"
 
 
 def _record_duplicate_asset_id(target: dict[str, Any], duplicate_id: str) -> None:
@@ -932,7 +1033,7 @@ def _annotate_with_vlm(
         "image": {
             "width": item.width,
             "height": item.height,
-            "aspect_ratio": _aspect_ratio_name(item.width, item.height),
+            "aspect_ratio": _ppt_aspect_ratio_name(item.width, item.height),
             "display_bbox": item.bbox,
             "source_media_path": item.source_media_path,
         },
@@ -981,8 +1082,8 @@ def _fallback_annotation(item: RawPptImage, meta: dict[str, Any], context: dict[
         "detail_prompt": detail,
         "context_summary": _fallback_ppt_context_summary(context),
         "teaching_intent": "辅助课堂讲解和页面视觉说明",
-        "padding_capacity": "",
-        "strict_reuse_group": "general_reuse",
+        "general": False,
+        "strict_reuse_group": "C06_generic_scene_activity",
         "strict_reuse_confidence": 0.5,
         "strict_reuse_reason": reason,
     }
@@ -1003,25 +1104,23 @@ def _normalize_annotation(
     detail_prompt = _clean_text(raw.get("detail_prompt")) or content_prompt
     context_summary = _clean_text(raw.get("context_summary")) or _fallback_ppt_context_summary(context)
     teaching_intent = _clean_text(raw.get("teaching_intent")) or "辅助课堂教学说明"
-    padding_capacity = normalize_padding_capacity(
-        raw.get("padding_capacity") or raw.get("transform_advice"),
-        image_path=image_path,
-    )
-    strict_reuse_group = _normalize_binary_reuse_group(raw.get("strict_reuse_group"))
+    strict_reuse_group = _normalize_material_category(raw.get("strict_reuse_group"))
     strict_reuse_confidence = max(0.0, min(1.0, _safe_float(raw.get("strict_reuse_confidence"))))
     if strict_reuse_confidence <= 0:
-        strict_reuse_confidence = 0.5 if strict_reuse_group == "general_reuse" else 0.75
+        strict_reuse_confidence = 0.5 if strict_reuse_group == "C06_generic_scene_activity" else 0.75
     strict_reuse_reason = _clean_text(raw.get("strict_reuse_reason")) or "PPT VLM reuse group classification"
+    general = _optional_bool(raw.get("general"))
     ann = {
         "content_prompt": content_prompt,
         "detail_prompt": detail_prompt,
         "context_summary": context_summary,
         "teaching_intent": teaching_intent,
-        "padding_capacity": padding_capacity,
         "strict_reuse_group": strict_reuse_group,
         "strict_reuse_confidence": round(strict_reuse_confidence, 4),
         "strict_reuse_reason": strict_reuse_reason,
     }
+    if general is not None:
+        ann["general"] = general
     return ann
 
 
@@ -1029,6 +1128,8 @@ def _build_asset_from_annotation(
     *,
     asset_id: str,
     image_rel: str,
+    original_image_rel: str,
+    image_fields: dict[str, int | str],
     item: RawPptImage,
     meta: dict[str, Any],
     context: dict[str, Any],
@@ -1036,18 +1137,24 @@ def _build_asset_from_annotation(
 ) -> dict[str, Any]:
     course = _course_block(meta)
     grade_info = normalize_grade_info(course.get("grade"), course.get("course_path"), course.get("lesson"))
-    subject = _clean_text(course.get("subject")) or infer_subject(course.get("course_path"), annotation.get("content_prompt"))
+    subject = _clean_text(course.get("subject"))
     page_type = _infer_page_type(item.slide_no, context.get("slide_text"), context.get("slide_title_guess"))
     theme = _theme_from_course(course)
     lesson_ref = course.get("lesson") or Path(meta.get("file_name") or item.pptx_path.name).stem
     unit_ref = _clean_text(course.get("unit"))
     topic_refs = extract_topic_refs(lesson_ref)
+    asset_kind = _ppt_asset_kind(item)
+    content_prompt = annotation["content_prompt"]
     asset = {
         "asset_id": asset_id,
-        "asset_kind": "page_image",
+        "asset_kind": asset_kind,
         "image_path": image_rel,
-        "aspect_ratio": _aspect_ratio_name(item.width, item.height),
-        "role": _infer_role(),
+        "original_image_path": original_image_rel,
+        "actual_width": image_fields["actual_width"],
+        "actual_height": image_fields["actual_height"],
+        "padded_width": image_fields["padded_width"],
+        "padded_height": image_fields["padded_height"],
+        "aspect_ratio": image_fields["aspect_ratio"],
         "page_type": page_type,
         "theme": theme,
         "subject": subject,
@@ -1055,22 +1162,22 @@ def _build_asset_from_annotation(
         "grade_band": grade_info["grade_band"],
         "unit_ref": unit_ref,
         "topic_refs": topic_refs,
-        "content_prompt": annotation["content_prompt"],
-        "detail_prompt": annotation.get("detail_prompt") or annotation["content_prompt"],
+        "content_prompt": content_prompt,
+        "detail_prompt": annotation.get("detail_prompt") or content_prompt,
         "context_summary": annotation["context_summary"],
         "teaching_intent": annotation["teaching_intent"],
-        "padding_capacity": annotation.get("padding_capacity") or "",
-        "context_summary_keywords": [],
-        "asset_category": "unknown",
-        "constraints": [],
-        "core_keywords": [],
-        "semantic_aliases": {},
+        "asset_category": "background" if asset_kind == "background" else "unknown",
         "duplicate_asset_ids": [],
-        "strict_reuse_group": annotation.get("strict_reuse_group") or "general_reuse",
+        "strict_reuse_group": annotation.get("strict_reuse_group") or "C06_generic_scene_activity",
         "strict_reuse_confidence": annotation.get("strict_reuse_confidence") or 0.5,
         "strict_reuse_reason": annotation.get("strict_reuse_reason") or "PPT VLM reuse group classification",
         "strict_reuse_signals": ["ppt_vlm_reuse_group"],
     }
+    general = _optional_bool(annotation.get("general"))
+    if general is not None:
+        asset["general"] = general
+    if asset_kind == "background":
+        asset["normalized_prompt"] = content_prompt
     return asset
 
 
@@ -1193,7 +1300,7 @@ def _build_library_db_snapshot(
     warnings: Iterable[Any],
 ) -> dict[str, Any]:
     assets = sorted(
-        assets_by_id.values(),
+        [asset for asset in assets_by_id.values() if not _is_skip_material_category(asset.get("strict_reuse_group"))],
         key=lambda asset: (
             _clean_text(asset.get("asset_kind")),
             _clean_text(asset.get("image_path")),
@@ -1272,12 +1379,6 @@ def _iter_pptx_files(
     yield from files
 
 
-def _infer_role() -> str:
-    # All known asset_category values for PPT-extracted assets currently render
-    # as standalone illustrations; if the matrix expands, branch here.
-    return "illustration"
-
-
 def _infer_page_type(slide_no: int, slide_text: Any, slide_title: Any) -> str:
     text = f"{_clean_text(slide_title)} {_clean_text(slide_text)}"
     if slide_no == 1:
@@ -1296,23 +1397,6 @@ def _theme_from_course(course: dict[str, str]) -> str:
     period = course.get("period", "")
     parts = [grade, subject, lesson, period]
     return _compact_theme_text("".join(part for part in parts if part)) or _compact_theme_text(course.get("course_path", ""))
-
-
-def _aspect_ratio_name(width: int, height: int) -> str:
-    if not width or not height:
-        return "unknown"
-    ratio = width / height
-    candidates = {
-        "1:1": 1.0,
-        "4:3": 4 / 3,
-        "3:4": 3 / 4,
-        "16:9": 16 / 9,
-        "9:16": 9 / 16,
-        "3:2": 3 / 2,
-        "2:3": 2 / 3,
-        "21:9": 21 / 9,
-    }
-    return min(candidates, key=lambda key: abs(candidates[key] - ratio))
 
 
 def _asset_id_for_sha(sha256: str) -> str:
@@ -1362,6 +1446,10 @@ def _dedupe(values: Iterable[Any]) -> list[str]:
 
 def _clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _optional_bool(value: Any) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def build_arg_parser() -> argparse.ArgumentParser:

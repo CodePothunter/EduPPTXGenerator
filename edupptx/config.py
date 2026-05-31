@@ -8,6 +8,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+DEFAULT_MATERIALS_CONCURRENCY = 4
+
 
 @dataclass
 class Config:
@@ -39,7 +41,7 @@ class Config:
     llm_reasoning_effort: str = ""  # Provider-specific reasoning effort, e.g. low/medium/high
     web_search: bool = False    # 联网搜索 (仅 responses provider 有效)
     llm_concurrency: int = 4    # LLM 并行请求数 (SVG 生成 + Review)
-    materials_concurrency: int = 3
+    materials_concurrency: int = DEFAULT_MATERIALS_CONCURRENCY
 
     # Paths
     env_file: Path = field(default_factory=lambda: Path(".env"))
@@ -49,8 +51,11 @@ class Config:
     output_dir: Path = field(default_factory=lambda: Path("./output"))
     styles_dir: Path = field(default_factory=lambda: Path(""))
 
-    # Asset library updates: inline | background | off
-    asset_library_update_mode: str = "inline"
+    # Asset library background ingest
+    asset_library_ingest_enabled: bool = True
+    asset_library_vlm_review: bool = False
+    asset_ingest_job_db: Path | None = None
+    debug_artifacts: bool = False
 
     @classmethod
     def from_env(cls, env_path: str | Path | None = None) -> Config:
@@ -83,13 +88,13 @@ class Config:
             llm_model=os.getenv("GEN_MODEL", "").split("#")[0].strip(),
             llm_base_url=llm_base,
             llm_provider=os.getenv("LLM_PROVIDER", "chat"),
-            llm_thinking=os.getenv("GEN_THINKING", "").strip(),
+            llm_thinking=_normalize_llm_thinking(os.getenv("GEN_THINKING", "")),
             llm_reasoning_effort=os.getenv("GEN_REASONING_EFFORT", "").strip(),
             llm_concurrency=int(os.getenv("LLM_CONCURRENCY", "4")),
             materials_concurrency=int(
                 os.getenv("EDUPPTX_MATERIALS_CONCURRENCY")
                 or os.getenv("MATERIALS_CONCURRENCY")
-                or "3"
+                or str(DEFAULT_MATERIALS_CONCURRENCY)
             ),
             image_api_key=os.getenv("VISION_GEN_APIKEY", ""),
             image_model=os.getenv("VISION_GEN_MODEL", "").split("#")[0].strip(),
@@ -106,11 +111,12 @@ class Config:
             reuse_library_dirs=reuse_library_dirs,
             output_dir=Path(os.getenv("OUTPUT_DIR", "./output")),
             styles_dir=pkg_dir / "design" / "style_templates",
-            asset_library_update_mode=(
-                os.getenv("EDUPPTX_ASSET_LIBRARY_UPDATE_MODE")
-                or os.getenv("ASSET_LIBRARY_UPDATE_MODE")
-                or "inline"
-            ).strip().lower(),
+            asset_library_vlm_review=_env_bool("EDUPPTX_ASSET_LIBRARY_VLM_REVIEW", False),
+            asset_ingest_job_db=(
+                Path(os.getenv("EDUPPTX_ASSET_INGEST_JOB_DB", ""))
+                if os.getenv("EDUPPTX_ASSET_INGEST_JOB_DB", "").strip()
+                else None
+            ),
         )
 
 
@@ -137,3 +143,24 @@ def _dedupe_paths(paths: list[Path]) -> tuple[Path, ...]:
         seen.add(key)
         result.append(path)
     return tuple(result)
+
+
+def _normalize_llm_thinking(value: str) -> str:
+    text = value.strip()
+    aliases = {
+        "disable": "disabled",
+        "enable": "enabled",
+    }
+    return aliases.get(text.lower(), text)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    text = raw.strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return default

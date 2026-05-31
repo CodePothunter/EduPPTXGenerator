@@ -58,9 +58,6 @@ IMAGE_RATIO_SIZES: dict[str, str] = {
     "4:3": "2304x1728",
     "16:9": "2848x1600",
     "9:16": "1600x2848",
-    "3:2": "2496x1664",
-    "2:3": "1664x2496",
-    "21:9": "3136x1344",
 }
 
 # Numeric values for ratio matching
@@ -70,9 +67,6 @@ _RATIO_VALUES: dict[str, float] = {
     "4:3": 1.333,
     "16:9": 1.778,
     "9:16": 0.5625,
-    "3:2": 1.5,
-    "2:3": 0.667,
-    "21:9": 2.333,
 }
 
 
@@ -157,11 +151,15 @@ class ImageNeed(BaseModel):
     role: Literal["hero", "illustration", "icon", "background"] = "illustration"
     aspect_ratio: str = Field(
         default="16:9",
-        description="Aspect ratio from predefined set: 1:1, 3:4, 4:3, 16:9, 9:16, 3:2, 2:3, 21:9",
+        description="Aspect ratio from predefined set: 1:1, 3:4, 4:3, 16:9, 9:16",
     )
     generation_prompt: str = Field(
         default="",
         description="Final routed AI-generation prompt. Empty means use query for backward compatibility.",
+    )
+    caption: str = Field(
+        default="",
+        description="Reusable coarse semantic caption for matching and library metadata.",
     )
     prompt_route: dict = Field(
         default_factory=dict,

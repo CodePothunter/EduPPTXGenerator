@@ -385,7 +385,7 @@ def build_svg_user_prompt(
             lines.append(
                 "以下位置需要插图。请用**虚线矩形 + 居中灰色描述文字**标注图片区域。\n"
                 "**重要**：占位框的宽高比必须使用以下预定比例之一：\n"
-                "1:1, 4:3, 3:4, 16:9, 9:16, 3:2, 2:3, 21:9\n"
+                "1:1, 4:3, 3:4, 16:9, 9:16\n"
             )
             for img in image_needs:
                 ratio = img.aspect_ratio
@@ -413,6 +413,7 @@ def build_svg_user_prompt(
             ratio = img.aspect_ratio
             image_lines.append(
                 f'- **{role}** (比例 {ratio}) 图片可用，'
+                f'图片语义：{img.query}。'
                 f'请用 `<image href="__IMAGE_{role.upper()}__" .../>` 作为占位'
             )
         if image_lines:
@@ -420,6 +421,8 @@ def build_svg_user_prompt(
             lines.extend(image_lines)
             lines.append(
                 "\n**必须** 在合适位置放置 `<image>` 元素。"
+                " 图片语义是规划阶段的内容约束，页面布局和讲解文字必须与它一致。"
+                " 如果图片语义说明为无字容器、空白底图或不含标签，不能假设图片中已经包含具体文字；需要用页面 SVG 文本层承载具体教学内容。"
                 ' 使用 `href="__IMAGE_HERO__"` 或 `href="__IMAGE_ILLUSTRATION__"` 等占位符。'
                 " 系统会自动替换为真实图片。`<image>` 的宽高比**必须严格匹配**上面标注的比例。"
                 " 先按规划比例确定图片框，再填写 `x/y/width/height`；不要先随意画框，再拿图片去凑。"

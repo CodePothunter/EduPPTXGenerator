@@ -35,7 +35,7 @@ def test_embedding_build_command_writes_sidecars_and_updates_match_index(tmp_pat
                 "content_prompt": "线段图展示倍数关系",
                 "context_summary": "线段图呈现数量倍数关系",
                 "teaching_intent": "辅助理解倍数应用题",
-                "core_keywords": ["线段图", "倍数关系"],
+                "strict_reuse_group": "C04_info_diagram",
             }
         ],
     }
@@ -44,7 +44,7 @@ def test_embedding_build_command_writes_sidecars_and_updates_match_index(tmp_pat
     result = CliRunner().invoke(main, ["embedding-build", str(library_dir), "--json"])
 
     assert result.exit_code == 0, result.output
-    payload = json.loads(result.output)
+    payload = json.loads(result.output.splitlines()[-1])
     assert payload["ok"] is True
     assert payload["asset_count"] == 1
     assert (library_dir / "ai_image_embedding_index.npz").exists()
@@ -52,7 +52,7 @@ def test_embedding_build_command_writes_sidecars_and_updates_match_index(tmp_pat
     assert payload["split_index_dir"].endswith("strict_reuse_indexes")
 
 
-def test_asset_ingest_vlm_review_defaults_on_and_can_be_disabled(tmp_path, monkeypatch):
+def test_asset_ingest_vlm_review_defaults_off_and_flag_enables_it(tmp_path, monkeypatch):
     monkeypatch.delenv("VLM_APIKEY", raising=False)
     monkeypatch.delenv("VLM_MODEL", raising=False)
     monkeypatch.delenv("GEN_APIKEY", raising=False)
@@ -77,11 +77,12 @@ def test_asset_ingest_vlm_review_defaults_on_and_can_be_disabled(tmp_path, monke
         ],
     )
 
-    assert default_result.exit_code == 1
+    assert default_result.exit_code == 0, default_result.output
     default_payload = json.loads(default_result.output)
-    assert default_payload["kind"] == "MissingVlmConfig"
+    assert default_payload["ok"] is True
+    assert default_payload["VLM_review"] is False
 
-    disabled_result = CliRunner().invoke(
+    enabled_result = CliRunner().invoke(
         main,
         [
             "asset-ingest",
@@ -91,15 +92,86 @@ def test_asset_ingest_vlm_review_defaults_on_and_can_be_disabled(tmp_path, monke
             str(library_dir),
             "--env-file",
             str(env_file),
-            "--VLM_review=False",
+            "--vlm-review",
             "--json",
         ],
     )
 
-    assert disabled_result.exit_code == 0, disabled_result.output
-    disabled_payload = json.loads(disabled_result.output)
-    assert disabled_payload["ok"] is True
-    assert disabled_payload["VLM_review"] is False
+    assert enabled_result.exit_code == 1
+    enabled_payload = json.loads(enabled_result.output)
+    assert enabled_payload["kind"] == "MissingVlmConfig"
+
+
+def test_gen_debug_artifacts_flag_sets_config(tmp_path, monkeypatch):
+    env_file = tmp_path / "empty.env"
+    env_file.write_text("", encoding="utf-8")
+    seen: list[bool] = []
+
+    class FakeAgent:
+        def __init__(self, config):
+            seen.append(config.debug_artifacts)
+
+        def run(self, *_args, **_kwargs):
+            session_dir = tmp_path / "output" / "session_test"
+            (session_dir / "slides").mkdir(parents=True)
+            (session_dir / "plan.json").write_text("{}", encoding="utf-8")
+            (session_dir / "output.pptx").write_bytes(b"pptx")
+            return session_dir
+
+    monkeypatch.setattr("edupptx.cli.PPTXAgent", FakeAgent)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "gen",
+            "test topic",
+            "--debug-artifacts",
+            "--output",
+            str(tmp_path / "output"),
+            "--env-file",
+            str(env_file),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == [True]
+
+
+def test_gen_no_asset_ingest_flag_disables_ingest(tmp_path, monkeypatch):
+    env_file = tmp_path / "empty.env"
+    env_file.write_text("", encoding="utf-8")
+    seen: list[bool] = []
+
+    class FakeAgent:
+        def __init__(self, config):
+            seen.append(config.asset_library_ingest_enabled)
+
+        def run(self, *_args, **_kwargs):
+            session_dir = tmp_path / "output" / "session_test"
+            (session_dir / "slides").mkdir(parents=True)
+            (session_dir / "plan.json").write_text("{}", encoding="utf-8")
+            (session_dir / "output.pptx").write_bytes(b"pptx")
+            return session_dir
+
+    monkeypatch.setattr("edupptx.cli.PPTXAgent", FakeAgent)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "gen",
+            "test topic",
+            "--no-asset-ingest",
+            "--output",
+            str(tmp_path / "output"),
+            "--env-file",
+            str(env_file),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == [False]
 
 
 def test_strict_reuse_classify_command_tags_library(tmp_path):
@@ -117,10 +189,8 @@ def test_strict_reuse_classify_command_tags_library(tmp_path):
                         "asset_kind": "page_image",
                         "image_path": "ai_images/math.png",
                         "subject": "数学",
-                        "asset_category": "content_specific",
                         "content_prompt": "36除以2的笔算除法竖式分步演示",
-                        "constraints": [{"kind": "math", "value": "36÷2", "importance": 2}],
-                        "strict_reuse_group": "math_problem",
+                        "strict_reuse_group": "C02_structure_diagram_visual",
                     }
                 ],
             },
@@ -143,16 +213,16 @@ def test_strict_reuse_classify_command_tags_library(tmp_path):
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["ok"] is True
-    assert payload["group_counts"]["content_reuse"] == 1
+    assert payload["group_counts"]["C02_structure_diagram_visual"] == 1
     assert not index_path.exists()
-    content_split = json.loads((library_dir / "strict_splits" / "content_reuse.json").read_text(encoding="utf-8"))
-    assert content_split["assets"][0]["strict_reuse_group"] == "content_reuse"
+    content_split = json.loads((library_dir / "strict_splits" / "C02_structure_diagram_visual.json").read_text(encoding="utf-8"))
+    assert content_split["assets"][0]["strict_reuse_group"] == "C02_structure_diagram_visual"
     assert not (library_dir / "strict_splits" / "strict_reuse_split_manifest.json").exists()
     assert not (library_dir / "ai_image_vlm_review.json").exists()
     assert "vlm_review_sidecar" not in payload
 
 
-def test_strict_reuse_export_check_command_copies_general_and_content_reuse(tmp_path):
+def test_strict_reuse_export_check_command_copies_material_category_folders(tmp_path):
     library_dir = tmp_path / "materials_library_ppt"
     image_dir = library_dir / "pptx_images"
     image_dir.mkdir(parents=True)
@@ -167,14 +237,14 @@ def test_strict_reuse_export_check_command_copies_general_and_content_reuse(tmp_
                 "asset_id": "none_asset",
                 "asset_kind": "page_image",
                 "image_path": "pptx_images/none.png",
-                "strict_reuse_group": "none",
+                "strict_reuse_group": "C05_scene_decor_container",
                 "content_prompt": "普通插画",
             },
             {
                 "asset_id": "strict_asset",
                 "asset_kind": "page_image",
                 "image_path": "pptx_images/strict.png",
-                "strict_reuse_group": "math_problem",
+                "strict_reuse_group": "C02_structure_diagram_visual",
                 "content_prompt": "36除以2的笔算除法竖式分步演示",
             },
         ],
@@ -197,7 +267,29 @@ def test_strict_reuse_export_check_command_copies_general_and_content_reuse(tmp_
     payload = json.loads(result.output)
     assert payload["ok"] is True
     assert payload["asset_library_unchanged"] is True
-    assert payload["group_counts"] == {"content_reuse": 1, "general_reuse": 1}
-    assert len(list((output_dir / "general_reuse").glob("*.png"))) == 1
-    assert len(list((output_dir / "content_reuse").glob("*.png"))) == 1
+    assert payload["group_counts"]["C05_scene_decor_container"] == 1
+    assert payload["group_counts"]["C02_structure_diagram_visual"] == 1
+    assert "html_path" not in payload
+    assert len(list((output_dir / "C05_scene_decor_container").glob("*.png"))) == 1
+    assert len(list((output_dir / "C02_structure_diagram_visual").glob("*.png"))) == 1
+    assert not (output_dir / "index.html").exists()
     assert json.loads(index_path.read_text(encoding="utf-8")) == index_payload
+
+    help_result = CliRunner().invoke(main, ["strict-reuse-export-check", "--help"])
+    assert help_result.exit_code == 0, help_result.output
+    assert "6-class material category" in help_result.output
+    assert "image copies" in help_result.output
+
+    human_output_dir = tmp_path / "visual_check_human"
+    human_result = CliRunner().invoke(
+        main,
+        [
+            "strict-reuse-export-check",
+            str(library_dir),
+            "--output-dir",
+            str(human_output_dir),
+        ],
+    )
+    assert human_result.exit_code == 0, human_result.output
+    assert "Groups: 7 material categories" in human_result.output
+    assert "HTML:" not in human_result.output

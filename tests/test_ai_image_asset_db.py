@@ -1,2568 +1,393 @@
 import json
 
+from PIL import Image
+
 from edupptx.materials.ai_image_asset_db import (
+    ASPECT_REUSE_BUCKETS,
+    BACKGROUND_COLOR_BIAS_REUSE_WEIGHT,
+    BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT,
+    DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE,
+    DEFAULT_REUSE_CANDIDATE_LIMIT,
+    HYBRID_BM25_WEIGHT,
+    HYBRID_EMBEDDING_WEIGHT,
+    HYBRID_SUBSTRING_WEIGHT,
+    MAX_LLM_REVIEW_WORKERS,
+    MAX_LLM_REVIEWS_PER_QUERY,
+    BACKGROUND_REUSE_GATE_THRESHOLDS,
+    PAGE_IMAGE_REUSE_GATE_THRESHOLDS,
+    _LLM_PROFILE_ACCEPT_THRESHOLDS,
     _apply_strict_reuse_group_from_payload,
+    _apply_keyword_payload,
     _asset_embedding_text,
-    _build_match_text,
-    _build_reuse_target_asset,
+    _build_keyword_messages,
     _candidate_hybrid_text,
-    _enrich_reuse_target_keywords_once,
-    _is_strict_semantic_gray_review_candidate,
-    _normalize_asset_for_match,
     _reuse_gate_profile,
+    _reuse_gate_thresholds_for_target,
+    _reuse_debug_asset_payload,
+    _reuse_hard_filter_reject_reason,
     _reuse_review_accept_score_threshold,
-    _route_match_text,
+    _route_match_index_for_target,
+    _score_gate_review_skip_safe,
     _score_reuse_candidate_details,
-    build_ai_image_asset_db,
-    enrich_ai_image_asset_db_keywords,
-    evaluate_ai_image_reuse_matches_from_plan,
-    extract_topic_refs,
+    _subject_scope_compatible,
+    _subject_scope_decision,
+    _target_metadata_unknown_fields,
+    _normalize_subject_value,
+    _save_reusable_png_with_transparent_padding,
+    build_ai_image_match_index,
     find_reusable_ai_image_asset,
-    ingest_ai_image_asset_library_from_output,
     infer_grade,
     infer_grade_band,
-    infer_subject,
-    materialize_reused_ai_image_asset,
-    record_reused_ai_image_asset,
+    normalize_aspect_bucket,
+    normalize_grade_info,
     read_ai_image_split_match_index,
-    update_ai_image_asset_library,
+    write_ai_image_match_index,
     write_ai_image_split_match_indexes,
 )
-from edupptx.materials.reuse_policy import normalize_reuse_policy_fields
 
 
-def _patch_embedding_encoder(monkeypatch) -> None:
-    monkeypatch.delenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", raising=False)
-
-    def fake_encode_embedding_texts(texts, **_kwargs):
-        import numpy as np
-
-        return np.asarray(
-            [[float(index + 1), 0.0, 1.0] for index, _text in enumerate(texts)],
-            dtype="float32",
-        )
-
-    monkeypatch.setattr(
-        "edupptx.materials.ai_image_asset_db._encode_embedding_texts",
-        fake_encode_embedding_texts,
-    )
+DELETED_FIELDS = {
+    "core_keywords",
+    "semantic_aliases",
+    "constraints",
+    "context_summary_keywords",
+}
 
 
-def _fake_reuse_review_response(messages):
-    raw = messages[1]["content"]
-    request = json.loads(raw[raw.index("{"):])
-    if not request.get("reuse_review"):
-        return None
-    target_constraints = request.get("target", {}).get("constraints") or []
-    candidate_constraints = request.get("candidate", {}).get("constraints") or []
-    for target_constraint in target_constraints:
-        same_kind = [
-            item
-            for item in candidate_constraints
-            if item.get("kind") == target_constraint.get("kind")
-        ]
-        if same_kind and any(item.get("value") == target_constraint.get("value") for item in same_kind):
-            continue
-        return {
-            "score": 0.12,
-            "brief_reason": "fake review found constraint mismatch",
-            "evidence": [],
-            "risk_factors": [target_constraint.get("value")],
-            "matched_constraints": [],
-            "mismatched_constraints": [target_constraint],
-            "missing_constraints": [],
-        }
+def _asset(asset_id: str, group: str, *, prompt: str = "single apple card") -> dict:
     return {
-        "score": 0.92,
-        "brief_reason": "fake review accepted matching constraints",
-        "evidence": ["constraints match"],
-        "risk_factors": [],
-        "matched_constraints": target_constraints,
-        "mismatched_constraints": [],
-        "missing_constraints": [],
+        "asset_id": asset_id,
+        "asset_kind": "page_image",
+        "image_path": f"ai_images/{asset_id}.png",
+        "original_image_path": f"ai_images_original/{asset_id}.png",
+        "actual_width": 1200,
+        "actual_height": 571,
+        "padded_width": 1200,
+        "padded_height": 675,
+        "aspect_ratio": "1:1",
+        "aspect_bucket": "1:1",
+        "role": "illustration",
+        "padding_capacity": "high",
+        "padded_image_path": f"ai_images_padded/{asset_id}.png",
+        "content_prompt": prompt,
+        "context_summary": "object recognition page",
+        "teaching_intent": "recognize the object",
+        "strict_reuse_group": group,
+        "core_keywords": ["legacy keyword"],
+        "semantic_aliases": {"legacy keyword": ["old alias"]},
+        "constraints": [{"kind": "object", "value": "legacy", "importance": 2}],
+        "context_summary_keywords": ["legacy context keyword"],
     }
 
 
-def test_reuse_search_routes_page_targets_to_split_reuse_group(tmp_path, monkeypatch):
-    monkeypatch.setenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", "1")
+def test_reuse_constants_match_plan_a_configuration():
+    assert DEFAULT_REUSE_CANDIDATE_LIMIT == 8
+    assert DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE == 20
+    assert MAX_LLM_REVIEWS_PER_QUERY == 3
+    assert MAX_LLM_REVIEW_WORKERS == 15
+    assert (HYBRID_BM25_WEIGHT, HYBRID_EMBEDDING_WEIGHT, HYBRID_SUBSTRING_WEIGHT) == (0.55, 0.35, 0.10)
+    assert BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT == 0.85
+    assert BACKGROUND_COLOR_BIAS_REUSE_WEIGHT == 0.15
 
+
+def test_aspect_bucket_set_and_nearest_mapping_are_fixed():
+    assert ASPECT_REUSE_BUCKETS == ("1:1", "3:4", "4:3", "9:16", "16:9", "other")
+    assert normalize_aspect_bucket(width=1920, height=1080) == "16:9"
+    assert normalize_aspect_bucket(width=1080, height=1920) == "9:16"
+    assert normalize_aspect_bucket(width=1200, height=900) == "4:3"
+    assert normalize_aspect_bucket(width=900, height=1200) == "3:4"
+    assert normalize_aspect_bucket(width=1000, height=1000) == "1:1"
+    assert normalize_aspect_bucket(width=2000, height=1000) == "other"
+    assert "9:6" not in ASPECT_REUSE_BUCKETS
+    assert "6:9" not in ASPECT_REUSE_BUCKETS
+
+
+def test_match_index_skips_c00_and_drops_deleted_fields(tmp_path):
     image_dir = tmp_path / "ai_images"
     image_dir.mkdir()
-    (image_dir / "general.png").write_bytes(b"general-image")
-    (image_dir / "content.png").write_bytes(b"content-image")
-    general_asset = {
-        "asset_id": "general",
-        "asset_kind": "page_image",
-        "image_path": "ai_images/general.png",
-        "content_prompt": "apple worksheet",
-        "asset_category": "concept_scene",
-        "constraints": [{"kind": "object", "subtype": "teaching_carrier", "value": "apple", "importance": 1}],
-        "core_keywords": ["apple"],
-        "semantic_aliases": {},
-        "strict_reuse_group": "general_reuse",
-    }
-    content_asset = {
-        **general_asset,
-        "asset_id": "content",
-        "image_path": "ai_images/content.png",
-        "strict_reuse_group": "content_reuse",
-    }
-    main_index = {
-        "schema_version": 13,
-        "input_asset_count": 2,
-        "asset_root": str(tmp_path),
-        "assets": [general_asset, content_asset],
-    }
-    (tmp_path / "ai_image_match_index.json").write_text(json.dumps(main_index, ensure_ascii=False), encoding="utf-8")
-    split_dir = tmp_path / "strict_reuse_indexes"
-    split_dir.mkdir()
-    (split_dir / "general_reuse.json").write_text(
-        json.dumps({"schema_version": 13, "asset_root": str(tmp_path), "assets": [general_asset]}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    (split_dir / "content_reuse.json").write_text(
-        json.dumps({"schema_version": 13, "asset_root": str(tmp_path), "assets": [content_asset]}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-    class KeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            if request.get("reuse_review"):
-                return _fake_reuse_review_response(messages)
-            asset_id = request["assets"][0]["asset_id"]
-            return {
-                "assets": [
-                    {
-                        "asset_id": asset_id,
-                        "context_summary": "apple worksheet",
-                        "teaching_intent": "identify apple",
-                        "asset_category": "concept_scene",
-                        "constraints": [
-                            {
-                                "kind": "object",
-                                "subtype": "teaching_carrier",
-                                "value": "apple",
-                                "importance": 1,
-                                "confidence": 0.9,
-                                "evidence": "prompt mentions apple",
-                                "reason": "main visual object",
-                            }
-                        ],
-                        "core_keywords": ["apple"],
-                        "semantic_aliases": {},
-                        "strict_reuse_group": "content_reuse",
-                        "strict_reuse_confidence": 0.9,
-                        "strict_reuse_reason": "target needs exact worksheet content",
-                    }
-                ]
-            }
-
-    debug_path = tmp_path / "reuse_debug.json"
-
-    match = find_reusable_ai_image_asset(
-        library_dir=tmp_path,
-        asset_kind="page_image",
-        prompt="apple worksheet",
-        keyword_client=KeywordClient(),
-        debug_path=debug_path,
-        reuse_debug_mode="full",
-    )
-
-    assert match is not None
-    assert match["asset"]["asset_id"] == "content"
-    debug = json.loads(debug_path.read_text(encoding="utf-8"))
-    route = debug["queries"][0]["reuse_group_route"]
-    assert route["strict_reuse_group"] == "content_reuse"
-    assert route["asset_count"] == 1
-
-
-def test_multi_library_reuse_enriches_target_keywords_once(tmp_path, monkeypatch):
-    monkeypatch.setenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", "1")
-
-    roots = [tmp_path / "library_a", tmp_path / "library_b"]
-    for index, root in enumerate(roots):
-        root.mkdir()
-        match_index = {
-            "schema_version": 13,
-            "asset_root": str(root),
-            "assets": [
-                {
-                    "asset_id": f"asset_{index}",
-                    "asset_kind": "page_image",
-                    "image_path": f"ai_images/asset_{index}.png",
-                    "content_prompt": f"unrelated library candidate {index}",
-                    "role": "illustration",
-                    "aspect_ratio": "1:1",
-                    "core_keywords": [f"library-only-{index}"],
-                    "semantic_aliases": {},
-                    "strict_reuse_group": "general_reuse",
-                }
-            ],
-        }
-        (root / "ai_image_match_index.json").write_text(
-            json.dumps(match_index, ensure_ascii=False),
-            encoding="utf-8",
-        )
-
-    class KeywordClient:
-        _model = "fake-keyword-model"
-
-        def __init__(self):
-            self.keyword_calls = 0
-
-        def chat_json(self, messages, **kwargs):
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            if request.get("reuse_review"):
-                return {"score": 0.0, "brief_reason": "not used"}
-            self.keyword_calls += 1
-            asset_id = request["assets"][0]["asset_id"]
-            return {
-                "assets": [
-                    {
-                        "asset_id": asset_id,
-                        "context_summary": "target keyword only",
-                        "teaching_intent": "find target keyword",
-                        "asset_category": "concept_scene",
-                        "constraints": [],
-                        "core_keywords": ["target-keyword"],
-                        "semantic_aliases": {},
-                        "strict_reuse_group": "general_reuse",
-                        "strict_reuse_confidence": 0.9,
-                        "strict_reuse_reason": "general visual target",
-                    }
-                ]
-            }
-
-    client = KeywordClient()
-
-    find_reusable_ai_image_asset(
-        library_dir=tuple(roots),
-        asset_kind="page_image",
-        prompt="target keyword only",
-        role="illustration",
-        aspect_ratio="1:1",
-        keyword_client=client,
-    )
-
-    assert client.keyword_calls == 1
-
-
-def test_multi_library_reuse_uses_one_global_llm_review_budget(tmp_path, monkeypatch):
-    from edupptx.materials import ai_image_asset_db as db_mod
-
-    monkeypatch.setenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", "1")
-    review_calls = {"count": 0}
-
-    class KeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            if request.get("reuse_review"):
-                review_calls["count"] += 1
-                return {
-                    "score": 0.05,
-                    "brief_reason": "fake reject",
-                    "evidence": [],
-                    "risk_factors": [],
-                    "matched_constraints": [],
-                    "mismatched_constraints": [],
-                    "missing_constraints": [],
-                }
-            asset_id = request["assets"][0]["asset_id"]
-            return {
-                "assets": [
-                    {
-                        "asset_id": asset_id,
-                        "normalized_prompt": "stub character teaching card",
-                        "context_summary": "exact character card",
-                        "teaching_intent": "teach exact character",
-                        "asset_category": "content_specific",
-                        "constraints": [
-                            {
-                                "kind": "text",
-                                "subtype": "teaching_content",
-                                "value": "stub_char",
-                                "importance": 2,
-                            }
-                        ],
-                        "core_keywords": ["stub_char"],
-                        "semantic_aliases": {},
-                        "strict_reuse_group": "general_reuse",
-                    }
-                ]
-            }
-
-    roots = [tmp_path / "library_a", tmp_path / "library_b"]
-    for library_index, root in enumerate(roots):
-        image_dir = root / "ai_images"
-        image_dir.mkdir(parents=True)
-        assets = []
-        for asset_index in range(3):
-            asset_id = f"asset_{library_index}_{asset_index}"
-            (image_dir / f"{asset_id}.png").write_bytes(asset_id.encode("ascii"))
-            assets.append(
-                {
-                    "asset_id": asset_id,
-                    "asset_kind": "page_image",
-                    "image_path": f"ai_images/{asset_id}.png",
-                    "aspect_ratio": "1:1",
-                    "content_prompt": "stub_char teaching card",
-                    "normalized_prompt": "stub_char teaching card",
-                    "asset_category": "content_specific",
-                    "constraints": [
-                        {
-                            "kind": "text",
-                            "subtype": "teaching_content",
-                            "value": "stub_char",
-                            "importance": 2,
-                        }
-                    ],
-                    "core_keywords": ["stub_char"],
-                    "semantic_aliases": {},
-                    "strict_reuse_group": "general_reuse",
-                }
-            )
-        (root / "ai_image_match_index.json").write_text(
-            json.dumps(
-                {
-                    "schema_version": 13,
-                    "asset_root": str(root),
-                    "input_asset_count": len(assets),
-                    "asset_count": len(assets),
-                    "assets": assets,
-                },
-                ensure_ascii=False,
-            ),
-            encoding="utf-8",
-        )
-
-    match = find_reusable_ai_image_asset(
-        library_dir=tuple(roots),
-        asset_kind="page_image",
-        prompt="stub_char teaching card",
-        role="illustration",
-        aspect_ratio="1:1",
-        keyword_client=KeywordClient(),
-        debug_path=tmp_path / "reuse_debug.json",
-        reuse_debug_mode="full",
-    )
-
-    assert match is None
-    assert review_calls["count"] == db_mod.MAX_LLM_REVIEWS_PER_QUERY
-
-
-def test_background_reuse_routes_to_general_split_by_default(tmp_path, monkeypatch):
-    monkeypatch.setenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", "1")
-
-    image_dir = tmp_path / "ai_images"
-    image_dir.mkdir()
-    (image_dir / "background.png").write_bytes(b"background-image")
-    (image_dir / "content.png").write_bytes(b"content-image")
-    background_asset = {
-        "asset_id": "background",
-        "asset_kind": "background",
-        "image_path": "ai_images/background.png",
-        "content_prompt": "warm classroom background",
-        "normalized_prompt": "色调:暖米色; 纹理:纸张; 明度:中明度; 构图:整体平铺",
-        "background_route": {"background_color_bias": "偏暖米色和浅棕色"},
-        "core_keywords": ["warm classroom", "background"],
-        "semantic_aliases": {},
-        "strict_reuse_group": "general_reuse",
-    }
-    content_asset = {
-        "asset_id": "content",
-        "asset_kind": "page_image",
-        "image_path": "ai_images/content.png",
-        "content_prompt": "visible math problem",
-        "core_keywords": ["math problem"],
-        "semantic_aliases": {},
-        "strict_reuse_group": "content_reuse",
-    }
-    split_dir = tmp_path / "strict_reuse_indexes"
-    split_dir.mkdir()
-    (split_dir / "general_reuse.json").write_text(
-        json.dumps({"schema_version": 13, "asset_root": str(tmp_path), "assets": [background_asset]}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-    (split_dir / "content_reuse.json").write_text(
-        json.dumps({"schema_version": 13, "asset_root": str(tmp_path), "assets": [content_asset]}, ensure_ascii=False),
-        encoding="utf-8",
-    )
-
-    debug_path = tmp_path / "reuse_debug.json"
-
-    find_reusable_ai_image_asset(
-        library_dir=tmp_path,
-        asset_kind="background",
-        prompt="warm classroom background",
-        background_route={"background_color_bias": "偏暖米色和浅棕色"},
-        keyword_client=None,
-        debug_path=debug_path,
-        reuse_debug_mode="full",
-    )
-
-    debug = json.loads(debug_path.read_text(encoding="utf-8"))
-    route = debug["queries"][0]["reuse_group_route"]
-    assert route["strict_reuse_group"] == "general_reuse"
-    assert route["match_index_path"].endswith("general_reuse.json")
-    assert route["asset_count"] == 1
-
-
-def test_extract_topic_refs_from_titles_and_knowledge_topics():
-    assert extract_topic_refs("一年级语文《比尾巴》课文教学") == ["比尾巴"]
-    assert extract_topic_refs("七年级数学三角函数教学") == ["三角函数"]
-
-
-def test_online_reuse_target_extracts_topic_refs_from_theme():
-    target = _build_reuse_target_asset(
-        asset_kind="page_image",
-        prompt="兔子古文字到现代汉字的演变示意图",
-        prompt_route=None,
-        background_route=None,
-        theme="一年级语文《比尾巴》课文教学",
-        grade="一年级",
-        subject="语文",
-        page_title="随文识字",
-        page_type="content",
-        role="illustration",
-        aspect_ratio="1:1",
-    )
-
-    assert target["topic_refs"] == ["比尾巴"]
-    match_target = _normalize_asset_for_match(target, for_target=True)
-    assert match_target["topic_refs"] == ["比尾巴"]
-
-
-def test_reuse_target_keyword_cache_is_keyed_by_target_content():
-    class FakeKeywordClient:
-        _model = "fake-keyword-model"
-
-        def __init__(self):
-            self.calls = []
-
-        def chat_json(self, messages, **kwargs):
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            item = request["assets"][0]
-            prompt = item["content_prompt"]
-            self.calls.append(prompt)
-            keyword = "frog" if "frog" in prompt else "cat"
-            return {
-                "assets": [
-                    {
-                        "asset_id": item["asset_id"],
-                        "context_summary": f"{keyword} context",
-                        "teaching_intent": f"{keyword} intent",
-                        "asset_category": "character_action",
-                        "constraints": [],
-                        "core_keywords": [keyword],
-                        "semantic_aliases": {},
-                        "strict_reuse_group": "general_reuse",
-                        "strict_reuse_confidence": 0.9,
-                        "strict_reuse_reason": f"belongs to scene illustration: {keyword}",
-                    }
-                ]
-            }
-
-    def make_target(prompt: str) -> dict:
-        return _build_reuse_target_asset(
-            asset_kind="page_image",
-            prompt=prompt,
-            prompt_route=None,
-            background_route=None,
-            theme="biology lesson",
-            grade="grade 3",
-            subject="science",
-            page_title="animals",
-            page_type="content",
-            role="illustration",
-            aspect_ratio="1:1",
-        )
-
-    client = FakeKeywordClient()
-    cache = {}
-    frog = _enrich_reuse_target_keywords_once(make_target("frog catches insects"), client, cache)
-    cat = _enrich_reuse_target_keywords_once(make_target("cat reads book"), client, cache)
-    frog_again = _enrich_reuse_target_keywords_once(make_target("frog catches insects"), client, cache)
-
-    assert client.calls == ["frog catches insects", "cat reads book"]
-    assert frog["core_keywords"] == ["frog"]
-    assert cat["core_keywords"] == ["cat"]
-    assert frog_again["core_keywords"] == ["frog"]
-    assert len(cache) == 2
-    assert all(key.startswith("target:") for key in cache)
-
-
-def test_page_image_core_keywords_come_from_llm_payload_and_are_cleaned():
-    class FakeKeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            return {
-                "assets": [
-                    {
-                        "asset_id": "page",
-                        "normalized_prompt": "小蝌蚪举旗子",
-                        "context_summary": "目录页引导插图",
-                        "teaching_intent": "引导学习路径",
-                        "asset_category": "character_action",
-                        "constraints": [
-                            {"kind": "entity", "value": "小蝌蚪", "importance": 1},
-                            {"kind": "action", "value": "举旗子", "importance": 1},
-                            {"kind": "object", "value": "旗子", "importance": 1},
-                            {"kind": "scene", "value": "池塘", "importance": 0},
-                        ],
-                        "core_keywords": ["小蝌蚪", "举旗子", "旗子", "池塘的场景", "教学配图", "卡通小蝌蚪插画"],
-                        "semantic_aliases": {"小蝌蚪": ["蝌蚪幼体"], "举旗子": ["挥旗"]},
-                    }
-                ]
-            }
+    for name in ("skip", "keep", "legacy_default"):
+        (image_dir / f"{name}.png").write_bytes(name.encode("ascii"))
 
     db = {
         "schema_version": 1,
         "assets": [
-            {
-                "asset_id": "page",
-                "asset_kind": "page_image",
-                "image_path": "page.png",
-                "content_prompt": "小蝌蚪举旗子",
-            }
-        ],
-    }
-
-    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
-
-    asset = db["assets"][0]
-    policy = normalize_reuse_policy_fields(asset)
-    assert asset["core_keywords"] == ["小蝌蚪", "举旗子", "旗子"]
-    assert "池塘" not in asset["core_keywords"]
-    assert asset["semantic_aliases"] == {"小蝌蚪": ["蝌蚪幼体"], "举旗子": ["挥旗"]}
-    assert policy["reuse_level"] == "medium"
-    assert policy["asset_category"] == "character_action"
-
-
-def test_text_math_physics_core_keywords_are_llm_payload_and_constraints_drive_strict_policy():
-    for kind, value in (("text", "比"), ("math", "a²+b²=c²"), ("physics", "F=ma")):
-        constraints = [{"kind": kind, "value": value, "importance": 2}]
-        asset = {
-            "asset_kind": "page_image",
-            "asset_category": "content_specific",
-            "constraints": constraints,
-            "core_keywords": [value],
-        }
-
-        assert value in asset["core_keywords"]
-        assert normalize_reuse_policy_fields(asset)["reuse_level"] == "strict"
-
-
-def test_zero_importance_constraints_make_loose_policy():
-    policy = normalize_reuse_policy_fields(
-        {
-            "asset_kind": "page_image",
-            "asset_category": "learning_behavior",
-            "constraints": [
-                {"kind": "entity", "value": "学生", "importance": 0},
-                {"kind": "action", "value": "读书", "importance": 0},
-            ],
-        }
-    )
-
-    assert policy["reuse_level"] == "loose"
-    assert policy["generic_support_allowed"] is True
-
-
-def test_asset_category_forces_loose_for_decorative_kinds():
-    """learning_behavior / generic_tool / generic_diagram are decorative kinds:
-    they bypass constraint filtering and force loose, even when constraints exist.
-    Other categories derive reuse_level from constraints normally."""
-
-    constraints = [{"kind": "action", "value": "挥手告别", "importance": 1}]
-    learning = normalize_reuse_policy_fields(
-        {"asset_kind": "page_image", "asset_category": "learning_behavior", "constraints": constraints}
-    )
-    content = normalize_reuse_policy_fields(
-        {"asset_kind": "page_image", "asset_category": "content_specific", "constraints": constraints}
-    )
-
-    assert learning["reuse_level"] == "loose"
-    assert learning["generic_support_allowed"] is True
-    assert content["reuse_level"] == "medium"
-    assert content["generic_support_allowed"] is False
-
-
-def test_decorative_category_forces_loose_review_threshold_and_gate_profile():
-    constraints = [{"kind": "action", "value": "挥手告别", "importance": 1}]
-    learning = {"asset_kind": "page_image", "asset_category": "learning_behavior", "constraints": constraints}
-    content = {"asset_kind": "page_image", "asset_category": "content_specific", "constraints": constraints}
-    loose_learning = {"asset_kind": "page_image", "asset_category": "learning_behavior", "constraints": []}
-
-    # learning_behavior is forced loose regardless of constraints
-    assert _reuse_gate_profile(learning) == "loose"
-    assert _reuse_gate_profile(loose_learning) == "loose"
-    # content_specific derives medium from imp=1 constraint
-    assert _reuse_gate_profile(content) == "medium"
-    # Loose threshold lowered from 0.60 → 0.55: loose covers decorative and
-    # background-like slots that have no exact-content gating, so 二次评审
-    # only needs to confirm visual plausibility.
-    assert _reuse_review_accept_score_threshold(loose_learning) == 0.55
-
-
-def test_strict_semantic_gray_review_ignores_asset_category():
-    weak_target = {
-        "asset_kind": "page_image",
-        "theme": "同一主题",
-        "asset_category": "content_specific",
-        "constraints": [{"kind": "action", "value": "观察", "importance": 1}],
-    }
-    weak_candidate = {
-        "asset": {
-            "asset_kind": "page_image",
-            "theme": "同一主题",
-            "asset_category": "content_specific",
-            "constraints": [{"kind": "action", "value": "观察", "importance": 1}],
-        }
-    }
-
-    assert not _is_strict_semantic_gray_review_candidate(
-        weak_target,
-        weak_candidate,
-        bm25_score=1.0,
-        embedding_score=1.0,
-        substring_score=1.0,
-    )
-
-    strict_constraints = [{"kind": "text", "value": "比", "importance": 2}]
-    learning_target = {
-        "asset_kind": "page_image",
-        "theme": "同一主题",
-        "asset_category": "learning_behavior",
-        "constraints": strict_constraints,
-    }
-    content_target = {
-        **learning_target,
-        "asset_category": "content_specific",
-    }
-
-    assert _is_strict_semantic_gray_review_candidate(
-        learning_target,
-        weak_candidate,
-        bm25_score=1.0,
-        embedding_score=1.0,
-        substring_score=1.0,
-    )
-    assert _is_strict_semantic_gray_review_candidate(
-        content_target,
-        weak_candidate,
-        bm25_score=1.0,
-        embedding_score=1.0,
-        substring_score=1.0,
-    )
-
-
-def test_style_usage_quality_llm_core_keywords_are_cleaned():
-    class FakeKeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            return {
-                "assets": [
-                    {
-                        "asset_id": "page",
-                        "normalized_prompt": "小蝌蚪",
-                        "context_summary": "课堂导入插图",
-                        "teaching_intent": "引导观察",
-                        "asset_category": "character_action",
-                        "constraints": [],
-                        "core_keywords": ["卡通小蝌蚪插画", "教学配图", "适合课堂导入"],
-                    }
-                ]
-            }
-
-    db = {
-        "schema_version": 1,
-        "assets": [
-            {
-                "asset_id": "page",
-                "asset_kind": "page_image",
-                "image_path": "page.png",
-                "content_prompt": "卡通小蝌蚪插画，适合课堂导入",
-            }
-        ],
-    }
-
-    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
-
-    keywords = db["assets"][0]["core_keywords"]
-    assert keywords == ["小蝌蚪"]
-    assert "教学配图" not in keywords
-    assert "适合课堂导入" not in keywords
-
-
-def test_semantic_aliases_preserve_llm_aliases_after_basic_cleaning():
-    class FakeKeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            return {
-                "assets": [
-                    {
-                        "asset_id": "page",
-                        "normalized_prompt": "小蝌蚪举旗子",
-                        "context_summary": "目录页引导插图",
-                        "teaching_intent": "引导学习路径",
-                        "asset_category": "character_action",
-                        "constraints": [
-                            {"kind": "entity", "value": "小蝌蚪", "importance": 1},
-                            {"kind": "action", "value": "举旗子", "importance": 1},
-                        ],
-                        "core_keywords": ["小蝌蚪", "举旗子"],
-                        "semantic_aliases": {
-                            "小蝌蚪": ["蝌蚪幼体", "", "蝌蚪幼体"],
-                            "举旗子": ["挥旗"],
-                            "": ["ignored"],
-                            "空值": ["", None],
-                        },
-                    }
-                ]
-            }
-
-    db = {
-        "schema_version": 1,
-        "assets": [
-            {
-                "asset_id": "page",
-                "asset_kind": "page_image",
-                "image_path": "page.png",
-                "content_prompt": "小蝌蚪举旗子",
-            }
-        ],
-    }
-
-    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
-
-    asset = db["assets"][0]
-    assert asset["core_keywords"] == ["小蝌蚪", "举旗子"]
-    assert asset["semantic_aliases"] == {"小蝌蚪": ["蝌蚪幼体"], "举旗子": ["挥旗"]}
-
-
-def test_empty_constraints_do_not_remove_llm_core_keywords():
-    class FakeKeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            return {
-                "assets": [
-                    {
-                        "asset_id": "page",
-                        "normalized_prompt": "史铁生肖像",
-                        "context_summary": "作者介绍页素材",
-                        "teaching_intent": "展示作者形象",
-                        "asset_category": "content_specific",
-                        "constraints": [],
-                        "core_keywords": ["史铁生", "肖像"],
-                        "semantic_aliases": {"史铁生": ["史铁生作者"]},
-                    }
-                ]
-            }
-
-    db = {
-        "schema_version": 1,
-        "assets": [
-            {
-                "asset_id": "page",
-                "asset_kind": "page_image",
-                "image_path": "page.png",
-                "content_prompt": "史铁生肖像",
-            }
-        ],
-    }
-
-    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
-
-    asset = db["assets"][0]
-    assert asset["constraints"] == []
-    assert asset["core_keywords"] == ["史铁生", "肖像"]
-    assert asset["semantic_aliases"] == {"史铁生": ["史铁生作者"]}
-    assert normalize_reuse_policy_fields(asset)["reuse_level"] == "loose"
-    match_asset = _normalize_asset_for_match(asset, for_target=True)
-    assert match_asset["core_keywords"] == ["史铁生", "肖像"]
-    assert "史铁生" in _build_match_text(match_asset)
-
-
-def test_empty_llm_core_keywords_fallback_from_content_prompt(caplog):
-    """When the LLM omits core_keywords, the asset_db must fall back to
-    extracting tokens from content_prompt instead of shipping an empty list.
-
-    An empty core_keywords field breaks BM25/substring recall (see the 3
-    empty 比尾巴 assets in materials_library: aiimg_c217.../c4b2.../8a52...
-    which became unrecallable). The fallback should emit a fallback warning
-    so the failure mode stays visible in logs."""
-
-    class FakeKeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            return {
-                "assets": [
-                    {
-                        "asset_id": "page",
-                        "normalized_prompt": "小蝌蚪举旗子",
-                        "context_summary": "目录页引导插图",
-                        "teaching_intent": "引导学习路径",
-                        "asset_category": "character_action",
-                        "constraints": [
-                            {"kind": "entity", "value": "小蝌蚪", "importance": 1},
-                            {"kind": "action", "value": "举旗子", "importance": 1},
-                        ],
-                        "core_keywords": [],
-                        "semantic_aliases": {"小蝌蚪": ["蝌蚪幼体"]},
-                    }
-                ]
-            }
-
-    caplog.set_level("WARNING", logger="edupptx.materials.ai_image_asset_db")
-    db = {
-        "schema_version": 1,
-        "assets": [
-            {
-                "asset_id": "page",
-                "asset_kind": "page_image",
-                "image_path": "page.png",
-                "content_prompt": "小蝌蚪举旗子",
-            }
-        ],
-    }
-
-    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
-
-    asset = db["assets"][0]
-    assert asset["constraints"]
-    assert asset["core_keywords"], "fallback should extract tokens from content_prompt"
-    assert "小蝌蚪" in "".join(asset["core_keywords"])
-    assert asset["semantic_aliases"] == {"小蝌蚪": ["蝌蚪幼体"]}
-    assert "page_image_core_keywords_fallback" in caplog.text
-
-
-def test_background_keeps_llm_core_keywords_without_constraints_or_category():
-    class FakeKeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            return {
-                "assets": [
-                    {
-                        "asset_id": "bg",
-                        "normalized_prompt": "清透蓝色课堂背景",
-                        "context_summary": "低干扰背景",
-                        "teaching_intent": "承载文字内容",
-                        "core_keywords": ["清透蓝色", "课堂背景"],
-                        "semantic_aliases": {"课堂背景": ["教学背景"]},
-                        "context_summary_keywords": ["低干扰"],
-                        "constraints": [{"kind": "scene", "value": "教室", "importance": 2}],
-                        "asset_category": "content_specific",
-                    }
-                ]
-            }
-
-    db = {
-        "schema_version": 1,
-        "assets": [
-            {
-                "asset_id": "bg",
-                "asset_kind": "background",
-                "image_path": "bg.png",
-                "content_prompt": "清透蓝色课堂背景",
-            }
-        ],
-    }
-
-    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
-
-    asset = db["assets"][0]
-    assert asset["core_keywords"] == ["清透蓝色", "课堂背景"]
-    assert asset["semantic_aliases"] == {"课堂背景": ["教学背景"]}
-    assert set(asset) == {
-        "asset_id",
-        "asset_kind",
-        "image_path",
-        "aspect_ratio",
-        "role",
-        "theme",
-        "subject",
-        "grade_norm",
-        "grade_band",
-        "unit_ref",
-        "topic_refs",
-        "content_prompt",
-        "background_route",
-        "normalized_prompt",
-        "color_temperature",
-        "context_summary",
-        "teaching_intent",
-        "core_keywords",
-        "semantic_aliases",
-        "context_summary_keywords",
-    }
-    assert "constraints" not in asset
-    assert "asset_category" not in asset
-
-
-def test_old_policy_fields_and_source_library_are_removed_from_final_asset():
-    class FakeKeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            return {
-                "assets": [
-                    {
-                        "asset_id": "page",
-                        "normalized_prompt": "character bi teaching card",
-                        "context_summary": "specific text card",
-                        "teaching_intent": "teach the exact character",
-                        "asset_category": "content_specific",
-                        "constraints": [{"kind": "text", "value": "比", "importance": 2}],
-                        "semantic_aliases": {"比": ["比字"]},
-                    }
-                ]
-            }
-
-    db = {
-        "schema_version": 1,
-        "assets": [
-            {
-                "asset_id": "page",
-                "asset_kind": "page_image",
-                "image_path": "page.png",
-                "content_prompt": "character bi teaching card",
-                "reuse_level": "loose",
-                "generic_support_allowed": True,
-                "strict_score": 0.0,
-                "loose_score": 1.0,
-                "reuse_scores": {"strict_score": 0.0},
-                "reuse_risk": {"unique_referent": {"required": False}},
-                "source": {"session_id": "session_source", "source_output_root": "/tmp/source"},
-                "library": {"source_output_root": "/tmp/library"},
-            }
-        ],
-    }
-
-    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient())
-
-    asset = db["assets"][0]
-    policy = normalize_reuse_policy_fields(asset)
-    assert policy["reuse_level"] == "strict"
-    for field in (
-        "reuse_level",
-        "generic_support_allowed",
-        "strict_score",
-        "loose_score",
-        "reuse_scores",
-        "reuse_risk",
-        "source",
-        "library",
-    ):
-        assert field not in asset
-    assert set(asset) == {
-        "asset_id",
-        "asset_kind",
-        "image_path",
-        "aspect_ratio",
-        "role",
-        "page_type",
-        "theme",
-        "subject",
-        "grade_norm",
-        "grade_band",
-        "unit_ref",
-        "topic_refs",
-        "content_prompt",
-        "detail_prompt",
-        "context_summary",
-        "teaching_intent",
-        "context_summary_keywords",
-        "asset_category",
-        "constraints",
-        "core_keywords",
-        "semantic_aliases",
-        "duplicate_asset_ids",
-    }
-
-
-def test_asset_construction_path_has_no_finalize_prune_helpers():
-    import edupptx.materials.ai_image_asset_db as asset_db
-
-    for name in (
-        "_finalize_asset_db_for_storage",
-        "_apply_final_field_set",
-        "_PAGE_IMAGE_FINAL_FIELDS",
-        "_BACKGROUND_FINAL_FIELDS",
-        "_filter_semantic_aliases_for_core_keywords",
-        "_filter_semantic_aliases_by_core_keywords",
-    ):
-        assert not hasattr(asset_db, name)
-
-
-def test_retrieval_text_sources_remain_prompt_and_context_rich():
-    asset = {
-        "asset_kind": "page_image",
-        "content_prompt": "史铁生肖像插图",
-        "normalized_prompt": "史铁生肖像",
-        "context_summary": "作者介绍页使用",
-        "teaching_intent": "介绍作者背景",
-        "context_summary_keywords": ["作者介绍"],
-        "constraints": [{"kind": "entity", "value": "史铁生", "importance": 2}],
-        "core_keywords": ["史铁生", "肖像"],
-    }
-
-    match_text = _build_match_text(asset)
-    embedding_text = _asset_embedding_text(asset)
-    hybrid_text = _candidate_hybrid_text(asset)
-
-    assert "史铁生" in asset["core_keywords"]
-    for text in (match_text, embedding_text, hybrid_text):
-        assert "史铁生肖像" in text
-        assert "作者介绍" in text or "作者介绍页使用" in text
-    assert match_text != "史铁生"
-
-
-def test_infers_grade_and_subject_from_plan_context():
-    assert infer_grade("七年级语文《秋天的怀念》课文教学", "七年级学生、初中语文教师") == "七年级"
-    assert infer_subject("七年级语文《秋天的怀念》课文教学", "七年级学生、初中语文教师") == "语文"
-    assert infer_grade_band("三年级") == "低年级"
-    assert infer_grade_band("四年级") == "高年级"
-    assert infer_grade_band("七年级") == "高年级"
-
-
-def test_route_match_text_uses_route_fields_not_generation_prompt_terms():
-    text = _route_match_text(
-        {
-            "asset_kind": "page_image",
-            "role": "illustration",
-            "page_type": "content",
-            "grade_band": "低年级",
-            "style_prompt": "profile style role only page only wide layout quality only no text",
-            "prompt_route": {
-                "template_family": "lower",
-                "profile_ids": ["profile_a"],
-                "profile_prompt_terms": ["profile style"],
-                "role_prompt_terms": ["role only"],
-                "page_type_prompt_terms": ["page only"],
-                "aspect_ratio_prompt_terms": ["wide layout"],
-                "quality_terms": ["quality only"],
-                "negative_terms": ["no text"],
-            },
-        }
-    )
-
-    assert "illustration" in text
-    assert "低年级" in text
-    assert "content" not in text
-    assert "lower" not in text
-    assert "profile_a" not in text
-    assert "profile style" not in text
-    assert "wide layout" not in text
-    assert "role only" not in text
-    assert "page only" not in text
-    assert "quality only" not in text
-    assert "no text" not in text
-
-
-def test_reuse_score_keyword_signals_are_limited_to_core_keywords():
-    target = {
-        "asset_kind": "page_image",
-        "reuse_scope": "visual_generic",
-        "content_prompt": "",
-        "normalized_prompt": "",
-        "core_keywords": [],
-        "main_entities": ["same entity"],
-        "visual_actions": ["same action"],
-        "scene_elements": ["same scene"],
-        "context_keywords": ["same context"],
-    }
-    candidate = {
-        "asset_kind": "page_image",
-        "reuse_scope": "visual_generic",
-        "content_prompt": "",
-        "normalized_prompt": "",
-        "core_keywords": [],
-        "main_entities": ["same entity"],
-        "visual_actions": ["same action"],
-        "scene_elements": ["same scene"],
-        "context_keywords": ["same context"],
-    }
-
-    details = _score_reuse_candidate_details(target, candidate)
-
-    assert details["score"] == 0.0
-    assert details["reject_reason"] == "no_content_match"
-
-    target["core_keywords"] = ["author portrait"]
-    candidate["content_prompt"] = "author portrait"
-
-    details = _score_reuse_candidate_details(target, candidate)
-
-    assert details["score"] > 0
-    assert details["core_score"] == 1.0
-    assert "main_entity_score" not in details
-
-
-def test_constraints_do_not_enter_primary_match_text():
-    match_text = _build_match_text(
-        {
-            "asset_kind": "page_image",
-            "content_prompt": "ordinary classroom study illustration",
-            "normalized_prompt": "ordinary classroom study illustration",
-            "core_keywords": ["classroom"],
-            "constraints": [
-                {"kind": "entity", "value": "小猴子", "importance": 2, "match_mode": "exact"}
-            ],
-        }
-    )
-
-    assert "classroom" in match_text
-    assert "小猴子" not in match_text
-
-
-def test_background_reuse_score_uses_prompt_and_color_bias_only():
-    target = {
-        "asset_kind": "background",
-        "content_prompt": "淡雅秋日课堂背景",
-        "normalized_prompt": "淡雅秋日课堂背景",
-        "core_keywords": ["淡雅秋日课堂背景"],
-        "background_route": {
-            "background_color_bias": "偏暖米色和浅棕色，秋日氛围",
-            "template_family": "高年级",
-            "style_name": "A",
-            "palette_id": "warm",
-        },
-        "subject": "语文",
-        "grade": "七年级",
-    }
-    same_bias_candidate = {
-        "asset_kind": "background",
-        "content_prompt": "淡雅秋日课堂背景",
-        "normalized_prompt": "淡雅秋日课堂背景",
-        "background_route": {
-            "background_color_bias": "偏暖米色和浅棕色，秋日氛围",
-            "template_family": "低年级",
-            "style_name": "B",
-            "palette_id": "other",
-        },
-        "subject": "数学",
-        "grade": "一年级",
-    }
-    different_bias_candidate = {
-        **same_bias_candidate,
-        "background_route": {
-            "background_color_bias": "偏深蓝色，冷静科技感",
-            "template_family": "低年级",
-            "style_name": "B",
-            "palette_id": "other",
-        },
-    }
-
-    same_details = _score_reuse_candidate_details(target, same_bias_candidate)
-    different_details = _score_reuse_candidate_details(target, different_bias_candidate)
-
-    assert same_details["background_prompt_match_score"] >= 0.8
-    assert same_details["background_color_bias_used"] is True
-    assert same_details["background_color_bias_match_score"] == 1.0
-    assert same_details["route_score"] == 0.0
-    assert same_details["context_score"] == 0.0
-    assert different_details["background_prompt_match_score"] == same_details["background_prompt_match_score"]
-    assert different_details["background_reuse_score"] < same_details["background_reuse_score"]
-    assert round(different_details["background_reuse_score"], 4) == round(
-        0.85 * different_details["background_prompt_match_score"],
-        4,
-    )
-
-
-def test_semantic_aliases_score_by_concept_group():
-    target = {
-        "asset_kind": "page_image",
-        "content_prompt": "",
-        "normalized_prompt": "",
-        "core_keywords": ["author portrait"],
-        "semantic_aliases": {
-            "author portrait": ["person portrait", "writer headshot", "author image"],
-        },
-    }
-    candidate = {
-        "asset_kind": "page_image",
-        "content_prompt": "person portrait",
-        "normalized_prompt": "",
-    }
-
-    details = _score_reuse_candidate_details(target, candidate)
-
-    assert details["score"] > 0
-    assert details["core_score"] == 1.0
-    assert details["core_hits"][0]["concept"] == "author portrait"
-    assert details["core_hits"][0]["matched_term"] == "person portrait"
-
-
-def test_semantic_aliases_average_across_core_concepts():
-    target = {
-        "asset_kind": "page_image",
-        "content_prompt": "",
-        "normalized_prompt": "",
-        "core_keywords": ["author portrait", "autumn chrysanthemum"],
-        "semantic_aliases": {
-            "author portrait": ["person portrait"],
-            "autumn chrysanthemum": ["flower"],
-        },
-    }
-    candidate = {
-        "asset_kind": "page_image",
-        "content_prompt": "person portrait",
-        "normalized_prompt": "",
-    }
-
-    details = _score_reuse_candidate_details(target, candidate)
-
-    assert 0.49 <= details["core_score"] <= 0.51
-    assert details["missing_core_groups"] == ["autumn chrysanthemum"]
-
-
-def test_content_bm25_uses_target_keywords_not_target_prompt_sentence():
-    target = {
-        "asset_kind": "page_image",
-        "content_prompt": "cartoon tadpole holding a flag",
-        "normalized_prompt": "cartoon tadpole holding a flag",
-        "core_keywords": ["author portrait"],
-        "semantic_aliases": {"author portrait": ["writer headshot"]},
-    }
-    candidate = {
-        "asset_kind": "page_image",
-        "content_prompt": "cartoon tadpole holding a flag",
-        "normalized_prompt": "cartoon tadpole holding a flag",
-    }
-
-    details = _score_reuse_candidate_details(target, candidate)
-
-    assert details["score"] == 0.0
-    assert details["reject_reason"] == "no_content_match"
-    assert "content_score" not in details
-    assert details["missing_core_groups"] == ["author portrait"]
-
-
-def test_context_score_uses_target_keywords_against_candidate_summary_sentence():
-    target = {
-        "asset_kind": "page_image",
-        "content_prompt": "",
-        "normalized_prompt": "",
-        "core_keywords": ["author portrait"],
-        "context_summary": "guide page illustration",
-        "context_summary_keywords": ["profile"],
-    }
-    candidate = {
-        "asset_kind": "page_image",
-        "content_prompt": "author portrait",
-        "normalized_prompt": "",
-        "context_summary": "author profile slide support image",
-        "context_summary_keywords": ["unrelated keyword"],
-    }
-
-    details = _score_reuse_candidate_details(target, candidate)
-
-    assert details["score"] > 0
-    assert details["target_context_summary_keywords"] == ["profile"]
-    assert details["context_score"] > 0
-    assert details["context_bm25_score"] > 0
-    assert details["context_substring_score"] > 0
-    assert any(hit["target"] == "profile" for hit in details["context_hits"])
-
-    with_embedding = _score_reuse_candidate_details(target, candidate, context_embedding_score=1.0)
-    assert with_embedding["context_embedding_score"] == 1.0
-    assert with_embedding["context_score"] >= details["context_score"]
-
-
-def test_context_score_does_not_use_target_summary_or_candidate_context_keywords():
-    target = {
-        "asset_kind": "page_image",
-        "content_prompt": "",
-        "normalized_prompt": "",
-        "core_keywords": ["author portrait"],
-        "context_summary": "guide page illustration",
-        "context_summary_keywords": [],
-    }
-    candidate = {
-        "asset_kind": "page_image",
-        "content_prompt": "author portrait",
-        "normalized_prompt": "",
-        "context_summary": "plain support image",
-        "context_summary_keywords": ["guide"],
-    }
-
-    details = _score_reuse_candidate_details(target, candidate)
-
-    assert details["score"] > 0
-    assert details["target_context_summary_keywords"] == []
-    assert details["context_score"] == 0.0
-    assert details["context_hits"] == []
-
-
-def test_route_score_uses_role_and_grade_family_weights():
-    target = {
-        "asset_kind": "page_image",
-        "content_prompt": "",
-        "core_keywords": ["author portrait"],
-        "role": "hero",
-        "page_type": "cover",
-        "grade_band": "高年级",
-        "aspect_ratio": "16:9",
-    }
-    candidate = {
-        "asset_kind": "page_image",
-        "content_prompt": "author portrait",
-        "role": "hero",
-        "page_type": "content",
-        "grade_band": "高年级",
-        "aspect_ratio": "4:3",
-    }
-
-    details = _score_reuse_candidate_details(target, candidate)
-
-    assert details["core_score"] == 1.0
-    assert round(details["route_score"], 4) == 1.0
-    assert details["route_role_match"] == 1.0
-    assert details["route_grade_family_match"] == 1.0
-    assert "route_page_type_match" not in details
-    assert details["aspect_score"] == 0.6
-
-
-def test_route_score_ignores_prompt_route_template_family_for_grade_match():
-    target = {
-        "asset_kind": "page_image",
-        "content_prompt": "",
-        "normalized_prompt": "",
-        "core_keywords": ["author portrait"],
-        "prompt_route": {
-            "template_family": "upper",
-            "profile_ids": ["upper_grade_base"],
-        },
-        "aspect_ratio": "16:9",
-    }
-    candidate = {
-        "asset_kind": "page_image",
-        "content_prompt": "author portrait",
-        "normalized_prompt": "",
-        "prompt_route": {
-            "template_family": "upper",
-            "profile_ids": ["upper_grade_analysis"],
-        },
-        "aspect_ratio": "16:9",
-    }
-
-    details = _score_reuse_candidate_details(target, candidate)
-
-    assert details["core_score"] == 1.0
-    assert details["route_score"] == 0.0
-    assert details["route_grade_family_match"] == 0.0
-
-
-def test_builds_ai_image_asset_db_from_output_sessions(tmp_path):
-    output_root = tmp_path / "output"
-    session_dir = output_root / "session_20260506_111550"
-    materials_dir = session_dir / "materials"
-    materials_dir.mkdir(parents=True)
-    (materials_dir / "background.png").write_bytes(b"bg")
-    (materials_dir / "page_01_hero_1.png").write_bytes(b"hero")
-    (materials_dir / "page_02_illustration_1.png").write_bytes(b"search")
-
-    plan = {
-        "meta": {
-            "topic": "七年级语文《秋天的怀念》课文教学",
-            "audience": "七年级学生、初中语文教师",
-        },
-        "visual": {
-            "background_prompt": "淡雅秋日课堂背景",
-            "background_color_bias": "偏暖米色和浅棕色，秋日氛围",
-        },
-        "style_routing": {
-            "template_family": "高年级",
-        },
-        "pages": [
-            {
-                "page_number": 1,
-                "title": "秋天的怀念",
-                "material_needs": {
-                    "images": [
-                        {
-                            "query": "深秋北海公园菊花盛放的静谧场景",
-                            "generation_prompt": "深秋北海公园菊花盛放的静谧场景，高年级编辑感风格",
-                            "prompt_route": {
-                                "template_family": "高年级",
-                                "profile_ids": ["upper_grade_base"],
-                                "profile_prompt_terms": ["高年级编辑感风格"],
-                            },
-                            "source": "ai_generate",
-                            "role": "hero",
-                            "aspect_ratio": "16:9",
-                        }
-                    ]
-                },
-            },
-            {
-                "page_number": 2,
-                "title": "搜索图不会入库",
-                "material_needs": {
-                    "images": [
-                        {
-                            "query": "web search image",
-                            "source": "search",
-                            "role": "illustration",
-                            "aspect_ratio": "4:3",
-                        }
-                    ]
-                },
-            },
-        ],
-    }
-    (session_dir / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
-
-    db = build_ai_image_asset_db(output_root)
-
-    assert db["asset_count"] == 2
-    prompts = {asset["content_prompt"] for asset in db["assets"]}
-    assert prompts == {"淡雅秋日课堂背景", "深秋北海公园菊花盛放的静谧场景"}
-    background_asset = next(asset for asset in db["assets"] if asset["asset_kind"] == "background")
-    assert background_asset["content_prompt"] == "淡雅秋日课堂背景"
-    assert background_asset["background_route"]["background_color_bias"] == "偏暖米色和浅棕色，秋日氛围"
-    page_asset = next(asset for asset in db["assets"] if asset["asset_kind"] == "page_image")
-    assert page_asset["content_prompt"] == "深秋北海公园菊花盛放的静谧场景"
-    assert "prompt_route" not in page_asset
-    assert "normalized_prompt" not in page_asset
-    for asset in db["assets"]:
-        assert "prompt" not in asset
-        assert "generation_prompt" not in asset
-        assert "source" not in asset
-        assert "library" not in asset
-        assert asset["theme"] == "七年级语文《秋天的怀念》课文教学"
-        assert asset["topic_refs"] == ["秋天的怀念"]
-        assert asset["grade_norm"] == "七年级"
-        assert asset["subject"] == "语文"
-        assert asset["image_path"].startswith("session_20260506_111550/materials/")
-
-
-def test_default_context_summary_describes_slide_function_not_visible_query(tmp_path):
-    output_root = tmp_path / "output"
-    session_dir = output_root / "session_20260506_111550"
-    materials_dir = session_dir / "materials"
-    materials_dir.mkdir(parents=True)
-    (materials_dir / "page_02_illustration_1.png").write_bytes(b"image")
-
-    plan = {
-        "meta": {"topic": "lesson", "audience": "grade"},
-        "pages": [
-            {
-                "page_number": 2,
-                "page_type": "toc",
-                "title": "Learning Path",
-                "material_needs": {
-                    "images": [
-                        {
-                            "query": "cartoon tadpole holding a flag",
-                            "source": "ai_generate",
-                            "role": "illustration",
-                            "aspect_ratio": "3:4",
-                        }
-                    ]
-                },
-            }
-        ],
-    }
-    (session_dir / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
-
-    db = build_ai_image_asset_db(output_root)
-
-    asset = db["assets"][0]
-    assert asset["context_summary"].startswith("Learning Path")
-    assert "学习路径" in asset["context_summary"]
-    assert "cartoon tadpole holding a flag" not in asset["context_summary"]
-
-
-def test_enriches_asset_db_keywords_with_llm_payload():
-    class FakeKeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            assert any(term in messages[1]["content"] for term in ("史铁生肖像", "汉字拼音标注"))
-            return {
-                "assets": [
-                    {
-                        "asset_id": "aiimg_author",
-                        "normalized_prompt": "史铁生肖像",
-                        "context_summary": "作者背景页的史铁生肖像素材",
-                        "reuse_scope": "course_specific",
-                        "specificity_score": 5,
-                        "core_keywords": ["史铁生", "肖像", "插画"],
-                        "asset_category": "content_specific",
-                        "constraints": [
-                            {"kind": "entity", "value": "史铁生", "importance": 2},
-                            {"kind": "object", "value": "肖像", "importance": 1},
-                        ],
-                        "context_keywords": ["七年级语文", "秋天的怀念", "作者介绍"],
-                        "style_keywords": ["线条简洁", "插画"],
-                    },
-                    {
-                        "asset_id": "aiimg_pinyin",
-                        "normalized_prompt": "汉字拼音标注教学示意",
-                        "context_summary": "生字词正音页的汉字拼音教学示意",
-                        "reuse_scope": "subject_generic",
-                        "specificity_score": 2,
-                        "core_keywords": ["汉字", "拼音标注", "教学示意"],
-                        "asset_category": "content_specific",
-                        "constraints": [
-                            {"kind": "text", "value": "汉字", "importance": 2},
-                            {"kind": "object", "value": "拼音标注", "importance": 1},
-                        ],
-                        "context_keywords": ["七年级语文", "秋天的怀念", "生字词正音"],
-                        "style_keywords": ["简洁清晰"],
-                    }
-                ]
-            }
-
-    db = {
-        "schema_version": 1,
-        "assets": [
-            {
-                "asset_id": "aiimg_author",
-                "asset_kind": "page_image",
-                "image_path": "session/materials/page_04_illustration_1.png",
-                "prompt": "史铁生肖像插画，编辑感风格，线条简洁",
-                "theme": "七年级语文《秋天的怀念》课文教学",
-                "grade": "七年级",
-                "subject": "语文",
-                "source": {"page_title": "作者与背景介绍"},
-            },
-            {
-                "asset_id": "aiimg_pinyin",
-                "asset_kind": "page_image",
-                "image_path": "session/materials/page_07_illustration_1.png",
-                "prompt": "汉字拼音标注教学示意图，编辑感风格，简洁清晰",
-                "theme": "七年级语文《秋天的怀念》课文教学",
-                "grade": "七年级",
-                "subject": "语文",
-                "source": {"page_title": "生字词正音"},
-            },
-        ],
-        "warnings": [],
-    }
-
-    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient(), batch_size=1)
-
-    author = db["assets"][0]
-    pinyin = db["assets"][1]
-    assert db["schema_version"] == 13
-    assert db["keyword_builder"]["method"] == "llm_reuse_metadata_extraction"
-    assert db["keyword_builder"]["model"] == "fake-keyword-model"
-    assert "reuse_scope" not in author
-    assert author["context_summary"] == "作者背景页的史铁生肖像素材"
-    assert "specificity_score" not in author
-    assert author["core_keywords"] == ["史铁生", "肖像"]
-    assert author["semantic_aliases"] == {}
-    assert "source" not in author
-    assert "context_keywords" not in author
-    assert "style_keywords" not in author
-    assert "match_key" not in author
-
-    assert "reuse_scope" not in pinyin
-    assert pinyin["context_summary"] == "生字词正音页的汉字拼音教学示意"
-    assert pinyin["core_keywords"] == ["汉字", "拼音标注"]
-    assert "context_keywords" not in pinyin
-    assert "match_key" not in pinyin
-
-
-def test_keyword_enrichment_uses_same_schema_and_llm_core_keywords():
-    class FakeKeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            assert "context_summary_keywords" in messages[0]["content"]
-            assert "page_image 结构" in messages[0]["content"]
-            assert "background 结构" in messages[0]["content"]
-            assert "core_keywords" in messages[0]["content"]
-            assert "AI 图像复用元数据规则" in messages[0]["content"]
-            assert "constraints" in messages[0]["content"]
-            assert "reuse_scores" not in messages[0]["content"]
-            assert "primary_subjects" not in messages[0]["content"]
-            assert "You are normalizing" not in messages[0]["content"]
-            assert messages[1]["content"].startswith("请按结构规范化以下素材")
-            assert "current_context_summary" not in messages[1]["content"]
-            assert "fallback summary should not be sent to llm" not in messages[1]["content"]
-            assert "generation_prompt" not in messages[1]["content"]
-            return {
-                "assets": [
-                    {
-                        "asset_id": "asset_author",
-                        "normalized_prompt": "作者肖像",
-                        "context_summary": "作者介绍页肖像素材",
-                        "teaching_intent": "展示作者形象",
-                        "core_keywords": ["作者", "肖像", "教学配图"],
-                        "semantic_aliases": {"作者": ["作家"], "肖像": ["人物肖像"]},
-                        "context_summary_keywords": ["作者介绍"],
-                        "constraints": [
-                            {
-                                "kind": "entity",
-                                "value": "作者",
-                                "importance": 2,
-                                "confidence": 0.8,
-                                "evidence": "请求作者肖像",
-                                "reason": "作者身份重要",
-                            },
-                            {
-                                "kind": "object",
-                                "value": "肖像",
-                                "importance": 1,
-                                "confidence": 0.8,
-                                "evidence": "请求肖像素材",
-                                "reason": "肖像形式重要",
-                            }
-                        ],
-                    }
-                ]
-            }
-
-    db = {
-        "schema_version": 1,
-        "assets": [
-            {
-                "asset_id": "asset_author",
-                "asset_kind": "page_image",
-                "image_path": "session/materials/page_01_illustration_1.png",
-                "content_prompt": "作者肖像",
-                "context_summary": "fallback summary should not be sent to llm",
-                "core_keywords": ["作者"],
-                "semantic_aliases": {"作者": ["作家"]},
-                "context_summary_keywords": ["课程"],
-            }
-        ],
-        "warnings": [],
-    }
-
-    enrich_ai_image_asset_db_keywords(db, FakeKeywordClient(), batch_size=1)
-
-    asset = db["assets"][0]
-    assert asset["core_keywords"] == ["作者", "肖像"]
-    assert asset["semantic_aliases"] == {"作者": ["作家"], "肖像": ["人物肖像"]}
-    assert asset["context_summary_keywords"] == ["课程", "作者介绍"]
-    assert asset["constraints"][0]["importance"] == 2
-    assert "match_mode" not in asset["constraints"][0]
-    assert "filter_threshold" not in asset["constraints"][0]
-    assert "core_constraints" not in asset
-
-
-def test_keyword_enrichment_offline_and_online_keep_same_policy_fields():
-    class FakeKeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            assets = []
-            for item in request["assets"]:
-                if item["asset_kind"] == "background":
-                    assets.append(
-                        {
-                            "asset_id": item["asset_id"],
-                            "normalized_prompt": "warm classroom background",
-                            "context_summary": "low noise visual background",
-                            "teaching_intent": "support readable lesson pages",
-                            "core_keywords": ["warm", "background"],
-                            "semantic_aliases": {"background": ["backdrop"]},
-                            "context_summary_keywords": ["low noise"],
-                            "primary_subjects": [{"name": "leaf", "strictness": "soft"}],
-                            "reuse_scores": {"strict_score": 1.0},
-                        }
-                    )
-                else:
-                    assets.append(
-                        {
-                            "asset_id": item["asset_id"],
-                            "normalized_prompt": "cartoon tadpole guiding classmates",
-                            "context_summary": "directory page guide illustration",
-                            "teaching_intent": "show the lesson guide role",
-                            "context_summary_keywords": ["guide"],
-                            "core_keywords": ["tadpole", "guide"],
-                            "constraints": [
-                                {"kind": "entity", "value": "tadpole", "importance": 1},
-                                {"kind": "action", "value": "guide", "importance": 1},
-                            ],
-                        }
-                    )
-            return {"assets": assets}
-
-    def make_db():
-        return {
-            "schema_version": 1,
-            "assets": [
-                {
-                    "asset_id": "bg",
-                    "asset_kind": "background",
-                    "image_path": "materials/background.png",
-                    "content_prompt": "warm classroom background",
-                },
-                {
-                    "asset_id": "page",
-                    "asset_kind": "page_image",
-                    "image_path": "materials/page_01_illustration_1.png",
-                    "content_prompt": "cartoon tadpole guiding classmates",
-                },
-            ],
-            "warnings": [],
-        }
-
-    offline = enrich_ai_image_asset_db_keywords(make_db(), FakeKeywordClient(), include_match_keywords=False)
-    online = enrich_ai_image_asset_db_keywords(make_db(), FakeKeywordClient(), include_match_keywords=True)
-
-    offline_page = next(asset for asset in offline["assets"] if asset["asset_id"] == "page")
-    online_page = next(asset for asset in online["assets"] if asset["asset_id"] == "page")
-    shared_fields = (
-        "normalized_prompt",
-        "context_summary",
-        "teaching_intent",
-        "core_keywords",
-        "semantic_aliases",
-        "context_summary_keywords",
-        "topic_refs",
-        "constraints",
-        "asset_category",
-    )
-    for field in shared_fields:
-        assert online_page.get(field) == offline_page.get(field)
-    assert offline_page["core_keywords"] == ["tadpole", "guide"]
-    assert offline_page["semantic_aliases"] == {}
-    for field in ("primary_subjects", "primary_actions", "primary_emotions", "teaching_objects", "soft_modifiers"):
-        assert field not in offline_page
-        assert field not in online_page
-    assert "match_text" not in offline_page
-    assert "match_text" in online_page
-
-    for db in (offline, online):
-        background = next(asset for asset in db["assets"] if asset["asset_id"] == "bg")
-        assert background["core_keywords"] == ["warm", "background"]
-        for field in ("primary_subjects", "constraints", "core_constraints", "reuse_scores", "reuse_level", "asset_category"):
-            assert field not in background
-
-
-def test_updates_reusable_asset_library_by_copying_images_and_merging_match_index(tmp_path, monkeypatch):
-    _patch_embedding_encoder(monkeypatch)
-
-    class FakeKeywordClient:
-        _model = "fake-keyword-model"
-
-        def chat_json(self, messages, **kwargs):
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            assets = []
-            for item in request["assets"]:
-                if item["asset_kind"] == "background":
-                    assets.append(
-                        {
-                            "asset_id": item["asset_id"],
-                            "normalized_prompt": "淡雅秋日课堂背景",
-                            "context_summary": "整套课件使用的低干扰秋日背景",
-                            "reuse_scope": "visual_generic",
-                            "specificity_score": 1,
-                            "core_keywords": ["秋日", "背景"],
-                            "context_keywords": [],
-                            "style_keywords": ["淡雅"],
-                        }
-                    )
-                else:
-                    assets.append(
-                        {
-                            "asset_id": item["asset_id"],
-                            "normalized_prompt": "史铁生肖像",
-                            "context_summary": "作者介绍页使用的史铁生肖像素材",
-                            "reuse_scope": "course_specific",
-                            "specificity_score": 5,
-                            "core_keywords": ["史铁生", "肖像"],
-                            "context_keywords": ["秋天的怀念"],
-                            "style_keywords": ["线条简洁"],
-                        }
-                    )
-            return {"assets": assets}
-
-    output_root = tmp_path / "output"
-    session_dir = output_root / "session_20260506_111550"
-    materials_dir = session_dir / "materials"
-    library_dir = tmp_path / "materials_library"
-    materials_dir.mkdir(parents=True)
-    (materials_dir / "background.png").write_bytes(b"bg")
-    (materials_dir / "page_04_illustration_1.png").write_bytes(b"author")
-
-    plan = {
-        "meta": {
-            "topic": "七年级语文《秋天的怀念》课文教学",
-            "audience": "七年级学生、初中语文教师",
-        },
-        "visual": {"background_prompt": "淡雅秋日课堂背景"},
-        "pages": [
-            {
-                "page_number": 4,
-                "title": "作者与背景介绍",
-                "material_needs": {
-                    "images": [
-                        {
-                            "query": "史铁生肖像",
-                            "generation_prompt": "史铁生肖像插画，编辑感风格，线条简洁",
-                            "source": "ai_generate",
-                            "role": "illustration",
-                            "aspect_ratio": "1:1",
-                        }
-                    ]
-                },
-            }
-        ],
-    }
-    (session_dir / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
-
-    db, index_path = update_ai_image_asset_library(
-        session_dir,
-        library_dir,
-        keyword_client=FakeKeywordClient(),
-        keyword_batch_size=4,
-    )
-
-    assert index_path == library_dir / "strict_reuse_indexes"
-    assert not (library_dir / "ai_image_match_index.json").exists()
-    assert (library_dir / "strict_reuse_indexes" / "general_reuse.json").exists()
-    assert (library_dir / "strict_reuse_indexes" / "content_reuse.json").exists()
-    assert not (library_dir / "ai_image_asset_db.json").exists()
-    assert (library_dir / "ai_image_embedding_index.npz").exists()
-    assert (library_dir / "ai_image_embedding_meta.json").exists()
-    assert db["asset_root"] == str(library_dir.resolve())
-    assert db["asset_count"] == 2
-    assert db["schema_version"] == 13
-    for asset in db["assets"]:
-        copied_path = library_dir / asset["image_path"]
-        assert copied_path.exists()
-        assert asset["image_path"].startswith("ai_images/")
-        assert "source" not in asset
-        assert "library" not in asset
-    background = next(asset for asset in db["assets"] if asset["asset_kind"] == "background")
-    for field in (
-        "primary_subjects",
-        "primary_actions",
-        "primary_emotions",
-        "teaching_objects",
-        "soft_modifiers",
-        "reuse_scores",
-        "reuse_level",
-        "asset_category",
-        "generic_support_allowed",
-    ):
-        assert field not in background
-
-    split = read_ai_image_split_match_index(library_dir)
-    assert split is not None
-    persisted, _split_dir = split
-    assert persisted["asset_count"] == 2
-    embedding_meta = json.loads((library_dir / "ai_image_embedding_meta.json").read_text(encoding="utf-8"))
-    assert embedding_meta["asset_count"] == 2
-    assert {asset["asset_id"] for asset in persisted["assets"]} == {asset["asset_id"] for asset in db["assets"]}
-
-
-def test_ingests_output_sessions_into_reusable_asset_library(tmp_path, monkeypatch):
-    _patch_embedding_encoder(monkeypatch)
-
-    output_root = tmp_path / "output"
-    library_dir = tmp_path / "materials_library"
-
-    for index in (1, 2):
-        session_dir = output_root / f"session_20260507_14000{index}"
-        materials_dir = session_dir / "materials"
-        materials_dir.mkdir(parents=True)
-        (materials_dir / "page_01_illustration_1.png").write_bytes(f"image-{index}".encode("ascii"))
-        plan = {
-            "meta": {"topic": "topic", "audience": "grade"},
-            "pages": [
-                {
-                    "page_number": 1,
-                    "title": f"Page {index}",
-                    "material_needs": {
-                        "images": [
-                            {
-                                "query": f"image prompt {index}",
-                                "source": "ai_generate",
-                                "role": "illustration",
-                                "aspect_ratio": "1:1",
-                            }
-                        ]
-                    },
-                }
-            ],
-        }
-        (session_dir / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
-
-    db, index_path, report = ingest_ai_image_asset_library_from_output(output_root, library_dir)
-
-    assert index_path == library_dir.resolve() / "strict_reuse_indexes"
-    assert report["match_index_path"] == str(index_path)
-    assert report["library_dir"] == str(library_dir.resolve())
-    assert report["asset_root"] == str(library_dir.resolve())
-    assert report["session_count"] == 2
-    assert len(report["processed_sessions"]) == 2
-    assert report["failed_sessions"] == []
-    assert db["asset_count"] == 2
-    assert index_path.exists()
-    assert not (library_dir / "ai_image_match_index.json").exists()
-    assert not (library_dir / "ai_image_asset_db.json").exists()
-    split = read_ai_image_split_match_index(library_dir)
-    assert split is not None
-    index, _split_dir = split
-    assert index["input_asset_count"] == 2
-    assert index["asset_count"] == 2
-    for asset in db["assets"]:
-        copied_path = library_dir / asset["image_path"]
-        assert copied_path.exists()
-        assert asset["image_path"].startswith("ai_images/")
-
-    db_again, _index_path, report_again = ingest_ai_image_asset_library_from_output(output_root, library_dir)
-    assert report_again["session_count"] == 2
-    assert db_again["asset_count"] == 2
-
-
-def test_finds_reusable_asset_with_content_bm25_score(tmp_path):
-    class FakeReuseClient:
-        _model = "fake-reuse-model"
-
-        def chat_json(self, messages, **kwargs):
-            review = _fake_reuse_review_response(messages)
-            if review is not None:
-                return review
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            asset_id = request["assets"][0]["asset_id"]
-            return {
-                "assets": [
-                    {
-                        "asset_id": asset_id,
-                        "normalized_prompt": "史铁生肖像",
-                        "context_summary": "作者介绍页使用的史铁生肖像素材",
-                        "reuse_scope": "course_specific",
-                        "specificity_score": 5,
-                        "core_keywords": ["史铁生", "肖像"],
-                        "asset_category": "content_specific",
-                        "constraints": [
-                            {"kind": "entity", "value": "史铁生", "importance": 2},
-                            {"kind": "object", "value": "肖像", "importance": 1},
-                        ],
-                        "context_keywords": ["秋天的怀念"],
-                        "style_keywords": ["线条简洁"],
-                    }
-                ]
-            }
-
-    library_dir = tmp_path / "materials_library"
-    image_dir = library_dir / "ai_images"
-    image_dir.mkdir(parents=True)
-    (image_dir / "asset_author.png").write_bytes(b"author")
-    db = {
-        "schema_version": 4,
-        "output_root": str(library_dir),
-        "asset_count": 1,
-        "assets": [
-            {
-                "asset_id": "asset_author",
-                "asset_kind": "page_image",
-                "image_path": "ai_images/asset_author.png",
-                "role": "illustration",
-                "aspect_ratio": "1:1",
-                "prompt": "史铁生肖像",
-                "generation_prompt": "史铁生肖像插画，编辑感风格，线条简洁",
-                "context_summary": "作者介绍页使用的史铁生肖像素材",
-                "theme": "七年级语文《秋天的怀念》课文教学",
-                "grade": "七年级",
-                "subject": "语文",
-                "reuse_scope": "course_specific",
-                "specificity_score": 5,
-                "core_keywords": ["史铁生", "肖像"],
-                "asset_category": "content_specific",
-                "constraints": [
-                    {"kind": "entity", "value": "史铁生", "importance": 2},
-                    {"kind": "object", "value": "肖像", "importance": 1},
-                ],
-                "context_keywords": ["秋天的怀念"],
-                "style_keywords": ["线条简洁"],
-                "match_key": "史铁生|肖像|秋天的怀念|语文|七年级",
-                "source": {},
-            }
-        ],
-        "warnings": [],
-    }
-    (library_dir / "ai_image_asset_db.json").write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
-
-    match = find_reusable_ai_image_asset(
-        library_dir=library_dir,
-        asset_kind="page_image",
-        prompt="史铁生肖像",
-        theme="七年级语文《秋天的怀念》课文教学",
-        grade="七年级",
-        subject="语文",
-        page_title="作者与背景介绍",
-        role="illustration",
-        aspect_ratio="1:1",
-        keyword_client=FakeReuseClient(),
-        debug_path=library_dir / "reuse_debug.json",
-        debug_context={"page_number": 4, "slot_key": "illustration_1"},
-        reuse_debug_mode="full",
-    )
-
-    assert match is not None
-    assert match["asset"]["asset_id"] == "asset_author"
-    assert match["keyword_score"] >= 0.6
-
-    debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
-    assert debug["queries"][0]["context"]["page_number"] == 4
-    assert debug["queries"][0]["decision"]["reused"] is True
-    assert debug["queries"][0]["decision"]["reason"] == "reused_by_hybrid_retrieval_score"
-    assert debug["queries"][0]["ranked_candidates"][0]["score_details"]["core_score"] >= 0.6
-
-
-def test_reuse_manifest_causes_library_ingest_to_skip_reused_images(tmp_path, monkeypatch):
-    _patch_embedding_encoder(monkeypatch)
-
-    session_dir = tmp_path / "output" / "session_20260506_111550"
-    materials_dir = session_dir / "materials"
-    library_dir = tmp_path / "materials_library"
-    materials_dir.mkdir(parents=True)
-    (materials_dir / "page_04_illustration_1.png").write_bytes(b"reused")
-    plan = {
-        "meta": {"topic": "七年级语文《秋天的怀念》课文教学", "audience": "七年级学生"},
-        "pages": [
-            {
-                "page_number": 4,
-                "title": "作者与背景介绍",
-                "material_needs": {
-                    "images": [
-                        {
-                            "query": "史铁生肖像",
-                            "generation_prompt": "史铁生肖像插画，编辑感风格，线条简洁",
-                            "source": "ai_generate",
-                            "role": "illustration",
-                            "aspect_ratio": "1:1",
-                        }
-                    ]
-                },
-            }
-        ],
-    }
-    (session_dir / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
-    record_reused_ai_image_asset(
-        session_dir=session_dir,
-        session_image_path=materials_dir / "page_04_illustration_1.png",
-        match={
-            "asset": {"asset_id": "asset_author", "image_path": "ai_images/asset_author.png"},
-            "keyword_score": 1.0,
-        },
-    )
-
-    db, _target = update_ai_image_asset_library(session_dir, library_dir)
-
-    assert db["asset_count"] == 0
-
-
-def test_materialize_reused_ai_image_creates_contain_pad_derivative(tmp_path):
-    from PIL import Image
-
-    session_dir = tmp_path / "output" / "session"
-    library_dir = tmp_path / "materials_library"
-    image_dir = library_dir / "ai_images"
-    image_dir.mkdir(parents=True)
-    source = image_dir / "square.png"
-    Image.new("RGB", (100, 100), (220, 30, 30)).save(source)
-    dest = session_dir / "materials" / "page_01_illustration_1.png"
-
-    materialize_reused_ai_image_asset(
-        session_dir=session_dir,
-        session_image_path=dest,
-        match={
-            "asset": {"asset_id": "asset_square", "image_path": "ai_images/square.png"},
-            "candidate_image_path": str(source),
-            "keyword_score": 0.8,
-            "transform_policy": {
-                "mode": "contain_pad",
-                "candidate_aspect_ratio": "1:1",
-                "target_aspect_ratio": "4:3",
-                "crop_loss": 0.25,
-                "transform_penalty": 0.09,
-            },
-            "reuse_audit": {
-                "target_theme": "lesson",
-                "target_page_number": 1,
-                "candidate_theme": "lesson",
-                "target_aspect_ratio": "4:3",
-                "candidate_aspect_ratio": "1:1",
-                "same_theme": True,
-                "cross_theme": False,
-                "candidate_available": True,
-            },
-        },
-    )
-
-    with Image.open(dest) as result:
-        assert result.size == (133, 100)
-
-    manifest = json.loads((session_dir / "materials" / "ai_image_reuse_manifest.json").read_text(encoding="utf-8"))
-    assert manifest["reused_assets"][0]["transform_policy"]["mode"] == "contain_pad"
-    assert manifest["reused_assets"][0]["target_theme"] == "lesson"
-    assert manifest["reused_assets"][0]["candidate_theme"] == "lesson"
-    assert manifest["reused_assets"][0]["same_theme"] is True
-    assert manifest["reused_assets"][0]["reuse_audit"]["target_aspect_ratio"] == "4:3"
-
-
-def test_materialize_reused_ai_image_refuses_transform_reject(tmp_path):
-    library_dir = tmp_path / "materials_library"
-    image_dir = library_dir / "ai_images"
-    image_dir.mkdir(parents=True)
-    source = image_dir / "square.png"
-    source.write_bytes(b"image")
-    dest = tmp_path / "output" / "session" / "materials" / "page_01_hero_1.png"
-
-    try:
-        materialize_reused_ai_image_asset(
-            session_dir=tmp_path / "output" / "session",
-            session_image_path=dest,
-            match={
-                "asset": {"asset_id": "asset_square", "image_path": "ai_images/square.png"},
-                "candidate_image_path": str(source),
-                "keyword_score": 0.95,
-                "transform_policy": {
-                    "decision": "reject",
-                    "mode": "copy",
-                    "candidate_aspect_ratio": "1:1",
-                    "target_aspect_ratio": "16:9",
-                    "reason": "hero_aspect_mismatch_too_large",
-                },
-            },
-        )
-    except ValueError as exc:
-        assert "refusing to materialize" in str(exc)
-    else:
-        raise AssertionError("materialize_reused_ai_image_asset should reject transform_policy.decision=reject")
-
-    assert not dest.exists()
-
-
-def test_match_index_omits_deprecated_constraints_and_normalizes_grade(tmp_path):
-    from edupptx.materials.ai_image_asset_db import build_ai_image_match_index
-
-    db = {
-        "schema_version": 4,
-        "assets": [
-            {
-                "asset_id": "asset_author",
-                "asset_kind": "page_image",
-                "image_path": "ai_images/asset_author.png",
-                "role": "illustration",
-                "aspect_ratio": "4:3",
-                "prompt": "author portrait",
-                "detail_prompt": "author portrait with a plain background",
-                "query_aliases": {"作者肖像": [{"alias": "作家画像", "confidence": 0.9}, {"alias": "author portrait", "confidence": 0.9}]},
-                "transform_advice": {
-                    "safe_crop": True,
-                    "crop_risk": "medium",
-                    "max_safe_crop_pct": {"top": 0.03, "right": "7%", "bottom": 0, "left": 50},
-                    "safe_padding": True,
-                    "padding_capacity": "mid",
-                    "padding_mode": "edge_color",
-                    "card_background_fill_safe": "conditional",
-                    "padding_color_source": "asset_edge_color",
-                    "edge_background_type": "solid",
-                    "edge_color_consistency": "medium",
-                    "requires_card_bg_similarity": True,
-                    "safe_stretch": False,
-                },
-                "grade": "7年级",
-                "subject": "语文",
-                "reuse_scope": "course_specific",
-                "specificity_score": 5,
-                "core_keywords": [
-                    "史铁生",
-                    "肖像",
-                    "高年级编辑感",
-                    "教学插画",
-                    "无文字水印",
-                ],
-                "asset_category": "content_specific",
-                "constraints": [
-                    {"kind": "entity", "value": "史铁生", "importance": 2},
-                    {"kind": "object", "value": "肖像", "importance": 1},
-                ],
-                "style_keywords": [],
-                "must_match": [],
-                "must_not_conflict": [
-                    "无多余文字",
-                    "场景为秋日",
-                    "其他作家肖像",
-                    "非秋日场景",
-                    "写实风格",
-                ],
-            }
+            _asset("skip", "C00_strict_text_problem_skip"),
+            _asset("legacy_default", "C06_generic_scene_activity", prompt="legacy classroom illustration"),
+            _asset("keep", "C04_generic_subject_object"),
         ],
     }
 
     index = build_ai_image_match_index(db, library_root=tmp_path)
 
-    asset = index["assets"][0]
-    assert asset["grade_norm"] == "七年级"
-    assert asset["grade_band"] == "高年级"
-    assert asset["core_keywords"] == ["史铁生", "肖像"]
-    assert asset["detail_prompt"] == "author portrait with a plain background"
-    assert "query_aliases" not in asset
-    assert asset["padding_capacity"] == "mid"
-    assert "transform_advice" not in asset
-    assert [item["value"] for item in asset["constraints"]] == ["史铁生", "肖像"]
-    assert "focus_dimensions" not in asset
-    assert "reuse_scope" not in asset
-    assert "specificity_score" not in asset
-    assert asset["role"] == "illustration"
-    assert "grade" not in asset
-    assert "prompt" not in asset
-    assert "must_match" not in asset
-    assert "must_not_conflict" not in asset
-    assert "avoid_keywords" not in asset
-    assert "grade_number" not in asset
+    assert [asset["asset_id"] for asset in index["assets"]] == ["keep", "legacy_default"]
+    match_asset = next(asset for asset in index["assets"] if asset["asset_id"] == "keep")
+    legacy_asset = next(asset for asset in index["assets"] if asset["asset_id"] == "legacy_default")
+    assert match_asset["strict_reuse_group"] == "C04_generic_subject_object"
+    assert legacy_asset["strict_reuse_group"] == "C05_scene_decor_container"
+    assert match_asset["aspect_ratio"] == "1:1"
+    assert match_asset["original_image_path"] == "ai_images_original/keep.png"
+    assert match_asset["actual_width"] == 1200
+    assert match_asset["actual_height"] == 571
+    assert match_asset["padded_width"] == 1200
+    assert match_asset["padded_height"] == 675
+    assert match_asset["teaching_intent"] == "recognize the object"
+    for removed_field in ("role", "aspect_bucket", "padding_capacity", "padded_image_path"):
+        assert removed_field not in match_asset
+    for field in DELETED_FIELDS:
+        assert field not in match_asset
 
 
-def test_background_match_index_keeps_only_color_bias_route(tmp_path):
-    from edupptx.materials.ai_image_asset_db import build_ai_image_match_index
-
-    db = {
-        "schema_version": 5,
-        "assets": [
+def test_keyword_messages_do_not_include_image_role():
+    messages = _build_keyword_messages(
+        [
             {
-                "asset_id": "asset_bg",
-                "asset_kind": "background",
-                "image_path": "ai_images/asset_bg.png",
-                "content_prompt": "淡雅秋日课堂背景",
-                "detail_prompt": "warm classroom background with decorative leaves",
-                "background_route": {
-                    "template_family": "高年级",
-                    "style_name": "秋日模板",
-                    "palette_id": "warm",
-                    "primary_color": "#111111",
-                    "background_color_bias": "偏暖米色和浅棕色，秋日氛围",
-                },
-            }
-        ],
-    }
-
-    index = build_ai_image_match_index(db, library_root=tmp_path)
-
-    asset = index["assets"][0]
-    assert asset["background_route"] == {"background_color_bias": "偏暖米色和浅棕色，秋日氛围"}
-    assert "detail_prompt" not in asset
-
-
-def test_find_reusable_background_prefers_matching_color_bias(tmp_path):
-    library_dir = tmp_path / "materials_library"
-    image_dir = library_dir / "ai_images"
-    image_dir.mkdir(parents=True)
-    (image_dir / "asset_cool.png").write_bytes(b"cool")
-    (image_dir / "asset_warm.png").write_bytes(b"warm")
-    match_index = {
-        "schema_version": 13,
-        "input_asset_count": 0,
-        "asset_count": 2,
-        "assets": [
-            {
-                "asset_id": "asset_cool",
-                "asset_kind": "background",
-                "image_path": "ai_images/asset_cool.png",
-                "aspect_ratio": "16:9",
-                "content_prompt": "淡雅秋日课堂背景",
-                "normalized_prompt": "淡雅秋日课堂背景",
-                "background_route": {"background_color_bias": "偏深蓝色，冷静科技感"},
-            },
-            {
-                "asset_id": "asset_warm",
-                "asset_kind": "background",
-                "image_path": "ai_images/asset_warm.png",
-                "aspect_ratio": "16:9",
-                "content_prompt": "淡雅秋日课堂背景",
-                "normalized_prompt": "淡雅秋日课堂背景",
-                "background_route": {"background_color_bias": "偏暖米色和浅棕色，秋日氛围"},
-            },
-        ],
-    }
-    (library_dir / "ai_image_match_index.json").write_text(json.dumps(match_index, ensure_ascii=False), encoding="utf-8")
-
-    match = find_reusable_ai_image_asset(
-        library_dir=library_dir,
-        asset_kind="background",
-        prompt="淡雅秋日课堂背景",
-        background_route={"background_color_bias": "偏暖米色和浅棕色，秋日氛围"},
-        aspect_ratio="16:9",
-        debug_path=library_dir / "reuse_debug.json",
-    )
-
-    assert match is not None
-    assert match["asset"]["asset_id"] == "asset_warm"
-    assert match["accepted_by"] == "background_threshold"
-    assert match["score_details"]["background_color_bias_used"] is True
-    assert match["score_details"]["route_score"] == 0.0
-
-
-def test_update_library_writes_match_index_and_embedding_sidecars(tmp_path, monkeypatch):
-    _patch_embedding_encoder(monkeypatch)
-
-    library_dir = tmp_path / "materials_library"
-    session_dir = tmp_path / "output" / "session_20260507_150001"
-    materials_dir = session_dir / "materials"
-    materials_dir.mkdir(parents=True)
-    (materials_dir / "page_01_illustration_1.png").write_bytes(b"image")
-    plan = {
-        "meta": {"topic": "topic", "audience": "grade"},
-        "pages": [
-            {
-                "page_number": 1,
-                "title": "Page",
-                "material_needs": {
-                    "images": [
-                        {
-                            "query": "simple image prompt",
-                            "generation_prompt": "simple image prompt, profile style, no text",
-                            "prompt_route": {
-                                "template_family": "lower",
-                                "profiles": [
-                                    {
-                                        "id": "lower_base",
-                                        "priority": 10,
-                                        "prompt_terms": ["profile style"],
-                                        "negative_terms": ["no text"],
-                                    }
-                                ],
-                                "profile_ids": ["lower_base"],
-                                "profile_prompt_terms": ["profile style"],
-                                "role_prompt_terms": ["role only"],
-                                "page_type_prompt_terms": ["page only"],
-                                "aspect_ratio_prompt_terms": ["square layout"],
-                                "quality_terms": ["quality only"],
-                                "negative_terms": ["no text"],
-                                "style_prompt": "profile style, role only, no text",
-                            },
-                            "source": "ai_generate",
-                            "role": "illustration",
-                            "aspect_ratio": "1:1",
-                        }
-                    ]
-                },
-            }
-        ],
-    }
-    (session_dir / "plan.json").write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
-
-    db, _db_path = update_ai_image_asset_library(session_dir, library_dir)
-
-    index_path = library_dir / "strict_reuse_indexes"
-    assert db["asset_count"] == 1
-    assert index_path.exists()
-    assert not (library_dir / "ai_image_match_index.json").exists()
-    assert (library_dir / "ai_image_embedding_index.npz").exists()
-    assert (library_dir / "ai_image_embedding_meta.json").exists()
-    split = read_ai_image_split_match_index(library_dir)
-    assert split is not None
-    index, _split_dir = split
-    assert index["input_asset_count"] == 1
-    assert index["asset_count"] == 1
-    asset = index["assets"][0]
-    assert asset["theme"] == "topic"
-    assert asset["topic_refs"] == ["topic"]
-    assert "source" not in asset
-    assert "library" not in asset
-    assert "style_prompt" not in asset
-    assert "prompt_route" not in asset
-    assert "normalized_prompt" not in asset
-
-
-def test_reuse_reads_slim_match_index_instead_of_rich_db(tmp_path):
-    class FakeReuseClient:
-        _model = "fake-reuse-model"
-
-        def chat_json(self, messages, **kwargs):
-            review = _fake_reuse_review_response(messages)
-            if review is not None:
-                return review
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            asset_id = request["assets"][0]["asset_id"]
-            return {
-                "assets": [
-                    {
-                        "asset_id": asset_id,
-                        "normalized_prompt": "author portrait",
-                        "context_summary": "author profile image",
-                        "reuse_scope": "course_specific",
-                        "specificity_score": 5,
-                        "core_keywords": ["author", "portrait"],
-                        "asset_category": "content_specific",
-                        "constraints": [{"kind": "entity", "value": "author", "importance": 2}],
-                        "context_keywords": ["lesson"],
-                        "style_keywords": [],
-                        "main_entities": ["author"],
-                        "visual_actions": [],
-                        "scene_elements": [],
-                        "emotion_tone": [],
-                        "teaching_intent": "author profile image",
-                    }
-                ]
-            }
-
-    library_dir = tmp_path / "materials_library"
-    image_dir = library_dir / "ai_images"
-    image_dir.mkdir(parents=True)
-    (image_dir / "asset_author.png").write_bytes(b"author")
-    rich_db = {
-        "schema_version": 4,
-        "output_root": str(library_dir),
-        "asset_count": 1,
-        "assets": [
-            {
-                "asset_id": "asset_author",
+                "asset_id": "a1",
                 "asset_kind": "page_image",
-                "image_path": "ai_images/asset_author.png",
-                "role": "illustration",
-                "aspect_ratio": "1:1",
-                "prompt": "unrelated",
-                "subject": "lang",
-                "grade": "7",
-                "reuse_scope": "course_specific",
-                "core_keywords": ["unrelated"],
-                "source": {},
-            }
-        ],
-    }
-    match_index = {
-        "schema_version": 13,
-        "input_asset_count": 1,
-        "asset_count": 1,
-        "assets": [
-            {
-                "asset_id": "asset_author",
-                "asset_kind": "page_image",
-                "image_path": "ai_images/asset_author.png",
-                "aspect_ratio": "1:1",
-                "subject": "lang",
-                "grade_norm": "7",
-                "grade_band": "high",
-                "prompt": "author portrait",
-                "content_prompt": "author portrait",
-                "normalized_prompt": "author portrait",
-                "context_summary": "author profile image",
-                "teaching_intent": "author profile image",
                 "theme": "lesson",
-                "asset_category": "content_specific",
-                "constraints": [{"kind": "entity", "value": "author", "importance": 2}],
-                "core_keywords": ["author"],
-                "semantic_aliases": {},
-                "context_summary_keywords": [],
-                "duplicate_asset_ids": [],
+                "content_prompt": "apple illustration",
+                "role": "illustration",
+                "page_type": "content",
+                "aspect_ratio": "1:1",
+                "strict_reuse_group": "C04_generic_subject_object",
             }
         ],
+        include_match_keywords=False,
+    )
+
+    payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
+    assert "image_role" not in payload["assets"][0]
+    assert "role" not in payload["assets"][0]
+
+
+def test_transform_policy_uses_aspect_ratio_without_bucket_fields():
+    target = {
+        "asset_kind": "page_image",
+        "strict_reuse_group": "C04_generic_subject_object",
+        "aspect_ratio": "4:3",
+        "subject": "语文",
+        "grade_norm": "五年级",
+        "grade_band": "高年级",
+        "content_prompt": "apple object card",
+        "context_summary": "object recognition",
     }
-    (library_dir / "ai_image_asset_db.json").write_text(json.dumps(rich_db, ensure_ascii=False), encoding="utf-8")
-    write_ai_image_split_match_indexes(match_index, library_dir)
+    candidate = {
+        **target,
+        "asset_id": "candidate",
+        "image_path": "ai_images/candidate.png",
+        "aspect_bucket": "4:3",
+    }
 
-    match = find_reusable_ai_image_asset(
-        library_dir=library_dir,
-        asset_kind="page_image",
-        prompt="author portrait",
-        theme="lesson",
-        grade="7",
-        subject="lang",
-        page_title="Author",
-        role="illustration",
-        aspect_ratio="1:1",
-        keyword_client=FakeReuseClient(),
-        debug_path=library_dir / "reuse_debug.json",
-        reuse_debug_mode="full",
+    details = _score_reuse_candidate_details(target, candidate)
+    policy = details["transform_policy"]
+
+    assert policy["candidate_aspect_ratio"] == "4:3"
+    assert policy["target_aspect_ratio"] == "4:3"
+    assert "candidate_aspect_bucket" not in policy
+    assert "target_aspect_bucket" not in policy
+
+
+def test_split_indexes_are_written_per_plan_a_group_and_read_back_without_c00(tmp_path):
+    match_index = {
+        "schema_version": 14,
+        "asset_root": str(tmp_path),
+        "assets": [
+            {"asset_id": "text", "asset_kind": "page_image", "strict_reuse_group": "C01_language_glyph_visual"},
+            {"asset_id": "subject", "asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object"},
+            {"asset_id": "skip", "asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"},
+        ],
+    }
+
+    split_dir = write_ai_image_split_match_indexes(match_index, tmp_path)
+    text_payload = json.loads((split_dir / "C01_language_glyph_visual.json").read_text(encoding="utf-8"))
+    skip_payload = json.loads((split_dir / "C00_strict_text_problem_skip.json").read_text(encoding="utf-8"))
+    merged, source_dir = read_ai_image_split_match_index(tmp_path)
+
+    assert source_dir == split_dir
+    assert [asset["asset_id"] for asset in text_payload["assets"]] == ["text"]
+    assert [asset["asset_id"] for asset in skip_payload["assets"]] == ["skip"]
+    assert {asset["asset_id"] for asset in merged["assets"]} == {"text", "subject"}
+
+
+def test_split_indexes_write_gapless_active_group_names(tmp_path):
+    index = {
+        "schema_version": 14,
+        "asset_root": str(tmp_path),
+        "assets": [
+            {"asset_id": "subject", "asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object"},
+            {"asset_id": "scene", "asset_kind": "page_image", "strict_reuse_group": "C05_scene_decor_container"},
+            {"asset_id": "legacy_subject", "asset_kind": "page_image", "strict_reuse_group": "C05_generic_subject_asset"},
+            {"asset_id": "legacy_scene", "asset_kind": "page_image", "strict_reuse_group": "C06_scene_decor_container"},
+        ],
+        "skip_reuse_assets": [
+            {"asset_id": "skip", "asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}
+        ],
+    }
+
+    split_dir = write_ai_image_split_match_indexes(index, tmp_path)
+
+    assert (split_dir / "C00_strict_text_problem_skip.json").exists()
+    assert (split_dir / "C04_generic_subject_object.json").exists()
+    assert (split_dir / "C05_scene_decor_container.json").exists()
+    assert not (split_dir / "C05_generic_subject_asset.json").exists()
+    assert not (split_dir / "C06_scene_decor_container.json").exists()
+
+    subject_payload = json.loads((split_dir / "C04_generic_subject_object.json").read_text(encoding="utf-8"))
+    assert [asset["asset_id"] for asset in subject_payload["assets"]] == ["subject", "legacy_subject"]
+
+    scene_payload = json.loads((split_dir / "C05_scene_decor_container.json").read_text(encoding="utf-8"))
+    assert [asset["asset_id"] for asset in scene_payload["assets"]] == ["scene", "legacy_scene"]
+
+
+def test_write_match_index_retains_c00_split_file_but_excludes_c00_from_matching(tmp_path):
+    image_dir = tmp_path / "ai_images"
+    image_dir.mkdir()
+    for name in ("skip", "keep"):
+        (image_dir / f"{name}.png").write_bytes(name.encode("ascii"))
+    db = {
+        "schema_version": 1,
+        "assets": [
+            _asset("skip", "C00_strict_text_problem_skip", prompt="batch exact text card"),
+            _asset("keep", "C04_generic_subject_object", prompt="single apple card"),
+        ],
+    }
+
+    index, split_dir = write_ai_image_match_index(db, tmp_path, write_embedding_index=False)
+
+    c00_payload = json.loads((split_dir / "C00_strict_text_problem_skip.json").read_text(encoding="utf-8"))
+    assert [asset["asset_id"] for asset in c00_payload["assets"]] == ["skip"]
+    assert [asset["asset_id"] for asset in index["assets"]] == ["keep"]
+    merged, _source_dir = read_ai_image_split_match_index(tmp_path)
+    assert {asset["asset_id"] for asset in merged["assets"]} == {"keep"}
+
+
+def test_write_match_index_persists_general_boolean_to_split_indexes(tmp_path):
+    image_dir = tmp_path / "ai_images"
+    image_dir.mkdir()
+    (image_dir / "keep.png").write_bytes(b"keep")
+    db = {
+        "schema_version": 1,
+        "assets": [
+            {
+                **_asset("keep", "C04_generic_subject_object", prompt="blank speech bubble"),
+                "general": True,
+            },
+        ],
+    }
+
+    index, split_dir = write_ai_image_match_index(db, tmp_path, write_embedding_index=False)
+
+    payload = json.loads((split_dir / "C04_generic_subject_object.json").read_text(encoding="utf-8"))
+    assert index["assets"][0]["general"] is True
+    assert payload["assets"][0]["general"] is True
+
+
+def test_split_indexes_write_backgrounds_to_dedicated_json(tmp_path):
+    match_index = {
+        "schema_version": 14,
+        "asset_root": str(tmp_path),
+        "assets": [
+            {
+                "asset_id": "background",
+                "asset_kind": "background",
+                "strict_reuse_group": "C05_scene_decor_container",
+                "image_path": "ai_images/background.png",
+                "aspect_ratio": "16:9",
+                "normalized_prompt": "light paper texture",
+                "context_summary": "quiet classroom background",
+            },
+            {
+                "asset_id": "scene",
+                "asset_kind": "page_image",
+                "strict_reuse_group": "C05_scene_decor_container",
+                "image_path": "ai_images/scene.png",
+                "aspect_ratio": "16:9",
+                "content_prompt": "classroom activity scene",
+                "context_summary": "generic classroom scene",
+            },
+        ],
+    }
+
+    split_dir = write_ai_image_split_match_indexes(match_index, tmp_path)
+    background_payload = json.loads((split_dir / "background.json").read_text(encoding="utf-8"))
+    general_payload = json.loads((split_dir / "C05_scene_decor_container.json").read_text(encoding="utf-8"))
+    merged, source_dir = read_ai_image_split_match_index(tmp_path)
+
+    assert source_dir == split_dir
+    assert [asset["asset_id"] for asset in background_payload["assets"]] == ["background"]
+    assert all(asset["asset_kind"] == "background" for asset in background_payload["assets"])
+    assert {asset["asset_id"] for asset in general_payload["assets"]} == {"scene"}
+    assert {asset["asset_id"] for asset in merged["assets"]} == {"background", "scene"}
+
+
+def test_background_reuse_routes_to_background_split(tmp_path):
+    split_dir = write_ai_image_split_match_indexes(
+        {
+            "schema_version": 14,
+            "asset_root": str(tmp_path),
+            "assets": [
+                {
+                    "asset_id": "background",
+                    "asset_kind": "background",
+                    "strict_reuse_group": "C05_scene_decor_container",
+                    "image_path": "ai_images/background.png",
+                    "aspect_ratio": "16:9",
+                    "normalized_prompt": "light paper texture",
+                    "context_summary": "quiet classroom background",
+                },
+                {
+                    "asset_id": "scene",
+                    "asset_kind": "page_image",
+                    "strict_reuse_group": "C05_scene_decor_container",
+                    "image_path": "ai_images/scene.png",
+                    "aspect_ratio": "16:9",
+                    "content_prompt": "classroom activity scene",
+                    "context_summary": "generic classroom scene",
+                },
+            ],
+        },
+        tmp_path,
+    )
+    merged, _source_dir = read_ai_image_split_match_index(tmp_path)
+
+    route = _route_match_index_for_target(
+        tmp_path,
+        merged,
+        split_dir,
+        {"asset_kind": "background", "strict_reuse_group": "C05_scene_decor_container"},
     )
 
-    assert match is not None
-    assert match["asset"]["asset_id"] == "asset_author"
-    assert match["reuse_audit"]["target_theme"] == "lesson"
-    assert match["reuse_audit"]["candidate_theme"] == "lesson"
-    assert match["reuse_audit"]["same_theme"] is True
-    assert match["reuse_audit"]["cross_theme"] is False
-    debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
-    assert debug["queries"][0]["match_index_path"].endswith("general_reuse.json")
-    assert debug["queries"][0]["decision"]["reuse_audit"]["target_theme"] == "lesson"
-    assert debug["queries"][0]["decision"]["reuse_audit"]["candidate_theme"] == "lesson"
+    assert route is not None
+    routed_index, routed_path, routed_assets, route_group = route
+    assert routed_path.name == "background.json"
+    assert route_group == "background"
+    assert [asset["asset_id"] for asset in routed_assets] == ["background"]
+    assert routed_index["strict_reuse_group"] == "background"
 
 
-def test_reuse_searches_primary_and_ppt_material_libraries(tmp_path):
-    class FakeReuseClient:
-        _model = "fake-reuse-model"
-
-        def chat_json(self, messages, **kwargs):
-            review = _fake_reuse_review_response(messages)
-            if review is not None:
-                return review
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            asset_id = request["assets"][0]["asset_id"]
-            return {
-                "assets": [
-                    {
-                        "asset_id": asset_id,
-                        "normalized_prompt": "author portrait",
-                        "context_summary": "author profile image",
-                        "teaching_intent": "author profile image",
-                        "core_keywords": ["author", "portrait"],
-                        "semantic_aliases": {},
-                        "context_summary_keywords": ["lesson"],
-                        "asset_category": "content_specific",
-                        "constraints": [{"kind": "entity", "value": "author", "importance": 2}],
-                    }
-                ]
-            }
-
-    primary_dir = tmp_path / "materials_library"
-    ppt_dir = tmp_path / "materials_library_ppt"
-    (primary_dir / "ai_images").mkdir(parents=True)
-    (ppt_dir / "pptx_images").mkdir(parents=True)
-    (ppt_dir / "pptx_images" / "asset_author.png").write_bytes(b"author")
-    (primary_dir / "ai_image_match_index.json").write_text(
-        json.dumps({"schema_version": 13, "input_asset_count": 0, "asset_count": 0, "assets": []}),
-        encoding="utf-8",
-    )
-    (ppt_dir / "ai_image_match_index.json").write_text(
+def test_legacy_split_backgrounds_are_read_and_rewritten_to_background_json(tmp_path):
+    split_dir = tmp_path / "strict_reuse_indexes"
+    split_dir.mkdir()
+    (split_dir / "C06_generic_scene_activity.json").write_text(
         json.dumps(
             {
-                "schema_version": 13,
-                "input_asset_count": 1,
-                "asset_count": 1,
+                "schema_version": 14,
+                "strict_reuse_group": "C06_generic_scene_activity",
+                "asset_root": str(tmp_path),
                 "assets": [
                     {
-                        "asset_id": "kbpptx_author",
+                        "asset_id": "legacy_background",
+                        "asset_kind": "background",
+                        "strict_reuse_group": "C06_generic_scene_activity",
+                        "image_path": "ai_images/background.png",
+                        "normalized_prompt": "light paper texture",
+                    },
+                    {
+                        "asset_id": "scene",
                         "asset_kind": "page_image",
-                        "image_path": "pptx_images/asset_author.png",
-                        "aspect_ratio": "1:1",
-                        "subject": "lang",
-                        "grade_norm": "7",
-                        "grade_band": "high",
-                        "content_prompt": "author portrait",
-                        "context_summary": "author profile image",
-                        "teaching_intent": "author profile image",
-                        "theme": "lesson",
-                        "asset_category": "content_specific",
-                        "constraints": [{"kind": "entity", "value": "author", "importance": 2}],
-                        "core_keywords": ["author"],
-                        "semantic_aliases": {},
-                        "context_summary_keywords": [],
-                        "duplicate_asset_ids": [],
-                    }
+                        "strict_reuse_group": "C06_generic_scene_activity",
+                        "image_path": "ai_images/scene.png",
+                        "content_prompt": "generic classroom scene",
+                    },
                 ],
             },
             ensure_ascii=False,
@@ -2570,571 +395,627 @@ def test_reuse_searches_primary_and_ppt_material_libraries(tmp_path):
         encoding="utf-8",
     )
 
+    merged, source_dir = read_ai_image_split_match_index(tmp_path)
+    rewritten_dir = write_ai_image_split_match_indexes(merged, tmp_path)
+    background_payload = json.loads((rewritten_dir / "background.json").read_text(encoding="utf-8"))
+    general_payload = json.loads((rewritten_dir / "C05_scene_decor_container.json").read_text(encoding="utf-8"))
+
+    assert source_dir == split_dir
+    assert {asset["asset_id"] for asset in merged["assets"]} == {"legacy_background", "scene"}
+    assert [asset["asset_id"] for asset in background_payload["assets"]] == ["legacy_background"]
+    assert {asset["asset_id"] for asset in general_payload["assets"]} == {"scene"}
+
+
+def test_review_accept_threshold_profiles_use_material_group_not_old_reuse_level():
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C05_scene_decor_container"}) == 0.55
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object"}) == 0.64
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C01_language_glyph_visual"}) == 0.72
+    assert _reuse_review_accept_score_threshold(
+        {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object"},
+        policy_result={"llm_accept_threshold_override": 0.66},
+    ) == 0.66
+
+
+def test_reuse_gate_profiles_follow_current_six_material_categories():
+    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C05_scene_decor_container"}) == "loose"
+    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object"}) == "medium"
+    for group in (
+        "C01_language_glyph_visual",
+        "C02_structure_diagram_visual",
+        "C03_irreplaceable_entity_event_action",
+    ):
+        assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": group}) == "strict_knowledge"
+    assert "strict_literary" not in _LLM_PROFILE_ACCEPT_THRESHOLDS
+
+
+def test_reuse_gate_thresholds_are_single_cross_ppt_values():
+    loose_target = {"asset_kind": "page_image", "strict_reuse_group": "C05_scene_decor_container"}
+    medium_target = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object"}
+    strict_target = {"asset_kind": "page_image", "strict_reuse_group": "C01_language_glyph_visual"}
+
+    assert _reuse_gate_thresholds_for_target(loose_target) == PAGE_IMAGE_REUSE_GATE_THRESHOLDS["loose"]
+    assert _reuse_gate_thresholds_for_target(medium_target) == PAGE_IMAGE_REUSE_GATE_THRESHOLDS["medium"]
+    assert _reuse_gate_thresholds_for_target(strict_target) == PAGE_IMAGE_REUSE_GATE_THRESHOLDS["strict_knowledge"]
+    assert _reuse_gate_thresholds_for_target({"asset_kind": "background"}) == BACKGROUND_REUSE_GATE_THRESHOLDS
+    assert PAGE_IMAGE_REUSE_GATE_THRESHOLDS["loose"]["keyword_min"] == 0.0
+    assert PAGE_IMAGE_REUSE_GATE_THRESHOLDS["medium"]["keyword_min"] == 0.0
+    assert BACKGROUND_REUSE_GATE_THRESHOLDS["keyword_min"] == 0.0
+
+
+def test_score_gate_review_skip_safe_uses_single_threshold_mode():
+    assert _score_gate_review_skip_safe(
+        {"asset_kind": "page_image", "strict_reuse_group": "C05_scene_decor_container"},
+        {"reason": "keyword_led_gray_review"},
+        {"keyword_score": 0.10, "embedding_score": 0.59, "substring_score": 0.0},
+    )
+
+
+def test_keyword_prompt_requests_llm_subject_and_grade_enums():
+    messages = _build_keyword_messages(
+        [
+            {
+                "asset_id": "asset_grade",
+                "asset_kind": "page_image",
+                "theme": "五年级语文《刷子李》",
+                "content_prompt": "刷子李人物插画",
+                "subject": "小学语文",
+                "subject_hint": "小学语文",
+                "grade_hint": "五年级",
+                "grade_norm": "其他",
+                "grade_band": "其他",
+            }
+        ]
+    )
+
+    system = messages[0]["content"]
+
+    assert "grade_norm" in system
+    assert "grade_band" in system
+    assert "subject" in system
+    assert "语文、数学、物理、其他" in system
+    assert "一年级、二年级、三年级、四年级、五年级、六年级、七年级、八年级、九年级、高一、高二、高三、其他" in system
+    assert "低年级、高年级、其他" in system
+    assert "subject 必须" in system
+    assert "grade_norm 必须" in system
+    assert "grade_band 必须" in system
+    assert "subject_hint" in messages[1]["content"]
+    assert "grade_hint" in messages[1]["content"]
+    assert "必须只返回严格 JSON" in system
+    assert "must be exactly" not in system
+    assert "Return strict JSON only" not in system
+
+
+def test_keyword_prompt_requests_general_boolean_and_rules():
+    messages = _build_keyword_messages(
+        [
+            {
+                "asset_id": "asset_general",
+                "asset_kind": "page_image",
+                "theme": "通用课堂素材",
+                "content_prompt": "带装饰的空白对话气泡贴纸",
+                "subject": "其他",
+                "subject_hint": "其他",
+                "grade_hint": "五年级",
+                "grade_norm": "其他",
+                "grade_band": "其他",
+            }
+        ]
+    )
+
+    system = messages[0]["content"]
+
+    assert "general" in system
+    assert "general 必须是布尔值" in system
+    assert "严格保守的 PPT 素材跨学科通用复用分类器" in system
+    assert "强排除" in system
+    assert "general 决策顺序必须固定：先判断强 general=false，再判断通用 general=true" in system
+    assert "强 false 命中时不能被通用白名单覆盖" in system
+    assert "具体故事情节、冲突、拒绝、后果、事故、损坏、救助、疾病、痛苦、愤怒、恐惧、孤独等强情绪或故事状态" in system
+    assert "课文或故事来源绑定的角色关系、母子叙事关系、青蛙妈妈和小蝌蚪等故事关系" in system
+    assert "温暖陪伴、秋日离别、压抑氛围等氛围本身是素材含义的场景" in system
+    assert "普通人物、动物、植物、教师、学生、教室、校园只有在非叙事、无强情绪、无故事后果、无来源绑定关系时可以输出 general=true" in system
+    assert "泛指课文、句子、段落、绘本、书本、资料、页面的朗读、圈画、划线、标序号等普通学习动作" in system
+    assert "没有具体可读课程文字、标题、生字拼音或固定语文知识点时可以输出 general=true" in system
+    assert "general 判断以 caption 描述的可见画面为主" in system
+    assert "theme、context_summary、subject、topic_refs 中的课文名或语文学科来源不等于画面含有可读课文内容" in system
+    assert "普通观察、记录、放大、聚焦用途的工具或视觉隐喻" in system
+    assert "不展示物理光路、成像原理、公式标签或具体可读文字时可以输出 general=true" in system
+    assert "具体可读文字、公式、光路图、成像原理图、带标注仪器结构" in system
+    assert "小朋友坐着大声朗读课文=>true" in system
+    assert "小朋友用横线画课文中的句子=>true" in system
+    assert "铅笔给课文段落标序号=>true" in system
+    assert "带圈画图案和铅笔的打开绘本插画=>true" in system
+    assert "老花镜=>true" in system
+    assert "照相机镜头特写=>true" in system
+    assert "放大镜放大文字=>true" in system
+    assert "《比尾巴》课文标题插画=>false" in system
+    assert "课文原文段落朗读卡片=>false" in system
+    assert "男孩在房间摔东西拒绝出门的场景=>false" in system
+    assert "池塘里一群小蝌蚪围着青蛙妈妈游动的卡通场景=>false" in system
+    assert "年轻男子坐在轮椅上，表情痛苦愤怒，身旁有被摔碎的杯子=>false" in system
+    assert "秋日黄昏，母亲和孩子并肩走在铺满落叶的路上a的温暖场景=>false" in system
+    assert "带装饰的空白对话气泡贴纸" in system
+    assert "足球管理员和学生对话场景，标注一共有36个足球" in system
+    assert '"general": false' in system
+
+
+def test_subject_normalization_accepts_only_current_chinese_enums():
+    assert _normalize_subject_value("语文") == "语文"
+    assert _normalize_subject_value("数学") == "数学"
+    assert _normalize_subject_value("物理") == "物理"
+    assert _normalize_subject_value("小学语文") == "其他"
+    assert _normalize_subject_value("math") == "其他"
+    assert _normalize_subject_value("") == "其他"
+
+
+def test_subject_scope_allows_explicit_general_cross_subject():
+    assert _subject_scope_compatible(
+        {"subject": "语文"},
+        {"subject": "数学", "general": True},
+    )
+
+
+def test_subject_scope_rejects_explicit_non_general_cross_subject():
+    assert not _subject_scope_compatible(
+        {"subject": "语文"},
+        {"subject": "其他", "general": False},
+    )
+
+
+def test_subject_scope_allows_legacy_other_missing_general():
+    decision = _subject_scope_decision(
+        {"subject": "语文"},
+        {"subject": "其他"},
+    )
+
+    assert decision["compatible"] is True
+    assert decision["subject_filter_mode"] == "subject_other_default"
+    assert decision["general_defaulted_from_subject_other"] is True
+
+
+def test_subject_scope_unknown_target_only_allows_general():
+    assert _subject_scope_compatible(
+        {"subject": "其他"},
+        {"subject": "数学", "general": True},
+    )
+    assert not _subject_scope_compatible(
+        {"subject": "其他"},
+        {"subject": "数学", "general": False},
+    )
+
+
+def test_reuse_debug_asset_payload_includes_general():
+    payload = _reuse_debug_asset_payload(
+        {
+            "asset_id": "asset_general",
+            "asset_kind": "page_image",
+            "content_prompt": "带装饰的空白对话气泡贴纸",
+            "subject": "其他",
+            "general": True,
+        }
+    )
+
+    assert payload["general"] is True
+
+
+def test_hard_filter_allows_legacy_other_subject_after_subject_unknown_filter():
+    target = {
+        "asset_kind": "page_image",
+        "strict_reuse_group": "C05_scene_decor_container",
+        "subject": "语文",
+        "grade_norm": "五年级",
+        "grade_band": "高年级",
+        "aspect_ratio": "1:1",
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "strict_reuse_group": "C05_scene_decor_container",
+        "subject": "其他",
+        "grade_norm": "五年级",
+        "grade_band": "高年级",
+        "aspect_ratio": "1:1",
+    }
+
+    assert _reuse_hard_filter_reject_reason(target, candidate) == ""
+
+
+def test_hard_filter_rejects_explicit_non_general_other_as_subject_mismatch():
+    target = {
+        "asset_kind": "page_image",
+        "strict_reuse_group": "C05_scene_decor_container",
+        "subject": "语文",
+        "grade_norm": "五年级",
+        "grade_band": "高年级",
+        "aspect_ratio": "1:1",
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "strict_reuse_group": "C05_scene_decor_container",
+        "subject": "其他",
+        "general": False,
+        "grade_norm": "五年级",
+        "grade_band": "高年级",
+        "aspect_ratio": "1:1",
+    }
+
+    assert _reuse_hard_filter_reject_reason(target, candidate) == "subject_mismatch"
+
+
+def test_apply_keyword_payload_uses_llm_grade_enums():
+    asset = {
+        "asset_id": "asset_grade",
+        "asset_kind": "page_image",
+        "image_path": "ai_images/asset_grade.png",
+        "aspect_ratio": "1:1",
+        "content_prompt": "刷子李人物插画",
+        "theme": "人物描写课文插画",
+        "subject": "其他",
+        "grade_norm": "其他",
+        "grade_band": "其他",
+    }
+
+    _apply_keyword_payload(
+        asset,
+        {
+            "asset_id": "asset_grade",
+            "content_prompt": "刷子李人物插画",
+            "context_summary": "课文人物插画",
+            "teaching_intent": "帮助学生理解人物形象",
+            "subject": "语文",
+            "grade_norm": "五年级",
+            "grade_band": "高年级",
+        },
+    )
+
+    assert asset["subject"] == "语文"
+    assert asset["grade_norm"] == "五年级"
+    assert asset["grade_band"] == "高年级"
+
+
+def test_apply_keyword_payload_persists_boolean_general():
+    asset = {
+        "asset_id": "asset_general",
+        "asset_kind": "page_image",
+        "image_path": "ai_images/asset_general.png",
+        "aspect_ratio": "1:1",
+        "content_prompt": "带装饰的空白对话气泡贴纸",
+        "theme": "通用课堂素材",
+        "subject": "其他",
+        "grade_norm": "其他",
+        "grade_band": "其他",
+    }
+
+    _apply_keyword_payload(
+        asset,
+        {
+            "asset_id": "asset_general",
+            "content_prompt": "带装饰的空白对话气泡贴纸",
+            "context_summary": "空白气泡贴纸用于课堂展示",
+            "teaching_intent": "承载可替换文字内容",
+            "subject": "其他",
+            "grade_norm": "其他",
+            "grade_band": "其他",
+            "general": True,
+        },
+    )
+
+    assert asset["general"] is True
+
+
+def test_apply_keyword_payload_ignores_non_boolean_general():
+    asset = {
+        "asset_id": "asset_invalid_general",
+        "asset_kind": "page_image",
+        "image_path": "ai_images/asset_invalid_general.png",
+        "aspect_ratio": "1:1",
+        "content_prompt": "米字格中的汉字“你”",
+        "theme": "识字",
+        "subject": "语文",
+        "grade_norm": "一年级",
+        "grade_band": "低年级",
+    }
+
+    _apply_keyword_payload(
+        asset,
+        {
+            "asset_id": "asset_invalid_general",
+            "content_prompt": "米字格中的汉字“你”",
+            "context_summary": "汉字书写示意图",
+            "teaching_intent": "辅助识字书写",
+            "subject": "语文",
+            "grade_norm": "一年级",
+            "grade_band": "低年级",
+            "general": "false",
+        },
+    )
+
+    assert "general" not in asset
+
+
+def test_apply_keyword_payload_normalizes_invalid_or_missing_subject_to_other():
+    asset = {
+        "asset_id": "asset_invalid_subject",
+        "asset_kind": "page_image",
+        "image_path": "ai_images/asset_invalid_subject.png",
+        "aspect_ratio": "1:1",
+        "content_prompt": "数学函数图像",
+        "subject": "数学",
+        "grade_norm": "五年级",
+        "grade_band": "高年级",
+    }
+
+    _apply_keyword_payload(
+        asset,
+        {
+            "asset_id": "asset_invalid_subject",
+            "content_prompt": "数学函数图像",
+            "context_summary": "函数教学图像",
+            "teaching_intent": "辅助理解函数",
+            "subject": "数学学科",
+            "grade_norm": "五年级",
+            "grade_band": "高年级",
+        },
+    )
+    assert asset["subject"] == "其他"
+
+    _apply_keyword_payload(
+        asset,
+        {
+            "asset_id": "asset_invalid_subject",
+            "content_prompt": "数学函数图像",
+            "context_summary": "函数教学图像",
+            "teaching_intent": "辅助理解函数",
+            "grade_norm": "五年级",
+            "grade_band": "高年级",
+        },
+    )
+    assert asset["subject"] == "其他"
+
+
+def test_apply_keyword_payload_normalizes_invalid_grade_enums_to_other():
+    asset = {
+        "asset_id": "asset_invalid_grade",
+        "asset_kind": "page_image",
+        "image_path": "ai_images/asset_invalid_grade.png",
+        "aspect_ratio": "1:1",
+        "content_prompt": "泛用教学插画",
+        "theme": "未指定年级主题",
+    }
+
+    _apply_keyword_payload(
+        asset,
+        {
+            "asset_id": "asset_invalid_grade",
+            "content_prompt": "泛用教学插画",
+            "context_summary": "通用教学插画",
+            "teaching_intent": "辅助课堂讲解",
+            "grade_norm": "小学高段",
+            "grade_band": "中年级",
+        },
+    )
+
+    assert asset["grade_norm"] == "其他"
+    assert asset["grade_band"] == "其他"
+
+
+def test_apply_keyword_payload_fills_missing_grade_fields_with_other():
+    asset = {
+        "asset_id": "asset_missing_grade",
+        "asset_kind": "background",
+        "image_path": "ai_images/asset_missing_grade.png",
+        "aspect_ratio": "16:9",
+        "content_prompt": "淡雅课堂背景",
+    }
+
+    _apply_keyword_payload(
+        asset,
+        {
+            "asset_id": "asset_missing_grade",
+            "normalized_prompt": "色调:柔和; 纹理:纸感; 明度:明亮; 构图:留白",
+            "context_summary": "通用课堂背景",
+            "teaching_intent": "承托页面内容",
+        },
+    )
+
+    assert asset["grade_norm"] == "其他"
+    assert asset["grade_band"] == "其他"
+
+
+def test_grade_helpers_only_accept_llm_enums_without_text_mapping():
+    assert infer_grade("五年级") == "五年级"
+    assert infer_grade("高中二年级") == "其他"
+    assert infer_grade_band("高年级") == "高年级"
+    assert infer_grade_band("高中") == "其他"
+    assert normalize_grade_info("五年级", "高年级") == {
+        "grade_norm": "五年级",
+        "grade_band": "高年级",
+    }
+    assert normalize_grade_info("初中二年级", "高中") == {
+        "grade_norm": "其他",
+        "grade_band": "其他",
+    }
+
+
+def test_target_metadata_unknown_fields_include_subject_and_grade_enums():
+    assert _target_metadata_unknown_fields(
+        {"subject": "其他", "grade_norm": "五年级", "grade_band": "高年级"}
+    ) == ["subject"]
+    assert _target_metadata_unknown_fields(
+        {"subject": "语文", "grade_norm": "其他", "grade_band": "其他"}
+    ) == ["grade_norm", "grade_band"]
+
+
+class _KeywordClient:
+    def __init__(self, payload: dict):
+        self.payload = payload
+
+    def chat_json(self, messages=None, *args, **kwargs):
+        payload = dict(self.payload)
+        if messages:
+            data = json.loads(messages[-1]["content"].split("\n", 1)[1])
+            payload["asset_id"] = data["assets"][0]["asset_id"]
+        return {"assets": [payload]}
+
+
+def test_target_subject_other_uses_general_filter_and_writes_debug(tmp_path):
+    image_dir = tmp_path / "ai_images"
+    image_dir.mkdir()
+    (image_dir / "candidate.png").write_bytes(b"candidate")
+    write_ai_image_split_match_indexes(
+        {
+            "schema_version": 14,
+            "asset_root": str(tmp_path),
+            "assets": [
+                {
+                    "asset_id": "candidate",
+                    "asset_kind": "page_image",
+                    "image_path": "ai_images/candidate.png",
+                    "aspect_ratio": "1:1",
+                    "subject": "语文",
+                    "grade_norm": "五年级",
+                    "grade_band": "高年级",
+                    "content_prompt": "刷子李人物插画",
+                    "context_summary": "人物描写课文插画",
+                    "strict_reuse_group": "C04_generic_subject_object",
+                }
+            ],
+        },
+        tmp_path,
+    )
     debug_path = tmp_path / "reuse_debug.json"
+
     match = find_reusable_ai_image_asset(
-        library_dir=(primary_dir, ppt_dir),
+        library_dir=tmp_path,
         asset_kind="page_image",
-        prompt="author portrait",
-        theme="lesson",
-        grade="7",
-        subject="lang",
-        page_title="Author",
-        role="illustration",
+        prompt="刷子李人物插画",
+        theme="五年级语文《刷子李》",
+        grade="五年级",
+        subject="语文",
         aspect_ratio="1:1",
-        keyword_client=FakeReuseClient(),
+        keyword_client=_KeywordClient(
+            {
+                "asset_id": "target",
+                "content_prompt": "刷子李人物插画",
+                "context_summary": "人物描写课文插画",
+                "teaching_intent": "理解人物形象",
+                "subject": "其他",
+                "grade_norm": "五年级",
+                "grade_band": "高年级",
+                "strict_reuse_group": "C04_generic_subject_object",
+            }
+        ),
         debug_path=debug_path,
-        reuse_debug_mode="full",
-    )
-
-    assert match is not None
-    assert match["asset"]["asset_id"] == "kbpptx_author"
-    assert match["library_dir"] == str(ppt_dir.resolve())
-    assert str(match["candidate_image_path"]).endswith("pptx_images\\asset_author.png") or str(
-        match["candidate_image_path"]
-    ).endswith("pptx_images/asset_author.png")
-    debug = json.loads(debug_path.read_text(encoding="utf-8"))
-    assert len(debug["queries"]) == 2
-    assert debug["queries"][0]["asset_count"] == 0
-    assert debug["queries"][1]["asset_count"] == 1
-
-
-def test_reuse_policy_rejects_conflicting_top_candidate_and_accepts_next(tmp_path):
-    class FakeReuseClient:
-        _model = "fake-reuse-model"
-
-        def chat_json(self, messages, **kwargs):
-            review = _fake_reuse_review_response(messages)
-            if review is not None:
-                return review
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            asset_id = request["assets"][0]["asset_id"]
-            return {
-                "assets": [
-                    {
-                        "asset_id": asset_id,
-                        "normalized_prompt": "character bi teaching card",
-                        "context_summary": "specific character teaching card",
-                        "teaching_intent": "teach the exact character",
-                        "core_keywords": ["character", "bi"],
-                        "semantic_aliases": {},
-                        "context_summary_keywords": ["character card"],
-                        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2}],
-                    }
-                ]
-            }
-
-    library_dir = tmp_path / "materials_library"
-    image_dir = library_dir / "ai_images"
-    image_dir.mkdir(parents=True)
-    (image_dir / "bad.png").write_bytes(b"bad")
-    (image_dir / "good.png").write_bytes(b"good")
-    db = {
-        "schema_version": 6,
-        "output_root": str(library_dir),
-        "asset_count": 2,
-        "assets": [
-            {
-                "asset_id": "bad",
-                "asset_kind": "page_image",
-                "image_path": "ai_images/bad.png",
-                "aspect_ratio": "1:1",
-                "content_prompt": "character bi teaching card",
-                "normalized_prompt": "character bi teaching card",
-                "core_keywords": ["character", "bi"],
-                "semantic_aliases": {},
-                "reuse_level": "strict",
-                "asset_category": "content_specific",
-                "constraints": [{"kind": "text", "value": "character: bei", "importance": 2, "match_mode": "exact"}],
-                "generic_support_allowed": False,
-            },
-            {
-                "asset_id": "good",
-                "asset_kind": "page_image",
-                "image_path": "ai_images/good.png",
-                "aspect_ratio": "1:1",
-                "content_prompt": "character bi teaching card",
-                "normalized_prompt": "character bi teaching card",
-                "core_keywords": ["character", "bi"],
-                "semantic_aliases": {},
-                "reuse_level": "strict",
-                "asset_category": "content_specific",
-                "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
-                "generic_support_allowed": False,
-            },
-        ],
-        "warnings": [],
-    }
-    (library_dir / "ai_image_asset_db.json").write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
-
-    match = find_reusable_ai_image_asset(
-        library_dir=library_dir,
-        asset_kind="page_image",
-        prompt="character bi teaching card",
-        subject="Chinese",
-        grade="2",
-        page_title="Character",
-        role="illustration",
-        aspect_ratio="1:1",
-        keyword_client=FakeReuseClient(),
-        debug_path=library_dir / "reuse_debug.json",
-        reuse_debug_mode="full",
-    )
-
-    assert match is not None
-    assert match["asset"]["asset_id"] == "good"
-    assert match["reuse_policy"]["decision"] == "full_match"
-    debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
-    policies = {
-        item["asset_id"]: item["reuse_policy"]["decision"]
-        for item in debug["queries"][0]["policy_candidates"]
-    }
-    assert policies["bad"] == "reject"
-    assert policies["good"] == "full_match"
-
-
-def test_summary_debug_records_top_two_candidates_when_no_reuse(tmp_path):
-    class FakeReuseClient:
-        _model = "fake-reuse-model"
-
-        def chat_json(self, messages, **kwargs):
-            review = _fake_reuse_review_response(messages)
-            if review is not None:
-                return review
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            asset_id = request["assets"][0]["asset_id"]
-            return {
-                "assets": [
-                    {
-                        "asset_id": asset_id,
-                        "normalized_prompt": "character bi teaching card",
-                        "context_summary": "specific character teaching card",
-                        "teaching_intent": "teach the exact character",
-                        "core_keywords": ["character", "bi"],
-                        "semantic_aliases": {},
-                        "context_summary_keywords": ["character card"],
-                        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2}],
-                    }
-                ]
-            }
-
-    library_dir = tmp_path / "materials_library"
-    image_dir = library_dir / "ai_images"
-    image_dir.mkdir(parents=True)
-    (image_dir / "one.png").write_bytes(b"one")
-    (image_dir / "two.png").write_bytes(b"two")
-    db = {
-        "schema_version": 6,
-        "output_root": str(library_dir),
-        "asset_count": 2,
-        "assets": [
-            {
-                "asset_id": "one",
-                "asset_kind": "page_image",
-                "image_path": "ai_images/one.png",
-                "aspect_ratio": "1:1",
-                "content_prompt": "character bi teaching card",
-                "normalized_prompt": "character bi teaching card",
-                "core_keywords": ["character", "bi"],
-                "semantic_aliases": {},
-                "reuse_level": "strict",
-                "asset_category": "content_specific",
-                "constraints": [{"kind": "text", "value": "character: bei", "importance": 2, "match_mode": "exact"}],
-                "generic_support_allowed": False,
-            },
-            {
-                "asset_id": "two",
-                "asset_kind": "page_image",
-                "image_path": "ai_images/two.png",
-                "aspect_ratio": "1:1",
-                "content_prompt": "character bi teaching card",
-                "normalized_prompt": "character bi teaching card",
-                "core_keywords": ["character", "bi"],
-                "semantic_aliases": {},
-                "reuse_level": "strict",
-                "asset_category": "content_specific",
-                "constraints": [{"kind": "text", "value": "character: pi", "importance": 2, "match_mode": "exact"}],
-                "generic_support_allowed": False,
-            },
-        ],
-    }
-    (library_dir / "ai_image_asset_db.json").write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
-
-    match = find_reusable_ai_image_asset(
-        library_dir=library_dir,
-        asset_kind="page_image",
-        prompt="character bi teaching card",
-        subject="Chinese",
-        grade="2",
-        page_title="Character",
-        role="illustration",
-        aspect_ratio="1:1",
-        keyword_client=FakeReuseClient(),
-        debug_path=library_dir / "reuse_debug.json",
     )
 
     assert match is None
-    debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
-    query = debug["queries"][0]
-    assert query["debug_mode"] == "summary"
-    assert "ranked_candidates" not in query
-    assert "policy_candidates" not in query
-    assert len(query["no_reuse_top_candidates"]) == 2
-    assert {item["asset_id"] for item in query["no_reuse_top_candidates"]} == {"one", "two"}
-    assert all(item["reuse_policy"]["decision"] == "reject" for item in query["no_reuse_top_candidates"])
+    payload = json.loads(debug_path.read_text(encoding="utf-8"))
+    query = payload["queries"][0]
+    decision = query["decision"]
+    assert decision["reason"] == "no_candidate_above_reuse_threshold"
+    assert "unknown_fields" not in decision
+    assert query["candidate_scores"][0]["score_details"]["subject_filter"]["subject_filter_mode"] == "target_subject_unknown"
 
 
-def test_strict_reuse_session_limit_skips_candidate_after_two_uses(tmp_path):
-    class FakeReuseClient:
-        _model = "fake-reuse-model"
+def test_reuse_routing_is_always_split(tmp_path):
+    image_dir = tmp_path / "ai_images"
+    image_dir.mkdir()
+    (image_dir / "candidate.png").write_bytes(b"candidate")
+    write_ai_image_split_match_indexes(
+        {
+            "schema_version": 14,
+            "asset_root": str(tmp_path),
+            "assets": [
+                {
+                    "asset_id": "candidate",
+                    "asset_kind": "page_image",
+                    "image_path": "ai_images/candidate.png",
+                    "aspect_ratio": "1:1",
+                    "subject": "语文",
+                    "grade_norm": "五年级",
+                    "grade_band": "高年级",
+                    "content_prompt": "红色苹果插画",
+                    "context_summary": "识字课水果图",
+                    "strict_reuse_group": "C04_generic_subject_object",
+                }
+            ],
+        },
+        tmp_path,
+    )
 
-        def chat_json(self, messages, **kwargs):
-            review = _fake_reuse_review_response(messages)
-            if review is not None:
-                return review
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            asset_id = request["assets"][0]["asset_id"]
-            return {
-                "assets": [
-                    {
-                        "asset_id": asset_id,
-                        "normalized_prompt": "character bi teaching card",
-                        "context_summary": "specific character teaching card",
-                        "teaching_intent": "teach the exact character",
-                        "core_keywords": ["character", "bi"],
-                        "semantic_aliases": {},
-                        "context_summary_keywords": ["character card"],
-                        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2}],
-                    }
-                ]
-            }
-
-    library_dir = tmp_path / "materials_library"
-    image_dir = library_dir / "ai_images"
-    image_dir.mkdir(parents=True)
-    (image_dir / "first.png").write_bytes(b"first")
-    (image_dir / "second.png").write_bytes(b"second")
-    db = {
-        "schema_version": 6,
-        "output_root": str(library_dir),
-        "asset_count": 2,
-        "assets": [
-            {
-                "asset_id": "first",
-                "asset_kind": "page_image",
-                "image_path": "ai_images/first.png",
-                "aspect_ratio": "1:1",
-                "content_prompt": "character bi teaching card",
-                "normalized_prompt": "character bi teaching card",
-                "core_keywords": ["character", "bi"],
-                "semantic_aliases": {},
-                "reuse_level": "strict",
-                "asset_category": "content_specific",
-                "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
-                "generic_support_allowed": False,
-            },
-            {
-                "asset_id": "second",
-                "asset_kind": "page_image",
-                "image_path": "ai_images/second.png",
-                "aspect_ratio": "1:1",
-                "content_prompt": "character bi teaching card",
-                "normalized_prompt": "character bi teaching card",
-                "core_keywords": ["character", "bi"],
-                "semantic_aliases": {},
-                "reuse_level": "strict",
-                "asset_category": "content_specific",
-                "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
-                "generic_support_allowed": False,
-            },
-        ],
-    }
-    (library_dir / "ai_image_asset_db.json").write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
-    state = {
-        "strict_asset_use_counts": {"first": 2},
-        "strict_asset_used_by": {"first": [{"page_number": 1, "slot_key": "illustration_1"}]},
-    }
-
-    match = find_reusable_ai_image_asset(
-        library_dir=library_dir,
+    collection = find_reusable_ai_image_asset(
+        library_dir=tmp_path,
         asset_kind="page_image",
-        prompt="character bi teaching card",
-        subject="Chinese",
-        grade="2",
-        page_title="Character",
-        role="illustration",
+        prompt="红色苹果插画",
+        theme="五年级语文识字课",
+        grade="五年级",
+        subject="语文",
         aspect_ratio="1:1",
-        keyword_client=FakeReuseClient(),
-        debug_path=library_dir / "reuse_debug.json",
-        reuse_session_state=state,
-        reuse_debug_mode="full",
+        keyword_client=_KeywordClient(
+            {
+                "asset_id": "target",
+                "content_prompt": "红色苹果插画",
+                "context_summary": "识字课水果图",
+                "teaching_intent": "识别苹果",
+                "subject": "语文",
+                "grade_norm": "五年级",
+                "grade_band": "高年级",
+                "strict_reuse_group": "C04_generic_subject_object",
+            }
+        ),
+        _collect_candidates_only=True,
     )
 
-    assert match is not None
-    assert match["asset"]["asset_id"] == "second"
-    debug = json.loads((library_dir / "reuse_debug.json").read_text(encoding="utf-8"))
-    occupancy = {
-        item["asset_id"]: item["strict_reuse_occupancy"]["decision"]
-        for item in debug["queries"][0]["policy_candidates"]
+    route = collection["debug_record"]["reuse_group_route"]
+    assert route["route_mode"] == "split"
+    assert route["routed"] is True
+
+
+def test_embedding_and_hybrid_text_use_current_fields_only():
+    page = {
+        "asset_kind": "page_image",
+        "content_prompt": "visible apple card",
+        "context_summary": "object recognition",
+        "teaching_intent": "kept but not retrieved",
+        "core_keywords": ["deleted"],
+        "semantic_aliases": {"deleted": ["old"]},
+        "constraints": [{"kind": "object", "value": "deleted", "importance": 2}],
+        "context_summary_keywords": ["deleted context"],
     }
-    assert occupancy["first"] == "skip_strict_asset_reuse_limit"
-    assert occupancy["second"] == "available_within_limit"
-
-
-def test_plan_reuse_match_check_does_not_generate_or_ingest_assets(tmp_path):
-    class FakeReuseClient:
-        _model = "fake-reuse-model"
-
-        def chat_json(self, messages, **kwargs):
-            review = _fake_reuse_review_response(messages)
-            if review is not None:
-                return review
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            asset_id = request["assets"][0]["asset_id"]
-            return {
-                "assets": [
-                    {
-                        "asset_id": asset_id,
-                        "normalized_prompt": "character bi teaching card",
-                        "context_summary": "specific character teaching card",
-                        "teaching_intent": "teach the exact character",
-                        "core_keywords": ["character", "bi"],
-                        "semantic_aliases": {},
-                        "context_summary_keywords": ["character card"],
-                        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2}],
-                    }
-                ]
-            }
-
-    library_dir = tmp_path / "materials_library"
-    image_dir = library_dir / "ai_images"
-    image_dir.mkdir(parents=True)
-    (image_dir / "character.png").write_bytes(b"character")
-    db = {
-        "schema_version": 6,
-        "output_root": str(library_dir),
-        "asset_count": 1,
-        "assets": [
-            {
-                "asset_id": "character",
-                "asset_kind": "page_image",
-                "image_path": "ai_images/character.png",
-                "aspect_ratio": "1:1",
-                "content_prompt": "character bi teaching card",
-                "normalized_prompt": "character bi teaching card",
-                "core_keywords": ["character", "bi"],
-                "semantic_aliases": {},
-                "reuse_level": "strict",
-                "asset_category": "content_specific",
-                "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
-                "generic_support_allowed": False,
-            }
-        ],
-    }
-    db_path = library_dir / "ai_image_asset_db.json"
-    db_path.write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
-    session_dir = tmp_path / "output" / "session_plan_only"
-    session_dir.mkdir(parents=True)
-    plan = {
-        "meta": {"topic": "Chinese character lesson", "audience": "grade 2"},
-        "pages": [
-            {
-                "page_number": 1,
-                "page_type": "content",
-                "title": "Character",
-                "material_needs": {
-                    "images": [
-                        {
-                            "query": "character bi teaching card",
-                            "source": "ai_generate",
-                            "role": "illustration",
-                            "aspect_ratio": "1:1",
-                        }
-                    ]
-                },
-            }
-        ],
-    }
-    plan_path = session_dir / "plan.json"
-    plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
-
-    report = evaluate_ai_image_reuse_matches_from_plan(
-        plan_path=plan_path,
-        library_dir=library_dir,
-        keyword_client=FakeReuseClient(),
-        include_background=False,
-    )
-
-    assert report["generated_images"] is False
-    assert report["updated_asset_store"] is False
-    assert report["check_count"] == 1
-    assert report["matched_count"] == 1
-    assert report["checks"][0]["asset_id"] == "character"
-    assert not (session_dir / "materials").exists()
-    db_after = json.loads(db_path.read_text(encoding="utf-8"))
-    assert db_after["asset_count"] == 1
-
-
-def test_plan_reuse_match_check_can_copy_matches_to_session(tmp_path):
-    class FakeReuseClient:
-        _model = "fake-reuse-model"
-
-        def chat_json(self, messages, **kwargs):
-            review = _fake_reuse_review_response(messages)
-            if review is not None:
-                return review
-            raw = messages[1]["content"]
-            request = json.loads(raw[raw.index("{"):])
-            asset_id = request["assets"][0]["asset_id"]
-            return {
-                "assets": [
-                    {
-                        "asset_id": asset_id,
-                        "normalized_prompt": "character bi teaching card",
-                        "context_summary": "specific character teaching card",
-                        "teaching_intent": "teach the exact character",
-                        "core_keywords": ["character", "bi"],
-                        "semantic_aliases": {},
-                        "context_summary_keywords": ["character card"],
-                        "constraints": [{"kind": "text", "value": "character: bi", "importance": 2}],
-                    }
-                ]
-            }
-
-    library_dir = tmp_path / "materials_library"
-    image_dir = library_dir / "ai_images"
-    image_dir.mkdir(parents=True)
-    (image_dir / "character.png").write_bytes(b"character")
-    db = {
-        "schema_version": 6,
-        "output_root": str(library_dir),
-        "asset_count": 1,
-        "assets": [
-            {
-                "asset_id": "character",
-                "asset_kind": "page_image",
-                "image_path": "ai_images/character.png",
-                "aspect_ratio": "1:1",
-                "content_prompt": "character bi teaching card",
-                "normalized_prompt": "character bi teaching card",
-                "core_keywords": ["character", "bi"],
-                "semantic_aliases": {},
-                "reuse_level": "strict",
-                "asset_category": "content_specific",
-                "constraints": [{"kind": "text", "value": "character: bi", "importance": 2, "match_mode": "exact"}],
-                "generic_support_allowed": False,
-            }
-        ],
-    }
-    db_path = library_dir / "ai_image_asset_db.json"
-    db_path.write_text(json.dumps(db, ensure_ascii=False), encoding="utf-8")
-    session_dir = tmp_path / "output" / "session_plan_only"
-    session_dir.mkdir(parents=True)
-    plan = {
-        "meta": {"topic": "Chinese character lesson", "audience": "grade 2"},
-        "pages": [
-            {
-                "page_number": 1,
-                "page_type": "content",
-                "title": "Character",
-                "material_needs": {
-                    "images": [
-                        {
-                            "query": "character bi teaching card",
-                            "source": "ai_generate",
-                            "role": "illustration",
-                            "aspect_ratio": "1:1",
-                        }
-                    ]
-                },
-            }
-        ],
-    }
-    plan_path = session_dir / "plan.json"
-    plan_path.write_text(json.dumps(plan, ensure_ascii=False), encoding="utf-8")
-
-    report = evaluate_ai_image_reuse_matches_from_plan(
-        plan_path=plan_path,
-        library_dir=library_dir,
-        keyword_client=FakeReuseClient(),
-        include_background=False,
-        materialize_matches=True,
-    )
-
-    copied = session_dir / "materials" / "page_01_illustration_1.png"
-    manifest_path = session_dir / "materials" / "ai_image_reuse_manifest.json"
-    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-
-    assert report["generated_images"] is False
-    assert report["updated_asset_store"] is False
-    assert report["materialize_matches"] is True
-    assert report["materialized_count"] == 1
-    assert report["checks"][0]["asset_id"] == "character"
-    assert report["checks"][0]["session_image_path"] == str(copied)
-    assert copied.read_bytes() == b"character"
-    assert manifest["reused_assets"][0]["image_path"] == "materials/page_01_illustration_1.png"
-    assert manifest["reused_assets"][0]["reuse_asset_id"] == "character"
-    db_after = json.loads(db_path.read_text(encoding="utf-8"))
-    assert db_after["asset_count"] == 1
-
-
-def test_apply_strict_reuse_group_payload_overrides_existing():
-    """Re-classifying an asset must apply LLM's new payload over stale values.
-
-    Regression guard for the bug where _apply_strict_reuse_group_from_payload
-    preferred existing values, causing prompt-change re-ingest to silently
-    keep old classifications.
-    """
-    asset = {
-        "asset_id": "story_scene",
-        "strict_reuse_group": "content_reuse",
-        "strict_reuse_confidence": 0.9,
-        "strict_reuse_reason": "old reason: bound to lesson",
-        "strict_reuse_signals": ["llm_reuse_group"],
-    }
-    payload = {
-        "strict_reuse_group": "general_reuse",
-        "strict_reuse_confidence": 0.85,
-        "strict_reuse_reason": "属于课文场景插画：小蝌蚪团聚",
+    background = {
+        "asset_kind": "background",
+        "content_prompt": "raw background prompt",
+        "normalized_prompt": "light paper texture",
+        "context_summary": "low noise background",
+        "teaching_intent": "kept but not retrieved",
+        "core_keywords": ["deleted"],
+        "semantic_aliases": {"deleted": ["old"]},
+        "context_summary_keywords": ["deleted context"],
     }
 
-    _apply_strict_reuse_group_from_payload(asset, payload)
+    for text in (_asset_embedding_text(page), _candidate_hybrid_text(page)):
+        assert "visible apple card" in text
+        assert "object recognition" in text
+        assert "kept but not retrieved" not in text
+        assert "deleted" not in text
 
-    assert asset["strict_reuse_group"] == "general_reuse"
-    assert asset["strict_reuse_confidence"] == 0.85
-    assert asset["strict_reuse_reason"] == "属于课文场景插画：小蝌蚪团聚"
-    assert "llm_reuse_group" in asset["strict_reuse_signals"]
-
-
-def test_apply_strict_reuse_group_payload_kept_when_missing():
-    """When LLM payload omits strict_reuse_group, existing value must be preserved."""
-    asset = {
-        "asset_id": "stable",
-        "strict_reuse_group": "general_reuse",
-        "strict_reuse_confidence": 0.9,
-        "strict_reuse_reason": "previous LLM classification",
-        "strict_reuse_signals": ["upstream_reuse_group"],
-    }
-    payload: dict = {}
-
-    _apply_strict_reuse_group_from_payload(asset, payload)
-
-    assert asset["strict_reuse_group"] == "general_reuse"
-    assert asset["strict_reuse_confidence"] == 0.9
-    assert asset["strict_reuse_reason"] == "previous LLM classification"
-    assert asset["strict_reuse_signals"] == ["upstream_reuse_group"]
+    for text in (_asset_embedding_text(background), _candidate_hybrid_text(background)):
+        assert "light paper texture" in text
+        assert "low noise background" in text
+        assert "raw background prompt" not in text
+        assert "kept but not retrieved" not in text
+        assert "deleted" not in text
 
 
-def test_apply_strict_reuse_group_payload_noop_when_both_missing():
-    """No-op when neither asset nor payload carries a group."""
-    asset: dict = {"asset_id": "fresh"}
-    payload: dict = {}
+def test_transparent_padding_saves_only_png_canvas(tmp_path):
+    source = tmp_path / "wide.jpg"
+    output = tmp_path / "library.png"
+    Image.new("RGB", (200, 100), (255, 0, 0)).save(source)
 
-    _apply_strict_reuse_group_from_payload(asset, payload)
+    _save_reusable_png_with_transparent_padding(source, output, aspect_bucket="16:9")
 
-    assert "strict_reuse_group" not in asset
-    assert "strict_reuse_confidence" not in asset
-    assert "strict_reuse_reason" not in asset
+    with Image.open(output) as image:
+        assert image.format == "PNG"
+        assert image.mode == "RGBA"
+        assert image.size == (200, 112)
+        assert image.getpixel((0, 0))[3] == 0
+        assert image.getpixel((100, 56))[3] == 255

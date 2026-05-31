@@ -26,6 +26,16 @@ def chat_config():
 
 
 @pytest.fixture
+def deepseek_config():
+    return Config(
+        llm_api_key="test-key",
+        llm_model="deepseek-v4-pro",
+        llm_base_url="https://api.deepseek.com",
+        llm_provider="chat",
+    )
+
+
+@pytest.fixture
 def responses_config():
     return Config(
         llm_api_key="test-key",
@@ -70,6 +80,90 @@ class TestCreateLlmClient:
     def test_web_search_default_false(self, responses_config):
         client = create_llm_client(responses_config)
         assert client._web_search is False
+
+
+class TestLLMClientChat:
+    @patch("edupptx.llm_client.OpenAI")
+    def test_doubao_chat_omits_thinking_by_default(self, mock_openai_cls, chat_config):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="ok"))]
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_openai_cls.return_value = mock_client
+
+        client = LLMClient(chat_config)
+        client.chat(messages=[{"role": "user", "content": "test"}])
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert "extra_body" not in call_kwargs
+
+    @patch("edupptx.llm_client.OpenAI")
+    def test_doubao_chat_uses_configured_thinking(self, mock_openai_cls, chat_config):
+        chat_config.llm_thinking = "enabled"
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="ok"))]
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_openai_cls.return_value = mock_client
+
+        client = LLMClient(chat_config)
+        client.chat(messages=[{"role": "user", "content": "test"}])
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
+
+    @patch("edupptx.llm_client.OpenAI")
+    def test_deepseek_chat_omits_reasoning_by_default(self, mock_openai_cls, deepseek_config):
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="ok"))]
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_openai_cls.return_value = mock_client
+
+        client = LLMClient(deepseek_config)
+        client.chat(messages=[{"role": "user", "content": "test"}])
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert "extra_body" not in call_kwargs
+
+    @patch("edupptx.llm_client.OpenAI")
+    def test_deepseek_chat_uses_configured_reasoning(self, mock_openai_cls, deepseek_config):
+        deepseek_config.llm_thinking = "enabled"
+        deepseek_config.llm_reasoning_effort = "high"
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="ok"))]
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_openai_cls.return_value = mock_client
+
+        client = LLMClient(deepseek_config)
+        client.chat(messages=[{"role": "user", "content": "test"}])
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["extra_body"] == {
+            "thinking": {"type": "enabled"},
+            "reasoning_effort": "high",
+        }
+
+    @patch("edupptx.llm_client.OpenAI")
+    def test_deepseek_chat_omits_disabled_thinking_when_reasoning_is_set(
+        self,
+        mock_openai_cls,
+        deepseek_config,
+    ):
+        deepseek_config.llm_thinking = "disabled"
+        deepseek_config.llm_reasoning_effort = "high"
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock(message=MagicMock(content="ok"))]
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_openai_cls.return_value = mock_client
+
+        client = LLMClient(deepseek_config)
+        client.chat(messages=[{"role": "user", "content": "test"}])
+
+        call_kwargs = mock_client.chat.completions.create.call_args.kwargs
+        assert call_kwargs["extra_body"] == {"reasoning_effort": "high"}
 
 
 class TestConvertMessages:
@@ -146,7 +240,7 @@ class TestDoubaoResponsesClientChat:
         assert call_kwargs.kwargs["store"] is False
 
     @patch("edupptx.llm_client.OpenAI")
-    def test_doubao_disables_thinking(self, mock_openai_cls, responses_config):
+    def test_doubao_omits_thinking_by_default(self, mock_openai_cls, responses_config):
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.output_text = "ok"
@@ -157,7 +251,22 @@ class TestDoubaoResponsesClientChat:
         client.chat(messages=[{"role": "user", "content": "test"}])
 
         call_kwargs = mock_client.responses.create.call_args.kwargs
-        assert call_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
+        assert "extra_body" not in call_kwargs
+
+    @patch("edupptx.llm_client.OpenAI")
+    def test_doubao_uses_configured_thinking(self, mock_openai_cls, responses_config):
+        responses_config.llm_thinking = "enabled"
+        mock_client = MagicMock()
+        mock_response = MagicMock()
+        mock_response.output_text = "ok"
+        mock_client.responses.create.return_value = mock_response
+        mock_openai_cls.return_value = mock_client
+
+        client = DoubaoResponsesClient(responses_config)
+        client.chat(messages=[{"role": "user", "content": "test"}])
+
+        call_kwargs = mock_client.responses.create.call_args.kwargs
+        assert call_kwargs["extra_body"] == {"thinking": {"type": "enabled"}}
 
     @patch("edupptx.llm_client.OpenAI")
     def test_web_search_tool_injected(self, mock_openai_cls, responses_config):
@@ -291,13 +400,31 @@ class TestConfigProvider:
         assert config.vlm_base_url == "https://example.test/api/v3"
         assert config.reuse_library_dirs == (config.library_dir, Path("./materials_library_ppt"))
 
-    def test_from_env_loads_asset_library_update_mode(self, tmp_path, monkeypatch):
-        monkeypatch.delenv("EDUPPTX_ASSET_LIBRARY_UPDATE_MODE", raising=False)
-        monkeypatch.delenv("ASSET_LIBRARY_UPDATE_MODE", raising=False)
+    def test_from_env_has_no_asset_library_update_mode(self, tmp_path, monkeypatch):
         env_path = tmp_path / ".env"
-        env_path.write_text("EDUPPTX_ASSET_LIBRARY_UPDATE_MODE=background\n", encoding="utf-8")
+        env_path.write_text("", encoding="utf-8")
 
         config = Config.from_env(env_path)
 
         assert config.env_file == env_path
-        assert config.asset_library_update_mode == "background"
+        assert config.asset_library_ingest_enabled is True
+        assert not hasattr(config, "asset_library_update_mode")
+
+    def test_from_env_defaults_asset_library_ingest_enabled(self, tmp_path, monkeypatch):
+        env_path = tmp_path / ".env"
+        env_path.write_text("", encoding="utf-8")
+
+        config = Config.from_env(env_path)
+
+        assert config.asset_library_ingest_enabled is True
+        assert config.asset_library_vlm_review is False
+        assert config.debug_artifacts is False
+
+    def test_from_env_normalizes_llm_thinking_disable_alias(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("GEN_THINKING", raising=False)
+        env_path = tmp_path / ".env"
+        env_path.write_text("GEN_THINKING=disable\n", encoding="utf-8")
+
+        config = Config.from_env(env_path)
+
+        assert config.llm_thinking == "disabled"

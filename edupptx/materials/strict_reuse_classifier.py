@@ -1,4 +1,4 @@
-"""Binary reuse-group classification utilities for AI image material libraries."""
+"""Material category classification utilities for AI image material libraries."""
 
 from __future__ import annotations
 
@@ -8,13 +8,16 @@ import shutil
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timezone
-from html import escape as html_escape
 from pathlib import Path
 from typing import Any
 
-from edupptx.materials.ai_image_asset_db import DEFAULT_MATCH_INDEX_FILENAME
+from edupptx.materials.ai_image_asset_db import (
+    BACKGROUND_REUSE_INDEX_FILENAME,
+    BACKGROUND_REUSE_INDEX_GROUP,
+    DEFAULT_MATCH_INDEX_FILENAME,
+)
 
-STRICT_REUSE_CLASSIFIER_VERSION = 2
+STRICT_REUSE_CLASSIFIER_VERSION = 7
 STRICT_REUSE_REVIEW_QUEUE_FILENAME = "strict_reuse_review_queue.jsonl"
 STRICT_REUSE_REPORT_FILENAME = "strict_reuse_classification_report.json"
 STRICT_REUSE_VISUAL_CHECK_MANIFEST_FILENAME = "manifest.json"
@@ -22,336 +25,440 @@ STRICT_REUSE_VISUAL_CHECK_HTML_FILENAME = "index.html"
 STRICT_REUSE_VISUAL_CHECK_MODE = "strict-reuse-export-check"
 STRICT_REUSE_INDEX_DIRNAME = "strict_reuse_indexes"
 
-GENERAL_REUSE_GROUP = "general_reuse"
-CONTENT_REUSE_GROUP = "content_reuse"
-STRICT_REUSE_GROUPS = (GENERAL_REUSE_GROUP, CONTENT_REUSE_GROUP)
-STRICT_REUSE_SPLIT_GROUPS = STRICT_REUSE_GROUPS
+# --- 6 active material categories (v7; gapless C00-C05) ---
+C00_STRICT_TEXT_PROBLEM_SKIP = "C00_strict_text_problem_skip"
+C01_LANGUAGE_GLYPH_VISUAL = "C01_language_glyph_visual"
+C02_STRUCTURE_DIAGRAM_VISUAL = "C02_structure_diagram_visual"
+C03_IRREPLACEABLE_ENTITY_EVENT_ACTION = "C03_irreplaceable_entity_event_action"
+C04_GENERIC_SUBJECT_OBJECT = "C04_generic_subject_object"
+C05_SCENE_DECOR_CONTAINER = "C05_scene_decor_container"
 
-LEGACY_GENERAL_REUSE_GROUPS = {"", "none", "general", "general_reuse"}
-LEGACY_CONTENT_REUSE_GROUPS = {
-    "non_none",
-    "content_reuse",
-    "content_specific_reuse",
-    "exact_reuse",
-    "strict_reuse",
-    "math_problem",
-    "physics_problem",
-    "chinese_word_text",
-    "chinese_passage_text",
+# Backward-compatible constants. These names remain importable, but their
+# values normalize to the current active category set.
+C03_SPECIFIC_EVENT_INTERACTION = C03_IRREPLACEABLE_ENTITY_EVENT_ACTION
+C04_TEACHING_BOUND_ENTITY = "C04_teaching_bound_entity"
+C04_SINGLE_SUBJECT_ASSET = C04_GENERIC_SUBJECT_OBJECT
+C05_GENERIC_SUBJECT_ASSET = C04_GENERIC_SUBJECT_OBJECT
+C05_DECOR_LAYOUT_CONTAINER = C05_SCENE_DECOR_CONTAINER
+C06_SCENE_DECOR_CONTAINER = C05_SCENE_DECOR_CONTAINER
+C06_GENERIC_SCENE_ACTIVITY = C05_SCENE_DECOR_CONTAINER
+
+MATERIAL_CATEGORIES = (
+    C00_STRICT_TEXT_PROBLEM_SKIP,
+    C01_LANGUAGE_GLYPH_VISUAL,
+    C02_STRUCTURE_DIAGRAM_VISUAL,
+    C03_IRREPLACEABLE_ENTITY_EVENT_ACTION,
+    C04_GENERIC_SUBJECT_OBJECT,
+    C05_SCENE_DECOR_CONTAINER,
+)
+_MATERIAL_CATEGORY_SET = frozenset(MATERIAL_CATEGORIES)
+
+_LEGACY_CATEGORY_MIGRATION = {
+    "c03_specific_event_interaction": C03_IRREPLACEABLE_ENTITY_EVENT_ACTION,
+    "c04_teaching_bound_entity": C03_IRREPLACEABLE_ENTITY_EVENT_ACTION,
+    "c04_single_subject_asset": C04_GENERIC_SUBJECT_OBJECT,
+    "c05_generic_subject_asset": C04_GENERIC_SUBJECT_OBJECT,
+    "c05_decor_layout_container": C05_SCENE_DECOR_CONTAINER,
+    "c06_scene_decor_container": C05_SCENE_DECOR_CONTAINER,
+    "c06_generic_scene_activity": C05_SCENE_DECOR_CONTAINER,
 }
+
+# Legacy v6 prompt before the 2026-05-28 boundary refinement.
+# Kept for audit only; not used at runtime.
+# OLD MATERIAL_CATEGORY_RULES_TEXT:
+# ## strict_reuse_group 7 类分类规则（v6）
+# 全局原则：只根据 content_prompt 字面描述判断。严禁参考 theme、subject、grade_norm 等元数据推断分类。按优先级从高到低检查，命中即停。分类依据是复用时哪些信息不可替换，而不是单个关键词是否出现。
+#
+# 复用宽松度谱系（严→松）：C00 不复用 → C01 符号匹配 → C04 身份匹配 → C03 事件匹配 → C02 结构匹配 → C05 类型匹配 → C06 语境匹配
+#
+# 0. C00_strict_text_problem_skip（精确教学载荷类 — 跳过复用）：
+# 画面核心复用价值依赖不可替换的教学载荷，必须逐字、逐数值、逐符号精确一致。
+# 对语言符号内容，3 个及以下明确语言符号本体教学优先归 C01；附带教学辅助标注（如宽窄比例提示、笔顺标注）不改变此判断。4 个或以上独立教学字词、整段课文、未展开外部指代、标题艺术字或主题文字，只要需要整体精确复现，归本类。
+# 关键词触发条件：content_prompt 出现「课文」「段落」「片段」「原文」「全诗」「歌词」「童谣」等字样时，仅当文字/数据内容本身是画面核心复用价值时才归 C00。如果描述的是涉及文字的动作/活动/工具使用（如标记、圈画、标注序号），画面核心是动作而非文字内容，不归 C00，继续按 C05/C06 判断。
+# 含具体数值且换数值就不能用的数学题/物理题归本类。无具体数值的几何/物理示意图不归本类，继续按 C02 判断。可替换短标签、栏目文字、装饰文字不因可读而归本类。
+#
+# 1. C01_language_glyph_visual（语言符号形式教学类 — 精确符号匹配）：
+# 画面核心是少量（3 个及以下）明确语言符号本身，或其形、音、义、书写、部件、偏旁、构字、字源、演变、组词、搭配。即使画面使用拆分、箭头、对应、演变等图示方式，只要知识对象仍是语言符号本体，就不归 C02。4 个或以上字词或整段语言载荷需要整体复现时，优先按 C00 处理。语言学习中的流程、层级、方法等知识结构图示不归本类，归 C02。本类仅限语言符号（汉字、拼音、笔画等），数学/物理的图示归 C02。
+#
+# 2. C02_structure_diagram_visual（跨学科知识结构图示类 — 结构+主题匹配）：
+# 画面核心是以图形方式呈现知识关系，知识对象不是语言符号本体，匹配关键在于结构/流程/关系走向 + 所属知识主题。
+# 遮住测试：把图中具体文字/数值/名称全部遮住，只看布局/节点/连线/流程走向，还能判断这是什么类型的教学图吗？能→C02。不能→按内容判断其他类。
+# 适用：思维导图、流程图、原理图（光路/几何概念/成像规律）、实验装置示意图（结构关系图，非实拍照片）、对比框架图、带位值/结构关系的教具模板（如数位表）、分类/关系图。
+# 排除：含具体不可替换数值的图→C00；实验实拍场景（核心是可辨识器材/对象在演示现象→C05；大场景/环境→C06）；抽象艺术/装饰插画→C06；通用插画恰巧有组合布局→C05/C06；空白田字格/米字格/方格纸等纯承载容器→C06。
+#
+# 3. C03_specific_event_interaction（不可替换事件命题类 — 事件匹配）：
+# 画面表达不可替换的事件命题。事件三要素必须同时满足：①有可辨识的主体（谁，可以是具名或泛化角色）；②有明确的行为/事件（做了什么/发生了什么）；③该行为具有叙事/情感意义，替换动作会改变画面的故事含义。
+# 叙事意义测试：把动作替换成另一个日常动作，画面传达的故事/情感是否根本改变？是→C03；动作只是例行活动→C06。
+# 排除：静态环境描写不因出自课文而归 C03→C06；单一主体+姿态不构成事件→C05；例行学习/生活活动（朗读、写字、举手、观察）→C06；具名角色共处但无明确行为→C04。
+#
+# 4. C04_teaching_bound_entity（教学指定实体类 — 严格身份匹配）：
+# 画面核心是世界上唯一的/不可替换的特定实体。判断依据只看 content_prompt，严禁参考 theme/subject。
+# 替换测试/唯一性测试：世界上只有这一个/这一位→C04；世界上有很多个同类型→C05。
+# 适用：具名人物肖像、课文具名角色（content_prompt 中出现角色名）、具名/唯一地标建筑、具名文学作品实物、多个具名角色共处但无明确行为。
+# 排除：通用器材类型（换一台同型号不影响教学→C05）；「X的卡通头像」等通用视觉格式（content_prompt 无具名角色→C05）；通用表情/状态插画（非具名人物→C05）。
+#
+# 5. C05_generic_subject_asset（通用主体/道具类 — 类型级匹配）：
+# 画面核心是可辨识的主体或道具，换成同类型的另一个即可。
+# 适用：通用卡通角色、动物头像/单体照片、通用花卉/植物/果实、通用文具/日用品/器材道具、通用主体+简单姿态、实验实拍中核心是可辨识器材/对象在演示现象。
+# 与 C04 区分：世界上有很多同类型→C05；唯一不可替换→C04。与 C06 区分：画面有可辨识的独立主体对象→C05；整体是场景/氛围/容器/活动→C06。
+#
+# 6. C06_scene_decor_container（泛化场景/装饰/容器类 — 语境级匹配）：
+# 画面表达可泛化的环境状态、例行活动、页面装饰或内容容器；复用只需语境/氛围相近，不要求主体身份、姿态动作逐项一致。
+# 适用：风景/场景/氛围图、例行学习/生活活动场景、涉及文字的动作/活动（标记、圈画等动作是核心而非文字内容）、静态环境描写、空白卡片/边框/装饰框/承载容器、空白田字格/米字格/方格纸等纯承载容器、页面背景图、装饰图案/光斑/印章、大场景实验室/教室全景。
+# 若容器内有不可替换文字，按文字内容判断（通常归 C00）。
+# 氛围修饰测试：content_prompt 包含氛围词且定义画面整体感受→C06；去掉氛围词后仍是独立可辨识对象→C05。
+
+# OLD MATERIAL_CATEGORY_RULES_TEXT v6.1 before C03/C04 merge.
+# Kept for audit only; not used at runtime.
+_OLD_MATERIAL_CATEGORY_RULES_TEXT_V61 = (
+    "## strict_reuse_group 7 类分类规则（v6.1）\n"
+    "全局原则：只根据 content_prompt 字面描述判断。"
+    "严禁参考 theme、subject、grade_norm 等元数据推断分类。"
+    "按优先级从高到低检查，命中即停；"
+    "但每类必须通过“复用时不可替换信息”测试，不得只因关键词命中分类。"
+    "分类依据是复用时哪些信息不可替换，而不是单个关键词是否出现。\n"
+    "先判断 content_prompt 是否给出明确语言载荷："
+    "具体汉字、词语、拼音、读音、笔顺、部首、偏旁、笔画等。"
+    "给出明确语言载荷时，优先按 C01/C00 的数量和文本精确性判断；"
+    "未给出具体语言载荷、只描述关系模板时，按 C02 判断。\n"
+    "\n"
+    "复用宽松度谱系（严→松）：C00 不复用 → C01 符号匹配 → C04 身份匹配 → "
+    "C03 事件匹配 → C02 结构匹配 → C05 类型匹配 → C06 语境匹配\n"
+    "\n"
+    "0. C00_strict_text_problem_skip（精确教学载荷类 — 跳过复用）：\n"
+    "画面核心复用价值依赖不可替换的教学载荷，必须逐字、逐数值、逐符号精确一致。\n"
+    "语言符号内容中，1-3 个明确汉字/词语/拼音用于书写、结构、读音、组词、搭配、辨析教学时，"
+    "不归 C00，优先归 C01；宽窄比例提示、笔顺标注、拼音、部首等辅助标注不改变此判断。"
+    "4 个及以上独立教学字词、生字表、整段课文、诗文、题干、选项、解题步骤、完整任务说明，"
+    "只要复用必须整体精确复现，归 C00。\n"
+    "content_prompt 出现“课文”“段落”“片段”“原文”“全诗”“歌词”“童谣”等字样时，"
+    "仅当文字/数据内容本身是画面核心复用价值时才归 C00。"
+    "如果描述的是涉及文字的动作/活动/工具使用（如标记、圈画、标注序号），"
+    "画面核心是动作而非文字内容，不归 C00，继续按 C05/C06 判断。\n"
+    "含具体不可替换数值、题号、选项或作答要求的数学/物理题归 C00；"
+    "无具体不可替换数值的几何、物理原理或装置关系图继续按 C02 判断。"
+    "可替换短标签、栏目文字、装饰文字不因可读而归本类。\n"
+    "\n"
+    "1. C01_language_glyph_visual（语言符号形式教学类 — 精确符号匹配）：\n"
+    "画面核心是少量（1-3 个）明确语言符号本身，或这些明确语言符号的形、音、义、书写、笔顺、部首、偏旁、字源、演变、组词、搭配、"
+    "形近字/同音字/多音字辨析。"
+    "即使画面使用拆分、箭头、对应、颜色标注、演变等图示方式，"
+    "只要 prompt 明确给出具体汉字/词语/拼音/读音对象，且教学对象仍是这些语言符号本体，归 C01。"
+    "组词/搭配若给出明确词语、汉字、读音或具体搭配对象，归 C01；"
+    "若只写“组词搭配素材/模板/示意图”而没有具体词语内容，按语言关系图示归 C02。"
+    "没有具体语言载荷的“左右结构拆分示意图”“部件相加拼新字示意图”“组词搭配卡通素材”等关系模板，"
+    "不归 C01，归 C02。"
+    "4 个或以上字词或整段语言载荷需要整体复现时，优先按 C00 处理。"
+    "本类仅限语言符号；数学/物理的图示归 C02。\n"
+    "\n"
+    "2. C02_structure_diagram_visual（跨学科知识结构图示类 — 结构+主题匹配）：\n"
+    "画面核心是以图形方式呈现知识关系、结构、流程、对应、组合、因果或分类；"
+    "匹配关键在于关系走向 + 知识主题，而不是单个主体外观。\n"
+    "遮住测试：把图中具体文字/数值/名称全部遮住，只看布局/节点/连线/流程走向，"
+    "还能判断这是什么类型的教学图吗？能→C02。不能→按内容判断其他类。\n"
+    "适用：思维导图、流程图、原理图（光路/几何概念/成像规律）、"
+    "实验装置示意图、对比框架图、带位值/结构关系的教具模板、分类/关系图。"
+    "语言学习中，若 prompt 未给出具体汉字/词语内容，而是描述结构拆分、部件组合、组词搭配、构字关系、阅读/写作结构模板，归 C02。"
+    "若图中明确给出 1-3 个具体汉字/词语/拼音/读音，并围绕这些语言符号做书写、读音、组词、搭配或辨析教学，"
+    "归 C01，而非 C02。"
+    "实验实拍/场景若核心只是器材、道具或单体对象，归 C05；"
+    "若核心是明确物理原理、光路、成像、会聚/发散或实验现象因果，归 C02。"
+    "含具体不可替换数值、题号、选项或作答要求的图归 C00。"
+    "抽象艺术/装饰插画→C06；通用插画恰巧有组合布局→C05/C06；"
+    "空白田字格/米字格/方格纸等纯承载容器→C06。\n"
+    "\n"
+    "3. C03_specific_event_interaction（不可替换事件命题类 — 事件匹配）：\n"
+    "画面表达不可替换的事件命题。事件三要素必须同时满足：有可辨识主体；有明确行为/事件/状态变化；"
+    "该行为或状态具有叙事/情感意义，替换后会改变故事含义。"
+    "叙事意义测试：把动作、姿态、表情、道具结果或环境氛围替换掉，画面传达的故事/情感是否根本改变？"
+    "是→C03。"
+    "人物处于低落、痛苦、愤怒、担忧、强忍等明确情绪状态，且姿态/道具/环境改变会改变课文或故事含义时，归 C03。"
+    "单一主体+普通姿态不构成事件，归 C05；"
+    "但姿态、表情、道具结果或环境氛围共同表达明确叙事情绪命题时，归 C03。"
+    "普通站立、蹲坐、举手、看向某物等无冲突、无情绪转折、无事件结果的主体姿态，不归 C03，按 C05/C06 判断。"
+    "例行学习/生活活动（朗读、写字、举手、观察）→C06；"
+    "具名角色共处但无明确行为→C04。\n"
+    "\n"
+    "4. C04_teaching_bound_entity（教学指定实体类 — 严格身份匹配）：\n"
+    "画面核心是世界上唯一的/不可替换的特定实体。"
+    "判断依据只看 content_prompt，严禁参考 theme/subject。\n"
+    "替换测试/唯一性测试：世界上只有这一个/这一位→C04；世界上有很多个同类型→C05。\n"
+    "适用：具名人物肖像、content_prompt 明确出现的课文具名角色、具名/唯一地标建筑、具名文学作品实物、"
+    "多个具名角色共处但无明确事件行为。"
+    "具名角色若正在执行有叙事意义的事件，优先按 C03；无事件、只展示角色身份或形象时归 C04。"
+    "若 X 只是通用类别或视觉主题（如孔雀头像、卡通小昆虫、普通教师），不是具名人物/具名角色，归 C05。"
+    "通用表情/状态插画（非具名人物）不归 C04，按 C05/C03 判断。\n"
+    "\n"
+    "5. C05_generic_subject_asset（通用主体/道具类 — 类型级匹配）：\n"
+    "适用：可辨识的通用主体或道具，换成同类型另一个仍可复用，且画面不依赖特定事件、强情绪命题、知识结构关系或内容容器。"
+    "适用：通用卡通角色、动物头像/单体照片、通用花卉/植物/果实、通用文具/日用品/器材道具、通用主体+普通姿态。"
+    "通用器材/道具单体或器材外观展示归 C05；"
+    "若器材在表达明确物理原理、光路、成像、会聚/发散或实验现象因果，归 C02。"
+    "有明确叙事情绪或事件结果时不归 C05，归 C03；"
+    "主体举着空白卡片、文本框、展示板等承载容器时不归 C05，归 C06。"
+    "与 C04 区分：世界上有很多同类型→C05；唯一不可替换→C04。"
+    "与 C06 区分：画面有可辨识的独立主体对象→C05；整体是场景/氛围/容器/活动→C06。\n"
+    "\n"
+    "6. C06_scene_decor_container（泛化场景/装饰/容器类 — 语境级匹配）：\n"
+    "画面表达可泛化的环境状态、例行活动、页面装饰或内容容器；"
+    "复用只需语境/氛围相近，不要求主体身份、姿态动作逐项一致。\n"
+    "适用：风景/场景/氛围图、例行学习/生活活动场景、"
+    "涉及文字的动作/活动（标记、圈画等动作是核心而非文字内容）、"
+    "静态环境描写、页面背景图、装饰图案/光斑/印章、大场景实验室/教室全景。"
+    "空白卡片、文本框、便签、黑板、展示板、边框、模板、占位区域优先归 C06，即使旁边有通用角色或动物。"
+    "空白田字格/米字格/方格纸等纯承载容器归 C06。"
+    "若卡片/框内已有明确不可替换教学文字、汉字、词语、拼音或题目，按文字内容归 C01 或 C00，而不是 C06。"
+    "自然物体若处在天气、季节、光线、氛围中并定义整体场景感受，归 C06；"
+    "若是白底/孤立展示的单个植物、果实、器物或角色，归 C05。\n"
+    "氛围修饰测试：content_prompt 包含氛围词且定义画面整体感受→C06；"
+    "去掉氛围词后仍是独立可辨识对象→C05。\n"
+)
+
+MATERIAL_CATEGORY_RULES_TEXT = (
+    "## strict_reuse_group 6 类分类规则（v7，无缺号，C03 动作边界收紧）\n"
+    "\n"
+    "全局原则：只根据 content_prompt 字面描述判断。"
+    "严禁参考 theme、subject、grade_norm、文件名、原始 strict_reuse_group 或其他元数据推断分类。"
+    "分类依据是 content_prompt 自身表达的复用粒度，而不是单个关键词是否出现。"
+    "不得看到某个词就强制归类；必须判断画面核心复用价值属于不可替代命题、主体对象还是场景语境。"
+    "按下面顺序判断；命中高优先级类别后不再下探。"
+    "C03 不能抢走文字题图、语言符号、数学/物理/语文结构图；"
+    "C04 不能抢走不可替代动作；C05 不能抢走可辨识主体或事件。\n"
+    "\n"
+    "新分类只允许输出以下 6 个 ID：\n"
+    "C00_strict_text_problem_skip\n"
+    "C01_language_glyph_visual\n"
+    "C02_structure_diagram_visual\n"
+    "C03_irreplaceable_entity_event_action\n"
+    "C04_generic_subject_object\n"
+    "C05_scene_decor_container\n"
+    "\n"
+    "复用宽松度谱系（严→松）："
+    "C00 不复用 → C01 符号精确匹配 → C03 实体/事件/动作严格匹配 → "
+    "C02 结构主题匹配 → C04 类型匹配 → C05 语境匹配\n"
+    "\n"
+    "0. C00_strict_text_problem_skip（精确教学载荷类 — 跳过复用）：\n"
+    "画面核心复用价值依赖不可替换的教学载荷，必须逐字、逐数值、逐符号一致时，归 C00。\n"
+    "适用：4 个及以上独立教学字词、生字表、整段课文/诗文/儿歌/选段、完整题干、选项、"
+    "解题步骤、完整任务说明、不可替换数值题图。\n"
+    "排除：1-3 个明确汉字/词语/拼音用于书写、结构、读音、组词、搭配、辨析教学时，"
+    "不归 C00，归 C01。短栏目标签、装饰文字、角色旁的小牌子，不因可读而归 C00，"
+    "应按画面主体判断。\n"
+    "\n"
+    "1. C01_language_glyph_visual（语言符号形式教学类 — 精确符号匹配）：\n"
+    "画面核心是语言符号本体或语言符号形式教学时，归 C01。\n"
+    "适用：汉字、词语、拼音、读音、笔画、笔顺、部首、偏旁、字源、演变、构字、结构、"
+    "形近字/同音字/多音字辨析、少量生字教学卡片。\n"
+    "即使画面使用拆分、箭头、对比、演变、图标辅助，只要教学对象仍是语言符号本体，归 C01。\n"
+    "排除：课文结构、阅读结构、写作结构、内容梳理、思维导图、人物关系图等，"
+    "核心是信息组织而不是字形/字音/字义本体时，归 C02。"
+    "4 个及以上独立教学字词或整段语言载荷需整体精确复现时，归 C00。"
+    "语言符号本体教学归 C01。\n"
+    "\n"
+    "2. C02_structure_diagram_visual（知识结构图示类 — 结构+主题匹配）：\n"
+    "画面核心是知识关系、流程、结构、对应、分类、因果、规律、图表或原理说明，"
+    "匹配关键在于结构走向和知识主题时，归 C02。\n"
+    "适用：数学几何/统计/数轴/路线/应用题关系图，物理光路、成像规律、实验装置结构、"
+    "变量对比，语文阅读/写作/课文结构思维导图，跨学科流程图、关系图、表格。\n"
+    "必要条件：遮住具体文字/数值后，仍能看出它是某类知识结构或原理图。\n"
+    "排除：单个工具、道具、器材、普通实验现象或实践场景，"
+    "若没有明确结构关系/变量关系/光路/规律对比，归 C04。"
+    "语言符号本体教学归 C01。不可替换题干/数值/选项归 C00。\n"
+    "\n"
+    "3. C03_irreplaceable_entity_event_action（不可替代实体/事件/动作类 — 严格匹配）：\n"
+    "只有 content_prompt 自身已经表达不可替代语义命题时才归 C03。"
+    "C03 不要求主体必须是具名人物、唯一地点、唯一物体或课文专名；匿名主体也可以归 C03。"
+    "判断时必须忽略课文名、theme、subject、grade_norm、teaching_intent、context_summary 和旧分类。"
+    "如果需要依赖课文名、theme、teaching_intent 或教学上下文才不可替代，不归 C03。"
+    "不得看到某个词就强制归类；必须看完整 content_prompt 是否形成不可替代命题。\n"
+    "C03 的核心判断：把画面简化为同类型通用主体/对象、普通姿态或普通动作后，"
+    "是否会丢失 content_prompt 自身表达的核心复用意义。"
+    "如果会丢失，且丢失的是故事绑定的角色身份、主体关系、叙事动作或情绪状态组合，归 C03。\n"
+    "可归 C03 的泛化类型包括：具名或故事绑定的角色身份；"
+    "亲属关系、故事角色关系、角色功能关系等不可互换主体关系；"
+    "有意图、对象或结果的动作；冲突、抗拒、破坏后果、状态转折、关系张力或故事结果；"
+    "姿态、道具、环境或氛围共同表达故事状态的强情绪画面。"
+    "这些类型必须由 content_prompt 自身表达，不得从课文主题或旧 metadata 推断。\n"
+    "不归 C03 的情况：普通动物群体、普通人物组合、轻量社交动作、普通自然状态、"
+    "通用主体的简单姿态、普通表情、外观特征、比喻性视觉特征，"
+    "不构成不可替代语义命题时，应下探到 C04 或 C05。\n"
+    "\n"
+    "4. C04_generic_subject_object（通用主体/道具类 — 类型级匹配）：\n"
+    "画面核心复用价值是可辨识的主体或对象时归 C04。"
+    "主体或对象可以是人物、角色、动物、植物、自然物、工具、器材、道具、小规模主体组合或普通状态。"
+    "简单姿态、普通动作、普通表情、外观特征、比喻性视觉特征、轻量社交动作可以保留在 C04，"
+    "前提是它们没有组成不可替代语义命题。"
+    "如果把主体换成同类型另一个、把动作简化成普通姿态、或移除关系/情绪状态后，"
+    "仍保留主要复用价值，归 C04。"
+    "如果这种简化会破坏 content_prompt 自身表达的故事绑定身份、关系、动作结果或情绪状态组合，归 C03。"
+    "如果画面主要靠整体环境、天气、远景、氛围或页面承载功能复用，归 C05。"
+    "明确知识结构、光路、变量关系或规律图示归 C02。"
+    "空白卡片、文本框、边框、模板、占位区域主导画面归 C05。\n"
+    "\n"
+    "5. C05_scene_decor_container（场景装饰容器类 — 语境级匹配）：\n"
+    "画面核心复用价值是整体场景、天气、氛围、远景、背景、页面装饰、空白容器或内容占位模板时归 C05。"
+    "复用只需语境、氛围或版式功能相近，不要求独立主体对象精确一致。"
+    "视觉具体、季节明确或气氛明显，不会自动提升到 C03。"
+    "如果画面裁出某个主体后仍主要作为该主体对象复用，归 C04。"
+    "如果 content_prompt 自身表达主体绑定的不可替代强叙事命题，归 C03。"
+    "容器内已有不可替换教学文字、题目、段落时，按 C00/C01 判断。\n"
+)
+
+MATERIAL_CATEGORY_RULES_TEXT = MATERIAL_CATEGORY_RULES_TEXT.replace("content_prompt", "caption")
+
+
+def _asset_caption(asset: dict[str, Any]) -> str:
+    return _clean_text(asset.get("caption")) or _clean_text(asset.get("content_prompt"))
+
+
+def _build_classify_prompt(payload: dict[str, Any]) -> str:
+    caption = _asset_caption(payload)
+    request = {
+        "asset_id": _clean_text(payload.get("asset_id")),
+        "caption": caption,
+    }
+    return (
+        "Classify this material into exactly one strict_reuse_group using only the caption field.\n\n"
+        + MATERIAL_CATEGORY_RULES_TEXT
+        + "\n\nInput JSON:\n"
+        + json.dumps(request, ensure_ascii=False, indent=2)
+    )
+
+
+# OLD MATERIAL_CATEGORY_RULES_TEXT v6.2 before C03 event-boundary refinement.
+# Kept below the active prompt for audit only; commented out and not used at runtime.
+#     "## strict_reuse_group 6 类分类规则（v6.2，C03/C04 合并）\n"
+#     "\n"
+#     "全局原则：只根据 content_prompt 字面描述判断。"
+#     "严禁参考 theme、subject、grade_norm 等元数据推断分类。"
+#     "分类依据是复用时哪些信息不可替换，而不是单个关键词是否出现。"
+#     "按下面顺序判断；命中高优先级类别后不再下探。\n"
+#     "\n"
+#     "新分类只允许输出以下 6 个 ID：\n"
+#     "C00_strict_text_problem_skip\n"
+#     "C01_language_glyph_visual\n"
+#     "C02_structure_diagram_visual\n"
+#     "C03_specific_event_interaction\n"
+#     "C05_generic_subject_asset\n"
+#     "C06_scene_decor_container\n"
+#     "\n"
+#     "注意：C04_teaching_bound_entity 是旧版兼容 ID，不允许新分类输出；"
+#     "旧数据中的 C04 会由代码归一到 C03。\n"
+#     "\n"
+#     "复用宽松度谱系（严→松）："
+#     "C00 不复用 → C01 符号精确匹配 → C03 实体/事件严格匹配 → "
+#     "C02 结构主题匹配 → C05 类型匹配 → C06 语境匹配\n"
+#     "\n"
+#     "0. C00_strict_text_problem_skip（精确教学载荷类 — 跳过复用）：\n"
+#     "画面核心复用价值依赖不可替换的教学载荷，必须逐字、逐数值、逐符号一致时，归 C00。\n"
+#     "适用：4 个及以上独立教学字词、生字表、整段课文/诗文/儿歌/选段、完整题干、选项、"
+#     "解题步骤、完整任务说明、不可替换数值题图。\n"
+#     "排除：1-3 个明确汉字/词语/拼音用于书写、结构、读音、组词、搭配、辨析教学时，"
+#     "不归 C00，归 C01。短栏目标签、装饰文字、角色旁的小牌子，不因可读而归 C00，"
+#     "应按画面主体判断。\n"
+#     "\n"
+#     "1. C01_language_glyph_visual（语言符号形式教学类 — 精确符号匹配）：\n"
+#     "画面核心是语言符号本体或语言符号形式教学时，归 C01。\n"
+#     "适用：汉字、词语、拼音、读音、笔画、笔顺、部首、偏旁、字源、演变、构字、结构、"
+#     "形近字/同音字/多音字辨析、少量生字教学卡片。\n"
+#     "即使画面使用拆分、箭头、对比、演变、图标辅助，只要教学对象仍是语言符号本体，归 C01。\n"
+#     "排除：课文结构、阅读结构、写作结构、内容梳理、思维导图、人物关系图等，"
+#     "核心是信息组织而不是字形/字音/字义本体时，归 C02。"
+#     "4 个及以上独立教学字词或整段语言载荷需整体精确复现时，归 C00。\n"
+#     "\n"
+#     "2. C02_structure_diagram_visual（知识结构图示类 — 结构+主题匹配）：\n"
+#     "画面核心是知识关系、流程、结构、对应、分类、因果、规律、图表或原理说明，"
+#     "匹配关键在于结构走向和知识主题时，归 C02。\n"
+#     "适用：数学几何/统计/数轴/路线/应用题关系图，物理光路、成像规律、实验装置结构、"
+#     "变量对比，语文阅读/写作/课文结构思维导图，跨学科流程图、关系图、表格。\n"
+#     "必要条件：遮住具体文字/数值后，仍能看出它是某类知识结构或原理图。\n"
+#     "排除：单个工具、道具、器材、普通实验现象或实践场景，"
+#     "若没有明确结构关系/变量关系/光路/规律对比，归 C05。"
+#     "语言符号本体教学归 C01。不可替换题干/数值/选项归 C00。\n"
+#     "\n"
+#     "3. C03_specific_event_interaction（严格实体/事件类 — 身份或事件匹配）：\n"
+#     "画面核心包含不可替换的具名实体、唯一实体、课文/文学具名角色，或不可替换的故事事件时，归 C03。\n"
+#     "适用：具体人名人物、作者肖像、历史人物、具名文学角色、唯一地标/文物/书籍封面、"
+#     "具名人物共处、具名人物正在做普通展示动作、课文故事关键事件、人物关系事件、"
+#     "冲突/救助/送别/对话等叙事场面。\n"
+#     "合并规则：旧 C04 的“教学指定实体”全部并入 C03。"
+#     "只要 content_prompt 明确给出具体人名、具名角色名、唯一实体名，且不是 C00/C01/C02，就归 C03。\n"
+#     "事件判断：即使没有具体人名，只要画面表达不可替换的叙事情节，"
+#     "替换主体关系、动作结果或事件会改变故事含义，也归 C03。\n"
+#     "排除：通用人物、通用动物、通用表情、单体面容、普通姿态、"
+#     "普通举旗/拿书/讲解/观察等不绑定特定身份或故事事件的主体，归 C05。"
+#     "普通课堂/生活活动场景、背景氛围、空白容器主导画面时，归 C06。\n"
+#     "\n"
+#     "4. C05_generic_subject_asset（通用主体/道具类 — 类型级匹配）：\n"
+#     "画面核心是可辨识的通用主体、角色、动物、植物、工具、器材、道具或普通状态，"
+#     "换成同类型另一个仍可复用时，归 C05。\n"
+#     "适用：通用卡通人物/动物/植物/器物，工具道具，放大镜/老花镜/显微镜实物，"
+#     "普通人物表情或面容，通用主体+普通姿态，举旗、拿书、讲解、观察、带路等非故事关键动作。\n"
+#     "排除：具名人物/具名角色/唯一实体归 C03。"
+#     "明确知识结构、光路、变量关系或规律图示归 C02。"
+#     "空白卡片、文本框、边框、模板、占位区域主导画面归 C06。\n"
+#     "\n"
+#     "5. C06_scene_decor_container（场景装饰容器类 — 语境级匹配）：\n"
+#     "画面核心是泛化场景、氛围、背景、页面装饰、空白容器或内容占位模板，"
+#     "复用只需语境/风格相近时，归 C06。\n"
+#     "适用：风景/天气/自然氛围、课堂/校园/生活泛场景、页面背景、装饰图案、边框、"
+#     "空白卡片、空白文本框、便签、黑板、展示板、模板、PPT 占位区域。\n"
+#     "容器判断：只有容器/占位功能是画面主功能时才归 C06。"
+#     "若短栏目标签、小牌子或卡片只是角色附属道具，应按主视觉主体判断。\n"
+#     "排除：容器内已有不可替换教学文字、题目、段落时，按 C00/C01 判断。"
+#     "具名主体或具名事件归 C03。可辨识通用主体/道具是画面核心时，归 C05。\n"
+
+# Canonical convenience constants (downstream code still imports these names).
+GENERAL_REUSE_GROUP = C05_SCENE_DECOR_CONTAINER
+CONTENT_REUSE_GROUP = C00_STRICT_TEXT_PROBLEM_SKIP
+STRICT_REUSE_GROUPS = MATERIAL_CATEGORIES
+STRICT_REUSE_SPLIT_GROUPS = MATERIAL_CATEGORIES
 
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
-_EXACT_CONTENT_CONSTRAINT_KINDS = {
-    "text",
-    "math",
-    "physics",
-    "formula",
-    "equation",
-    "table",
-    "data",
-}
-_LEGACY_CONTENT_TERMS = (
-    "数学题",
-    "算式",
-    "计算题",
-    "应用题",
-    "题目",
-    "题干",
-    "公式",
-    "方程",
-    "竖式",
-    "横式",
-    "几何题",
-    "统计表",
-    "数据表",
-    "物理题",
-    "电路图",
-    "实验题",
-    "受力分析",
-    "拼音",
-    "生字",
-    "字词",
-    "词语",
-    "组词",
-    "偏旁",
-    "部首",
-    "汉字",
-    "会认字",
-    "会写字",
-    "课文",
-    "段落",
-    "原文",
-    "文本",
-    "句子",
-    "古诗",
-    "诗句",
-    "阅读题",
-    "选择题",
-    "填空题",
-)
-_LEGACY_BROAD_CONTENT_TERMS = {
-    "题目",
-    "题干",
-    "课文",
-    "段落",
-    "文本",
-    "句子",
-    "古诗",
-    "诗句",
-}
-_LEGACY_EXTRA_CONTENT_TERMS = (
-    "带拼音",
-    "课文片段",
-    "课文段落",
-    "课文文本",
-    "课文节选",
-    "课文材料",
-    "段落文本",
-    "原文段落",
-    "语段",
-    "选段",
-    "摘抄",
-    "歌词",
-    "宋词",
-    "儿歌",
-    "字词注释",
-    "米字格",
-    "田字格",
-    "笔顺",
-    "笔画",
-    "书法",
-    "字样",
-    "练习题",
-    "习作",
-    "写作任务",
-    "阅读任务",
-    "思维导图",
-    "七巧板",
-    "数位顺序表",
-    "数位表格",
-    "统计图",
-    "统计表格",
-    "表格",
-    "方格纸",
-    "分数墙",
-    "坐标",
-    "数轴",
-    "平面图",
-    "展开图",
-    "面积",
-    "体积",
-    "几何",
-    "三角形",
-    "长方形",
-    "正方形",
-    "平行四边形",
-    "梯形",
-    "直线",
-    "量角器",
-    "刻度",
-    "软尺",
-    "天平",
-    "等式",
-    "未知数",
-    "笔算",
-    "除法",
-    "加法",
-    "减法",
-    "乘法",
-    "光路",
-    "透镜",
-    "光学",
-    "实验装置",
-    "光具座",
-    "电路",
-    "受力",
-    "压强",
-    "浮力",
-    "电压",
-    "电流",
-)
-_LEGACY_NEGATED_CONTENT_PATTERNS = (
-    r"不要.{0,6}文字",
-    r"不含.{0,6}文字",
-    r"没有.{0,6}文字",
-    r"无.{0,6}文字",
-    r"避免.{0,6}文字",
-    r"no\s+text",
-    r"without\s+text",
-)
-_LEGACY_DECORATIVE_TEXT_TERMS = (
-    "空白卡片",
-    "空白标签",
-    "空白词卡",
-    "空白字卡",
-    "装饰边框",
-    "边框装饰",
-    "文本框",
-)
-_LEGACY_MATH_EXPRESSION_RE = re.compile(
-    r"(\d+(?:\.\d+)?\s*(?:[+×xX*÷/＝=])\s*\d+(?:\.\d+)?)"
-    r"|(\d+(?:\.\d+)?\s*/\s*\d+(?:\.\d+)?)"
-    r"|(\d+(?:\.\d+)?\s*%)"
-    r"|(?<![A-Za-z])([A-Z]\s*=\s*[A-Za-z]{1,3}\d*)(?![A-Za-z])"
-)
-_LEGACY_EXACT_CONTENT_CONTEXT_TERMS = (
-    "数学题",
-    "算式",
-    "计算题",
-    "应用题",
-    "练习题",
-    "例题",
-    "看图列式",
-    "题目",
-    "题干",
-    "解法",
-    "分步推导",
-    "推导过程",
-    "混合运算",
-    "小数比较",
-    "分解质因数",
-    "最大公因数",
-    "可能性",
-    "总个数",
-    "成绩表",
-    "统计表",
-    "数据表",
-    "表格",
-    "五局三胜",
-    "对阵",
-    "课文",
-    "课文内容",
-    "内容页面",
-    "古诗",
-    "注释",
-    "开放时间",
-    "参观路线",
-    "行为准则",
-    "写作题目",
-    "题目提示",
-    "文本",
-    "象形字",
-    "篆书",
-    "拼音标注",
-    "词语卡片",
-    "生字卡片",
-    "物理示意图",
-    "平面镜",
-    "物体AB",
-    "光路",
-    "电路图",
-    "受力分析",
-    "配比示意图",
-    "关系示意图",
-    "局部地图",
-    "售价示意图",
-    "求总价",
-    "购物小票",
-    "品名",
-    "单价",
-    "金额",
-    "选句",
-    "交际小贴士",
-    "小贴士",
-    "主动交流",
-    "行程路线",
-    "时间示意图",
-    "方位示意图",
-    "方位射线",
-    "内部连线",
-    "三角形拼图",
-    "字体演变",
-    "甲骨文",
-    "小篆",
-    "隶书",
-    "书写示范",
-    "笔顺",
-    "交友场景",
-    "对话",
-)
-_LEGACY_HARD_EXACT_CONTENT_CONTEXT_TERMS = tuple(
-    term
-    for term in _LEGACY_EXACT_CONTENT_CONTEXT_TERMS
-    if term not in {"古诗", "篆书", "文本"}
-)
-_LEGACY_GENERIC_VISUAL_CONTEXT_TERMS = (
-    "简笔画",
-    "实物",
-    "手势",
-    "手指操",
-    "三角尺",
-    "量角器",
-    "显微镜",
-    "光学显微镜",
-    "田字格",
-    "米字格",
-    "七巧板",
-    "枕头",
-    "婴儿服",
-    "椰子树",
-    "绿植",
-    "禾苗",
-    "彩纸",
-    "折角",
-    "平面布局",
-    "布局示意图",
-    "工笔画",
-    "水墨",
-    "古风",
-    "画像",
-    "卡通形象",
-    "诗集",
-    "封面",
-    "意境",
-    "山水",
-    "传统插画",
-    "局部插画",
-)
-_LEGACY_ART_OR_INCIDENTAL_LABEL_TERMS = (
-    "工笔画",
-    "水墨",
-    "古风",
-    "画像",
-    "卡通形象",
-    "诗集",
-    "封面",
-    "意境",
-    "传统插画",
-    "局部插画",
-    "印有",
-    "字样",
-    "上方有",
-    "身穿",
-)
-_LEGACY_CHARACTER_GRID_TERMS = ("米字格", "田字格")
-_LEGACY_CHARACTER_GRID_STYLE_TERMS = {
-    "拼音",
-    "楷书",
-    "楷体",
-    "红色",
-    "灰色",
-    "浅蓝灰色",
-    "书写",
-    "书法",
-    "笔顺",
-    "笔画",
-}
-_LEGACY_GENERIC_VISUAL_CATEGORIES = {
-    "concept_scene",
-    "generic_tool",
-    "learning_behavior",
-}
 
 
-def normalize_strict_reuse_group(value: Any, *, default: str = GENERAL_REUSE_GROUP) -> str:
-    """Normalize legacy/future labels to the binary reuse groups."""
+def normalize_strict_reuse_group(value: Any, *, default: str = C05_SCENE_DECOR_CONTAINER) -> str:
+    """Normalize canonical material category labels."""
 
     text = _clean_text(value).casefold()
-    if text in LEGACY_CONTENT_REUSE_GROUPS:
-        return CONTENT_REUSE_GROUP
-    if text in LEGACY_GENERAL_REUSE_GROUPS:
-        return GENERAL_REUSE_GROUP
+    if not text:
+        return default
+    if text in _MATERIAL_CATEGORY_SET:
+        return text
+    # Case-insensitive match for current IDs
+    for cat in MATERIAL_CATEGORIES:
+        if text == cat.casefold():
+            return cat
+    # Legacy persisted IDs map to the current active category set.
+    migrated = _LEGACY_CATEGORY_MIGRATION.get(text)
+    if migrated is not None:
+        return migrated
     return default
+
+
+SKIP_FROM_INDEX_VLM_QUALITY_THRESHOLD = 0.3
+
+
+def should_skip_from_index(asset: dict[str, Any]) -> bool:
+    group = normalize_strict_reuse_group(asset.get("strict_reuse_group"))
+    if group == C00_STRICT_TEXT_PROBLEM_SKIP:
+        return True
+
+    vlm_quality = asset.get("vlm_match_quality")
+    if vlm_quality is not None:
+        try:
+            if float(vlm_quality) < SKIP_FROM_INDEX_VLM_QUALITY_THRESHOLD:
+                return True
+        except (TypeError, ValueError):
+            pass
+
+    from edupptx.materials.ai_image_asset_db import normalize_aspect_bucket
+    bucket = normalize_aspect_bucket(asset.get("aspect_ratio"))
+    padding = _clean_text(asset.get("padding_capacity")).casefold()
+    if bucket == "other" and padding == "none":
+        return True
+
+    return False
 
 
 def classify_asset_strict_reuse(
@@ -362,25 +469,30 @@ def classify_asset_strict_reuse(
     """Normalize one asset's upstream reuse-group decision.
 
     New assets are classified by the LLM/VLM stages and arrive with
-    ``strict_reuse_group`` already set to ``general_reuse`` or ``content_reuse``.
-    This pass trusts that upstream label and only normalizes its format (legacy
-    fine-grained groups are migrated to ``content_reuse``). Keyword-based rules
-    are used as a fallback only when no upstream label is present.
+    ``strict_reuse_group`` already set by an LLM/VLM stage. This pass trusts
+    explicit upstream labels and only normalizes their format. Missing labels
+    are never inferred from local keywords.
     """
 
     asset_kind = _clean_text(asset.get("asset_kind"))
+    if asset_kind == "background":
+        return _classification(
+            C06_SCENE_DECOR_CONTAINER,
+            1.0,
+            ["background_asset_kind"],
+            [],
+            reason="background assets routed by asset_kind, not classified",
+        )
     if asset_kind and asset_kind != "page_image":
         return _classification(
             GENERAL_REUSE_GROUP,
             1.0,
             ["non_page_image"],
             [],
-            reason="non-page images use general reuse routing",
+            reason=f"non-page images use {GENERAL_REUSE_GROUP} routing",
         )
 
     raw_group = _clean_text(asset.get("strict_reuse_group"))
-    if not raw_group:
-        raw_group = _clean_text(asset.get("reuse_group"))
     if (
         infer_legacy_missing
         and raw_group
@@ -392,35 +504,29 @@ def classify_asset_strict_reuse(
         raw_group = ""
 
     if raw_group:
-        group = normalize_strict_reuse_group(raw_group)
-        legacy = raw_group.casefold() not in STRICT_REUSE_GROUPS
-        signals = [f"legacy_group:{raw_group}"] if legacy else ["upstream_reuse_group"]
+        group = normalize_strict_reuse_group(raw_group, default="")
+        if not group:
+            return _classification(
+                GENERAL_REUSE_GROUP,
+                0.5,
+                ["invalid_upstream_reuse_group"],
+                ["invalid_upstream_reuse_group"],
+                reason=f"invalid upstream reuse group {raw_group}; expected LLM/VLM material category",
+            )
+        signals = ["upstream_reuse_group"]
         confidence = _to_score(asset.get("strict_reuse_confidence"))
         if confidence is None:
             confidence = 0.86 if group == CONTENT_REUSE_GROUP else 0.9
-        reason = (
-            f"migrated legacy reuse group {raw_group} to {group}"
-            if legacy
-            else f"kept upstream reuse group {group}"
-        )
+        reason = f"kept upstream reuse group {group}"
         return _classification(group, confidence, signals, [], reason=reason)
 
     if infer_legacy_missing:
-        legacy_signals = _legacy_content_reuse_signals(asset)
-        if legacy_signals:
-            return _classification(
-                CONTENT_REUSE_GROUP,
-                0.82,
-                legacy_signals,
-                [],
-                reason="legacy unclassified asset inferred as content_reuse",
-            )
         return _classification(
             GENERAL_REUSE_GROUP,
             0.78,
-            ["legacy_default_general_reuse"],
+            ["legacy_default_generic_scene_activity"],
             [],
-            reason="legacy unclassified asset defaulted to general_reuse",
+            reason=f"legacy unclassified asset defaulted to {GENERAL_REUSE_GROUP}",
         )
 
     return _classification(
@@ -428,7 +534,7 @@ def classify_asset_strict_reuse(
         0.5,
         ["missing_upstream_reuse_classification"],
         ["missing_upstream_reuse_classification"],
-        reason="no LLM/VLM reuse classification; defaulted to general_reuse",
+        reason=f"no LLM/VLM reuse classification; defaulted to {GENERAL_REUSE_GROUP}",
     )
 
 
@@ -561,17 +667,13 @@ def write_strict_reuse_group_indexes(
     now = datetime.now(timezone.utc).isoformat()
     if not dry_run:
         target_dir.mkdir(parents=True, exist_ok=True)
-        for legacy_group in sorted((LEGACY_GENERAL_REUSE_GROUPS | LEGACY_CONTENT_REUSE_GROUPS) - set(STRICT_REUSE_GROUPS)):
-            if not legacy_group:
-                continue
-            legacy_path = target_dir / f"{legacy_group}.json"
-            if legacy_path.exists():
-                legacy_path.unlink()
     for group in STRICT_REUSE_SPLIT_GROUPS:
         group_assets = [
             deepcopy(asset)
             for asset in assets
             if normalize_strict_reuse_group(asset.get("strict_reuse_group")) == group
+            and (group == C00_STRICT_TEXT_PROBLEM_SKIP or not should_skip_from_index(asset))
+            and _clean_text(asset.get("asset_kind")) != "background"
         ]
         payload = {
             "schema_version": index.get("schema_version"),
@@ -587,6 +689,33 @@ def write_strict_reuse_group_indexes(
         if not dry_run:
             output_path.parent.mkdir(parents=True, exist_ok=True)
             output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    background_assets = [
+        deepcopy(asset)
+        for asset in assets
+        if _clean_text(asset.get("asset_kind")) == "background"
+        and not should_skip_from_index(asset)
+    ]
+    for asset in background_assets:
+        asset["asset_kind"] = "background"
+        asset["strict_reuse_group"] = normalize_strict_reuse_group(asset.get("strict_reuse_group"))
+    background_payload = {
+        "schema_version": index.get("schema_version"),
+        "strict_reuse_group": BACKGROUND_REUSE_INDEX_GROUP,
+        "built_at": now,
+        "updated_at": now,
+        "asset_root": index.get("asset_root") or str(root),
+        "asset_count": len(background_assets),
+        "assets": background_assets,
+    }
+    background_path = target_dir / BACKGROUND_REUSE_INDEX_FILENAME
+    written[BACKGROUND_REUSE_INDEX_GROUP] = {
+        "path": str(background_path),
+        "asset_count": len(background_assets),
+    }
+    if not dry_run:
+        background_path.parent.mkdir(parents=True, exist_ok=True)
+        background_path.write_text(json.dumps(background_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     if not dry_run:
         legacy_manifest = target_dir / "strict_reuse_split_manifest.json"
@@ -630,6 +759,8 @@ def _read_split_classification_source(root: Path, target_dir: Path) -> tuple[dic
     assets: list[dict[str, Any]] = []
     found = False
     first_payload: dict[str, Any] = {}
+    background_path = target_dir / BACKGROUND_REUSE_INDEX_FILENAME
+    has_background_split = background_path.exists()
     for group in STRICT_REUSE_GROUPS:
         path = target_dir / f"{group}.json"
         if not path.exists():
@@ -650,7 +781,29 @@ def _read_split_classification_source(root: Path, target_dir: Path) -> tuple[dic
             asset["strict_reuse_group"] = normalize_strict_reuse_group(
                 asset.get("strict_reuse_group") or payload.get("strict_reuse_group") or group,
             )
+            if has_background_split and _clean_text(asset.get("asset_kind")) == "background":
+                continue
             assets.append(asset)
+    if has_background_split:
+        found = True
+        payload = json.loads(background_path.read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"Strict reuse index is not a JSON object: {background_path}")
+        if not first_payload:
+            first_payload = payload
+        raw_assets = payload.get("assets")
+        if isinstance(raw_assets, list):
+            for raw_asset in raw_assets:
+                if not isinstance(raw_asset, dict):
+                    continue
+                asset = deepcopy(raw_asset)
+                if _clean_text(asset.get("asset_kind")) != "background":
+                    continue
+                asset["asset_kind"] = "background"
+                asset["strict_reuse_group"] = normalize_strict_reuse_group(
+                    asset.get("strict_reuse_group"),
+                )
+                assets.append(asset)
     if not found:
         return None
 
@@ -674,7 +827,7 @@ def export_strict_reuse_visual_check(
     clean: bool = True,
     force: bool = False,
 ) -> tuple[dict[str, Any], Path]:
-    """Copy assets into general_reuse/content_reuse folders for inspection."""
+    """Copy assets into material category folders for inspection."""
 
     root = Path(library_dir).expanduser().resolve()
     index_path = root / index_filename
@@ -719,7 +872,7 @@ def export_strict_reuse_visual_check(
                 "output_image_path": _relative_posix(target_path, target_dir) if copied else "",
                 "copied": copied,
                 "subject": _clean_text(asset.get("subject")),
-                "content_prompt": _clean_text(asset.get("content_prompt")),
+                "caption": _asset_caption(asset),
                 "vlm_match_quality": asset.get("vlm_match_quality"),
             }
         )
@@ -730,7 +883,6 @@ def export_strict_reuse_visual_check(
         group_counts.setdefault(group, 0)
 
     manifest_path = target_dir / STRICT_REUSE_VISUAL_CHECK_MANIFEST_FILENAME
-    html_path = target_dir / STRICT_REUSE_VISUAL_CHECK_HTML_FILENAME
     now = datetime.now(timezone.utc).isoformat()
     manifest = {
         "mode": STRICT_REUSE_VISUAL_CHECK_MODE,
@@ -743,249 +895,11 @@ def export_strict_reuse_visual_check(
         "missing_image_count": len(missing_items),
         "group_counts": dict(group_counts),
         "manifest_path": str(manifest_path),
-        "html_path": str(html_path),
         "missing_items": missing_items,
         "assets": entries,
     }
     manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    html_path.write_text(_render_visual_check_html(manifest), encoding="utf-8")
     return manifest, target_dir
-
-
-def _legacy_content_reuse_signals(asset: dict[str, Any]) -> list[str]:
-    signals: list[str] = []
-    text = _legacy_asset_text(asset)
-    text_without_negations = _strip_legacy_negated_content_terms(text)
-    if _looks_like_blank_decorative_text_asset(text_without_negations):
-        return []
-    content_keyword_hits = _legacy_content_keyword_hits(text_without_negations)
-    character_grid_context = _looks_like_legacy_character_grid_content(asset, text_without_negations)
-    hard_exact_context = _has_legacy_hard_exact_content_context(text_without_negations) or character_grid_context
-    exact_context = _has_legacy_exact_content_context(text_without_negations) or character_grid_context
-    incidental_art_label = _looks_like_legacy_art_or_incidental_label_asset(text_without_negations)
-    if incidental_art_label and not hard_exact_context:
-        content_keyword_hits = []
-        exact_context = False
-    generic_visual_context = _looks_like_legacy_generic_visual_asset(asset, text_without_negations)
-    if exact_context:
-        signals.append("legacy_content_context")
-    if content_keyword_hits and (exact_context or not generic_visual_context):
-        signals.append("legacy_content_keyword")
-    if _LEGACY_MATH_EXPRESSION_RE.search(text_without_negations):
-        signals.append("legacy_math_expression")
-    for constraint in _constraint_items(asset):
-        kind = _clean_text(constraint.get("kind")).casefold()
-        importance = _constraint_importance(constraint)
-        if importance < 2:
-            continue
-        value = _clean_text(constraint.get("value")).casefold()
-        if kind in {"formula", "equation", "table", "data"}:
-            signals.append(f"legacy_exact_constraint:{kind}")
-        elif kind == "text" and (
-            not _looks_like_legacy_gesture_label(value, text_without_negations)
-            and (
-                exact_context
-                or (content_keyword_hits and not generic_visual_context)
-                or _looks_like_substantive_text_content(value, text_without_negations)
-            )
-        ):
-            signals.append("legacy_exact_constraint:text")
-        elif kind == "math" and (
-            exact_context
-            or (content_keyword_hits and not generic_visual_context)
-            or _LEGACY_MATH_EXPRESSION_RE.search(value)
-            or _looks_like_math_content(value, text_without_negations)
-        ):
-            signals.append("legacy_exact_constraint:math")
-        elif kind == "physics" and (
-            exact_context
-            or (content_keyword_hits and not generic_visual_context)
-            or _looks_like_physics_content(value, text_without_negations)
-        ):
-            signals.append("legacy_exact_constraint:physics")
-    return _dedupe(signals)
-
-
-def _legacy_asset_text(asset: dict[str, Any]) -> str:
-    pieces: list[str] = []
-    for key in (
-        "content_prompt",
-    ):
-        pieces.append(_clean_text(asset.get(key)))
-    for key in ("core_keywords",):
-        value = asset.get(key)
-        if isinstance(value, list):
-            pieces.extend(_clean_text(item) for item in value)
-    aliases = asset.get("semantic_aliases")
-    if isinstance(aliases, dict):
-        for key, values in aliases.items():
-            pieces.append(_clean_text(key))
-            if isinstance(values, list):
-                pieces.extend(_clean_text(item) for item in values)
-    for constraint in _constraint_items(asset):
-        pieces.append(_clean_text(constraint.get("value")))
-    return " ".join(piece for piece in pieces if piece).casefold()
-
-
-def _strip_legacy_negated_content_terms(text: str) -> str:
-    stripped = text
-    for pattern in _LEGACY_NEGATED_CONTENT_PATTERNS:
-        stripped = re.sub(pattern, " ", stripped, flags=re.IGNORECASE)
-    return _clean_text(stripped).casefold()
-
-
-def _looks_like_blank_decorative_text_asset(text: str) -> bool:
-    return any(term.casefold() in text for term in _LEGACY_DECORATIVE_TEXT_TERMS)
-
-
-def _legacy_content_keyword_hits(text: str) -> list[str]:
-    terms = [
-        term
-        for term in (*_LEGACY_CONTENT_TERMS, *_LEGACY_EXTRA_CONTENT_TERMS)
-        if term and term not in _LEGACY_BROAD_CONTENT_TERMS
-    ]
-    return [term for term in _dedupe(terms) if term.casefold() in text]
-
-
-def _has_legacy_exact_content_context(text: str) -> bool:
-    return any(term.casefold() in text for term in _LEGACY_EXACT_CONTENT_CONTEXT_TERMS)
-
-
-def _has_legacy_hard_exact_content_context(text: str) -> bool:
-    return any(term.casefold() in text for term in _LEGACY_HARD_EXACT_CONTENT_CONTEXT_TERMS)
-
-
-def _looks_like_legacy_character_grid_content(asset: dict[str, Any], text: str) -> bool:
-    if not any(term.casefold() in text for term in _LEGACY_CHARACTER_GRID_TERMS):
-        return False
-    for constraint in _constraint_items(asset):
-        if _clean_text(constraint.get("kind")).casefold() != "text":
-            continue
-        if _constraint_importance(constraint) < 2:
-            continue
-        value = _clean_text(constraint.get("value"))
-        if not value:
-            continue
-        if value.casefold() in {term.casefold() for term in _LEGACY_CHARACTER_GRID_STYLE_TERMS}:
-            continue
-        return True
-    return False
-
-
-def _looks_like_legacy_art_or_incidental_label_asset(text: str) -> bool:
-    return any(term.casefold() in text for term in _LEGACY_ART_OR_INCIDENTAL_LABEL_TERMS)
-
-
-def _looks_like_legacy_generic_visual_asset(asset: dict[str, Any], text: str) -> bool:
-    if _has_legacy_exact_content_context(text):
-        return False
-    category = _clean_text(asset.get("asset_category")).casefold()
-    if category in _LEGACY_GENERIC_VISUAL_CATEGORIES:
-        return True
-    return any(term.casefold() in text for term in _LEGACY_GENERIC_VISUAL_CONTEXT_TERMS)
-
-
-def _looks_like_legacy_gesture_label(value: str, text: str) -> bool:
-    if not any(term.casefold() in text for term in ("手势", "手指操")):
-        return False
-    compact = re.sub(r"\s+", "", value).casefold()
-    if not compact:
-        return False
-    return bool(re.fullmatch(r"[a-zɑüāáǎàēéěèīíǐìōóǒòūúǔùǖǘǚǜ]{1,3}", compact))
-
-
-def _looks_like_substantive_text_content(value: str, text: str) -> bool:
-    if not value:
-        return False
-    if "《" in text and "》" in text and any(term in text for term in ("选段", "摘抄", "节选", "原文")):
-        return True
-    return any(
-        term in text
-        for term in (
-            "带拼音",
-            "课文片段",
-            "课文段落",
-            "课文文本",
-            "课文节选",
-            "段落文本",
-            "语段",
-            "选段",
-            "摘抄",
-            "歌词",
-            "字词注释",
-            "阅读任务",
-            "写作任务",
-            "习作",
-        )
-    )
-
-
-def _looks_like_math_content(value: str, text: str) -> bool:
-    if not value:
-        return False
-    if _LEGACY_MATH_EXPRESSION_RE.search(value):
-        return True
-    return any(
-        term in text
-        for term in (
-            "数学题",
-            "算式",
-            "计算题",
-            "应用题",
-            "练习题",
-            "填空题",
-            "数位",
-            "统计图",
-            "统计表",
-            "数轴",
-            "方程",
-            "等式",
-            "未知数",
-            "笔算",
-            "除法",
-            "加法",
-            "减法",
-            "乘法",
-        )
-    )
-
-
-def _looks_like_physics_content(value: str, text: str) -> bool:
-    if not value:
-        return False
-    return any(
-        term in text
-        for term in (
-            "物理题",
-            "电路图",
-            "实验题",
-            "受力分析",
-            "光路",
-            "透镜",
-            "光学",
-            "实验装置",
-            "光具座",
-            "电压",
-            "电流",
-            "电阻",
-            "压强",
-            "浮力",
-        )
-    )
-
-
-def _constraint_items(asset: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_constraints = asset.get("constraints")
-    if not isinstance(raw_constraints, list):
-        return []
-    return [item for item in raw_constraints if isinstance(item, dict)]
-
-
-def _constraint_importance(constraint: dict[str, Any]) -> int:
-    try:
-        return int(float(constraint.get("importance")))
-    except (TypeError, ValueError):
-        return 0
 
 
 def _is_missing_upstream_default(asset: dict[str, Any]) -> bool:
@@ -993,13 +907,13 @@ def _is_missing_upstream_default(asset: dict[str, Any]) -> bool:
     if "missing_upstream_reuse_classification" in signals:
         return True
     reason = _clean_text(asset.get("strict_reuse_reason")).casefold()
-    return "missing_upstream_reuse_classification" in reason or "defaulted to general_reuse" in reason
+    return "missing_upstream_reuse_classification" in reason or f"defaulted to {GENERAL_REUSE_GROUP}".casefold() in reason
 
 
 def _is_legacy_unclassified_inference(asset: dict[str, Any]) -> bool:
     signals = {_clean_text(item) for item in _as_string_list(asset.get("strict_reuse_signals"))}
     if any(
-        signal == "legacy_default_general_reuse"
+        signal == "legacy_default_generic_scene_activity"
         or signal == "legacy_content_context"
         or signal == "legacy_content_keyword"
         or signal == "legacy_math_expression"
@@ -1066,7 +980,7 @@ def _review_queue_item(asset: dict[str, Any], result: dict[str, Any]) -> dict[st
         "asset_id": _clean_text(asset.get("asset_id")),
         "image_path": _clean_text(asset.get("image_path")),
         "subject": _clean_text(asset.get("subject")),
-        "content_prompt": _clean_text(asset.get("content_prompt")),
+        "caption": _asset_caption(asset),
         "strict_reuse_group": result["strict_reuse_group"],
         "strict_reuse_confidence": result["strict_reuse_confidence"],
         "review_reasons": result["strict_reuse_review_reasons"],
@@ -1161,72 +1075,6 @@ def _visual_check_target_path(
     if suffix not in _IMAGE_SUFFIXES:
         suffix = ".png"
     return target_dir / group / f"{ordinal:06d}_{group}_{asset_id}{suffix}"
-
-
-def _render_visual_check_html(manifest: dict[str, Any]) -> str:
-    cards_by_group = {group: [] for group in STRICT_REUSE_GROUPS}
-    for entry in manifest.get("assets", []):
-        if not isinstance(entry, dict):
-            continue
-        group = normalize_strict_reuse_group(entry.get("strict_reuse_group"))
-        if entry.get("copied"):
-            image_html = (
-                f'<img loading="lazy" src="{html_escape(_clean_text(entry.get("output_image_path")))}" '
-                f'alt="{html_escape(_clean_text(entry.get("asset_id")))}">'
-            )
-        else:
-            image_html = '<div class="missing">missing image</div>'
-        cards_by_group[group].append(
-            "\n".join(
-                [
-                    '<article class="card">',
-                    image_html,
-                    f'<div class="meta"><strong>{html_escape(group)}</strong></div>',
-                    f'<div class="id">{html_escape(_clean_text(entry.get("asset_id")))}</div>',
-                    f'<div class="prompt">{html_escape(_clean_text(entry.get("content_prompt")))}</div>',
-                    "</article>",
-                ]
-            )
-        )
-
-    def section(group: str) -> str:
-        count = manifest.get("group_counts", {}).get(group, 0)
-        cards = "\n".join(cards_by_group[group])
-        return f"<section><h2>{html_escape(group)} ({count})</h2><div class=\"grid\">{cards}</div></section>"
-
-    return "\n".join(
-        [
-            "<!doctype html>",
-            '<html lang="zh-CN">',
-            "<head>",
-            '<meta charset="utf-8">',
-            "<title>Reuse Group Visual Check</title>",
-            "<style>",
-            "body{font-family:Arial,'Microsoft YaHei',sans-serif;margin:24px;background:#f6f7f9;color:#20242a}",
-            "h1{font-size:24px;margin:0 0 8px} h2{font-size:20px;margin:28px 0 12px}",
-            ".summary{color:#56606b;margin-bottom:18px}.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px}",
-            ".card{background:white;border:1px solid #dde2e8;border-radius:8px;padding:10px;box-shadow:0 1px 2px rgba(0,0,0,.04)}",
-            ".card img{width:100%;height:160px;object-fit:contain;background:#eef1f4;border-radius:4px}",
-            ".missing{height:160px;display:flex;align-items:center;justify-content:center;background:#f2dede;color:#8a1f11;border-radius:4px}",
-            ".meta{font-size:13px;margin-top:8px;color:#334155}.id{font-size:12px;color:#667085;margin-top:4px;word-break:break-all}",
-            ".prompt{font-size:13px;line-height:1.35;margin-top:6px;max-height:72px;overflow:auto}",
-            "</style>",
-            "</head>",
-            "<body>",
-            "<h1>Reuse Group Visual Check</h1>",
-            (
-                '<div class="summary">'
-                f"Assets: {manifest.get('asset_count', 0)} | "
-                f"Copied: {manifest.get('copied_count', 0)} | "
-                f"Missing: {manifest.get('missing_image_count', 0)}"
-                "</div>"
-            ),
-            section(CONTENT_REUSE_GROUP),
-            section(GENERAL_REUSE_GROUP),
-            "</body>",
-            "</html>",
-        ]
-    )
 
 
 def _relative_posix(path: Path, base: Path) -> str:

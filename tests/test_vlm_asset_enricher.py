@@ -2,7 +2,12 @@ import base64
 import json
 
 from edupptx.materials.ai_image_asset_db import build_ai_image_match_index, enrich_ai_image_asset_db_keywords
-from edupptx.materials.vlm_asset_enricher import VLM_SYSTEM_PROMPT, enrich_assets_with_vlm
+from edupptx.materials.vlm_asset_enricher import (
+    VLM_REDESCRIBE_SYSTEM_PROMPT,
+    VLM_SYSTEM_PROMPT,
+    _apply_redescription,
+    enrich_assets_with_vlm,
+)
 from edupptx.materials.vlm_metadata_rules import infer_padding_capacity_from_image
 
 
@@ -37,13 +42,37 @@ class FakeKeywordClient:
                     "asset_id": asset_id,
                     "context_summary": "keyword context should not replace rewritten context",
                     "teaching_intent": "keyword intent should not replace rewritten intent",
-                    "asset_category": "content_specific",
-                    "constraints": [{"kind": "object", "value": "apple", "importance": 1}],
                     "core_keywords": ["apple", "bubble chart"],
                     "semantic_aliases": {"apple": ["fruit"]},
                 }
             ]
         }
+
+
+def test_vlm_redescription_prompt_requests_general_boolean():
+    assert '"general": false' in VLM_REDESCRIBE_SYSTEM_PROMPT
+    assert "general 必须是布尔值" in VLM_REDESCRIBE_SYSTEM_PROMPT
+
+
+def test_apply_redescription_persists_boolean_general():
+    asset = {
+        "asset_id": "asset_general",
+        "content_prompt": "旧描述",
+        "general": False,
+    }
+
+    _apply_redescription(
+        asset,
+        {
+            "content_prompt": "带装饰的空白对话气泡贴纸",
+            "detail_prompt": "带装饰的空白对话气泡贴纸",
+            "context_summary": "空白气泡贴纸用于课堂展示",
+            "teaching_intent": "承载可替换文字内容",
+            "general": True,
+        },
+    )
+
+    assert asset["general"] is True
 
 
 def test_padding_capacity_infers_from_image_edges(tmp_path):
@@ -278,10 +307,11 @@ def test_low_quality_asset_is_redescribed_and_keywords_are_rebuilt(tmp_path):
         "needs_regeneration": True,
     }
     redescribe_payload = {
-        "content_prompt": "apple object bubble chart",
-        "detail_prompt": "An apple is surrounded by fruit objects in bubbles.",
+        "caption": "apple object bubble chart",
         "context_summary": "apple related objects in bubbles",
         "teaching_intent": "compare fruit related objects",
+        "strict_reuse_group": "C04_generic_subject_object",
+        "strict_reuse_reason": "generic subject: apple object bubble chart",
         "core_keywords": ["ignored"],
     }
     keyword_client = FakeKeywordClient()
@@ -299,26 +329,24 @@ def test_low_quality_asset_is_redescribed_and_keywords_are_rebuilt(tmp_path):
     assert report["keyword_rewrite_count"] == 1
     asset = db["assets"][0]
     assert asset["regenerate"] is True
-    assert asset["content_prompt"] == "apple object bubble chart"
-    assert asset["detail_prompt"] == "An apple is surrounded by fruit objects in bubbles."
+    assert asset["caption"] == "apple object bubble chart"
+    assert "detail_prompt" not in asset
     assert asset["context_summary"] == "apple related objects in bubbles"
     assert asset["teaching_intent"] == "compare fruit related objects"
-    assert asset["asset_category"] == "content_specific"
-    assert [(item["kind"], item["value"], item["importance"]) for item in asset["constraints"]] == [
-        ("object", "apple", 1)
-    ]
-    assert asset["core_keywords"] == ["apple", "bubble chart"]
-    assert asset["semantic_aliases"] == {"apple": ["fruit"]}
-    assert asset["context_summary_keywords"] == []
+    assert "asset_category" not in asset
+    assert "constraints" not in asset
+    assert "core_keywords" not in asset
+    assert "semantic_aliases" not in asset
+    assert "context_summary_keywords" not in asset
     assert "tadpole" not in json.dumps(asset, ensure_ascii=False)
-    assert "character" not in asset["core_keywords"]
+    assert "character" not in json.dumps(asset, ensure_ascii=False)
     assert "query_aliases" not in asset
 
     review = json.loads((tmp_path / "ai_image_vlm_review.json").read_text(encoding="utf-8"))["assets"]["page"]
     assert review["action"] == "auto_rewrite"
     assert review["manual_review_required"] is False
     assert review["regenerate"] is True
-    assert review["rewritten_metadata"]["content_prompt"] == "apple object bubble chart"
+    assert review["rewritten_metadata"]["caption"] == "apple object bubble chart"
     assert not (tmp_path / "debug" / "vlm_review_queue.jsonl").exists()
     assert len(keyword_client.messages) == 1
 
@@ -436,15 +464,15 @@ def test_vlm_reuse_group_mismatch_high_confidence_auto_corrects(tmp_path):
                 "asset_kind": "page_image",
                 "image_path": "page.png",
                 "content_prompt": "generic classroom illustration",
-                "strict_reuse_group": "general_reuse",
-                "strict_reuse_requires_exact_match": True,
+                    "strict_reuse_group": "C04_generic_subject_object",
+                    "strict_reuse_requires_exact_match": True,
             }
         ]
     }
     payload = {
         "constraint_verification": [],
         "match_quality_score": 0.76,
-        "visual_reuse_group": "content_reuse",
+            "visual_reuse_group": "C03_irreplaceable_entity_event_action",
         "visual_reuse_confidence": 0.86,
         "visual_reuse_reason": "The image contains visible exercise text.",
     }
@@ -454,14 +482,14 @@ def test_vlm_reuse_group_mismatch_high_confidence_auto_corrects(tmp_path):
     assert report["accepted_count"] == 1
     assert report["manual_review_count"] == 0
     asset = db["assets"][0]
-    assert asset["strict_reuse_group"] == "content_reuse"
+    assert asset["strict_reuse_group"] == "C03_irreplaceable_entity_event_action"
     assert asset["strict_reuse_confidence"] == 0.86
     assert "strict_reuse_requires_exact_match" not in asset
 
     review = json.loads((tmp_path / "ai_image_vlm_review.json").read_text(encoding="utf-8"))["assets"]["page"]
     assert review["strict_reuse_group_mismatch"] is True
     assert review["strict_reuse_auto_corrected"] is True
-    assert review["strict_reuse_group_update"] == "content_reuse"
+    assert review["strict_reuse_group_update"] == "C03_irreplaceable_entity_event_action"
     assert review["manual_review_required"] is False
 
 
@@ -477,14 +505,14 @@ def test_vlm_reuse_group_mismatch_low_confidence_goes_to_manual_review(tmp_path)
                 "asset_kind": "page_image",
                 "image_path": "page.png",
                 "content_prompt": "exercise text card",
-                "strict_reuse_group": "content_reuse",
+                    "strict_reuse_group": "C01_language_glyph_visual",
             }
         ]
     }
     payload = {
         "constraint_verification": [],
         "match_quality_score": 0.76,
-        "visual_reuse_group": "general_reuse",
+        "visual_reuse_group": "C05_scene_decor_container",
         "visual_reuse_confidence": 0.7,
         "visual_reuse_reason": "The image may only be a blank card.",
     }
@@ -493,7 +521,7 @@ def test_vlm_reuse_group_mismatch_low_confidence_goes_to_manual_review(tmp_path)
 
     assert report["manual_review_count"] == 1
     assert report["manual_review_asset_ids"] == ["page"]
-    assert db["assets"][0]["strict_reuse_group"] == "content_reuse"
+    assert db["assets"][0]["strict_reuse_group"] == "C01_language_glyph_visual"
 
     review = json.loads((tmp_path / "ai_image_vlm_review.json").read_text(encoding="utf-8"))["assets"]["page"]
     assert review["manual_review_required"] is True
@@ -502,8 +530,8 @@ def test_vlm_reuse_group_mismatch_low_confidence_goes_to_manual_review(tmp_path)
 
     debug_path = tmp_path / "debug" / "vlm_review_queue.jsonl"
     debug_record = json.loads(debug_path.read_text(encoding="utf-8").splitlines()[0])
-    assert debug_record["visual_reuse_group"] == "general_reuse"
-    assert debug_record["llm_reuse_group"] == "content_reuse"
+    assert debug_record["visual_reuse_group"] == "C05_scene_decor_container"
+    assert debug_record["llm_reuse_group"] == "C01_language_glyph_visual"
 
 
 def test_keyword_enrichment_preserves_review_fields():
@@ -520,8 +548,6 @@ def test_keyword_enrichment_preserves_review_fields():
                         "asset_id": asset_id,
                         "context_summary": "teaching illustration",
                         "teaching_intent": "show the peacock",
-                        "asset_category": "content_specific",
-                        "constraints": [],
                         "core_keywords": ["peacock"],
                         "semantic_aliases": {"peacock": ["bird"]},
                     }
@@ -564,8 +590,6 @@ def test_match_index_keeps_only_review_passthrough_fields(tmp_path):
                 "asset_kind": "page_image",
                 "image_path": "page.png",
                 "content_prompt": "blue peacock",
-                "asset_category": "content_specific",
-                "constraints": [{"kind": "entity", "value": "peacock", "importance": 2}],
                 "core_keywords": ["peacock"],
                 "semantic_aliases": {},
                 "query_aliases": {"peacock": ["blue peacock"]},
@@ -573,7 +597,7 @@ def test_match_index_keeps_only_review_passthrough_fields(tmp_path):
                 "vlm_match_quality": 0.91,
                 "regenerate": True,
                 "vlm_constraint_visibility": [{"value": "peacock", "presence": "present"}],
-                "strict_reuse_group": "content_reuse",
+                    "strict_reuse_group": "C04_generic_subject_object",
                 "strict_reuse_requires_exact_match": True,
             }
         ],
@@ -586,7 +610,9 @@ def test_match_index_keeps_only_review_passthrough_fields(tmp_path):
     assert "query_aliases" not in match_asset
     assert match_asset["vlm_match_quality"] == 0.91
     assert match_asset["regenerate"] is True
-    assert match_asset["padding_capacity"] == "mid"
-    assert match_asset["strict_reuse_group"] == "content_reuse"
+    assert "padding_capacity" not in match_asset
+    assert match_asset["strict_reuse_group"] == "C04_generic_subject_object"
+    for field in ("core_keywords", "semantic_aliases"):
+        assert field not in match_asset
     assert "strict_reuse_requires_exact_match" not in match_asset
     assert "transform_advice" not in match_asset

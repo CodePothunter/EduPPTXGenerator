@@ -39,17 +39,23 @@ class LLMClient:
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        # Doubao-specific: disable thinking for structured output
         if self._is_doubao:
-            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            if self._thinking:
+                kwargs["extra_body"] = {"thinking": {"type": self._thinking}}
         elif self._is_deepseek:
             extra_body: dict[str, Any] = {}
-            thinking = self._thinking or ("enabled" if self._model == "deepseek-v4-pro" else "")
-            reasoning_effort = self._reasoning_effort or ("high" if self._model == "deepseek-v4-pro" else "")
-            if thinking:
-                extra_body["thinking"] = {"type": thinking}
-            if reasoning_effort:
-                extra_body["reasoning_effort"] = reasoning_effort
+            if self._reasoning_effort:
+                extra_body["reasoning_effort"] = self._reasoning_effort
+            if self._thinking:
+                if (
+                    self._thinking.strip().lower() == "disabled"
+                    and self._reasoning_effort
+                ):
+                    logger.debug(
+                        "Omitting DeepSeek thinking=disabled because reasoning_effort is set"
+                    )
+                else:
+                    extra_body["thinking"] = {"type": self._thinking}
             if extra_body:
                 kwargs["extra_body"] = extra_body
         resp = self._client.chat.completions.create(**kwargs)
@@ -123,9 +129,8 @@ class DoubaoResponsesClient(LLMClient):
         if getattr(self, "_web_search", False):
             kwargs["tools"] = [{"type": "web_search", "max_keyword": 3}]
 
-        # 豆包: 关闭深度思考 (结构化输出场景)
-        if self._is_doubao:
-            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        if self._is_doubao and self._thinking:
+            kwargs["extra_body"] = {"thinking": {"type": self._thinking}}
 
         resp = self._client.responses.create(**kwargs)
         return resp.output_text or ""
@@ -149,6 +154,89 @@ class DoubaoResponsesClient(LLMClient):
                 input_items.append({"role": msg["role"], "content": msg["content"]})
         instructions = "\n\n".join(system_parts)
         return instructions, input_items
+
+
+class BatchLLMClient:
+    """火山方舟 / OpenAI Batch API 适配，用于离线批量任务。"""
+
+    def __init__(self, config: "Config"):
+        self._client = OpenAI(
+            api_key=config.llm_api_key,
+            base_url=config.llm_base_url or None,
+            timeout=300,
+            max_retries=1,
+        )
+        self._model = config.llm_model
+
+    def submit_batch(
+        self,
+        prompts: list[dict[str, str]],
+        *,
+        system_prompt: str = "",
+    ) -> str:
+        import tempfile as _tempfile
+
+        requests = []
+        for i, prompt in enumerate(prompts):
+            messages: list[dict[str, str]] = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            if isinstance(prompt, dict) and "content" in prompt:
+                messages.append({"role": "user", "content": prompt["content"]})
+            else:
+                messages.append({"role": "user", "content": str(prompt)})
+            requests.append({
+                "custom_id": f"req_{i}",
+                "method": "POST",
+                "url": "/v1/chat/completions",
+                "body": {
+                    "model": self._model,
+                    "messages": messages,
+                    "max_tokens": 4096,
+                },
+            })
+
+        jsonl_content = "\n".join(json.dumps(r, ensure_ascii=False) for r in requests)
+        with _tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False, encoding="utf-8") as f:
+            f.write(jsonl_content)
+            f.flush()
+            input_file = self._client.files.create(file=open(f.name, "rb"), purpose="batch")
+
+        batch = self._client.batches.create(
+            input_file_id=input_file.id,
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+        )
+        return batch.id
+
+    def poll_batch(self, batch_id: str, *, interval: int = 5, timeout: int = 3600) -> list[str]:
+        import time as _time
+
+        elapsed = 0
+        while elapsed < timeout:
+            batch = self._client.batches.retrieve(batch_id)
+            if batch.status == "completed":
+                break
+            if batch.status in ("failed", "cancelled", "expired"):
+                raise RuntimeError(f"Batch {batch_id} ended with status: {batch.status}")
+            _time.sleep(interval)
+            elapsed += interval
+        else:
+            raise TimeoutError(f"Batch {batch_id} did not complete within {timeout}s")
+
+        content = self._client.files.content(batch.output_file_id)
+        results_by_id: dict[str, str] = {}
+        for line in content.text.strip().split("\n"):
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            custom_id = entry.get("custom_id", "")
+            body = entry.get("response", {}).get("body", {})
+            choices = body.get("choices", [])
+            text = choices[0]["message"]["content"] if choices else ""
+            results_by_id[custom_id] = text
+
+        return [results_by_id.get(f"req_{i}", "") for i in range(len(results_by_id))]
 
 
 def create_llm_client(config: "Config", web_search: bool | None = None) -> LLMClient:
@@ -262,8 +350,7 @@ class ImageClient:
         size: preset ('2K','3K') or exact pixels ('2848x1600').
               Recommended 2K sizes by aspect ratio:
               1:1=2048x2048, 4:3=2304x1728, 3:4=1728x2304,
-              16:9=2848x1600, 9:16=1600x2848, 3:2=2496x1664,
-              2:3=1664x2496, 21:9=3136x1344
+              16:9=2848x1600, 9:16=1600x2848
         """
         resp = self._client.images.generate(
             model=self._model,

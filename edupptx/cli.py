@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any
@@ -13,6 +14,7 @@ from loguru import logger
 
 from edupptx.agent import PPTXAgent
 from edupptx.config import Config
+from edupptx.materials.ai_image_asset_db import DEFAULT_KEYWORD_BATCH_SIZE
 
 try:
     from edupptx import __version__ as _VERSION
@@ -64,6 +66,130 @@ def _optional_keyword_client(config: Config, *, enabled: bool):
     return create_llm_client(config, web_search=False), "enabled"
 
 
+LLM_PROFILE_CHOICES = ("deepseek", "doubao")
+
+
+def _llm_profile_option(func):
+    return click.option(
+        "--llm",
+        type=click.Choice(LLM_PROFILE_CHOICES, case_sensitive=False),
+        default=None,
+        help="LLM profile override: deepseek or doubao",
+    )(func)
+
+
+def _asset_library_vlm_review_option(func):
+    return click.option(
+        "--vlm-review",
+        "vlm_review",
+        is_flag=True,
+        default=False,
+        show_default=True,
+        help="Run VLM review before generated assets enter the reusable library",
+    )(func)
+
+
+def _debug_artifacts_option(func):
+    return click.option(
+        "--debug-artifacts",
+        is_flag=True,
+        default=None,
+        help="Persist intermediate reuse/debug artifacts for segmented testing and replay",
+    )(func)
+
+
+def _asset_ingest_option(func):
+    return click.option(
+        "--no-asset-ingest",
+        is_flag=True,
+        default=False,
+        help="Skip background asset-library ingest for this debug run",
+    )(func)
+
+
+def _clean_env_value(value: str | None) -> str:
+    return (value or "").split("#", 1)[0].strip()
+
+
+def _env_value(*names: str) -> str:
+    for name in names:
+        value = _clean_env_value(os.getenv(name))
+        if value:
+            return value
+    return ""
+
+
+def _profile_value(prefix: str, key: str, *aliases: str) -> str:
+    names = [f"{prefix}_{key}", *aliases]
+    return _env_value(*names)
+
+
+def _normalize_base_url(base_url: str) -> str:
+    base_url = base_url.rstrip("/")
+    suffix = "/chat/completions"
+    if base_url.endswith(suffix):
+        return base_url[: -len(suffix)]
+    return base_url
+
+
+def _apply_llm_profile(config: Config, llm: str | None) -> Config:
+    if not llm:
+        return config
+
+    profile = llm.lower()
+    if profile == "deepseek":
+        prefix = "DEEPSEEK"
+        config.llm_model = _profile_value(prefix, "GEN_MODEL", "DEEPSEEK_MODEL")
+        config.llm_api_key = _profile_value(
+            prefix,
+            "GEN_APIKEY",
+            "DEEPSEEK_APIKEY",
+            "DEEPSEEK_API_KEY",
+        )
+        config.llm_base_url = _normalize_base_url(
+            _profile_value(prefix, "GEN_BASE_URL", "DEEPSEEK_BASE_URL")
+        )
+        config.llm_provider = _profile_value(prefix, "LLM_PROVIDER")
+        config.llm_thinking = _profile_value(prefix, "GEN_THINKING", "DEEPSEEK_THINKING")
+        config.llm_reasoning_effort = _profile_value(
+            prefix,
+            "GEN_REASONING_EFFORT",
+            "DEEPSEEK_REASONING_EFFORT",
+        )
+    elif profile == "doubao":
+        prefix = "DOUBAO"
+        config.llm_model = _profile_value(prefix, "GEN_MODEL", "DOUBAO_MODEL", "ARK_MODEL")
+        config.llm_api_key = _profile_value(
+            prefix,
+            "GEN_APIKEY",
+            "DOUBAO_APIKEY",
+            "DOUBAO_API_KEY",
+            "ARK_API_KEY",
+        )
+        config.llm_base_url = _normalize_base_url(
+            _profile_value(prefix, "GEN_BASE_URL", "DOUBAO_BASE_URL", "ARK_BASE_URL")
+        )
+        config.llm_provider = _profile_value(prefix, "LLM_PROVIDER")
+        config.llm_thinking = _profile_value(prefix, "GEN_THINKING", "DOUBAO_THINKING")
+        config.llm_reasoning_effort = _profile_value(
+            prefix,
+            "GEN_REASONING_EFFORT",
+            "DOUBAO_REASONING_EFFORT",
+        )
+    return config
+
+
+def _load_config(env_file: str, llm: str | None = None) -> Config:
+    return _apply_llm_profile(Config.from_env(env_file), llm)
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.name}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.replace(temp_path, path)
+
+
 def _run_plan_reuse_match_check(
     *,
     plan_path: Path,
@@ -76,16 +202,32 @@ def _run_plan_reuse_match_check(
     keyword_client, keyword_status = _optional_keyword_client(config, enabled=keywords)
     report_path = plan_path.parent / "ai_image_reuse_plan_check.json"
     debug_path = plan_path.parent / "ai_image_reuse_plan_check_debug.json"
+    logger.info(
+        "Reuse check starting: plan={}, libraries={}, keywords={}, materialize={}, search_concurrency={}",
+        plan_path,
+        [str(path) for path in (config.reuse_library_dirs or (config.library_dir,))],
+        keyword_status,
+        materialize_matches,
+        config.materials_concurrency,
+    )
     report = evaluate_ai_image_reuse_matches_from_plan(
         plan_path=plan_path,
         library_dir=config.reuse_library_dirs or (config.library_dir,),
         keyword_client=keyword_client,
         debug_path=debug_path,
         materialize_matches=materialize_matches,
+        reuse_search_concurrency=config.materials_concurrency,
     )
     report["keyword_status"] = keyword_status
     report["debug_path"] = str(debug_path)
-    report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
+    _write_json_atomic(report_path, report)
+    logger.info(
+        "Reuse check finished: matched={}/{}, report={}, debug={}",
+        report["matched_count"],
+        report["check_count"],
+        report_path,
+        debug_path,
+    )
     return report, report_path, keyword_status
 
 
@@ -120,11 +262,15 @@ def main(ctx: click.Context, verbose: bool, quiet: bool):
 @click.option("--web-search", is_flag=True, help="启用 LLM 联网搜索 (仅 Responses API provider)")
 @click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
 @click.option("--env-file", default=".env", help=".env 文件路径")
+@_llm_profile_option
+@_asset_library_vlm_review_option
+@_debug_artifacts_option
+@_asset_ingest_option
 @click.option("--json", "as_json", is_flag=True, help="以 JSON 格式输出结果（agent 友好）")
 @click.option("--qa", is_flag=True, help="生成完成后运行视觉 QA，把摘要附加到结果")
 def gen(topic: str, requirements: str, file_path: str | None, research: bool,
         style: str, review: bool, debug: bool, web_search: bool, output: str,
-        env_file: str, as_json: bool, qa: bool):
+        env_file: str, llm: str | None, vlm_review: bool, debug_artifacts: bool | None, no_asset_ingest: bool, as_json: bool, qa: bool):
     """从主题生成教育演示文稿。
 
     \b
@@ -151,9 +297,13 @@ def gen(topic: str, requirements: str, file_path: str | None, research: bool,
             )
 
     try:
-        config = Config.from_env(env_file)
+        config = _load_config(env_file, llm)
         config.output_dir = Path(output)
         config.web_search = web_search
+        config.asset_library_vlm_review = vlm_review
+        if debug_artifacts is not None:
+            config.debug_artifacts = debug_artifacts
+        config.asset_library_ingest_enabled = not no_asset_ingest
 
         agent = PPTXAgent(config)
         session_dir = agent.run(
@@ -227,8 +377,12 @@ def gen(topic: str, requirements: str, file_path: str | None, research: bool,
 @click.option("--style", "-s", default="edu_emerald", help="风格模板名称")
 @click.option("--debug", is_flag=True, help="Debug 模式：跳过素材图片生成")
 @click.option("--env-file", default=".env", help=".env 文件路径")
+@_llm_profile_option
 @click.option("--json", "as_json", is_flag=True, help="以 JSON 格式输出结果")
-def render(plan_path: str, style: str, debug: bool, env_file: str, as_json: bool):
+@_asset_library_vlm_review_option
+@_debug_artifacts_option
+@_asset_ingest_option
+def render(plan_path: str, style: str, debug: bool, env_file: str, llm: str | None, vlm_review: bool, debug_artifacts: bool | None, no_asset_ingest: bool, as_json: bool):
     """从策划稿 JSON 渲染 SVG + PPTX。
 
     \b
@@ -237,7 +391,11 @@ def render(plan_path: str, style: str, debug: bool, env_file: str, as_json: bool
       edupptx render plan.json --style edu_tech --debug
     """
     try:
-        config = Config.from_env(env_file)
+        config = _load_config(env_file, llm)
+        config.asset_library_vlm_review = vlm_review
+        if debug_artifacts is not None:
+            config.debug_artifacts = debug_artifacts
+        config.asset_library_ingest_enabled = not no_asset_ingest
         agent = PPTXAgent(config)
         session_dir = asyncio.run(agent.run_from_plan(Path(plan_path), style, debug=debug))
         pptx_path = session_dir / "output.pptx"
@@ -266,14 +424,22 @@ def render(plan_path: str, style: str, debug: bool, env_file: str, as_json: bool
 @click.option("--web-search", is_flag=True, help="启用 LLM 联网搜索 (仅 Responses API provider)")
 @click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
 @click.option("--env-file", default=".env", help=".env 文件路径")
+@_llm_profile_option
 @click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
+@_asset_library_vlm_review_option
+@_debug_artifacts_option
+@_asset_ingest_option
 def images(topic: str, requirements: str, file_path: str | None, research: bool,
-           style: str, web_search: bool, output: str, env_file: str, as_json: bool):
-    """Run planning and image/material phases, then stop after asset-library update."""
+           style: str, web_search: bool, output: str, env_file: str, llm: str | None, vlm_review: bool, debug_artifacts: bool | None, no_asset_ingest: bool, as_json: bool):
+    """Run planning and image/material phases, then queue background asset-library ingest."""
     try:
-        config = Config.from_env(env_file)
+        config = _load_config(env_file, llm)
         config.output_dir = Path(output)
         config.web_search = web_search
+        config.asset_library_vlm_review = vlm_review
+        if debug_artifacts is not None:
+            config.debug_artifacts = debug_artifacts
+        config.asset_library_ingest_enabled = not no_asset_ingest
         agent = PPTXAgent(config)
         session_dir = agent.run(
             topic,
@@ -317,11 +483,19 @@ def images(topic: str, requirements: str, file_path: str | None, research: bool,
 @main.command("images-from-plan")
 @click.argument("plan_path", type=click.Path(exists=True))
 @click.option("--env-file", default=".env", help=".env file path")
+@_llm_profile_option
 @click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
-def images_from_plan(plan_path: str, env_file: str, as_json: bool):
-    """Run image/material phases from an existing plan and stop after asset-library update."""
+@_asset_library_vlm_review_option
+@_debug_artifacts_option
+@_asset_ingest_option
+def images_from_plan(plan_path: str, env_file: str, llm: str | None, vlm_review: bool, debug_artifacts: bool | None, no_asset_ingest: bool, as_json: bool):
+    """Run image/material phases from an existing plan, then queue background asset-library ingest."""
     try:
-        config = Config.from_env(env_file)
+        config = _load_config(env_file, llm)
+        config.asset_library_vlm_review = vlm_review
+        if debug_artifacts is not None:
+            config.debug_artifacts = debug_artifacts
+        config.asset_library_ingest_enabled = not no_asset_ingest
         agent = PPTXAgent(config)
         session_dir = asyncio.run(agent.run_images_from_plan(Path(plan_path)))
         materials_dir = session_dir / "materials"
@@ -359,9 +533,10 @@ def images_from_plan(plan_path: str, env_file: str, as_json: bool):
 @click.option("--research", is_flag=True, help="启用联网搜索")
 @click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
 @click.option("--env-file", default=".env", help=".env 文件路径")
+@_llm_profile_option
 @click.option("--json", "as_json", is_flag=True, help="以 JSON 格式输出结果")
 def plan(topic: str, requirements: str, file_path: str | None, research: bool,
-         output: str, env_file: str, as_json: bool):
+         output: str, env_file: str, llm: str | None, as_json: bool):
     """只生成策划稿，不渲染。
 
     \b
@@ -370,7 +545,7 @@ def plan(topic: str, requirements: str, file_path: str | None, research: bool,
       edupptx plan "人工智能" --research
     """
     try:
-        config = Config.from_env(env_file)
+        config = _load_config(env_file, llm)
         config.output_dir = Path(output)
 
         agent = PPTXAgent(config)
@@ -401,6 +576,7 @@ def plan(topic: str, requirements: str, file_path: str | None, research: bool,
 @click.option("--output", "-o", default="./output", type=click.Path(), help="杈撳嚭鐩綍")
 @click.option("--env-file", default=".env", help=".env file path")
 @click.option("--keywords/--no-keywords", default=True, show_default=True, help="Use LLM keyword enrichment for reuse targets")
+@_llm_profile_option
 @click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
 def reuse_check(
     topic: str,
@@ -410,11 +586,12 @@ def reuse_check(
     output: str,
     env_file: str,
     keywords: bool,
+    llm: str | None,
     as_json: bool,
 ):
     """Generate a plan, then check AI image reuse without image generation or rendering."""
     try:
-        config = Config.from_env(env_file)
+        config = _load_config(env_file, llm)
         config.output_dir = Path(output)
 
         agent = PPTXAgent(config)
@@ -441,6 +618,7 @@ def reuse_check(
             "matched_count": report["matched_count"],
             "unmatched_count": report["unmatched_count"],
             "keyword_status": keyword_status,
+            "reuse_search_concurrency": report.get("reuse_search_concurrency"),
             "generated_images": False,
             "updated_asset_library": False,
         }
@@ -461,11 +639,12 @@ def reuse_check(
 @click.argument("plan_path", type=click.Path(exists=True))
 @click.option("--env-file", default=".env", help=".env file path")
 @click.option("--keywords/--no-keywords", default=True, show_default=True, help="Use LLM keyword enrichment for reuse targets")
+@_llm_profile_option
 @click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
-def reuse_check_plan(plan_path: str, env_file: str, keywords: bool, as_json: bool):
+def reuse_check_plan(plan_path: str, env_file: str, keywords: bool, llm: str | None, as_json: bool):
     """Check AI image reuse matches from an existing plan without generating images or ingesting assets."""
     try:
-        config = Config.from_env(env_file)
+        config = _load_config(env_file, llm)
         report, report_path, keyword_status = _run_plan_reuse_match_check(
             plan_path=Path(plan_path),
             config=config,
@@ -480,6 +659,7 @@ def reuse_check_plan(plan_path: str, env_file: str, keywords: bool, as_json: boo
             "matched_count": report["matched_count"],
             "unmatched_count": report["unmatched_count"],
             "keyword_status": keyword_status,
+            "reuse_search_concurrency": report.get("reuse_search_concurrency"),
             "generated_images": False,
             "updated_asset_library": False,
         }
@@ -498,9 +678,16 @@ def reuse_check_plan(plan_path: str, env_file: str, keywords: bool, as_json: boo
 @click.option("--output-root", default="./output", type=click.Path(file_okay=False), help="Output root containing session_* dirs")
 @click.option("--library-dir", default=None, type=click.Path(file_okay=False), help="Reusable material library directory")
 @click.option("--keywords/--no-keywords", default=True, show_default=True, help="Use the configured LLM to build matching keywords while ingesting")
-@click.option("--keyword-batch-size", default=3, show_default=True, type=click.IntRange(1, 50), help="Assets per LLM keyword batch")
-@click.option("--VLM_review", "vlm_review", default=True, show_default=True, type=bool, help="Run VLM review before assets enter the reusable library")
+@click.option(
+    "--keyword-batch-size",
+    default=DEFAULT_KEYWORD_BATCH_SIZE,
+    show_default=True,
+    type=click.IntRange(1, 50),
+    help="Assets per LLM keyword batch",
+)
+@_asset_library_vlm_review_option
 @click.option("--env-file", default=".env", help=".env file path used by --keywords and LIBRARY_DIR")
+@_llm_profile_option
 @click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
 def asset_ingest(
     output_root: str,
@@ -509,13 +696,14 @@ def asset_ingest(
     keyword_batch_size: int,
     vlm_review: bool,
     env_file: str,
+    llm: str | None,
     as_json: bool,
 ):
     """Copy AI-generated images from output sessions into the reusable library."""
     try:
         from edupptx.materials.ai_image_asset_db import ingest_ai_image_asset_library_from_output
 
-        config = Config.from_env(env_file)
+        config = _load_config(env_file, llm)
         target_library = Path(library_dir) if library_dir else config.library_dir
 
         keyword_client, keyword_status = _optional_keyword_client(config, enabled=keywords)
@@ -698,9 +886,9 @@ def strict_reuse_classify(
 
 @main.command("strict-reuse-export-check")
 @click.argument("library_dir", type=click.Path(file_okay=False))
-@click.option("--output-dir", default="strict_reuse_visual_check", show_default=True, type=click.Path(file_okay=False), help="Directory that receives general_reuse/content_reuse image copies")
+@click.option("--output-dir", default="strict_reuse_visual_check", show_default=True, type=click.Path(file_okay=False), help="Directory that receives 6-class material category image copies")
 @click.option("--index-filename", default="ai_image_match_index.json", show_default=True, help="Match index filename")
-@click.option("--clean/--no-clean", default=True, show_default=True, help="Clean the command-owned general_reuse/content_reuse folders before exporting")
+@click.option("--clean/--no-clean", default=True, show_default=True, help="Clean command-owned material category folders before exporting")
 @click.option("--force", is_flag=True, help="Allow overwriting an existing unrelated manifest in the output directory")
 @click.option("--json", "as_json", is_flag=True, help="Emit command result as JSON")
 def strict_reuse_export_check(
@@ -711,7 +899,7 @@ def strict_reuse_export_check(
     force: bool,
     as_json: bool,
 ):
-    """Export reuse groups into general_reuse/content_reuse folders for visual checking."""
+    """Export reuse groups into 6-class material category folders for visual checking."""
     try:
         from edupptx.materials.strict_reuse_classifier import export_strict_reuse_visual_check
 
@@ -730,14 +918,20 @@ def strict_reuse_export_check(
             **{key: value for key, value in manifest.items() if key != "assets"},
         }
         group_counts = manifest.get("group_counts") or {}
+        non_empty_group_lines = [
+            f"{group}: {count}"
+            for group, count in sorted(group_counts.items())
+            if count
+        ]
+        if not non_empty_group_lines:
+            non_empty_group_lines = ["No assets in material category folders"]
         human = [
             f"Output: {target_dir}",
-            f"general_reuse: {group_counts.get('general_reuse', 0)}",
-            f"content_reuse: {group_counts.get('content_reuse', 0)}",
+            "Groups: 7 material categories",
+            *non_empty_group_lines,
             f"Copied: {manifest.get('copied_count', 0)}",
             f"Missing images: {manifest.get('missing_image_count', 0)}",
             f"Manifest: {manifest.get('manifest_path')}",
-            f"HTML: {manifest.get('html_path')}",
             "Asset library: unchanged",
         ]
         _emit_result(payload, as_json=as_json, human_lines=human)

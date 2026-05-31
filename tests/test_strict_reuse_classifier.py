@@ -1,39 +1,149 @@
 import json
+from pathlib import Path
 
 from edupptx.materials.ai_image_asset_db import build_ai_image_match_index
 from edupptx.materials.strict_reuse_classifier import (
+    C00_STRICT_TEXT_PROBLEM_SKIP,
+    C01_LANGUAGE_GLYPH_VISUAL,
+    C02_STRUCTURE_DIAGRAM_VISUAL,
+    C03_IRREPLACEABLE_ENTITY_EVENT_ACTION,
+    C03_SPECIFIC_EVENT_INTERACTION,
+    C04_GENERIC_SUBJECT_OBJECT,
+    C04_TEACHING_BOUND_ENTITY,
+    C05_SCENE_DECOR_CONTAINER,
+    C06_GENERIC_SCENE_ACTIVITY,
     CONTENT_REUSE_GROUP,
     GENERAL_REUSE_GROUP,
+    MATERIAL_CATEGORIES,
+    MATERIAL_CATEGORY_RULES_TEXT,
     classify_asset_strict_reuse,
     classify_strict_reuse_groups,
     classify_strict_reuse_library,
     export_strict_reuse_visual_check,
+    normalize_strict_reuse_group,
+    should_skip_from_index,
+    write_strict_reuse_group_indexes,
 )
 
 
-def test_legacy_groups_are_normalized_to_binary_groups():
-    cases = {
-        "none": GENERAL_REUSE_GROUP,
-        "general_reuse": GENERAL_REUSE_GROUP,
-        "non_none": CONTENT_REUSE_GROUP,
-        "math_problem": CONTENT_REUSE_GROUP,
-        "physics_problem": CONTENT_REUSE_GROUP,
-        "chinese_word_text": CONTENT_REUSE_GROUP,
-        "chinese_passage_text": CONTENT_REUSE_GROUP,
-    }
+def test_material_categories_are_gapless_six_class_ids():
+    assert MATERIAL_CATEGORIES == (
+        C00_STRICT_TEXT_PROBLEM_SKIP,
+        C01_LANGUAGE_GLYPH_VISUAL,
+        C02_STRUCTURE_DIAGRAM_VISUAL,
+        C03_IRREPLACEABLE_ENTITY_EVENT_ACTION,
+        C04_GENERIC_SUBJECT_OBJECT,
+        C05_SCENE_DECOR_CONTAINER,
+    )
+    assert GENERAL_REUSE_GROUP == C05_SCENE_DECOR_CONTAINER
+    assert CONTENT_REUSE_GROUP == C00_STRICT_TEXT_PROBLEM_SKIP
 
-    for raw_group, expected_group in cases.items():
+
+def test_legacy_category_ids_normalize_to_gapless_ids():
+    assert normalize_strict_reuse_group("C03_specific_event_interaction") == C03_IRREPLACEABLE_ENTITY_EVENT_ACTION
+    assert normalize_strict_reuse_group(C03_SPECIFIC_EVENT_INTERACTION) == C03_IRREPLACEABLE_ENTITY_EVENT_ACTION
+    assert normalize_strict_reuse_group(C04_TEACHING_BOUND_ENTITY) == C03_IRREPLACEABLE_ENTITY_EVENT_ACTION
+    assert normalize_strict_reuse_group("c04_teaching_bound_entity") == C03_IRREPLACEABLE_ENTITY_EVENT_ACTION
+    assert normalize_strict_reuse_group("C04_single_subject_asset") == C04_GENERIC_SUBJECT_OBJECT
+    assert normalize_strict_reuse_group("C05_generic_subject_asset") == C04_GENERIC_SUBJECT_OBJECT
+    assert normalize_strict_reuse_group("C05_decor_layout_container") == C05_SCENE_DECOR_CONTAINER
+    assert normalize_strict_reuse_group("C06_scene_decor_container") == C05_SCENE_DECOR_CONTAINER
+    assert normalize_strict_reuse_group(C06_GENERIC_SCENE_ACTIVITY) == C05_SCENE_DECOR_CONTAINER
+
+
+def test_material_category_prompt_exposes_only_gapless_active_outputs():
+    rules = MATERIAL_CATEGORY_RULES_TEXT
+
+    assert "6 类分类规则（v7" in rules
+    assert "新分类只允许输出以下 6 个 ID" in rules
+    for group in MATERIAL_CATEGORIES:
+        assert group in rules
+    assert "C04_teaching_bound_entity" not in rules
+    assert "旧 C04" not in rules
+    assert "兼容 C04" not in rules
+    assert "C04 合并" not in rules
+    assert "C05_generic_subject_asset" not in rules
+    assert "C06_scene_decor_container" not in rules
+
+
+def test_previous_v62_prompt_is_preserved_below_active_prompt():
+    source = Path("edupptx/materials/strict_reuse_classifier.py").read_text(encoding="utf-8")
+
+    active_index = source.index("MATERIAL_CATEGORY_RULES_TEXT = (")
+    old_index = source.index("# OLD MATERIAL_CATEGORY_RULES_TEXT v6.2 before C03 event-boundary refinement.")
+    assert active_index < old_index
+
+
+def test_material_category_prompt_keeps_language_symbol_teaching_in_c01():
+    rules = MATERIAL_CATEGORY_RULES_TEXT
+
+    assert "4 个及以上独立教学字词" in rules
+    assert "1-3 个明确汉字/词语/拼音" in rules
+    assert "汉字、词语、拼音、读音、笔画、笔顺、部首、偏旁、字源、演变、构字、结构" in rules
+    assert "只要教学对象仍是语言符号本体，归 C01" in rules
+    assert "课文结构、阅读结构、写作结构、内容梳理、思维导图、人物关系图" in rules
+
+
+def test_material_category_prompt_protects_c00_c01_c02_before_c03():
+    rules = MATERIAL_CATEGORY_RULES_TEXT
+
+    assert "按下面顺序判断；命中高优先级类别后不再下探" in rules
+    assert "C03 不能抢走文字题图、语言符号、数学/物理/语文结构图" in rules
+    assert "4 个及以上独立教学字词" in rules
+    assert "1-3 个明确汉字/词语/拼音" in rules
+    assert "语言符号本体教学归 C01" in rules
+    assert "必要条件：遮住具体文字/数值后，仍能看出它是某类知识结构或原理图" in rules
+
+
+def test_material_category_prompt_uses_caption_only_reuse_granularity():
+    rules = MATERIAL_CATEGORY_RULES_TEXT
+
+    assert "C03_irreplaceable_entity_event_action（不可替代实体/事件/动作类" in rules
+    assert "分类依据是 caption 自身表达的复用粒度" in rules
+    assert "不可替代语义命题" in rules
+    assert "如果需要依赖课文名、theme、teaching_intent 或教学上下文才不可替代，不归 C03" in rules
+    assert "C03 不要求主体必须是具名人物、唯一地点、唯一物体或课文专名" in rules
+    assert "故事绑定的角色身份、主体关系、叙事动作或情绪状态组合" in rules
+    assert "亲属关系、故事角色关系、角色功能关系" in rules
+    assert "有意图、对象或结果的动作" in rules
+    assert "姿态、道具、环境或氛围共同表达故事状态" in rules
+    assert "把主体换成同类型另一个、把动作简化成普通姿态、或移除关系/情绪状态后" in rules
+    assert "普通动物群体、普通人物组合、轻量社交动作、普通自然状态" in rules
+    assert "比喻性视觉特征" in rules
+    assert "整体场景、天气、氛围、远景、背景、页面装饰、空白容器" in rules
+    assert "看到某个词就强制归类" in rules
+    assert "团聚、寻找、告别" not in rules
+    assert "把东西藏进口袋、摔东西拒绝出门" not in rules
+    assert "轮椅上背对窗户" not in rules
+    assert "雾孩子的不同卡通形象" not in rules
+    assert "母亲站在床边温柔劝说男孩" not in rules
+    assert "池塘里一群小蝌蚪围着青蛙妈妈游动" not in rules
+
+
+def test_legacy_reuse_group_field_is_ignored_by_v3_classification():
+    legacy_groups = [
+        "none",
+        "non_none",
+        "math_problem",
+        "physics_problem",
+        "chinese_word_text",
+        "chinese_passage_text",
+    ]
+
+    for raw_group in legacy_groups:
         result = classify_asset_strict_reuse(
             {
                 "asset_id": raw_group,
                 "asset_kind": "page_image",
-                "strict_reuse_group": raw_group,
+                "reuse_group": raw_group,
                 "strict_reuse_requires_exact_match": True,
             }
         )
 
-        assert result["strict_reuse_group"] == expected_group
-        assert result["strict_reuse_review_required"] is False
+        assert result["strict_reuse_group"] == C06_GENERIC_SCENE_ACTIVITY
+        assert result["strict_reuse_confidence"] == 0.5
+        assert result["strict_reuse_review_required"] is True
+        assert result["strict_reuse_review_reasons"] == ["missing_upstream_reuse_classification"]
         assert "strict_reuse_requires_exact_match" not in result
 
 
@@ -52,19 +162,50 @@ def test_missing_upstream_group_defaults_general_and_requires_review():
     assert result["strict_reuse_review_reasons"] == ["missing_upstream_reuse_classification"]
 
 
-def test_classify_strict_reuse_groups_migrates_index_and_removes_old_field():
+def test_legacy_missing_classification_does_not_promote_by_keywords():
+    cases = [
+        {
+            "asset_id": "character_grid",
+            "asset_kind": "page_image",
+            "content_prompt": "田字格中“争”“频”的笔顺书写示范",
+            "constraints": [
+                {"kind": "text", "value": "争", "importance": 2},
+                {"kind": "text", "value": "频", "importance": 2},
+            ],
+            "core_keywords": ["田字格", "笔顺", "争", "频"],
+        },
+        {
+            "asset_id": "math_problem",
+            "asset_kind": "page_image",
+            "content_prompt": "看图列式：脐橙8个，苹果是脐橙5倍，求总个数",
+            "constraints": [
+                {"kind": "math", "value": "8个", "importance": 2},
+                {"kind": "math", "value": "5倍", "importance": 2},
+            ],
+            "core_keywords": ["看图列式", "脐橙", "苹果", "倍数"],
+        },
+    ]
+
+    for asset in cases:
+        result = classify_asset_strict_reuse(asset, infer_legacy_missing=True)
+
+        assert result["strict_reuse_group"] == GENERAL_REUSE_GROUP
+        assert result["strict_reuse_signals"] == ["legacy_default_generic_scene_activity"]
+
+
+def test_classify_strict_reuse_groups_does_not_migrate_legacy_labels():
     index = {
         "assets": [
             {
                 "asset_id": "math",
                 "asset_kind": "page_image",
-                "strict_reuse_group": "math_problem",
+                "reuse_group": "math_problem",
                 "strict_reuse_requires_exact_match": True,
             },
             {
                 "asset_id": "plain",
                 "asset_kind": "page_image",
-                "strict_reuse_group": "none",
+                "reuse_group": "none",
                 "strict_reuse_requires_exact_match": False,
             },
         ]
@@ -73,12 +214,15 @@ def test_classify_strict_reuse_groups_migrates_index_and_removes_old_field():
     report = classify_strict_reuse_groups(index)
 
     assets = {asset["asset_id"]: asset for asset in index["assets"]}
-    assert assets["math"]["strict_reuse_group"] == CONTENT_REUSE_GROUP
+    assert assets["math"]["strict_reuse_group"] == GENERAL_REUSE_GROUP
     assert assets["plain"]["strict_reuse_group"] == GENERAL_REUSE_GROUP
+    assert assets["math"]["reuse_group"] == "math_problem"
+    assert assets["plain"]["reuse_group"] == "none"
     assert "strict_reuse_requires_exact_match" not in assets["math"]
     assert "strict_reuse_requires_exact_match" not in assets["plain"]
-    assert report["group_counts"] == {CONTENT_REUSE_GROUP: 1, GENERAL_REUSE_GROUP: 1}
-    assert report["review_required_count"] == 0
+    assert report["group_counts"][GENERAL_REUSE_GROUP] == 2
+    assert report["review_required_count"] == 2
+    assert report["review_reason_counts"]["missing_upstream_reuse_classification"] == 2
 
 
 def test_classification_fields_survive_match_index_rebuild_without_old_field(tmp_path):
@@ -91,11 +235,9 @@ def test_classification_fields_survive_match_index_rebuild_without_old_field(tmp
                 "asset_kind": "page_image",
                 "image_path": "math.png",
                 "content_prompt": "division problem card",
-                "constraints": [{"kind": "math", "value": "36/2", "importance": 2}],
-                "core_keywords": ["36/2", "division"],
-                "semantic_aliases": {},
-                "strict_reuse_group": CONTENT_REUSE_GROUP,
-                "strict_reuse_requires_exact_match": True,
+                "context_summary": "math division diagram",
+                "teaching_intent": "support division understanding",
+                "strict_reuse_group": C01_LANGUAGE_GLYPH_VISUAL,
                 "strict_reuse_confidence": 0.9,
                 "strict_reuse_reason": "classified by LLM",
                 "strict_reuse_signals": ["llm_reuse_group"],
@@ -108,7 +250,7 @@ def test_classification_fields_survive_match_index_rebuild_without_old_field(tmp
     index = build_ai_image_match_index(db, library_root=tmp_path)
 
     asset = index["assets"][0]
-    assert asset["strict_reuse_group"] == CONTENT_REUSE_GROUP
+    assert asset["strict_reuse_group"] == C01_LANGUAGE_GLYPH_VISUAL
     assert asset["strict_reuse_signals"] == ["llm_reuse_group"]
     assert "strict_reuse_requires_exact_match" not in asset
     assert "strict_reuse_vlm_review_required" not in asset
@@ -133,7 +275,7 @@ def test_classify_strict_reuse_library_writes_queue_and_binary_splits(tmp_path):
                 "asset_kind": "page_image",
                 "image_path": "math.png",
                 "content_prompt": "math problem",
-                "strict_reuse_group": "math_problem",
+                "reuse_group": "math_problem",
             },
         ],
     }
@@ -143,26 +285,98 @@ def test_classify_strict_reuse_library_writes_queue_and_binary_splits(tmp_path):
 
     assert index_path == library_dir / "strict_splits"
     assert not (library_dir / "ai_image_match_index.json").exists()
-    content_split = library_dir / "strict_splits" / f"{CONTENT_REUSE_GROUP}.json"
+    # legacy_math is not migrated locally; missing infers to GENERAL_REUSE_GROUP in legacy mode.
     general_split = library_dir / "strict_splits" / f"{GENERAL_REUSE_GROUP}.json"
-    split_assets = (
-        json.loads(content_split.read_text(encoding="utf-8"))["assets"]
-        + json.loads(general_split.read_text(encoding="utf-8"))["assets"]
-    )
-    by_id = {asset["asset_id"]: asset for asset in split_assets}
+    assert general_split.exists()
+    general_assets = json.loads(general_split.read_text(encoding="utf-8"))["assets"]
+    by_id = {a["asset_id"]: a for a in general_assets}
+    assert by_id["legacy_math"]["strict_reuse_group"] == GENERAL_REUSE_GROUP
+    assert by_id["legacy_math"]["reuse_group"] == "math_problem"
+    # "missing" has no upstream label → legacy inference kicks in
     assert by_id["missing"]["strict_reuse_group"] == GENERAL_REUSE_GROUP
-    assert by_id["legacy_math"]["strict_reuse_group"] == CONTENT_REUSE_GROUP
     assert report["review_required_count"] == 0
     queue_path = library_dir / "debug" / "strict_reuse_review_queue.jsonl"
     assert queue_path.exists()
     assert queue_path.read_text(encoding="utf-8") == ""
-    assert json.loads(content_split.read_text(encoding="utf-8"))["asset_count"] == 1
-    assert json.loads(general_split.read_text(encoding="utf-8"))["asset_count"] == 1
     assert not (library_dir / "strict_splits" / "strict_reuse_split_manifest.json").exists()
     assert not (library_dir / "ai_image_vlm_review.json").exists()
 
 
-def test_classify_legacy_unclassified_index_infers_content_reuse(tmp_path):
+def test_strict_reuse_classifier_writes_background_split_separately(tmp_path):
+    library_dir = tmp_path / "library"
+    library_dir.mkdir()
+    index = {
+        "schema_version": 14,
+        "asset_root": str(library_dir),
+        "assets": [
+            {
+                "asset_id": "background",
+                "asset_kind": "background",
+                "image_path": "bg.png",
+                "strict_reuse_group": GENERAL_REUSE_GROUP,
+                "normalized_prompt": "light paper texture",
+            },
+            {
+                "asset_id": "scene",
+                "asset_kind": "page_image",
+                "image_path": "scene.png",
+                "strict_reuse_group": GENERAL_REUSE_GROUP,
+                "content_prompt": "generic classroom scene",
+            },
+        ],
+    }
+
+    report = write_strict_reuse_group_indexes(index, library_dir, split_dir="strict_splits")
+
+    background_split = json.loads((library_dir / "strict_splits" / "background.json").read_text(encoding="utf-8"))
+    general_split = json.loads((library_dir / "strict_splits" / f"{GENERAL_REUSE_GROUP}.json").read_text(encoding="utf-8"))
+    assert report["groups"]["background"]["asset_count"] == 1
+    assert [asset["asset_id"] for asset in background_split["assets"]] == ["background"]
+    assert {asset["asset_id"] for asset in general_split["assets"]} == {"scene"}
+
+
+def test_strict_reuse_classifier_migrates_legacy_background_split(tmp_path):
+    library_dir = tmp_path / "library"
+    split_dir = library_dir / "strict_reuse_indexes"
+    split_dir.mkdir(parents=True)
+    (split_dir / f"{GENERAL_REUSE_GROUP}.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 14,
+                "strict_reuse_group": GENERAL_REUSE_GROUP,
+                "asset_root": str(library_dir),
+                "assets": [
+                    {
+                        "asset_id": "legacy_background",
+                        "asset_kind": "background",
+                        "image_path": "bg.png",
+                        "strict_reuse_group": GENERAL_REUSE_GROUP,
+                        "normalized_prompt": "light paper texture",
+                    },
+                    {
+                        "asset_id": "scene",
+                        "asset_kind": "page_image",
+                        "image_path": "scene.png",
+                        "strict_reuse_group": GENERAL_REUSE_GROUP,
+                        "content_prompt": "generic classroom scene",
+                    },
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    report, _index_path = classify_strict_reuse_library(library_dir, write_debug=False)
+
+    background_split = json.loads((split_dir / "background.json").read_text(encoding="utf-8"))
+    general_split = json.loads((split_dir / f"{GENERAL_REUSE_GROUP}.json").read_text(encoding="utf-8"))
+    assert report["source_kind"] == "split_index"
+    assert [asset["asset_id"] for asset in background_split["assets"]] == ["legacy_background"]
+    assert {asset["asset_id"] for asset in general_split["assets"]} == {"scene"}
+
+
+def test_classify_legacy_unclassified_index_defaults_without_keyword_inference(tmp_path):
     library_dir = tmp_path / "library"
     library_dir.mkdir()
     index = {
@@ -205,12 +419,13 @@ def test_classify_legacy_unclassified_index_infers_content_reuse(tmp_path):
     report, _index_path = classify_strict_reuse_library(library_dir, split_dir="strict_splits")
 
     assert report["classification_source"] == "legacy_unclassified_index_migration"
-    assert report["group_counts"] == {CONTENT_REUSE_GROUP: 2, GENERAL_REUSE_GROUP: 2}
+    assert report["group_counts"][CONTENT_REUSE_GROUP] == 0
+    assert report["group_counts"][GENERAL_REUSE_GROUP] == 4
     assert report["review_required_count"] == 0
     content_split = json.loads((library_dir / "strict_splits" / f"{CONTENT_REUSE_GROUP}.json").read_text(encoding="utf-8"))
     general_split = json.loads((library_dir / "strict_splits" / f"{GENERAL_REUSE_GROUP}.json").read_text(encoding="utf-8"))
-    assert {asset["asset_id"] for asset in content_split["assets"]} == {"math", "pinyin"}
-    assert {asset["asset_id"] for asset in general_split["assets"]} == {"plain", "blank"}
+    assert content_split["assets"] == []
+    assert {asset["asset_id"] for asset in general_split["assets"]} == {"math", "pinyin", "plain", "blank"}
 
 
 def test_legacy_inference_keeps_generic_visual_assets_general():
@@ -262,7 +477,7 @@ def test_legacy_inference_keeps_generic_visual_assets_general():
         result = classify_asset_strict_reuse(asset, infer_legacy_missing=True)
 
         assert result["strict_reuse_group"] == GENERAL_REUSE_GROUP
-        assert result["strict_reuse_signals"] == ["legacy_default_general_reuse"]
+        assert result["strict_reuse_signals"] == ["legacy_default_generic_scene_activity"]
 
 
 def test_legacy_inference_keeps_art_portraits_and_incidental_labels_general():
@@ -306,10 +521,10 @@ def test_legacy_inference_keeps_art_portraits_and_incidental_labels_general():
         result = classify_asset_strict_reuse(asset, infer_legacy_missing=True)
 
         assert result["strict_reuse_group"] == GENERAL_REUSE_GROUP
-        assert result["strict_reuse_signals"] == ["legacy_default_general_reuse"]
+        assert result["strict_reuse_signals"] == ["legacy_default_generic_scene_activity"]
 
 
-def test_legacy_inference_promotes_exact_text_math_and_physics_content():
+def test_legacy_inference_does_not_promote_exact_text_math_and_physics_content():
     cases = [
         {
             "asset_id": "relation_diagram",
@@ -417,7 +632,8 @@ def test_legacy_inference_promotes_exact_text_math_and_physics_content():
     for asset in cases:
         result = classify_asset_strict_reuse(asset, infer_legacy_missing=True)
 
-        assert result["strict_reuse_group"] == CONTENT_REUSE_GROUP
+        assert result["strict_reuse_group"] == GENERAL_REUSE_GROUP
+        assert result["strict_reuse_signals"] == ["legacy_default_generic_scene_activity"]
         assert result["strict_reuse_review_required"] is False
 
 
@@ -439,7 +655,7 @@ def test_legacy_inference_ignores_context_summary_and_bare_count_noise():
     )
 
     assert result["strict_reuse_group"] == GENERAL_REUSE_GROUP
-    assert result["strict_reuse_signals"] == ["legacy_default_general_reuse"]
+    assert result["strict_reuse_signals"] == ["legacy_default_generic_scene_activity"]
 
 
 def test_classify_prefers_existing_split_indexes_over_legacy_main_index(tmp_path):
@@ -491,7 +707,8 @@ def test_classify_prefers_existing_split_indexes_over_legacy_main_index(tmp_path
 
     assert report["source_kind"] == "split_index"
     assert report["source_index_path"] == str(split_dir)
-    assert report["group_counts"] == {CONTENT_REUSE_GROUP: 1, GENERAL_REUSE_GROUP: 0}
+    assert report["group_counts"][CONTENT_REUSE_GROUP] == 1
+    assert report["group_counts"][GENERAL_REUSE_GROUP] == 0
     assert not (library_dir / "ai_image_match_index.json").exists()
 
 
@@ -553,9 +770,12 @@ def test_classify_can_force_rebuild_from_main_index_over_existing_split(tmp_path
     )
 
     assert report["source_kind"] == "legacy_match_index"
-    assert report["group_counts"] == {CONTENT_REUSE_GROUP: 1, GENERAL_REUSE_GROUP: 1}
+    assert report["group_counts"][CONTENT_REUSE_GROUP] == 0
+    assert report["group_counts"][GENERAL_REUSE_GROUP] == 2
     content_split = json.loads((split_dir / f"{CONTENT_REUSE_GROUP}.json").read_text(encoding="utf-8"))
-    assert {asset["asset_id"] for asset in content_split["assets"]} == {"pinyin"}
+    general_split = json.loads((split_dir / f"{GENERAL_REUSE_GROUP}.json").read_text(encoding="utf-8"))
+    assert content_split["assets"] == []
+    assert {asset["asset_id"] for asset in general_split["assets"]} == {"pinyin", "plain"}
 
 
 def test_classify_recomputes_split_indexes_written_by_legacy_inference(tmp_path):
@@ -578,7 +798,7 @@ def test_classify_recomputes_split_indexes_written_by_legacy_inference(tmp_path)
         "content_prompt": "生字拼音词语卡片展示",
         "core_keywords": ["生字", "拼音", "词语"],
         "strict_reuse_group": GENERAL_REUSE_GROUP,
-        "strict_reuse_signals": ["legacy_default_general_reuse"],
+        "strict_reuse_signals": ["legacy_default_generic_scene_activity"],
     }
     (split_dir / f"{CONTENT_REUSE_GROUP}.json").write_text(
         json.dumps(
@@ -606,11 +826,12 @@ def test_classify_recomputes_split_indexes_written_by_legacy_inference(tmp_path)
     report, _index_path = classify_strict_reuse_library(library_dir, write_debug=False)
 
     assert report["source_kind"] == "split_index"
-    assert report["group_counts"] == {CONTENT_REUSE_GROUP: 1, GENERAL_REUSE_GROUP: 1}
+    assert report["group_counts"][CONTENT_REUSE_GROUP] == 0
+    assert report["group_counts"][GENERAL_REUSE_GROUP] == 2
     content_split = json.loads((split_dir / f"{CONTENT_REUSE_GROUP}.json").read_text(encoding="utf-8"))
     general_split = json.loads((split_dir / f"{GENERAL_REUSE_GROUP}.json").read_text(encoding="utf-8"))
-    assert {asset["asset_id"] for asset in content_split["assets"]} == {"pinyin"}
-    assert {asset["asset_id"] for asset in general_split["assets"]} == {"ordinary_count_scene"}
+    assert content_split["assets"] == []
+    assert {asset["asset_id"] for asset in general_split["assets"]} == {"ordinary_count_scene", "pinyin"}
 
 
 def test_classifier_does_not_touch_existing_vlm_review_sidecar(tmp_path):
@@ -666,14 +887,14 @@ def test_export_strict_reuse_visual_check_splits_images_without_touching_library
                 "asset_kind": "page_image",
                 "image_path": "ai_images/plain.png",
                 "content_prompt": "generic tree illustration",
-                "strict_reuse_group": "none",
+                "reuse_group": "none",
             },
             {
                 "asset_id": "math",
                 "asset_kind": "page_image",
                 "image_path": "ai_images/math.png",
                 "content_prompt": "division problem",
-                "strict_reuse_group": "math_problem",
+                "reuse_group": "math_problem",
             },
         ],
     }
@@ -686,12 +907,51 @@ def test_export_strict_reuse_visual_check_splits_images_without_touching_library
 
     manifest, output_dir = export_strict_reuse_visual_check(library_dir, output_root)
 
-    assert manifest["group_counts"] == {CONTENT_REUSE_GROUP: 1, GENERAL_REUSE_GROUP: 1}
+    assert manifest["group_counts"][CONTENT_REUSE_GROUP] == 0
+    assert manifest["group_counts"][GENERAL_REUSE_GROUP] == 2
     assert manifest["missing_image_count"] == 0
-    assert len(list((output_dir / GENERAL_REUSE_GROUP).glob("*.png"))) == 1
-    assert len(list((output_dir / CONTENT_REUSE_GROUP).glob("*.png"))) == 1
+    assert len(list((output_dir / GENERAL_REUSE_GROUP).glob("*.png"))) == 2
     assert not (output_dir / "none").exists()
     assert not (output_dir / "non_none").exists()
     assert (output_dir / "manifest.json").exists()
-    assert (output_dir / "index.html").exists()
+    assert "html_path" not in manifest
+    assert not (output_dir / "index.html").exists()
     assert index_path.read_text(encoding="utf-8") == before
+
+
+# --- should_skip_from_index tests ---
+
+
+def test_skip_from_index_c00():
+    asset = {"asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}
+    assert should_skip_from_index(asset) is True
+
+
+def test_skip_from_index_low_vlm_quality():
+    asset = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object",
+             "vlm_match_quality": 0.2}
+    assert should_skip_from_index(asset) is True
+
+
+def test_skip_from_index_vlm_quality_above_threshold():
+    asset = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object",
+             "vlm_match_quality": 0.5}
+    assert should_skip_from_index(asset) is False
+
+
+def test_skip_from_index_other_bucket_no_padding():
+    asset = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object",
+             "aspect_ratio": "32:15", "padding_capacity": "none"}
+    assert should_skip_from_index(asset) is True
+
+
+def test_skip_from_index_other_bucket_with_padding():
+    asset = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object",
+             "aspect_ratio": "32:15", "padding_capacity": "mid"}
+    assert should_skip_from_index(asset) is False
+
+
+def test_skip_from_index_normal_asset():
+    asset = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object",
+             "aspect_ratio": "4:3", "vlm_match_quality": 0.8, "padding_capacity": "mid"}
+    assert should_skip_from_index(asset) is False
