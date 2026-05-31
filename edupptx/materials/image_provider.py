@@ -71,7 +71,13 @@ async def fetch_images(needs: list[ImageNeed], config: Config) -> list[ImageResu
             if gen_provider is None:
                 logger.warning("No AI image provider configured, skipping: {}", prompt)
                 return None
-            size = IMAGE_RATIO_SIZES.get(need.aspect_ratio, "2848x1600")
+            size = IMAGE_RATIO_SIZES.get(need.aspect_ratio)
+            if size is None:
+                logger.warning(
+                    "Unsupported image aspect ratio after normalization: {}; using 16:9",
+                    need.aspect_ratio,
+                )
+                size = IMAGE_RATIO_SIZES["16:9"]
             logger.info("Generating image [{}] ratio={} size={}", need.role, need.aspect_ratio, size)
             imgs = await gen_provider.generate(prompt, size=size)
             return imgs[0] if imgs else None

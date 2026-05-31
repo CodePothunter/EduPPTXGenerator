@@ -3,6 +3,7 @@
 import pytest
 from lxml import etree
 
+from edupptx.models import ImageNeed, MaterialNeeds, PagePlan
 from edupptx.postprocess.svg_validator import validate_and_fix
 
 
@@ -115,6 +116,91 @@ class TestImageHrefCheck:
         svg = _make_svg(body)
         _, warnings = validate_and_fix(svg)
         assert any("empty href" in w for w in warnings)
+
+
+class TestImageAspectRatioFrames:
+    def _page_with_ratio(self, aspect_ratio: str) -> PagePlan:
+        return PagePlan(
+            page_number=8,
+            page_type="content",
+            title="比例校验",
+            material_needs=MaterialNeeds(
+                images=[
+                    ImageNeed(
+                        query="triangle diagram",
+                        source="ai_generate",
+                        role="illustration",
+                        aspect_ratio=aspect_ratio,
+                    )
+                ]
+            ),
+        )
+
+    def _first_image(self, fixed_svg: str):
+        root = etree.fromstring(fixed_svg.encode())
+        return root.find(f".//{{{SVG_NS}}}image")
+
+    def test_repairs_4_3_image_frame_drawn_too_wide(self):
+        page = self._page_with_ratio("4:3")
+        svg = _make_svg(
+            '<image href="__IMAGE_ILLUSTRATION_1__" x="94" y="174" '
+            'width="472" height="210" preserveAspectRatio="xMidYMid slice"/>'
+        )
+
+        fixed, warnings = validate_and_fix(svg, page=page)
+
+        img = self._first_image(fixed)
+        width = float(img.get("width"))
+        height = float(img.get("height"))
+        assert width / height == pytest.approx(4 / 3, rel=0.01)
+        assert any("image aspect ratio" in w.lower() for w in warnings)
+
+    def test_accepts_valid_4_3_image_frame(self):
+        page = self._page_with_ratio("4:3")
+        svg = _make_svg(
+            '<image href="__IMAGE_ILLUSTRATION_1__" x="100" y="120" '
+            'width="400" height="300" preserveAspectRatio="xMidYMid slice"/>'
+        )
+
+        fixed, warnings = validate_and_fix(svg, page=page)
+
+        img = self._first_image(fixed)
+        assert float(img.get("width")) / float(img.get("height")) == pytest.approx(4 / 3)
+        assert not any("image aspect ratio" in w.lower() for w in warnings)
+
+    def test_defensively_normalizes_unsupported_page_ratio(self):
+        page = self._page_with_ratio("32:15")
+        svg = _make_svg(
+            '<image href="__IMAGE_ILLUSTRATION_1__" x="74" y="210" '
+            'width="472" height="221.25" preserveAspectRatio="xMidYMid slice"/>'
+        )
+
+        fixed, warnings = validate_and_fix(svg, page=page)
+
+        img = self._first_image(fixed)
+        width = float(img.get("width"))
+        height = float(img.get("height"))
+        assert width / height == pytest.approx(16 / 9, rel=0.01)
+        assert any("unsupported image aspect ratio" in w.lower() for w in warnings)
+
+    def test_updates_image_clip_rect_when_ratio_is_repaired(self):
+        page = self._page_with_ratio("4:3")
+        svg = _make_svg(
+            '<defs><clipPath id="imgClip"><rect x="94" y="174" width="472" height="210"/></clipPath></defs>'
+            '<image href="__IMAGE_ILLUSTRATION_1__" x="94" y="174" width="472" height="210" '
+            'preserveAspectRatio="xMidYMid slice" clip-path="url(#imgClip)"/>'
+        )
+
+        fixed, warnings = validate_and_fix(svg, page=page)
+
+        root = etree.fromstring(fixed.encode())
+        img = root.find(f".//{{{SVG_NS}}}image")
+        clip_rect = root.find(f".//{{{SVG_NS}}}clipPath/{{{SVG_NS}}}rect")
+        assert clip_rect.get("x") == img.get("x")
+        assert clip_rect.get("y") == img.get("y")
+        assert clip_rect.get("width") == img.get("width")
+        assert clip_rect.get("height") == img.get("height")
+        assert any("image aspect ratio" in w.lower() for w in warnings)
 
 
 class TestUnescapedAmpersand:

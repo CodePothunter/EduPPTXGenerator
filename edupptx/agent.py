@@ -540,12 +540,29 @@ class PPTXAgent:
 
         return align_draft_to_template(draft, manifest)
 
+    def _normalize_image_aspect_ratios(self, draft: PlanningDraft) -> None:
+        """Normalize planned image ratios before prompt routing and material generation."""
+
+        from edupptx.planning.image_aspect_ratio_normalizer import normalize_draft_image_aspect_ratios
+
+        changes = normalize_draft_image_aspect_ratios(draft)
+        for change in changes:
+            logger.warning(
+                "Normalized image aspect ratio: page={}, slot={}, role={}, {} -> {}",
+                change.page_number,
+                change.slot_key,
+                change.role,
+                change.original_ratio,
+                change.normalized_ratio,
+            )
+
     def _route_ai_image_prompts(self, draft: PlanningDraft) -> PlanningDraft:
         """Attach routed generation prompts while preserving semantic image queries."""
 
         from edupptx.materials.image_prompt_router import build_routed_image_needs
 
         self._coerce_unavailable_search_sources(draft)
+        self._normalize_image_aspect_ratios(draft)
         for page in draft.pages:
             if page.material_needs.images:
                 page.material_needs.images = build_routed_image_needs(draft, page)

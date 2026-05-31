@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -60,14 +61,17 @@ IMAGE_RATIO_SIZES: dict[str, str] = {
     "9:16": "1600x2848",
 }
 
-# Numeric values for ratio matching
-_RATIO_VALUES: dict[str, float] = {
+# Numeric values for ratio matching. Keep keys identical to IMAGE_RATIO_SIZES.
+IMAGE_RATIO_VALUES: dict[str, float] = {
     "1:1": 1.0,
     "3:4": 0.75,
-    "4:3": 1.333,
-    "16:9": 1.778,
-    "9:16": 0.5625,
+    "4:3": 4 / 3,
+    "16:9": 16 / 9,
+    "9:16": 9 / 16,
 }
+
+SUPPORTED_IMAGE_ASPECT_RATIOS: tuple[str, ...] = tuple(IMAGE_RATIO_SIZES.keys())
+_RATIO_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$")
 
 
 def normalize_image_source(value: object) -> Literal["search", "ai_generate"]:
@@ -125,6 +129,41 @@ def normalize_image_source(value: object) -> Literal["search", "ai_generate"]:
     return "ai_generate"
 
 
+def parse_aspect_ratio(value: object) -> float | None:
+    """Parse a ratio string like ``4:3`` into a numeric width/height value."""
+    text = str(value or "").strip()
+    match = _RATIO_PATTERN.match(text)
+    if not match:
+        return None
+    width = float(match.group(1))
+    height = float(match.group(2))
+    if width <= 0 or height <= 0:
+        return None
+    return width / height
+
+
+def _closest_supported_image_aspect_ratio(target: float) -> str:
+    best_ratio = "16:9"
+    best_diff = float("inf")
+    for name, value in IMAGE_RATIO_VALUES.items():
+        diff = abs(target - value)
+        if diff < best_diff:
+            best_diff = diff
+            best_ratio = name
+    return best_ratio
+
+
+def normalize_image_aspect_ratio(value: object, default: str = "16:9") -> str:
+    """Return a supported image aspect ratio, mapping unsupported ratios to the nearest option."""
+    text = str(value or "").strip()
+    if text in IMAGE_RATIO_SIZES:
+        return text
+    parsed = parse_aspect_ratio(text)
+    if parsed is None:
+        return default
+    return _closest_supported_image_aspect_ratio(parsed)
+
+
 def match_aspect_ratio(width: float, height: float) -> str:
     """Find the closest predefined aspect ratio for given dimensions.
 
@@ -132,15 +171,7 @@ def match_aspect_ratio(width: float, height: float) -> str:
     """
     if height <= 0:
         return "16:9"
-    target = width / height
-    best_ratio = "16:9"
-    best_diff = float("inf")
-    for name, value in _RATIO_VALUES.items():
-        diff = abs(target - value)
-        if diff < best_diff:
-            best_diff = diff
-            best_ratio = name
-    return best_ratio
+    return _closest_supported_image_aspect_ratio(width / height)
 
 
 class ImageNeed(BaseModel):
