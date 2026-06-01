@@ -12,6 +12,7 @@ from edupptx.models import (
     iter_image_slot_keys,
     normalize_image_aspect_ratio,
 )
+from edupptx.postprocess.svg_sanitizer import resolve_html_entities
 
 if TYPE_CHECKING:
     from edupptx.models import PagePlan
@@ -77,6 +78,9 @@ def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[st
     """Validate SVG, auto-fix issues. Returns (fixed_svg, list_of_warnings)."""
     warnings: list[str] = []
 
+    # Resolve HTML named entities (e.g. &nbsp;) to numeric char refs before the
+    # bare-& escaper below would otherwise mangle them into visible literal text.
+    svg_content = resolve_html_entities(svg_content)
     # Pre-clean XML-unsafe characters (common LLM artifacts)
     svg_content = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#)", "&amp;", svg_content)
     # Escape bare < not part of XML tags (e.g., "k < 0" in math formulas)

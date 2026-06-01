@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+from html.entities import name2codepoint
+
 from lxml import etree
 
 SVG_NS = "http://www.w3.org/2000/svg"
@@ -11,9 +13,39 @@ TSPAN_TAG = f"{{{SVG_NS}}}tspan"
 EVENT_ATTRS = re.compile(r"^on[a-z]+$", re.IGNORECASE)
 _POSITION_ATTRS = {"x", "y", "dx", "dy", "rotate", "textLength", "lengthAdjust"}
 
+# XML predefines only these five named entities; everything else (&nbsp; &mdash;
+# &times; …) is HTML-only and must be turned into a numeric char ref.
+_XML_PREDEFINED_ENTITIES = {"amp", "lt", "gt", "quot", "apos"}
+_NAMED_ENTITY_RE = re.compile(r"&([a-zA-Z][a-zA-Z0-9]*);")
+
+
+def resolve_html_entities(svg_content: str) -> str:
+    """Convert HTML named entities to XML-safe numeric char refs.
+
+    SVG is XML, so an LLM-emitted ``&nbsp;`` is neither valid XML nor, once the
+    bare-``&`` escaper runs, recoverable — it becomes the literal visible text
+    ``&nbsp;``. Mapping the whole class of HTML named entities to ``&#NNN;``
+    (e.g. ``&nbsp;`` → ``&#160;``) makes them render as the intended character.
+    XML-predefined and unknown names are left untouched.
+    """
+
+    def _replace(match: re.Match[str]) -> str:
+        name = match.group(1)
+        if name in _XML_PREDEFINED_ENTITIES:
+            return match.group(0)
+        codepoint = name2codepoint.get(name)
+        if codepoint is None:
+            return match.group(0)
+        return f"&#{codepoint};"
+
+    return _NAMED_ENTITY_RE.sub(_replace, svg_content)
+
 
 def sanitize_for_ppt(svg_content: str) -> str:
     """Apply PPT-specific fixes to SVG content."""
+    # Resolve HTML named entities (e.g. &nbsp;) before the bare-& escaper turns
+    # them into visible literal text.
+    svg_content = resolve_html_entities(svg_content)
     # Pre-clean unescaped &
     svg_content = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#)", "&amp;", svg_content)
     # Pre-clean unescaped < in text content (e.g., "k < 0" in math formulas)

@@ -285,3 +285,31 @@ class TestMathFontHandling:
         fixed, warnings = validate_and_fix(svg)
         assert 'Courier New' not in fixed
         assert any('Replaced unsafe font' in w for w in warnings)
+
+
+class TestHtmlEntityResolution:
+    """Regression for the fill-in-the-blank slides that rendered literal
+    '&nbsp;&nbsp;...' garbage: HTML named entities must resolve to real
+    characters, never get blind-escaped into &amp;nbsp;."""
+
+    def test_nbsp_renders_as_real_space_not_literal(self):
+        body = '<text x="150" y="220">叫做（&nbsp;&nbsp;&nbsp;）</text>'
+        fixed, _ = validate_and_fix(_make_svg(body))
+        text = "".join(etree.fromstring(fixed.encode()).itertext())
+        assert " " in text
+        assert "&nbsp;" not in text
+        assert "&amp;nbsp;" not in fixed
+
+    def test_tspan_fillblank_mirrors_real_slide(self):
+        # mirrors the broken slide_10 structure from session_20260531_233444
+        body = (
+            '<text x="150" y="220" font-size="24">'
+            '<tspan x="150" dy="0">每份分得同样多，叫做（&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;</tspan>'
+            '<tspan x="150" dy="33">&nbsp;），它是除法的基础</tspan>'
+            '</text>'
+        )
+        fixed, _ = validate_and_fix(_make_svg(body))
+        assert "&amp;nbsp;" not in fixed
+        text = "".join(etree.fromstring(fixed.encode()).itertext())
+        assert "&nbsp;" not in text
+        assert " " in text

@@ -323,6 +323,8 @@ def build_svg_user_prompt(
         "- 禁止生成嵌套 `<tspan>`；只允许一层 sibling `<tspan>`\n"
         "- 高亮词前后的正文必须完整保留，按阅读顺序连续输出，不能只剩高亮词\n"
         "- 同一行内连续 `<tspan>` 默认不要重复设置 `x` 或 `dy`；只有真正换行时才设置新的 `x` 与 `dy`\n"
+        "- SVG 是 XML，`<text>` 文本只能写真实字符：填空/留白请用真实空格或 `<line>` 下划线，"
+        "禁止使用 `&nbsp;`、`&emsp;`、`&mdash;` 等 HTML 命名实体（XML 不识别，会显示成可见乱码）\n"
         "推荐写法示例：\n"
         "```svg\n"
         '<text x="128" y="632" font-size="20" fill="{text_color}">\n'
