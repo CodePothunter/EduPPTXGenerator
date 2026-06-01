@@ -4423,6 +4423,7 @@ def _build_keyword_messages(
                 "asset_id": asset.get("asset_id"),
                 "asset_kind": asset.get("asset_kind"),
                 "theme": asset.get("theme"),
+                "query": _asset_query(asset),
                 "caption": _asset_caption(asset),
                 "prompt_route": _match_prompt_route(asset.get("prompt_route")),
                 "background_route": _match_background_route(asset.get("background_route")),
@@ -4478,7 +4479,7 @@ def _build_keyword_messages(
         "strict_reuse_group 必须是下方 6 个素材类别 ID 之一（v7 无缺号体系）。"
         "C00_strict_text_problem_skip 表示图片需要精确匹配文字、数字或符号，将跳过复用和素材库入库。"
         "page_image 的 context_summary 描述可见内容和页面用途；teaching_intent 描述教学动作。"
-        "strict_reuse_group 分类只能基于 caption 的字面内容。"
+        "strict_reuse_group 分类只能基于 query 的完整描述内容（保留数值、汉字、标注、图形关系）。"
         "不要使用 page_type、subject、grade_norm、grade_band 来判断 strict_reuse_group。"
         "background 的 normalized_prompt 是视觉特征列表，格式为："
         "『色调:X; 纹理:Y; 明度:Z; 构图:W』。冷色、暖色、中性色只写入 color_temperature。"
@@ -4488,7 +4489,7 @@ def _build_keyword_messages(
         "strict_reuse_reason 格式：『属于<类别中文名>：<被描述的主体>』。"
     )
     user = "请按结构规范化以下素材：\n" + json.dumps({"assets": items}, ensure_ascii=False, indent=2)
-    system += "\n\n" + _load_keyword_reuse_rules_reference().replace("content_prompt", "caption")
+    system += "\n\n" + _load_keyword_reuse_rules_reference().replace("content_prompt", "query")
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -5677,6 +5678,16 @@ def _asset_caption(asset: dict[str, Any]) -> str:
     )
 
 
+def _asset_query(asset: dict[str, Any]) -> str:
+    """Verbose classification text. Falls back to legacy verbose fields so
+    pre-rebuild libraries stay classifiable."""
+    return (
+        _clean_text(asset.get("query"))
+        or _clean_text(asset.get("detail_prompt"))
+        or _asset_content_prompt(asset)
+    )
+
+
 def _is_background_asset(asset: dict[str, Any]) -> bool:
     return _clean_text(asset.get("asset_kind")) == "background"
 
@@ -5747,6 +5758,7 @@ def _build_reuse_target_asset(
         "aspect_ratio": aspect_ratio,
         "theme": _clean_text(theme),
         "topic_refs": extract_topic_refs(theme),
+        "query": content_prompt,
         "caption": _clean_text(caption) or content_prompt,
         "prompt_route": route,
         "background_route": bg_route,
@@ -7687,7 +7699,14 @@ def _as_string_list(value: Any) -> list[str]:
 
 
 def _preserve_review_fields(asset: dict[str, Any]) -> dict[str, Any]:
-    return {key: deepcopy(asset[key]) for key in _METADATA_PASSTHROUGH_FIELDS if key in asset}
+    preserved = {key: deepcopy(asset[key]) for key in _METADATA_PASSTHROUGH_FIELDS if key in asset}
+    query = _clean_text(asset.get("query"))
+    if query:
+        preserved["query"] = query
+    for key in ("visual_reuse_group", "visual_reuse_confidence", "visual_reuse_reason"):
+        if asset.get(key) not in (None, ""):
+            preserved[key] = deepcopy(asset[key])
+    return preserved
 
 
 def _apply_strict_reuse_group_from_payload(asset: dict[str, Any], payload: dict[str, Any]) -> None:

@@ -95,11 +95,11 @@ def test_material_category_prompt_protects_c00_c01_c02_before_c03():
     assert "必要条件：遮住具体文字/数值后，仍能看出它是某类知识结构或原理图" in rules
 
 
-def test_material_category_prompt_uses_caption_only_reuse_granularity():
+def test_material_category_prompt_uses_query_reuse_granularity():
     rules = MATERIAL_CATEGORY_RULES_TEXT
 
     assert "C03_irreplaceable_entity_event_action（不可替代实体/事件/动作类" in rules
-    assert "分类依据是 caption 自身表达的复用粒度" in rules
+    assert "分类依据是 query 自身表达的复用粒度" in rules
     assert "不可替代语义命题" in rules
     assert "如果需要依赖课文名、theme、teaching_intent 或教学上下文才不可替代，不归 C03" in rules
     assert "C03 不要求主体必须是具名人物、唯一地点、唯一物体或课文专名" in rules

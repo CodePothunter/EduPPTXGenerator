@@ -109,58 +109,43 @@ NS = {
     "pr": "http://schemas.openxmlformats.org/package/2006/relationships",
 }
 
-PPT_VLM_SYSTEM_PROMPT = f"""你是教学课件素材库的图片标注助手。给定一张从 PPT 中提取的图片以及它所在课件、页码和前后页文本，你只生成图片的可复用语义描述。
+PPT_VLM_SYSTEM_PROMPT = """你是教学课件素材库的图片标注助手。给定一张从 PPT 中提取的图片以及它所在课件、页码和前后页文本，你只生成可重新生成该图的完整 query 与一个视觉分类判断。
 
 输出 JSON 结构：
-{{
-  "content_prompt": "短中文图片需求，只描述图片本体",
-  "detail_prompt": "完整的视觉细节描述，保留布局、控件、装饰、配色等",
+{
+  "query": "可重新生成该图的完整中文 prompt，保留全部可见文字/数值/标注/图形关系",
   "context_summary": "一句 20-40 个汉字的短句，描述画面内容和页面功能",
   "teaching_intent": "该图服务的教学动作或学习目标",
-  "strict_reuse_group": "<C00-C99 material category ID>",
-  "strict_reuse_confidence": 0.0,
-  "strict_reuse_reason": "一句中文判断依据"
-}}
+  "general": false,
+  "visual_reuse_group": "<C00-C05 material category ID>",
+  "visual_reuse_confidence": 0.0,
+  "visual_reuse_reason": "一句中文判断依据"
+}
 
 通用原则：
-1. content_prompt 和 detail_prompt 必须独立生成、粒度不同、不可相同：
-   - content_prompt 只回答"这张图是什么"，写成可直接检索图片的短中文名词短语；以可复用为目标，长度 ≤ 30 个汉字。
-   - detail_prompt 是完整视觉记录，覆盖 content_prompt 之外的所有可见信息（主体外观、数量、布局、背景、装饰、控件、配色、纹理、构图、辅助说明），用于人工审阅与维护，长度不设上限。
+1. query 是"若要重新生成这张图，会怎么写生成 prompt"：保留教学主体、教学载体、影响题意的动作或场景，以及可读教学内容（具体汉字、拼音、数字、公式、标签等原子值）和它们之间的数量、顺序、对应、因果、空间或比较关系。这些原子值与关系是分类依据，绝不能省略。
 
-2. content_prompt 必须保留的，是图片"在不同样式下也必须传达"的内容：教学主体、教学载体、影响题意的动作或场景、可读教学内容（具体汉字、拼音、数字、公式、标签等原子值），以及这些之间的数量、顺序、对应、因果、空间或比较关系。
+2. query 省略所有用途、课堂活动、页面功能、教学目标、使用方式和来源语境（课程、年级、学科、页码、文件名等）。
 
-3. content_prompt 必须省略所有用途、课堂活动、页面功能、教学目标、使用方式和来源语境。禁止出现"用于"、"用来"、"作为"、"配合"、"辅助"、"讲解"、"练习"、"课堂"、"互动"、"教学"、"展示页面"等用途性表达；如果删除这些短语后仍能准确描述图片，就必须删除。
+3. 当图片仅为通用工具或空白底图时，query 必须显式说明不含具体可读内容，例如"不含具体汉字、拼音或文字"，避免被误用为含字底图。
 
-4. content_prompt 必须省略"任何样式下都能被替换的承载层"。判定标准：替换或移除该元素是否改变教学事实——不改变即为承载层，应放入 detail_prompt 而非 content_prompt。功能交互控件、装饰边框、模板部件、配色样式、字体样式、生成风格指令均属此类。
+4. 面对教学模板化组件时，query 写"教学载体 + 具体教学内容"，对多音字、形近字、偏旁部首、词语辨析、算式推导、实验标签等，必须保留具体对象及其对应关系。
 
-5. content_prompt 不写来源信息：课程、年级、学科、页码、文件名、"来自/这是一张..."等只作为理解上下文，不写进 content_prompt 和 context_summary。
+5. context_summary 保持短句风格（20-40 汉字），写"画面内容 + 页面功能"，先说主体/动作/关系再说页面功能；不要退化为"页面类型+用于+主题+展示"模板句。
 
-6. content_prompt 面对教学模板化组件时，写"教学载体 + 具体教学内容"，不要只写类别名也不要罗列模板 UI。对多音字、形近字、偏旁部首、词语辨析、算式推导、实验标签等，必须保留具体对象及其对应关系。
+6. teaching_intent 写教学动作或学习目标，不重复 context_summary 也不重复来源信息。
 
-7. 当图片仅为通用工具或空白底图时，content_prompt 必须显式说明不含具体可读内容，例如"不含具体汉字、拼音或文字"，避免被误用为含字底图。
+7. visual_reuse_group 是你看图直接给出的素材分类（C00-C05），作为对 query 文本分类的交叉校验；visual_reuse_confidence 为 0-1，visual_reuse_reason 用一句中文说明画面依据。
 
-8. context_summary 必须保持 materials_library 的短句风格，长度控制在 20-40 个汉字；写"画面内容 + 页面功能"，至少先说明一个主体、动作或关系，再说明页面功能；可以包含"作为"、"用于"、"辅助"等页面功能词，但禁止只写页面类型、课程主题或教学环节，也禁止退化为"{{page_type}}+用于+{{topic}}+展示/学习"这类模板句式；不要写教学目标、解题过程、学习效果或"在页面中承担..."这类长解释，这些内容应放入 teaching_intent。
-
-9. detail_prompt 可以包含 PPT 控件、按钮、图标、边框、装饰和样式等维护信息，但这些内容不得进入 content_prompt，除非它们本身就是教学对象。
-
-10. teaching_intent 写教学动作或学习目标，不重复 context_summary 也不重复来源信息。
-
-11. 不要输出 core_keywords、semantic_aliases、query_aliases 或任何同义词；图片语义之外的其他检索元数据由后续步骤独立生成。
-
-12. strict_reuse_group 只判断图片是否需要进入严格内容复用组：
-   - general_reuse：普通插画、场景、人物动作、装饰、空白卡片、通用教学活动，不要求文字、数字或题干严格一致。
-   - content_reuse：图片里含有必须严格匹配的可见文本、拼音字词、课文段落、题目、公式、表格、数据、标注图、物理/数学题面等内容。
-   strict_reuse_confidence 为 0-1，strict_reuse_reason 用一句中文说明画面依据。
-
-13. 结构之外不要输出任何字段。
+8. 不要输出 caption、content_prompt、detail_prompt、core_keywords、semantic_aliases、query_aliases 或结构之外的任何字段。
 """
 
 
 PPT_VLM_SYSTEM_PROMPT += (
     "\n\nFinal override for the current material-library schema:\n"
-    "- strict_reuse_group must be one of the 7 material category IDs below, not general_reuse/content_reuse.\n"
+    "- visual_reuse_group must be one of the 6 material category IDs below (C00-C05).\n"
     "- C00_strict_text_problem_skip means skip reuse and skip library ingestion.\n"
-    "- Do not output core_keywords, semantic_aliases, constraints, context_summary_keywords, or query_aliases.\n"
+    "- 用 query 作为唯一的图片本体描述字段；不要输出 caption/content_prompt/detail_prompt。\n"
     '- Output "general": false in every JSON object unless the image is clearly reusable across subjects.\n'
     "- general 必须是布尔值 true 或 false；你是严格保守的跨学科通用复用分类器，模糊时输出 false。\n"
     + MATERIAL_CATEGORY_RULES_TEXT
@@ -187,6 +172,23 @@ class _KeywordClientFromVLM:
             max_tokens=max_tokens,
             max_retries=max_retries,
         )
+
+    def chat(
+        self,
+        messages: list[dict[str, Any]],
+        temperature: float = 0.0,
+        max_tokens: int = 4096,
+        max_retries: int = 1,
+    ) -> str:
+        import json as _json
+
+        result = self._vlm_client.chat_vlm_json(
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            max_retries=max_retries,
+        )
+        return _json.dumps(result, ensure_ascii=False)
 
 
 @dataclass
@@ -381,7 +383,7 @@ def build_ppt_image_materials_library(
                 annotation = _fallback_annotation(item, meta, context, "vlm_skipped")
 
             annotation = _normalize_annotation(annotation, item, meta, context, image_path=original_image_abs)
-            if _is_skip_material_category(annotation.get("strict_reuse_group")):
+            if _is_skip_material_category(annotation.get("visual_reuse_group")):
                 _add_skip(report, _usage_label(item), "C00_strict_text_problem_skip")
                 pptx_summary["skipped"] += 1
                 try:
@@ -427,6 +429,24 @@ def build_ppt_image_materials_library(
         warnings=report["warnings"],
     )
     if use_keyword_enrichment and keyword_client is not None:
+        from edupptx.materials.caption_rules import summarize_records
+
+        page_assets = [
+            a for a in (db.get("assets") or [])
+            if isinstance(a, dict)
+            and _clean_text(a.get("asset_kind")) != "background"
+            and not _clean_text(a.get("caption"))
+        ]
+        if page_assets:
+            records = [{"query": _clean_text(a.get("query"))} for a in page_assets]
+            try:
+                summarized = summarize_records(records, keyword_client, query_field="query", caption_field="caption")
+                for asset, item in zip(page_assets, summarized):
+                    asset["caption"] = _clean_text(item.get("caption")) or _clean_text(asset.get("query"))
+            except Exception as exc:
+                report["warnings"].append(f"caption_summarize_failed:{type(exc).__name__}: {exc}")
+                for asset in page_assets:
+                    asset["caption"] = _clean_text(asset.get("query"))
         enrich_ai_image_asset_db_keywords(
             db,
             keyword_client,
@@ -440,6 +460,8 @@ def build_ppt_image_materials_library(
     report["near_duplicate_count"] = near_duplicate_report["removed_count"]
     if near_duplicate_report["groups"]:
         report["near_duplicates"] = near_duplicate_report["groups"]
+    mismatch_audit_path = _write_query_visual_mismatch_audit(db, library_root)
+    report["query_visual_mismatch_audit_path"] = str(mismatch_audit_path)
     _strip_ppt_internal_asset_fields(db)
     db["asset_count"] = len(db.get("assets", []) if isinstance(db.get("assets"), list) else [])
     db["warnings"] = _dedupe(
@@ -1002,6 +1024,47 @@ def _delete_ppt_duplicate_image(asset: dict[str, Any], library_root: Path) -> st
     return str(path)
 
 
+QUERY_VISUAL_MISMATCH_AUDIT_FILENAME = "query_visual_group_mismatch.json"
+
+
+def _write_query_visual_mismatch_audit(db: dict[str, Any], library_root: str | Path) -> Path:
+    """Log assets where query classification disagrees with the VLM visual group.
+
+    Classification stays query-based (canonical). This is a passive audit file
+    for human review; it never rewrites strict_reuse_group.
+    """
+    assets = db.get("assets") if isinstance(db.get("assets"), list) else []
+    mismatches: list[dict[str, Any]] = []
+    for asset in assets:
+        if not isinstance(asset, dict) or _clean_text(asset.get("asset_kind")) != "page_image":
+            continue
+        query_group = normalize_strict_reuse_group(asset.get("strict_reuse_group"), default="")
+        visual_group = normalize_strict_reuse_group(asset.get("visual_reuse_group"), default="")
+        if not query_group or not visual_group or query_group == visual_group:
+            continue
+        mismatches.append({
+            "asset_id": _clean_text(asset.get("asset_id")),
+            "image_path": _clean_text(asset.get("image_path")),
+            "query": _clean_text(asset.get("query")),
+            "caption": _clean_text(asset.get("caption")),
+            "strict_reuse_group": query_group,
+            "strict_reuse_reason": _clean_text(asset.get("strict_reuse_reason")),
+            "visual_reuse_group": visual_group,
+            "visual_reuse_confidence": asset.get("visual_reuse_confidence"),
+            "visual_reuse_reason": _clean_text(asset.get("visual_reuse_reason")),
+        })
+    debug_dir = Path(library_root) / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    path = debug_dir / QUERY_VISUAL_MISMATCH_AUDIT_FILENAME
+    payload = {
+        "note": "classification is query-based (canonical); these assets disagree with the VLM visual group, review manually",
+        "mismatch_count": len(mismatches),
+        "mismatches": mismatches,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
 def _strip_ppt_internal_asset_fields(db: dict[str, Any]) -> None:
     assets = db.get("assets")
     if not isinstance(assets, list):
@@ -1098,26 +1161,26 @@ def _normalize_annotation(
     image_path: Path | None = None,
 ) -> dict[str, Any]:
     raw = annotation if isinstance(annotation, dict) else {}
-    content_prompt = _clean_text(raw.get("content_prompt"))
-    if not content_prompt:
-        content_prompt = _fallback_annotation(item, meta, context, "missing_content_prompt")["content_prompt"]
-    detail_prompt = _clean_text(raw.get("detail_prompt")) or content_prompt
+    query = _clean_text(raw.get("query")) or _clean_text(raw.get("content_prompt"))
+    if not query:
+        query = _fallback_annotation(item, meta, context, "missing_query")["content_prompt"]
     context_summary = _clean_text(raw.get("context_summary")) or _fallback_ppt_context_summary(context)
     teaching_intent = _clean_text(raw.get("teaching_intent")) or "辅助课堂教学说明"
-    strict_reuse_group = _normalize_material_category(raw.get("strict_reuse_group"))
-    strict_reuse_confidence = max(0.0, min(1.0, _safe_float(raw.get("strict_reuse_confidence"))))
-    if strict_reuse_confidence <= 0:
-        strict_reuse_confidence = 0.5 if strict_reuse_group == "C06_generic_scene_activity" else 0.75
-    strict_reuse_reason = _clean_text(raw.get("strict_reuse_reason")) or "PPT VLM reuse group classification"
+    visual_reuse_group = _normalize_material_category(
+        raw.get("visual_reuse_group") or raw.get("strict_reuse_group")
+    )
+    visual_reuse_confidence = max(0.0, min(1.0, _safe_float(raw.get("visual_reuse_confidence"))))
+    if visual_reuse_confidence <= 0:
+        visual_reuse_confidence = 0.5 if visual_reuse_group == "C05_scene_decor_container" else 0.75
+    visual_reuse_reason = _clean_text(raw.get("visual_reuse_reason")) or "PPT VLM visual reuse group"
     general = _optional_bool(raw.get("general"))
     ann = {
-        "content_prompt": content_prompt,
-        "detail_prompt": detail_prompt,
+        "query": query,
         "context_summary": context_summary,
         "teaching_intent": teaching_intent,
-        "strict_reuse_group": strict_reuse_group,
-        "strict_reuse_confidence": round(strict_reuse_confidence, 4),
-        "strict_reuse_reason": strict_reuse_reason,
+        "visual_reuse_group": visual_reuse_group,
+        "visual_reuse_confidence": round(visual_reuse_confidence, 4),
+        "visual_reuse_reason": visual_reuse_reason,
     }
     if general is not None:
         ann["general"] = general
@@ -1144,7 +1207,7 @@ def _build_asset_from_annotation(
     unit_ref = _clean_text(course.get("unit"))
     topic_refs = extract_topic_refs(lesson_ref)
     asset_kind = _ppt_asset_kind(item)
-    content_prompt = annotation["content_prompt"]
+    query = annotation["query"]
     asset = {
         "asset_id": asset_id,
         "asset_kind": asset_kind,
@@ -1162,22 +1225,24 @@ def _build_asset_from_annotation(
         "grade_band": grade_info["grade_band"],
         "unit_ref": unit_ref,
         "topic_refs": topic_refs,
-        "content_prompt": content_prompt,
-        "detail_prompt": annotation.get("detail_prompt") or content_prompt,
+        "query": query,
         "context_summary": annotation["context_summary"],
         "teaching_intent": annotation["teaching_intent"],
         "asset_category": "background" if asset_kind == "background" else "unknown",
         "duplicate_asset_ids": [],
-        "strict_reuse_group": annotation.get("strict_reuse_group") or "C06_generic_scene_activity",
-        "strict_reuse_confidence": annotation.get("strict_reuse_confidence") or 0.5,
-        "strict_reuse_reason": annotation.get("strict_reuse_reason") or "PPT VLM reuse group classification",
-        "strict_reuse_signals": ["ppt_vlm_reuse_group"],
+        "visual_reuse_group": annotation.get("visual_reuse_group") or "C05_scene_decor_container",
+        "visual_reuse_confidence": annotation.get("visual_reuse_confidence") or 0.5,
+        "visual_reuse_reason": annotation.get("visual_reuse_reason") or "PPT VLM visual reuse group",
+        "strict_reuse_group": annotation.get("visual_reuse_group") or "C05_scene_decor_container",
+        "strict_reuse_confidence": annotation.get("visual_reuse_confidence") or 0.5,
+        "strict_reuse_reason": annotation.get("visual_reuse_reason") or "PPT VLM visual reuse group (pre-query-classify)",
+        "strict_reuse_signals": ["ppt_vlm_visual_reuse_group"],
     }
     general = _optional_bool(annotation.get("general"))
     if general is not None:
         asset["general"] = general
     if asset_kind == "background":
-        asset["normalized_prompt"] = content_prompt
+        asset["normalized_prompt"] = query
     return asset
 
 

@@ -139,7 +139,7 @@ def test_build_ppt_image_materials_library_writes_match_index_and_embedding_side
     embedding_meta = json.loads((library_dir / "ai_image_embedding_meta.json").read_text(encoding="utf-8"))
     assert embedding_meta["asset_count"] == 1
     assert index["ppt_extractor"]["schema_version"] == MODULE.PPT_LIBRARY_SCHEMA_VERSION
-    assert index["assets"][0]["detail_prompt"].startswith("教学配图")
+    assert index["assets"][0]["query"].startswith("教学配图")
     asset = db["assets"][0]
     assert asset["asset_id"].startswith("kbpptx_")
     assert asset["asset_kind"] == "page_image"
@@ -150,7 +150,9 @@ def test_build_ppt_image_materials_library_writes_match_index_and_embedding_side
     for deleted_field in ("context_summary_keywords", "constraints", "core_keywords", "semantic_aliases"):
         assert deleted_field not in asset
     assert asset["duplicate_asset_ids"] == []
-    assert asset["detail_prompt"].startswith("教学配图")
+    assert asset["query"].startswith("教学配图")
+    assert "detail_prompt" not in asset
+    assert "content_prompt" not in asset
     assert "prompt_route" not in asset
     assert "normalized_prompt" not in asset
     assert "source_type" not in asset
@@ -263,7 +265,7 @@ def test_build_ppt_image_materials_library_keeps_full_slide_backgrounds(tmp_path
     assert "aspect_bucket" not in asset
     assert "padding_capacity" not in asset
     assert asset["asset_category"] == "background"
-    assert asset["normalized_prompt"] == asset["content_prompt"]
+    assert asset["normalized_prompt"] == asset["query"]
     background_index = json.loads((library_dir / "strict_reuse_indexes" / "background.json").read_text(encoding="utf-8"))
     general_index = json.loads(
         (library_dir / "strict_reuse_indexes" / "C05_scene_decor_container.json").read_text(encoding="utf-8")
@@ -397,13 +399,13 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
         def chat_vlm_json(self, **kwargs):
             self.messages = kwargs["messages"]
             return {
-                "content_prompt": "blue rectangle teaching illustration",
-                "detail_prompt": "blue rectangle teaching illustration with a plain blue fill",
+                "query": "blue rectangle teaching illustration",
                 "context_summary": "visual support image",
                 "teaching_intent": "support explanation",
-                "strict_reuse_group": "C05_scene_decor_container",
-                "strict_reuse_confidence": 0.82,
-                "strict_reuse_reason": "plain visual support image",
+                "general": True,
+                "visual_reuse_group": "C05_scene_decor_container",
+                "visual_reuse_confidence": 0.82,
+                "visual_reuse_reason": "plain visual support image",
                 "query_aliases": {"蓝色矩形": [{"alias": "蓝色方块", "confidence": 0.9}]},
                 # padding_capacity is now derived from pixel-edge analysis at
                 # annotation time; VLM-side hints (if any) are discarded by the
@@ -454,17 +456,20 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
     )
 
     asset = db["assets"][0]
-    assert asset["content_prompt"] == "blue rectangle teaching illustration"
-    assert asset["detail_prompt"] == "blue rectangle teaching illustration with a plain blue fill"
+    assert asset["query"] == "blue rectangle teaching illustration"
+    assert "content_prompt" not in asset
+    assert "detail_prompt" not in asset
+    # caption 由 summarize_records 从 query 概括；FakeKeywordClient 无 .chat，降级用 query
+    assert asset["caption"] == "blue rectangle teaching illustration"
     assert asset["context_summary"] == "visual support image"
     assert asset["teaching_intent"] == "support explanation"
     assert "query_aliases" not in asset
     # padding_capacity is computed at annotation time from pixel edges; the
     # synthesized blue rectangle test image has fully colored borders → low.
     assert "padding_capacity" not in asset
+    # VLM 视觉组落盘作交叉校验；strict_reuse_group canonical 来自 query 分类（此处 keyword LLM 未覆盖 → 沿用视觉种子）
+    assert asset["visual_reuse_group"] == "C05_scene_decor_container"
     assert asset["strict_reuse_group"] == "C05_scene_decor_container"
-    assert asset["strict_reuse_confidence"] == 0.82
-    assert asset["strict_reuse_reason"] == "plain visual support image"
     assert "transform_advice" not in asset
     for deleted_field in ("context_summary_keywords", "constraints", "core_keywords", "semantic_aliases"):
         assert deleted_field not in asset
@@ -475,31 +480,21 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
     assert "normalized_prompt" not in asset
     assert "vlm_visual_style" not in asset
     assert "source_type" not in asset
-    assert all(not key.startswith("vlm_") for key in asset)
     system_prompt = vlm_client.messages[0]["content"]
-    assert "material_needs.images[].query" not in system_prompt
-    assert "只描述图片本体" in system_prompt
-    assert "detail_prompt" in system_prompt
-    assert "≤ 30 个汉字" in system_prompt
+    assert '"query"' in system_prompt
+    assert '"visual_reuse_group"' in system_prompt
+    assert "若要重新生成这张图" in system_prompt
     assert "20-40 个汉字" in system_prompt
     assert "教学载体 + 具体教学内容" in system_prompt
-    assert "承载层" in system_prompt
-    assert "只回答\"这张图是什么\"" in system_prompt
-    assert "禁止出现\"用于\"" in system_prompt
-    assert "这些内容不得进入 content_prompt" in system_prompt
-    assert "core_keywords" in system_prompt
-    assert "semantic_aliases" in system_prompt
-    assert "query_aliases" in system_prompt
+    assert "不含具体汉字、拼音或文字" in system_prompt
+    assert '"general": false' in system_prompt
+    assert "C00-C05" in system_prompt
+    # query 取代 content_prompt/detail_prompt 作为唯一本体字段
+    assert '"content_prompt"' not in system_prompt
+    assert '"detail_prompt"' not in system_prompt
     # padding_capacity is now derived from pixel-edge analysis, not VLM output
     assert "transform_advice" not in system_prompt
     assert "padding_capacity" not in system_prompt
-    assert "safe_crop" not in system_prompt
-    assert "max_safe_crop_pct" not in system_prompt
-    assert "card_background_fill_safe" not in system_prompt
-    assert "max_safe_padding_pct" not in system_prompt
-    assert "不含具体汉字、拼音或文字" in system_prompt
-    assert "{page_type}+用于+{topic}+展示/学习" in system_prompt
-    assert "不要写教学目标、解题过程、学习效果" in system_prompt
     for disallowed_field in (
         "normalized_prompt",
         "prompt_route",
@@ -507,7 +502,7 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
         "asset_category",
     ):
         assert disallowed_field not in system_prompt
-    assert '"content_prompt": "blue rectangle teaching illustration"' in keyword_client.messages[-1]["content"]
+    assert '"query": "blue rectangle teaching illustration"' in keyword_client.messages[-1]["content"]
 
 
 def test_ppt_theme_is_compact_without_inserted_spaces():
@@ -526,13 +521,12 @@ def test_ppt_theme_is_compact_without_inserted_spaces():
 
 def test_ppt_annotation_normalization_keeps_only_vlm_semantics():
     annotation = {
-        "content_prompt": "汉字“傻”生字教学卡，含拼音、田字格、笔画与部首",
-        "detail_prompt": "生字教学卡片，展示汉字“傻”的拼音和田字格写法，左下角标注笔画、部首，右上角有音量播放图标，下方有连续、分步按钮",
+        "query": "汉字“傻”生字教学卡，含拼音、田字格、笔画与部首，标注音量图标与连续/分步按钮",
         "context_summary": "汉字“傻”的生字卡，承担课堂上的读音与书写讲解",
         "teaching_intent": "辅助学生识记生字",
-        "strict_reuse_group": "C01_language_glyph_visual",
-        "strict_reuse_confidence": 0.91,
-        "strict_reuse_reason": "画面含有具体汉字和拼音内容",
+        "visual_reuse_group": "C01_language_glyph_visual",
+        "visual_reuse_confidence": 0.91,
+        "visual_reuse_reason": "画面含有具体汉字和拼音内容",
         "query_aliases": {"汉字生字卡": [{"alias": "生字卡", "confidence": 0.9}, {"alias": "character card", "confidence": 0.9}]},
         "transform_advice": {"padding_capacity": "LOW"},
         "visible_text": ["傻"],
@@ -542,13 +536,12 @@ def test_ppt_annotation_normalization_keeps_only_vlm_semantics():
     normalized = MODULE._normalize_annotation(annotation, object(), {}, {})
 
     assert normalized == {
-        "content_prompt": "汉字“傻”生字教学卡，含拼音、田字格、笔画与部首",
-        "detail_prompt": "生字教学卡片，展示汉字“傻”的拼音和田字格写法，左下角标注笔画、部首，右上角有音量播放图标，下方有连续、分步按钮",
+        "query": "汉字“傻”生字教学卡，含拼音、田字格、笔画与部首，标注音量图标与连续/分步按钮",
         "context_summary": "汉字“傻”的生字卡，承担课堂上的读音与书写讲解",
         "teaching_intent": "辅助学生识记生字",
-        "strict_reuse_group": "C01_language_glyph_visual",
-        "strict_reuse_confidence": 0.91,
-        "strict_reuse_reason": "画面含有具体汉字和拼音内容",
+        "visual_reuse_group": "C01_language_glyph_visual",
+        "visual_reuse_confidence": 0.91,
+        "visual_reuse_reason": "画面含有具体汉字和拼音内容",
     }
 
 
@@ -605,14 +598,13 @@ def test_ppt_asset_persists_general_from_annotation():
     meta = {"file_name": "demo.pptx", "course": {"subject": "其他", "grade": "五年级"}}
     context = {"slide_text": "课堂展示", "slide_title_guess": "导入"}
     annotation = {
-        "content_prompt": "带装饰的空白对话气泡贴纸",
-        "detail_prompt": "带装饰的空白对话气泡贴纸",
+        "query": "带装饰的空白对话气泡贴纸，不含具体文字",
         "context_summary": "空白气泡贴纸用于课堂展示",
         "teaching_intent": "承载可替换文字内容",
         "general": True,
-        "strict_reuse_group": "C05_scene_decor_container",
-        "strict_reuse_confidence": 0.9,
-        "strict_reuse_reason": "属于场景装饰容器：空白气泡",
+        "visual_reuse_group": "C05_scene_decor_container",
+        "visual_reuse_confidence": 0.9,
+        "visual_reuse_reason": "属于场景装饰容器：空白气泡",
     }
 
     asset = MODULE._build_asset_from_annotation(
@@ -635,7 +627,8 @@ def test_ppt_asset_persists_general_from_annotation():
     assert asset["general"] is True
 
 
-def test_ppt_annotation_normalization_falls_back_when_detail_prompt_missing():
+def test_ppt_annotation_normalization_maps_legacy_content_prompt_to_query():
+    # 旧 annotation 只有 content_prompt（无 query）时，归一化把它映射成 query，且不再产 content_prompt/detail_prompt
     annotation = {
         "content_prompt": "线段图：钢笔5支，铅笔是钢笔的3倍，求铅笔几支",
         "context_summary": "线段图配题，承担二年级倍数应用题的练习展示",
@@ -644,7 +637,9 @@ def test_ppt_annotation_normalization_falls_back_when_detail_prompt_missing():
 
     normalized = MODULE._normalize_annotation(annotation, object(), {}, {})
 
-    assert normalized["detail_prompt"] == normalized["content_prompt"]
+    assert normalized["query"] == "线段图：钢笔5支，铅笔是钢笔的3倍，求铅笔几支"
+    assert "content_prompt" not in normalized
+    assert "detail_prompt" not in normalized
     assert "query_aliases" not in normalized
     # No image path supplied → no pixel-derived capacity available.
     assert "padding_capacity" not in normalized

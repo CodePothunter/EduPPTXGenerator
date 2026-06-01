@@ -307,11 +307,10 @@ def test_low_quality_asset_is_redescribed_and_keywords_are_rebuilt(tmp_path):
         "needs_regeneration": True,
     }
     redescribe_payload = {
-        "caption": "apple object bubble chart",
+        "query": "apple object bubble chart",
         "context_summary": "apple related objects in bubbles",
         "teaching_intent": "compare fruit related objects",
-        "strict_reuse_group": "C04_generic_subject_object",
-        "strict_reuse_reason": "generic subject: apple object bubble chart",
+        "general": True,
         "core_keywords": ["ignored"],
     }
     keyword_client = FakeKeywordClient()
@@ -329,8 +328,11 @@ def test_low_quality_asset_is_redescribed_and_keywords_are_rebuilt(tmp_path):
     assert report["keyword_rewrite_count"] == 1
     asset = db["assets"][0]
     assert asset["regenerate"] is True
+    assert asset["query"] == "apple object bubble chart"
+    # caption 由 summarize_records 从 query 概括；FakeKeywordClient 无 .chat，降级用 query
     assert asset["caption"] == "apple object bubble chart"
     assert "detail_prompt" not in asset
+    assert "content_prompt" not in asset
     assert asset["context_summary"] == "apple related objects in bubbles"
     assert asset["teaching_intent"] == "compare fruit related objects"
     assert "asset_category" not in asset
@@ -346,7 +348,7 @@ def test_low_quality_asset_is_redescribed_and_keywords_are_rebuilt(tmp_path):
     assert review["action"] == "auto_rewrite"
     assert review["manual_review_required"] is False
     assert review["regenerate"] is True
-    assert review["rewritten_metadata"]["caption"] == "apple object bubble chart"
+    assert review["rewritten_metadata"]["query"] == "apple object bubble chart"
     assert not (tmp_path / "debug" / "vlm_review_queue.jsonl").exists()
     assert len(keyword_client.messages) == 1
 

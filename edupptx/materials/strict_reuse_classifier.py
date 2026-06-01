@@ -304,21 +304,29 @@ MATERIAL_CATEGORY_RULES_TEXT = (
     "容器内已有不可替换教学文字、题目、段落时，按 C00/C01 判断。\n"
 )
 
-MATERIAL_CATEGORY_RULES_TEXT = MATERIAL_CATEGORY_RULES_TEXT.replace("content_prompt", "caption")
+MATERIAL_CATEGORY_RULES_TEXT = MATERIAL_CATEGORY_RULES_TEXT.replace("content_prompt", "query")
 
 
 def _asset_caption(asset: dict[str, Any]) -> str:
     return _clean_text(asset.get("caption")) or _clean_text(asset.get("content_prompt"))
 
 
+def _asset_query(asset: dict[str, Any]) -> str:
+    return (
+        _clean_text(asset.get("query"))
+        or _clean_text(asset.get("detail_prompt"))
+        or _clean_text(asset.get("content_prompt"))
+    )
+
+
 def _build_classify_prompt(payload: dict[str, Any]) -> str:
-    caption = _asset_caption(payload)
+    query = _asset_query(payload)
     request = {
         "asset_id": _clean_text(payload.get("asset_id")),
-        "caption": caption,
+        "query": query,
     }
     return (
-        "Classify this material into exactly one strict_reuse_group using only the caption field.\n\n"
+        "Classify this material into exactly one strict_reuse_group using only the query field.\n\n"
         + MATERIAL_CATEGORY_RULES_TEXT
         + "\n\nInput JSON:\n"
         + json.dumps(request, ensure_ascii=False, indent=2)
