@@ -28,7 +28,7 @@ def test_ingest_ai_image_asset_job_uses_seeded_metadata_without_llm(tmp_path: Pa
         "grade_norm": "八年级",
         "grade_band": "high",
         "general": False,
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
         "_reuse_target_metadata_seeded": True,
     }
 
@@ -52,5 +52,5 @@ def test_ingest_ai_image_asset_job_uses_seeded_metadata_without_llm(tmp_path: Pa
     assert ingested["asset_id"] == "aiimg_seeded_job"
     assert ingested["caption"] == "seeded eclipse diagram"
     assert ingested["context_summary"] == "seeded context summary"
-    assert ingested["strict_reuse_group"] == "C05_scene_decor_container"
+    assert ingested["strict_reuse_group"] == "C03_scene_decor_container"
     assert (library_dir / "ai_images" / "aiimg_seeded_job.png").exists()

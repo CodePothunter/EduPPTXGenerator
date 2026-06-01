@@ -12,19 +12,9 @@ REUSE_LEVELS = {"loose", "medium", "strict", "skip"}
 # String literals to avoid circular import (strict_reuse_classifier → ai_image_asset_db → reuse_policy).
 MATERIAL_CATEGORY_REUSE_LEVEL: dict[str, str] = {
     "C00_strict_text_problem_skip": "skip",
-    "C01_language_glyph_visual": "strict",
-    "C02_structure_diagram_visual": "strict",
-    "C03_irreplaceable_entity_event_action": "strict",
-    "C04_generic_subject_object": "medium",
-    "C05_scene_decor_container": "loose",
-    # Backward compatibility for persisted data.
-    "C03_specific_event_interaction": "strict",
-    "C04_teaching_bound_entity": "strict",
-    "C04_single_subject_asset": "medium",
-    "C05_generic_subject_asset": "medium",
-    "C05_decor_layout_container": "loose",
-    "C06_scene_decor_container": "loose",
-    "C06_generic_scene_activity": "loose",
+    "C01_irreplaceable_entity_event_action": "strict",
+    "C02_generic_subject_object": "medium",
+    "C03_scene_decor_container": "loose",
 }
 
 FORCED_LOOSE_MATERIAL_CATEGORIES = frozenset(

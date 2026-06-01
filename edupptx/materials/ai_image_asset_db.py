@@ -380,7 +380,7 @@ _BACKGROUND_ROUTE_FIELDS = (
 _BACKGROUND_ROUTE_MATCH_FIELDS = (
     "background_color_bias",
 )
-_GENERAL_REUSE_GROUP = "C05_scene_decor_container"
+_GENERAL_REUSE_GROUP = "C03_scene_decor_container"
 _CONTENT_REUSE_GROUP = "C00_strict_text_problem_skip"
 GENERAL_REUSE_GROUP = _GENERAL_REUSE_GROUP
 CONTENT_REUSE_GROUP = _CONTENT_REUSE_GROUP
@@ -389,22 +389,12 @@ BACKGROUND_REUSE_INDEX_GROUP = "background"
 BACKGROUND_REUSE_INDEX_FILENAME = "background.json"
 STRICT_REUSE_GROUPS = (
     "C00_strict_text_problem_skip",
-    "C01_language_glyph_visual",
-    "C02_structure_diagram_visual",
-    "C03_irreplaceable_entity_event_action",
-    "C04_generic_subject_object",
-    "C05_scene_decor_container",
+    "C01_irreplaceable_entity_event_action",
+    "C02_generic_subject_object",
+    "C03_scene_decor_container",
 )
-LEGACY_STRICT_REUSE_GROUPS = (
-    "C03_specific_event_interaction",
-    "C04_teaching_bound_entity",
-    "C04_single_subject_asset",
-    "C05_decor_layout_container",
-    "C05_generic_subject_asset",
-    "C06_scene_decor_container",
-    "C06_generic_scene_activity",
-)
-_STRICT_REUSE_READ_GROUPS = tuple(dict.fromkeys((*STRICT_REUSE_GROUPS, *LEGACY_STRICT_REUSE_GROUPS)))
+LEGACY_STRICT_REUSE_GROUPS: tuple[str, ...] = ()
+_STRICT_REUSE_READ_GROUPS = STRICT_REUSE_GROUPS
 _PAGE_TYPE_CONTEXT_SUMMARIES = {
     "cover": "作为封面主视觉，建立课程主题和导入氛围",
     "toc": "作为目录页辅助导览插图，引导学生理解本节课学习路径",
@@ -6829,9 +6819,7 @@ def _reuse_gate_profile(target: dict[str, Any] | None) -> str:
     policy = normalize_reuse_policy_fields(_dict(target))
     group = _normalize_binary_reuse_group(_dict(target).get("strict_reuse_group"), default="")
     has_strict_knowledge = group in {
-        "C01_language_glyph_visual",
-        "C02_structure_diagram_visual",
-        "C03_irreplaceable_entity_event_action",
+        "C01_irreplaceable_entity_event_action",
     }
     # Background-like page_image slot: declared via page_type by
     # ``_target_is_background_like``. Treated as ambience (loose) rather
@@ -6861,9 +6849,7 @@ def _is_text_overlap_review_slot(target: dict[str, Any] | None, candidate: dict[
         _normalize_binary_reuse_group(candidate_asset.get("strict_reuse_group"), default=""),
     }
     return bool(groups & {
-        "C01_language_glyph_visual",
-        "C02_structure_diagram_visual",
-        "C03_irreplaceable_entity_event_action",
+        "C01_irreplaceable_entity_event_action",
     })
 
 

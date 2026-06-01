@@ -361,18 +361,18 @@ def _audit_flags_for_prompt_classification(content_prompt: str, group: str) -> l
     if normalized == "C00_strict_text_problem_skip" and any(marker in text for marker in short_language_markers):
         if not any(marker in text for marker in ("4个", "5个", "6个", "7个", "8个", "9个", "10个", "整段", "课文", "题干")):
             flags.append("c00_possible_short_language_symbol")
-    if normalized == "C01_language_glyph_visual" and any(marker in text for marker in ("整段", "课文片段", "题干", "选项", "竖式")):
+    if normalized == "C00_strict_text_problem_skip" and any(marker in text for marker in ("整段", "课文片段", "题干", "选项", "竖式")):
         flags.append("c01_possible_exact_payload")
-    if normalized == "C02_structure_diagram_visual" and any(marker in text for marker in generic_subject_markers):
+    if normalized == "C00_strict_text_problem_skip" and any(marker in text for marker in generic_subject_markers):
         flags.append("c02_possible_generic_subject")
-    if normalized == "C03_irreplaceable_entity_event_action" and not any(marker in text for marker in irreplaceable_markers):
+    if normalized == "C01_irreplaceable_entity_event_action" and not any(marker in text for marker in irreplaceable_markers):
         if any(marker in text for marker in generic_subject_markers):
             flags.append("c03_possible_generic_subject")
-    if normalized == "C04_generic_subject_object" and any(marker in text for marker in irreplaceable_markers):
+    if normalized == "C02_generic_subject_object" and any(marker in text for marker in irreplaceable_markers):
         flags.append("c04_possible_irreplaceable_action_or_relation")
-    if normalized == "C05_scene_decor_container" and any(marker in text for marker in irreplaceable_markers):
+    if normalized == "C03_scene_decor_container" and any(marker in text for marker in irreplaceable_markers):
         flags.append("c05_possible_irreplaceable_event")
-    if normalized == "C05_scene_decor_container" and any(marker in text for marker in generic_subject_markers):
+    if normalized == "C03_scene_decor_container" and any(marker in text for marker in generic_subject_markers):
         if not any(marker in text for marker in container_markers):
             flags.append("c05_possible_subject_core")
     return flags

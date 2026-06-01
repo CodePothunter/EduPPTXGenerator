@@ -4,14 +4,9 @@ from pathlib import Path
 from edupptx.materials.ai_image_asset_db import build_ai_image_match_index
 from edupptx.materials.strict_reuse_classifier import (
     C00_STRICT_TEXT_PROBLEM_SKIP,
-    C01_LANGUAGE_GLYPH_VISUAL,
-    C02_STRUCTURE_DIAGRAM_VISUAL,
-    C03_IRREPLACEABLE_ENTITY_EVENT_ACTION,
-    C03_SPECIFIC_EVENT_INTERACTION,
-    C04_GENERIC_SUBJECT_OBJECT,
-    C04_TEACHING_BOUND_ENTITY,
-    C05_SCENE_DECOR_CONTAINER,
-    C06_GENERIC_SCENE_ACTIVITY,
+    C01_IRREPLACEABLE_ENTITY_EVENT_ACTION,
+    C02_GENERIC_SUBJECT_OBJECT,
+    C03_SCENE_DECOR_CONTAINER,
     CONTENT_REUSE_GROUP,
     GENERAL_REUSE_GROUP,
     MATERIAL_CATEGORIES,
@@ -26,38 +21,47 @@ from edupptx.materials.strict_reuse_classifier import (
 )
 
 
-def test_material_categories_are_gapless_six_class_ids():
+def test_material_categories_are_four_active_class_ids():
     assert MATERIAL_CATEGORIES == (
         C00_STRICT_TEXT_PROBLEM_SKIP,
-        C01_LANGUAGE_GLYPH_VISUAL,
-        C02_STRUCTURE_DIAGRAM_VISUAL,
-        C03_IRREPLACEABLE_ENTITY_EVENT_ACTION,
-        C04_GENERIC_SUBJECT_OBJECT,
-        C05_SCENE_DECOR_CONTAINER,
+        C01_IRREPLACEABLE_ENTITY_EVENT_ACTION,
+        C02_GENERIC_SUBJECT_OBJECT,
+        C03_SCENE_DECOR_CONTAINER,
     )
-    assert GENERAL_REUSE_GROUP == C05_SCENE_DECOR_CONTAINER
+    assert GENERAL_REUSE_GROUP == C03_SCENE_DECOR_CONTAINER
     assert CONTENT_REUSE_GROUP == C00_STRICT_TEXT_PROBLEM_SKIP
 
 
-def test_legacy_category_ids_normalize_to_gapless_ids():
-    assert normalize_strict_reuse_group("C03_specific_event_interaction") == C03_IRREPLACEABLE_ENTITY_EVENT_ACTION
-    assert normalize_strict_reuse_group(C03_SPECIFIC_EVENT_INTERACTION) == C03_IRREPLACEABLE_ENTITY_EVENT_ACTION
-    assert normalize_strict_reuse_group(C04_TEACHING_BOUND_ENTITY) == C03_IRREPLACEABLE_ENTITY_EVENT_ACTION
-    assert normalize_strict_reuse_group("c04_teaching_bound_entity") == C03_IRREPLACEABLE_ENTITY_EVENT_ACTION
-    assert normalize_strict_reuse_group("C04_single_subject_asset") == C04_GENERIC_SUBJECT_OBJECT
-    assert normalize_strict_reuse_group("C05_generic_subject_asset") == C04_GENERIC_SUBJECT_OBJECT
-    assert normalize_strict_reuse_group("C05_decor_layout_container") == C05_SCENE_DECOR_CONTAINER
-    assert normalize_strict_reuse_group("C06_scene_decor_container") == C05_SCENE_DECOR_CONTAINER
-    assert normalize_strict_reuse_group(C06_GENERIC_SCENE_ACTIVITY) == C05_SCENE_DECOR_CONTAINER
+def test_old_category_ids_are_not_compatibility_aliases():
+    for old_id in (
+        "C01_language_glyph_visual",
+        "C02_structure_diagram_visual",
+        "C03_irreplaceable_entity_event_action",
+        "C04_generic_subject_object",
+        "C05_scene_decor_container",
+        "C03_specific_event_interaction",
+        "C04_teaching_bound_entity",
+        "C04_single_subject_asset",
+        "C05_generic_subject_asset",
+        "C05_decor_layout_container",
+        "C06_scene_decor_container",
+        "C06_generic_scene_activity",
+    ):
+        assert normalize_strict_reuse_group(old_id, default="INVALID") == "INVALID"
 
 
 def test_material_category_prompt_exposes_only_gapless_active_outputs():
     rules = MATERIAL_CATEGORY_RULES_TEXT
 
-    assert "6 类分类规则（v7" in rules
-    assert "新分类只允许输出以下 6 个 ID" in rules
+    assert "4 类分类规则" in rules
+    assert "只允许输出以下 4 个 ID" in rules
     for group in MATERIAL_CATEGORIES:
         assert group in rules
+    assert "C01_language_glyph_visual" not in rules
+    assert "C02_structure_diagram_visual" not in rules
+    assert "C03_irreplaceable_entity_event_action" not in rules
+    assert "C04_generic_subject_object" not in rules
+    assert "C05_scene_decor_container" not in rules
     assert "C04_teaching_bound_entity" not in rules
     assert "旧 C04" not in rules
     assert "兼容 C04" not in rules
@@ -66,52 +70,44 @@ def test_material_category_prompt_exposes_only_gapless_active_outputs():
     assert "C06_scene_decor_container" not in rules
 
 
-def test_previous_v62_prompt_is_preserved_below_active_prompt():
+def test_previous_v62_prompt_is_removed_from_classifier_source():
     source = Path("edupptx/materials/strict_reuse_classifier.py").read_text(encoding="utf-8")
 
-    active_index = source.index("MATERIAL_CATEGORY_RULES_TEXT = (")
-    old_index = source.index("# OLD MATERIAL_CATEGORY_RULES_TEXT v6.2 before C03 event-boundary refinement.")
-    assert active_index < old_index
+    assert "# OLD MATERIAL_CATEGORY_RULES_TEXT" not in source
+    assert "_OLD_MATERIAL_CATEGORY_RULES_TEXT" not in source
 
 
-def test_material_category_prompt_keeps_language_symbol_teaching_in_c01():
+def test_material_category_prompt_merges_language_symbol_and_structure_into_skip():
     rules = MATERIAL_CATEGORY_RULES_TEXT
 
     assert "4 个及以上独立教学字词" in rules
-    assert "1-3 个明确汉字/词语/拼音" in rules
-    assert "汉字、词语、拼音、读音、笔画、笔顺、部首、偏旁、字源、演变、构字、结构" in rules
-    assert "只要教学对象仍是语言符号本体，归 C01" in rules
-    assert "课文结构、阅读结构、写作结构、内容梳理、思维导图、人物关系图" in rules
+    assert "语言符号本体教学" in rules
+    assert "知识结构/原理图示" in rules
+    assert "汉字/词语/拼音/笔画/笔顺/部首/字源/演变/构字/结构" in rules
+    assert "语文阅读/写作/课文结构思维导图" in rules
 
 
-def test_material_category_prompt_protects_c00_c01_c02_before_c03():
+def test_material_category_prompt_protects_merged_skip_before_c03():
     rules = MATERIAL_CATEGORY_RULES_TEXT
 
-    assert "按下面顺序判断；命中高优先级类别后不再下探" in rules
-    assert "C03 不能抢走文字题图、语言符号、数学/物理/语文结构图" in rules
+    assert "按下面顺序判断，命中高优先级即停" in rules
     assert "4 个及以上独立教学字词" in rules
-    assert "1-3 个明确汉字/词语/拼音" in rules
-    assert "语言符号本体教学归 C01" in rules
-    assert "必要条件：遮住具体文字/数值后，仍能看出它是某类知识结构或原理图" in rules
+    assert "语言符号本体教学" in rules
+    assert "知识结构图示" in rules
 
 
 def test_material_category_prompt_uses_query_reuse_granularity():
     rules = MATERIAL_CATEGORY_RULES_TEXT
 
-    assert "C03_irreplaceable_entity_event_action（不可替代实体/事件/动作类" in rules
+    assert "C01_irreplaceable_entity_event_action（不可替代实体/事件/动作" in rules
     assert "分类依据是 query 自身表达的复用粒度" in rules
     assert "不可替代语义命题" in rules
-    assert "如果需要依赖课文名、theme、teaching_intent 或教学上下文才不可替代，不归 C03" in rules
-    assert "C03 不要求主体必须是具名人物、唯一地点、唯一物体或课文专名" in rules
-    assert "故事绑定的角色身份、主体关系、叙事动作或情绪状态组合" in rules
-    assert "亲属关系、故事角色关系、角色功能关系" in rules
-    assert "有意图、对象或结果的动作" in rules
-    assert "姿态、道具、环境或氛围共同表达故事状态" in rules
-    assert "把主体换成同类型另一个、把动作简化成普通姿态、或移除关系/情绪状态后" in rules
-    assert "普通动物群体、普通人物组合、轻量社交动作、普通自然状态" in rules
-    assert "比喻性视觉特征" in rules
-    assert "整体场景、天气、氛围、远景、背景、页面装饰、空白容器" in rules
-    assert "看到某个词就强制归类" in rules
+    assert "不得从课文主题或旧 metadata 推断" in rules
+    assert "故事绑定的角色身份" in rules
+    assert "有意图/对象/结果的动作" in rules
+    assert "把主体换成同类型另一个、动作简化成普通姿态后" in rules
+    assert "普通动物群体、普通人物组合、轻量社交动作" in rules
+    assert "整体场景/天气/氛围/远景/背景/页面装饰/空白容器" in rules
     assert "团聚、寻找、告别" not in rules
     assert "把东西藏进口袋、摔东西拒绝出门" not in rules
     assert "轮椅上背对窗户" not in rules
@@ -140,7 +136,7 @@ def test_legacy_reuse_group_field_is_ignored_by_v3_classification():
             }
         )
 
-        assert result["strict_reuse_group"] == C06_GENERIC_SCENE_ACTIVITY
+        assert result["strict_reuse_group"] == GENERAL_REUSE_GROUP
         assert result["strict_reuse_confidence"] == 0.5
         assert result["strict_reuse_review_required"] is True
         assert result["strict_reuse_review_reasons"] == ["missing_upstream_reuse_classification"]
@@ -237,7 +233,7 @@ def test_classification_fields_survive_match_index_rebuild_without_old_field(tmp
                 "content_prompt": "division problem card",
                 "context_summary": "math division diagram",
                 "teaching_intent": "support division understanding",
-                "strict_reuse_group": C01_LANGUAGE_GLYPH_VISUAL,
+                "strict_reuse_group": C02_GENERIC_SUBJECT_OBJECT,
                 "strict_reuse_confidence": 0.9,
                 "strict_reuse_reason": "classified by LLM",
                 "strict_reuse_signals": ["llm_reuse_group"],
@@ -250,7 +246,7 @@ def test_classification_fields_survive_match_index_rebuild_without_old_field(tmp
     index = build_ai_image_match_index(db, library_root=tmp_path)
 
     asset = index["assets"][0]
-    assert asset["strict_reuse_group"] == C01_LANGUAGE_GLYPH_VISUAL
+    assert asset["strict_reuse_group"] == C02_GENERIC_SUBJECT_OBJECT
     assert asset["strict_reuse_signals"] == ["llm_reuse_group"]
     assert "strict_reuse_requires_exact_match" not in asset
     assert "strict_reuse_vlm_review_required" not in asset
@@ -928,30 +924,30 @@ def test_skip_from_index_c00():
 
 
 def test_skip_from_index_low_vlm_quality():
-    asset = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object",
+    asset = {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object",
              "vlm_match_quality": 0.2}
     assert should_skip_from_index(asset) is True
 
 
 def test_skip_from_index_vlm_quality_above_threshold():
-    asset = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object",
+    asset = {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object",
              "vlm_match_quality": 0.5}
     assert should_skip_from_index(asset) is False
 
 
 def test_skip_from_index_other_bucket_no_padding():
-    asset = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object",
+    asset = {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object",
              "aspect_ratio": "32:15", "padding_capacity": "none"}
     assert should_skip_from_index(asset) is True
 
 
 def test_skip_from_index_other_bucket_with_padding():
-    asset = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object",
+    asset = {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object",
              "aspect_ratio": "32:15", "padding_capacity": "mid"}
     assert should_skip_from_index(asset) is False
 
 
 def test_skip_from_index_normal_asset():
-    asset = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object",
+    asset = {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object",
              "aspect_ratio": "4:3", "vlm_match_quality": 0.8, "padding_capacity": "mid"}
     assert should_skip_from_index(asset) is False

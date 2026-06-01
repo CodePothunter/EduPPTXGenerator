@@ -105,25 +105,25 @@ def test_aspect_bucket_set_and_nearest_mapping_are_fixed():
 def test_match_index_skips_c00_and_drops_deleted_fields(tmp_path):
     image_dir = tmp_path / "ai_images"
     image_dir.mkdir()
-    for name in ("skip", "keep", "legacy_default"):
+    for name in ("skip", "keep", "unknown_default"):
         (image_dir / f"{name}.png").write_bytes(name.encode("ascii"))
 
     db = {
         "schema_version": 1,
         "assets": [
             _asset("skip", "C00_strict_text_problem_skip"),
-            _asset("legacy_default", "C06_generic_scene_activity", prompt="legacy classroom illustration"),
-            _asset("keep", "C04_generic_subject_object"),
+            _asset("unknown_default", "not_a_current_material_category", prompt="generic classroom illustration"),
+            _asset("keep", "C02_generic_subject_object"),
         ],
     }
 
     index = build_ai_image_match_index(db, library_root=tmp_path)
 
-    assert [asset["asset_id"] for asset in index["assets"]] == ["keep", "legacy_default"]
+    assert [asset["asset_id"] for asset in index["assets"]] == ["keep", "unknown_default"]
     match_asset = next(asset for asset in index["assets"] if asset["asset_id"] == "keep")
-    legacy_asset = next(asset for asset in index["assets"] if asset["asset_id"] == "legacy_default")
-    assert match_asset["strict_reuse_group"] == "C04_generic_subject_object"
-    assert legacy_asset["strict_reuse_group"] == "C05_scene_decor_container"
+    legacy_asset = next(asset for asset in index["assets"] if asset["asset_id"] == "unknown_default")
+    assert match_asset["strict_reuse_group"] == "C02_generic_subject_object"
+    assert legacy_asset["strict_reuse_group"] == "C03_scene_decor_container"
     assert match_asset["aspect_ratio"] == "1:1"
     assert match_asset["original_image_path"] == "ai_images_original/keep.png"
     assert match_asset["actual_width"] == 1200
@@ -148,7 +148,7 @@ def test_keyword_messages_do_not_include_image_role():
                 "role": "illustration",
                 "page_type": "content",
                 "aspect_ratio": "1:1",
-                "strict_reuse_group": "C04_generic_subject_object",
+                "strict_reuse_group": "C02_generic_subject_object",
             }
         ],
         include_match_keywords=False,
@@ -162,7 +162,7 @@ def test_keyword_messages_do_not_include_image_role():
 def test_transform_policy_uses_aspect_ratio_without_bucket_fields():
     target = {
         "asset_kind": "page_image",
-        "strict_reuse_group": "C04_generic_subject_object",
+        "strict_reuse_group": "C02_generic_subject_object",
         "aspect_ratio": "4:3",
         "subject": "语文",
         "grade_norm": "五年级",
@@ -186,26 +186,26 @@ def test_transform_policy_uses_aspect_ratio_without_bucket_fields():
     assert "target_aspect_bucket" not in policy
 
 
-def test_split_indexes_are_written_per_plan_a_group_and_read_back_without_c00(tmp_path):
+def test_split_indexes_collapse_legacy_skip_groups_and_read_back_without_c00(tmp_path):
     match_index = {
         "schema_version": 14,
         "asset_root": str(tmp_path),
         "assets": [
-            {"asset_id": "text", "asset_kind": "page_image", "strict_reuse_group": "C01_language_glyph_visual"},
-            {"asset_id": "subject", "asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object"},
+            {"asset_id": "text", "asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"},
+            {"asset_id": "subject", "asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"},
             {"asset_id": "skip", "asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"},
         ],
     }
 
     split_dir = write_ai_image_split_match_indexes(match_index, tmp_path)
-    text_payload = json.loads((split_dir / "C01_language_glyph_visual.json").read_text(encoding="utf-8"))
     skip_payload = json.loads((split_dir / "C00_strict_text_problem_skip.json").read_text(encoding="utf-8"))
     merged, source_dir = read_ai_image_split_match_index(tmp_path)
 
     assert source_dir == split_dir
-    assert [asset["asset_id"] for asset in text_payload["assets"]] == ["text"]
-    assert [asset["asset_id"] for asset in skip_payload["assets"]] == ["skip"]
-    assert {asset["asset_id"] for asset in merged["assets"]} == {"text", "subject"}
+    assert (split_dir / "C00_strict_text_problem_skip.json").exists()
+    assert {asset["asset_id"] for asset in skip_payload["assets"]} == {"text", "skip"}
+    assert {asset["strict_reuse_group"] for asset in skip_payload["assets"]} == {"C00_strict_text_problem_skip"}
+    assert {asset["asset_id"] for asset in merged["assets"]} == {"subject"}
 
 
 def test_split_indexes_write_gapless_active_group_names(tmp_path):
@@ -213,10 +213,14 @@ def test_split_indexes_write_gapless_active_group_names(tmp_path):
         "schema_version": 14,
         "asset_root": str(tmp_path),
         "assets": [
-            {"asset_id": "subject", "asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object"},
-            {"asset_id": "scene", "asset_kind": "page_image", "strict_reuse_group": "C05_scene_decor_container"},
-            {"asset_id": "legacy_subject", "asset_kind": "page_image", "strict_reuse_group": "C05_generic_subject_asset"},
-            {"asset_id": "legacy_scene", "asset_kind": "page_image", "strict_reuse_group": "C06_scene_decor_container"},
+            {"asset_id": "subject", "asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"},
+            {"asset_id": "scene", "asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container"},
+            {
+                "asset_id": "invalid_subject",
+                "asset_kind": "page_image",
+                "strict_reuse_group": "not_a_current_material_category",
+            },
+            {"asset_id": "invalid_scene", "asset_kind": "page_image", "strict_reuse_group": "not_a_current_material_category"},
         ],
         "skip_reuse_assets": [
             {"asset_id": "skip", "asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}
@@ -226,16 +230,16 @@ def test_split_indexes_write_gapless_active_group_names(tmp_path):
     split_dir = write_ai_image_split_match_indexes(index, tmp_path)
 
     assert (split_dir / "C00_strict_text_problem_skip.json").exists()
-    assert (split_dir / "C04_generic_subject_object.json").exists()
-    assert (split_dir / "C05_scene_decor_container.json").exists()
-    assert not (split_dir / "C05_generic_subject_asset.json").exists()
-    assert not (split_dir / "C06_scene_decor_container.json").exists()
+    assert (split_dir / "C02_generic_subject_object.json").exists()
+    assert (split_dir / "C03_scene_decor_container.json").exists()
+    assert not (split_dir / "not_a_current_material_category.json").exists()
+    assert not (split_dir / "not_a_current_material_category.json").exists()
 
-    subject_payload = json.loads((split_dir / "C04_generic_subject_object.json").read_text(encoding="utf-8"))
-    assert [asset["asset_id"] for asset in subject_payload["assets"]] == ["subject", "legacy_subject"]
+    subject_payload = json.loads((split_dir / "C02_generic_subject_object.json").read_text(encoding="utf-8"))
+    assert [asset["asset_id"] for asset in subject_payload["assets"]] == ["subject"]
 
-    scene_payload = json.loads((split_dir / "C05_scene_decor_container.json").read_text(encoding="utf-8"))
-    assert [asset["asset_id"] for asset in scene_payload["assets"]] == ["scene", "legacy_scene"]
+    scene_payload = json.loads((split_dir / "C03_scene_decor_container.json").read_text(encoding="utf-8"))
+    assert [asset["asset_id"] for asset in scene_payload["assets"]] == ["scene", "invalid_subject", "invalid_scene"]
 
 
 def test_write_match_index_retains_c00_split_file_but_excludes_c00_from_matching(tmp_path):
@@ -247,7 +251,7 @@ def test_write_match_index_retains_c00_split_file_but_excludes_c00_from_matching
         "schema_version": 1,
         "assets": [
             _asset("skip", "C00_strict_text_problem_skip", prompt="batch exact text card"),
-            _asset("keep", "C04_generic_subject_object", prompt="single apple card"),
+            _asset("keep", "C02_generic_subject_object", prompt="single apple card"),
         ],
     }
 
@@ -268,7 +272,7 @@ def test_write_match_index_persists_general_boolean_to_split_indexes(tmp_path):
         "schema_version": 1,
         "assets": [
             {
-                **_asset("keep", "C04_generic_subject_object", prompt="blank speech bubble"),
+                **_asset("keep", "C02_generic_subject_object", prompt="blank speech bubble"),
                 "general": True,
             },
         ],
@@ -276,7 +280,7 @@ def test_write_match_index_persists_general_boolean_to_split_indexes(tmp_path):
 
     index, split_dir = write_ai_image_match_index(db, tmp_path, write_embedding_index=False)
 
-    payload = json.loads((split_dir / "C04_generic_subject_object.json").read_text(encoding="utf-8"))
+    payload = json.loads((split_dir / "C02_generic_subject_object.json").read_text(encoding="utf-8"))
     assert index["assets"][0]["general"] is True
     assert payload["assets"][0]["general"] is True
 
@@ -298,10 +302,10 @@ def test_match_index_preserves_ppt_vlm_llm_comparison_fields():
                 "general": False,
                 "context_summary": "VLM context",
                 "teaching_intent": "VLM intent",
-                "strict_reuse_group": "C04_generic_subject_object",
+                "strict_reuse_group": "C02_generic_subject_object",
                 "strict_reuse_confidence": 0.91,
                 "strict_reuse_reason": "LLM says subject object",
-                "visual_reuse_group": "C05_scene_decor_container",
+                "visual_reuse_group": "C03_scene_decor_container",
                 "visual_reuse_confidence": 0.82,
                 "visual_reuse_reason": "VLM says scene",
             }
@@ -315,8 +319,8 @@ def test_match_index_preserves_ppt_vlm_llm_comparison_fields():
     assert asset["vlm_general"] is True
     assert asset["llm_general"] is False
     assert asset["general"] is False
-    assert asset["visual_reuse_group"] == "C05_scene_decor_container"
-    assert asset["strict_reuse_group"] == "C04_generic_subject_object"
+    assert asset["visual_reuse_group"] == "C03_scene_decor_container"
+    assert asset["strict_reuse_group"] == "C02_generic_subject_object"
 
 
 def test_split_indexes_write_backgrounds_to_dedicated_json(tmp_path):
@@ -327,7 +331,7 @@ def test_split_indexes_write_backgrounds_to_dedicated_json(tmp_path):
             {
                 "asset_id": "background",
                 "asset_kind": "background",
-                "strict_reuse_group": "C05_scene_decor_container",
+                "strict_reuse_group": "C03_scene_decor_container",
                 "image_path": "ai_images/background.png",
                 "aspect_ratio": "16:9",
                 "normalized_prompt": "light paper texture",
@@ -336,7 +340,7 @@ def test_split_indexes_write_backgrounds_to_dedicated_json(tmp_path):
             {
                 "asset_id": "scene",
                 "asset_kind": "page_image",
-                "strict_reuse_group": "C05_scene_decor_container",
+                "strict_reuse_group": "C03_scene_decor_container",
                 "image_path": "ai_images/scene.png",
                 "aspect_ratio": "16:9",
                 "content_prompt": "classroom activity scene",
@@ -347,7 +351,7 @@ def test_split_indexes_write_backgrounds_to_dedicated_json(tmp_path):
 
     split_dir = write_ai_image_split_match_indexes(match_index, tmp_path)
     background_payload = json.loads((split_dir / "background.json").read_text(encoding="utf-8"))
-    general_payload = json.loads((split_dir / "C05_scene_decor_container.json").read_text(encoding="utf-8"))
+    general_payload = json.loads((split_dir / "C03_scene_decor_container.json").read_text(encoding="utf-8"))
     merged, source_dir = read_ai_image_split_match_index(tmp_path)
 
     assert source_dir == split_dir
@@ -366,7 +370,7 @@ def test_background_reuse_routes_to_background_split(tmp_path):
                 {
                     "asset_id": "background",
                     "asset_kind": "background",
-                    "strict_reuse_group": "C05_scene_decor_container",
+                    "strict_reuse_group": "C03_scene_decor_container",
                     "image_path": "ai_images/background.png",
                     "aspect_ratio": "16:9",
                     "normalized_prompt": "light paper texture",
@@ -375,7 +379,7 @@ def test_background_reuse_routes_to_background_split(tmp_path):
                 {
                     "asset_id": "scene",
                     "asset_kind": "page_image",
-                    "strict_reuse_group": "C05_scene_decor_container",
+                    "strict_reuse_group": "C03_scene_decor_container",
                     "image_path": "ai_images/scene.png",
                     "aspect_ratio": "16:9",
                     "content_prompt": "classroom activity scene",
@@ -391,7 +395,7 @@ def test_background_reuse_routes_to_background_split(tmp_path):
         tmp_path,
         merged,
         split_dir,
-        {"asset_kind": "background", "strict_reuse_group": "C05_scene_decor_container"},
+        {"asset_kind": "background", "strict_reuse_group": "C03_scene_decor_container"},
     )
 
     assert route is not None
@@ -402,27 +406,27 @@ def test_background_reuse_routes_to_background_split(tmp_path):
     assert routed_index["strict_reuse_group"] == "background"
 
 
-def test_legacy_split_backgrounds_are_read_and_rewritten_to_background_json(tmp_path):
+def test_current_split_backgrounds_are_read_and_rewritten_to_background_json(tmp_path):
     split_dir = tmp_path / "strict_reuse_indexes"
     split_dir.mkdir()
-    (split_dir / "C06_generic_scene_activity.json").write_text(
+    (split_dir / "C03_scene_decor_container.json").write_text(
         json.dumps(
             {
                 "schema_version": 14,
-                "strict_reuse_group": "C06_generic_scene_activity",
+                "strict_reuse_group": "C03_scene_decor_container",
                 "asset_root": str(tmp_path),
                 "assets": [
                     {
-                        "asset_id": "legacy_background",
+                        "asset_id": "page_background",
                         "asset_kind": "background",
-                        "strict_reuse_group": "C06_generic_scene_activity",
+                        "strict_reuse_group": "C03_scene_decor_container",
                         "image_path": "ai_images/background.png",
                         "normalized_prompt": "light paper texture",
                     },
                     {
                         "asset_id": "scene",
                         "asset_kind": "page_image",
-                        "strict_reuse_group": "C06_generic_scene_activity",
+                        "strict_reuse_group": "C03_scene_decor_container",
                         "image_path": "ai_images/scene.png",
                         "content_prompt": "generic classroom scene",
                     },
@@ -436,40 +440,38 @@ def test_legacy_split_backgrounds_are_read_and_rewritten_to_background_json(tmp_
     merged, source_dir = read_ai_image_split_match_index(tmp_path)
     rewritten_dir = write_ai_image_split_match_indexes(merged, tmp_path)
     background_payload = json.loads((rewritten_dir / "background.json").read_text(encoding="utf-8"))
-    general_payload = json.loads((rewritten_dir / "C05_scene_decor_container.json").read_text(encoding="utf-8"))
+    general_payload = json.loads((rewritten_dir / "C03_scene_decor_container.json").read_text(encoding="utf-8"))
 
     assert source_dir == split_dir
-    assert {asset["asset_id"] for asset in merged["assets"]} == {"legacy_background", "scene"}
-    assert [asset["asset_id"] for asset in background_payload["assets"]] == ["legacy_background"]
+    assert {asset["asset_id"] for asset in merged["assets"]} == {"page_background", "scene"}
+    assert [asset["asset_id"] for asset in background_payload["assets"]] == ["page_background"]
     assert {asset["asset_id"] for asset in general_payload["assets"]} == {"scene"}
 
 
 def test_review_accept_threshold_profiles_use_material_group_not_old_reuse_level():
-    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C05_scene_decor_container"}) == 0.55
-    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object"}) == 0.64
-    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C01_language_glyph_visual"}) == 0.72
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container"}) == 0.55
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"}) == 0.64
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C01_irreplaceable_entity_event_action"}) == 0.72
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}) == 0.64
     assert _reuse_review_accept_score_threshold(
-        {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object"},
+        {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"},
         policy_result={"llm_accept_threshold_override": 0.66},
     ) == 0.66
 
 
-def test_reuse_gate_profiles_follow_current_six_material_categories():
-    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C05_scene_decor_container"}) == "loose"
-    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object"}) == "medium"
-    for group in (
-        "C01_language_glyph_visual",
-        "C02_structure_diagram_visual",
-        "C03_irreplaceable_entity_event_action",
-    ):
-        assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": group}) == "strict_knowledge"
+def test_reuse_gate_profiles_follow_current_four_material_categories():
+    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container"}) == "loose"
+    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"}) == "medium"
+    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C01_irreplaceable_entity_event_action"}) == "strict_knowledge"
+    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}) == "medium"
+    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}) == "medium"
     assert "strict_literary" not in _LLM_PROFILE_ACCEPT_THRESHOLDS
 
 
 def test_reuse_gate_thresholds_are_single_cross_ppt_values():
-    loose_target = {"asset_kind": "page_image", "strict_reuse_group": "C05_scene_decor_container"}
-    medium_target = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object"}
-    strict_target = {"asset_kind": "page_image", "strict_reuse_group": "C01_language_glyph_visual"}
+    loose_target = {"asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container"}
+    medium_target = {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"}
+    strict_target = {"asset_kind": "page_image", "strict_reuse_group": "C01_irreplaceable_entity_event_action"}
 
     assert _reuse_gate_thresholds_for_target(loose_target) == PAGE_IMAGE_REUSE_GATE_THRESHOLDS["loose"]
     assert _reuse_gate_thresholds_for_target(medium_target) == PAGE_IMAGE_REUSE_GATE_THRESHOLDS["medium"]
@@ -482,7 +484,7 @@ def test_reuse_gate_thresholds_are_single_cross_ppt_values():
 
 def test_score_gate_review_skip_safe_uses_single_threshold_mode():
     assert _score_gate_review_skip_safe(
-        {"asset_kind": "page_image", "strict_reuse_group": "C05_scene_decor_container"},
+        {"asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container"},
         {"reason": "keyword_led_gray_review"},
         {"keyword_score": 0.10, "embedding_score": 0.59, "substring_score": 0.0},
     )
@@ -639,7 +641,7 @@ def test_reuse_debug_asset_payload_includes_general():
 def test_hard_filter_allows_legacy_other_subject_after_subject_unknown_filter():
     target = {
         "asset_kind": "page_image",
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
         "subject": "语文",
         "grade_norm": "五年级",
         "grade_band": "高年级",
@@ -647,7 +649,7 @@ def test_hard_filter_allows_legacy_other_subject_after_subject_unknown_filter():
     }
     candidate = {
         "asset_kind": "page_image",
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
         "subject": "其他",
         "grade_norm": "五年级",
         "grade_band": "高年级",
@@ -660,7 +662,7 @@ def test_hard_filter_allows_legacy_other_subject_after_subject_unknown_filter():
 def test_hard_filter_rejects_explicit_non_general_other_as_subject_mismatch():
     target = {
         "asset_kind": "page_image",
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
         "subject": "语文",
         "grade_norm": "五年级",
         "grade_band": "高年级",
@@ -668,7 +670,7 @@ def test_hard_filter_rejects_explicit_non_general_other_as_subject_mismatch():
     }
     candidate = {
         "asset_kind": "page_image",
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
         "subject": "其他",
         "general": False,
         "grade_norm": "五年级",
@@ -914,7 +916,7 @@ def test_target_subject_other_uses_general_filter_and_writes_debug(tmp_path):
                     "grade_band": "高年级",
                     "content_prompt": "刷子李人物插画",
                     "context_summary": "人物描写课文插画",
-                    "strict_reuse_group": "C04_generic_subject_object",
+                    "strict_reuse_group": "C02_generic_subject_object",
                 }
             ],
         },
@@ -939,7 +941,7 @@ def test_target_subject_other_uses_general_filter_and_writes_debug(tmp_path):
                 "subject": "其他",
                 "grade_norm": "五年级",
                 "grade_band": "高年级",
-                "strict_reuse_group": "C04_generic_subject_object",
+                "strict_reuse_group": "C02_generic_subject_object",
             }
         ),
         debug_path=debug_path,
@@ -973,7 +975,7 @@ def test_reuse_routing_is_always_split(tmp_path):
                     "grade_band": "高年级",
                     "content_prompt": "红色苹果插画",
                     "context_summary": "识字课水果图",
-                    "strict_reuse_group": "C04_generic_subject_object",
+                    "strict_reuse_group": "C02_generic_subject_object",
                 }
             ],
         },
@@ -997,7 +999,7 @@ def test_reuse_routing_is_always_split(tmp_path):
                 "subject": "语文",
                 "grade_norm": "五年级",
                 "grade_band": "高年级",
-                "strict_reuse_group": "C04_generic_subject_object",
+                "strict_reuse_group": "C02_generic_subject_object",
             }
         ),
         _collect_candidates_only=True,

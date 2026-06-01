@@ -22,14 +22,14 @@ def test_refresh_metadata_reads_all_split_json_files(tmp_path):
     split_dir = tmp_path / "strict_reuse_indexes"
     split_dir.mkdir()
     _write_split(
-        split_dir / "C05_scene_decor_container.json",
-        group="C05_scene_decor_container",
+        split_dir / "C03_scene_decor_container.json",
+        group="C03_scene_decor_container",
         assets=[
             {
                 "asset_id": "current_page",
                 "asset_kind": "page_image",
                 "content_prompt": "current prompt",
-                "strict_reuse_group": "C05_scene_decor_container",
+                "strict_reuse_group": "C03_scene_decor_container",
             }
         ],
     )
@@ -113,7 +113,7 @@ def test_refresh_metadata_apply_updates_all_fields_rebuilds_embedding_and_remove
                 "teaching_intent": "new intent",
                 "subject": "new subject",
                 "grade_norm": "new grade",
-                "strict_reuse_group": "C01_language_glyph_visual",
+                "strict_reuse_group": "C00_strict_text_problem_skip",
                 "strict_reuse_confidence": 0.94,
                 "strict_reuse_reason": "new reason",
             }
@@ -126,10 +126,10 @@ def test_refresh_metadata_apply_updates_all_fields_rebuilds_embedding_and_remove
         captured["db"] = db
         captured["root"] = root
         captured["write_embedding_index"] = write_embedding_index
-        canonical_path = split_dir / "C01_language_glyph_visual.json"
+        canonical_path = split_dir / "C00_strict_text_problem_skip.json"
         _write_split(
             canonical_path,
-            group="C01_language_glyph_visual",
+            group="C00_strict_text_problem_skip",
             assets=db["assets"],
         )
         return {"embedding_index": {"enabled": True, "asset_count": 1}}, split_dir
@@ -160,9 +160,9 @@ def test_refresh_metadata_apply_updates_all_fields_rebuilds_embedding_and_remove
     assert asset["teaching_intent"] == "new intent"
     assert asset["subject"] == "new subject"
     assert asset["grade_norm"] == "new grade"
-    assert asset["strict_reuse_group"] == "C01_language_glyph_visual"
+    assert asset["strict_reuse_group"] == "C00_strict_text_problem_skip"
     assert not stale_path.exists()
-    assert (split_dir / "C01_language_glyph_visual.json").exists()
+    assert (split_dir / "C00_strict_text_problem_skip.json").exists()
     summary = (report_dir / "summary.md").read_text(encoding="utf-8")
     assert "Embedding rebuild" in summary
     assert "content_prompt" in summary
@@ -178,14 +178,14 @@ def test_refresh_metadata_parallel_workers_are_capped_and_call_one_asset_per_llm
     report_dir = tmp_path / "report"
     split_dir.mkdir(parents=True)
     _write_split(
-        split_dir / "C05_scene_decor_container.json",
-        group="C05_scene_decor_container",
+        split_dir / "C03_scene_decor_container.json",
+        group="C03_scene_decor_container",
         assets=[
             {
                 "asset_id": f"asset_{idx}",
                 "asset_kind": "page_image",
                 "content_prompt": f"old prompt {idx}",
-                "strict_reuse_group": "C05_scene_decor_container",
+                "strict_reuse_group": "C03_scene_decor_container",
             }
             for idx in range(3)
         ],
@@ -234,7 +234,7 @@ def test_refresh_metadata_parallel_workers_are_capped_and_call_one_asset_per_llm
         )
         asset = db["assets"][0]
         asset["content_prompt"] = f"new {asset['asset_id']}"
-        asset["strict_reuse_group"] = "C01_language_glyph_visual"
+        asset["strict_reuse_group"] = "C00_strict_text_problem_skip"
         db["keyword_builder"] = {"method": "llm_reuse_metadata_extraction"}
         db["keyword_built_at"] = "2026-05-27T00:00:00+00:00"
         return db

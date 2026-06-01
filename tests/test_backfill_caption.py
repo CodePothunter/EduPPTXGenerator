@@ -15,7 +15,7 @@ def test_backfill_adds_caption_keeps_label(tmp_path: Path):
             {
                 "asset_id": "a1",
                 "content_prompt": "cartoon girl with red apple",
-                "strict_reuse_group": "C04_generic_subject_object",
+                "strict_reuse_group": "C02_generic_subject_object",
             }
         ]
     }
@@ -27,7 +27,7 @@ def test_backfill_adds_caption_keeps_label(tmp_path: Path):
     out = json.loads(path.read_text(encoding="utf-8"))["assets"][0]
     assert updated == 1
     assert out["caption"] == "girl and apple"
-    assert out["strict_reuse_group"] == "C04_generic_subject_object"
+    assert out["strict_reuse_group"] == "C02_generic_subject_object"
 
 
 def test_backfill_keeps_existing_caption_by_default(tmp_path: Path):

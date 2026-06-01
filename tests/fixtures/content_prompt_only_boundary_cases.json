@@ -1,0 +1,66 @@
+[
+  {
+    "content_prompt": "小蝌蚪和青蛙妈妈在荷叶边团聚的温馨场景",
+    "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action"
+  },
+  {
+    "content_prompt": "卡通雾孩子把大海、太阳、城市一个个藏进身后的口袋里的插画",
+    "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action"
+  },
+  {
+    "content_prompt": "雾孩子的不同卡通形象，分别是捣蛋鬼、魔术师、小画家的样子",
+    "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action"
+  },
+  {
+    "content_prompt": "母亲拿着外套，笑着邀请轮椅上的儿子出门",
+    "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action"
+  },
+  {
+    "content_prompt": "母亲站在门外，贴着墙悄悄听房间里的动静，神情担忧",
+    "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action"
+  },
+  {
+    "content_prompt": "母亲站在床边温柔劝说男孩的场景",
+    "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action"
+  },
+  {
+    "content_prompt": "男孩在房间摔东西拒绝出门的场景",
+    "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action"
+  },
+  {
+    "content_prompt": "年轻男子坐在轮椅上，表情痛苦愤怒，身旁有被摔碎的杯子",
+    "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action"
+  },
+  {
+    "content_prompt": "年轻人坐在轮椅上背对窗户，姿态低落的插画，氛围压抑",
+    "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action"
+  },
+  {
+    "content_prompt": "池塘里一群小蝌蚪围着青蛙妈妈游动的卡通场景",
+    "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action"
+  },
+  {
+    "content_prompt": "史铁生肖像",
+    "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action"
+  },
+  {
+    "content_prompt": "北海公园秋天盛开的菊花",
+    "expected_strict_reuse_group": "C02_generic_subject_object"
+  },
+  {
+    "content_prompt": "秋天的雨中飘落的金黄银杏叶",
+    "expected_strict_reuse_group": "C02_generic_subject_object"
+  },
+  {
+    "content_prompt": "松鼠尾巴撑开像降落伞的卡通插图",
+    "expected_strict_reuse_group": "C02_generic_subject_object"
+  },
+  {
+    "content_prompt": "小动物们挥手告别的卡通场景",
+    "expected_strict_reuse_group": "C02_generic_subject_object"
+  },
+  {
+    "content_prompt": "真实的海岸照片，海浪拍打着岸边的石头",
+    "expected_strict_reuse_group": "C03_scene_decor_container"
+  }
+]

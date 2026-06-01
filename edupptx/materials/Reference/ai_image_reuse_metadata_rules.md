@@ -73,7 +73,7 @@
 
 ## 类别路由
 
-`strict_reuse_group` 必须是当前 v7 无缺号体系的 6 个素材类别 ID 之一：`C00_strict_text_problem_skip`、`C01_language_glyph_visual`、`C02_structure_diagram_visual`、`C03_irreplaceable_entity_event_action`、`C04_generic_subject_object`、`C05_scene_decor_container`。`C00_strict_text_problem_skip` 表示图片需要精确匹配文字、数字、公式、符号、题目、选项或原文段落；这类素材跳过复用，也不写入可复用匹配索引。
+`strict_reuse_group` 必须是当前 v7 无缺号体系的 6 个素材类别 ID 之一：`C00_strict_text_problem_skip`、`C00_strict_text_problem_skip`、`C00_strict_text_problem_skip`、`C01_irreplaceable_entity_event_action`、`C02_generic_subject_object`、`C03_scene_decor_container`。`C00_strict_text_problem_skip` 表示图片需要精确匹配文字、数字、公式、符号、题目、选项或原文段落；这类素材跳过复用，也不写入可复用匹配索引。
 
 `strict_reuse_group` 分类只能依据 `content_prompt` 的字面内容。不要用 `page_type`、`subject`、`grade_norm`、`grade_band`、`image_role` 来判断类别。
 

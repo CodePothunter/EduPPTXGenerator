@@ -190,7 +190,7 @@ def test_strict_reuse_classify_command_tags_library(tmp_path):
                         "image_path": "ai_images/math.png",
                         "subject": "数学",
                         "content_prompt": "36除以2的笔算除法竖式分步演示",
-                        "strict_reuse_group": "C02_structure_diagram_visual",
+                        "strict_reuse_group": "C00_strict_text_problem_skip",
                     }
                 ],
             },
@@ -213,10 +213,10 @@ def test_strict_reuse_classify_command_tags_library(tmp_path):
     assert result.exit_code == 0, result.output
     payload = json.loads(result.output)
     assert payload["ok"] is True
-    assert payload["group_counts"]["C02_structure_diagram_visual"] == 1
+    assert payload["group_counts"]["C00_strict_text_problem_skip"] == 1
     assert not index_path.exists()
-    content_split = json.loads((library_dir / "strict_splits" / "C02_structure_diagram_visual.json").read_text(encoding="utf-8"))
-    assert content_split["assets"][0]["strict_reuse_group"] == "C02_structure_diagram_visual"
+    content_split = json.loads((library_dir / "strict_splits" / "C00_strict_text_problem_skip.json").read_text(encoding="utf-8"))
+    assert content_split["assets"][0]["strict_reuse_group"] == "C00_strict_text_problem_skip"
     assert not (library_dir / "strict_splits" / "strict_reuse_split_manifest.json").exists()
     assert not (library_dir / "ai_image_vlm_review.json").exists()
     assert "vlm_review_sidecar" not in payload
@@ -237,14 +237,14 @@ def test_strict_reuse_export_check_command_copies_material_category_folders(tmp_
                 "asset_id": "none_asset",
                 "asset_kind": "page_image",
                 "image_path": "pptx_images/none.png",
-                "strict_reuse_group": "C05_scene_decor_container",
+                "strict_reuse_group": "C03_scene_decor_container",
                 "content_prompt": "普通插画",
             },
             {
                 "asset_id": "strict_asset",
                 "asset_kind": "page_image",
                 "image_path": "pptx_images/strict.png",
-                "strict_reuse_group": "C02_structure_diagram_visual",
+                "strict_reuse_group": "C00_strict_text_problem_skip",
                 "content_prompt": "36除以2的笔算除法竖式分步演示",
             },
         ],
@@ -267,17 +267,17 @@ def test_strict_reuse_export_check_command_copies_material_category_folders(tmp_
     payload = json.loads(result.output)
     assert payload["ok"] is True
     assert payload["asset_library_unchanged"] is True
-    assert payload["group_counts"]["C05_scene_decor_container"] == 1
-    assert payload["group_counts"]["C02_structure_diagram_visual"] == 1
+    assert payload["group_counts"]["C03_scene_decor_container"] == 1
+    assert payload["group_counts"]["C00_strict_text_problem_skip"] == 1
     assert "html_path" not in payload
-    assert len(list((output_dir / "C05_scene_decor_container").glob("*.png"))) == 1
-    assert len(list((output_dir / "C02_structure_diagram_visual").glob("*.png"))) == 1
+    assert len(list((output_dir / "C03_scene_decor_container").glob("*.png"))) == 1
+    assert len(list((output_dir / "C00_strict_text_problem_skip").glob("*.png"))) == 1
     assert not (output_dir / "index.html").exists()
     assert json.loads(index_path.read_text(encoding="utf-8")) == index_payload
 
     help_result = CliRunner().invoke(main, ["strict-reuse-export-check", "--help"])
     assert help_result.exit_code == 0, help_result.output
-    assert "6-class material category" in help_result.output
+    assert "4-class material category" in help_result.output
     assert "image copies" in help_result.output
 
     human_output_dir = tmp_path / "visual_check_human"

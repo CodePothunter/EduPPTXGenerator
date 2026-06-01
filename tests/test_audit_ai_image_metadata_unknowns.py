@@ -7,7 +7,7 @@ from scripts.audit_ai_image_metadata_unknowns import audit_library, main
 def test_audit_library_reports_assets_with_other_metadata(tmp_path):
     split_dir = tmp_path / "strict_reuse_indexes"
     split_dir.mkdir()
-    (split_dir / "C04_generic_subject_object.json").write_text(
+    (split_dir / "C02_generic_subject_object.json").write_text(
         json.dumps(
             {
                 "schema_version": 14,
@@ -41,7 +41,7 @@ def test_audit_library_reports_assets_with_other_metadata(tmp_path):
     assert report["unknown_asset_count"] == 1
     assert report["by_field"] == {"subject": 1, "grade_norm": 0, "grade_band": 0}
     assert report["items"][0]["asset_id"] == "unknown_subject"
-    assert report["items"][0]["source"].endswith("C04_generic_subject_object.json")
+    assert report["items"][0]["source"].endswith("C02_generic_subject_object.json")
 
 
 def test_audit_script_writes_json_and_csv_outputs(tmp_path):

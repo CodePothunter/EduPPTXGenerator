@@ -137,12 +137,12 @@ def test_build_payload_groups_by_category_order_and_keeps_audit_fields():
     ]
     labels = {
         "scene": {
-            "assigned_category": "C05_scene_decor_container",
+            "assigned_category": "C03_scene_decor_container",
             "decision_reason": "风景/场景/氛围图",
             "review_flags": [],
         },
         "glyph": {
-            "assigned_category": "C01_language_glyph_visual",
+            "assigned_category": "C00_strict_text_problem_skip",
             "decision_reason": "1个汉字符号本身是教学核心",
             "review_flags": [],
         },
@@ -156,11 +156,11 @@ def test_build_payload_groups_by_category_order_and_keeps_audit_fields():
     )
 
     assert payload["category_order"] == CATEGORY_ORDER
-    assert payload["counts"]["C01_language_glyph_visual"] == 1
-    assert payload["counts"]["C05_scene_decor_container"] == 1
+    assert payload["counts"]["C00_strict_text_problem_skip"] == 1
+    assert payload["counts"]["C03_scene_decor_container"] == 1
     assert payload["warnings"] == ["source warning"]
-    assert payload["categories"]["C01_language_glyph_visual"][0]["asset_id"] == "glyph"
-    scene = payload["categories"]["C05_scene_decor_container"][0]
+    assert payload["categories"]["C00_strict_text_problem_skip"][0]["asset_id"] == "glyph"
+    scene = payload["categories"]["C03_scene_decor_container"][0]
     assert scene["source_file"] == "general_reuse.json"
     assert scene["original_strict_reuse_group"] == "general_reuse"
     assert scene["theme"] == "审核定位"

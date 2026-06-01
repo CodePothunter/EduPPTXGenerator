@@ -44,7 +44,7 @@ def _asset(asset_id="a1", prompt="带装饰的空白对话气泡贴纸", subject
         "content_prompt": prompt,
         "context_summary": "课堂展示素材",
         "subject": subject,
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
     }
     if general is not None:
         asset["general"] = general
@@ -214,4 +214,4 @@ def test_apply_general_payload_updates_only_general():
 
     assert asset["general"] is True
     assert asset["content_prompt"] == "带装饰的空白对话气泡贴纸"
-    assert asset["strict_reuse_group"] == "C05_scene_decor_container"
+    assert asset["strict_reuse_group"] == "C03_scene_decor_container"

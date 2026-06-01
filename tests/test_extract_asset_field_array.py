@@ -10,9 +10,9 @@ def test_extract_field_values_reads_split_indexes_only_by_default(tmp_path):
     source_dir = tmp_path / "strict_reuse_indexes"
     source_dir.mkdir()
     _write_json(
-        source_dir / "C04_generic_subject_object.json",
+        source_dir / "C02_generic_subject_object.json",
         {
-            "strict_reuse_group": "C04_generic_subject_object",
+            "strict_reuse_group": "C02_generic_subject_object",
             "assets": [
                 {"asset_id": "a", "content_prompt": " apple card "},
                 {"asset_id": "b", "content_prompt": ""},
@@ -40,9 +40,9 @@ def test_main_writes_json_string_array(tmp_path):
     output_path = tmp_path / "content_prompts.json"
     source_dir.mkdir()
     _write_json(
-        source_dir / "C05_scene_decor_container.json",
+        source_dir / "C03_scene_decor_container.json",
         {
-            "strict_reuse_group": "C05_scene_decor_container",
+            "strict_reuse_group": "C03_scene_decor_container",
             "assets": [
                 {"asset_id": "a", "content_prompt": "classroom scene"},
             ],
@@ -67,35 +67,35 @@ def test_groups_filter_accepts_c_range_and_prefixes(tmp_path):
     source_dir = tmp_path / "strict_reuse_indexes"
     source_dir.mkdir()
     _write_json(
-        source_dir / "C02_structure_diagram_visual.json",
+        source_dir / "C00_strict_text_problem_skip.json",
         {
-            "strict_reuse_group": "C02_structure_diagram_visual",
+            "strict_reuse_group": "C00_strict_text_problem_skip",
             "assets": [{"asset_id": "c02", "content_prompt": "diagram"}],
         },
     )
     _write_json(
-        source_dir / "C03_irreplaceable_entity_event_action.json",
+        source_dir / "C01_irreplaceable_entity_event_action.json",
         {
-            "strict_reuse_group": "C03_irreplaceable_entity_event_action",
+            "strict_reuse_group": "C01_irreplaceable_entity_event_action",
             "assets": [{"asset_id": "c03", "content_prompt": "story event"}],
         },
     )
     _write_json(
-        source_dir / "C04_generic_subject_object.json",
+        source_dir / "C02_generic_subject_object.json",
         {
-            "strict_reuse_group": "C04_generic_subject_object",
+            "strict_reuse_group": "C02_generic_subject_object",
             "assets": [{"asset_id": "c04", "content_prompt": "single object"}],
         },
     )
     _write_json(
-        source_dir / "C05_scene_decor_container.json",
+        source_dir / "C03_scene_decor_container.json",
         {
-            "strict_reuse_group": "C05_scene_decor_container",
+            "strict_reuse_group": "C03_scene_decor_container",
             "assets": [{"asset_id": "c05", "content_prompt": "scene"}],
         },
     )
 
-    values = module.extract_field_values(source_dir, groups=["C03-C05"])
+    values = module.extract_field_values(source_dir, groups=["C01-C03"])
 
     assert values == ["story event", "single object", "scene"]
 
@@ -103,9 +103,9 @@ def test_groups_filter_accepts_c_range_and_prefixes(tmp_path):
 def test_default_output_path_adds_group_suffix(tmp_path):
     module = _load_module()
 
-    path = module.default_output_path(tmp_path, "content_prompt", groups=["C03-C05"])
+    path = module.default_output_path(tmp_path, "content_prompt", groups=["C01-C03"])
 
-    assert path == tmp_path / "content_prompts_C03_C04_C05.json"
+    assert path == tmp_path / "content_prompts_C01_C02_C03.json"
 
 
 def _write_json(path, payload):

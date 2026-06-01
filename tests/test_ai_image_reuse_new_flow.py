@@ -94,7 +94,7 @@ def test_match_index_skips_c00_and_omits_deleted_reuse_fields(tmp_path):
                 "content_prompt": "单个苹果插画",
                 "context_summary": "用于识别物体",
                 "teaching_intent": "辅助识别苹果",
-                "strict_reuse_group": "C04_generic_subject_object",
+                "strict_reuse_group": "C02_generic_subject_object",
                 "core_keywords": ["苹果"],
                 "semantic_aliases": {"苹果": ["apple"]},
                 "constraints": [{"kind": "object", "value": "苹果", "importance": 1}],
@@ -180,7 +180,7 @@ def test_background_retrieval_text_uses_normalized_prompt_and_context_only():
 def test_reuse_scoring_hard_filters_category_subject_and_aspect_bucket():
     target = {
         "asset_kind": "page_image",
-        "strict_reuse_group": "C04_generic_subject_object",
+        "strict_reuse_group": "C02_generic_subject_object",
         "aspect_ratio": "16:9",
         "subject": "语文",
         "content_prompt": "single apple subject",
@@ -196,7 +196,7 @@ def test_reuse_scoring_hard_filters_category_subject_and_aspect_bucket():
     target["grade_norm"] = "五年级"
     target["grade_band"] = "高年级"
 
-    group_mismatch = {**compatible_candidate, "strict_reuse_group": "C03_irreplaceable_entity_event_action"}
+    group_mismatch = {**compatible_candidate, "strict_reuse_group": "C01_irreplaceable_entity_event_action"}
     assert _score_reuse_candidate_details(target, group_mismatch)["reject_reason"] == "strict_reuse_group_mismatch"
 
     subject_mismatch = {**compatible_candidate, "subject": "数学"}
@@ -219,7 +219,7 @@ def test_aspect_tolerance_constants():
 
 
 def test_aspect_tolerance_same_bucket_passes():
-    target = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object",
+    target = {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object",
               "aspect_ratio": "4:3", "subject": "语文", "grade_norm": "五年级", "grade_band": "高年级"}
     candidate = {**target, "aspect_ratio": "4:3"}
     from edupptx.materials.ai_image_asset_db import _reuse_hard_filter_reject_reason
@@ -244,7 +244,7 @@ def test_aspect_tolerance_adjacent_penalty_fires_for_small_diff():
 
 
 def test_aspect_tolerance_too_far_rejects():
-    target = {"asset_kind": "page_image", "strict_reuse_group": "C04_generic_subject_object",
+    target = {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object",
               "aspect_ratio": "9:16", "subject": "语文", "grade_norm": "五年级", "grade_band": "高年级"}
     candidate = {**target, "aspect_ratio": "16:9"}
     from edupptx.materials.ai_image_asset_db import _reuse_hard_filter_reject_reason
@@ -271,7 +271,7 @@ def test_end_to_end_simplified_reuse_flow():
 
     target = {
         "asset_kind": "page_image",
-        "strict_reuse_group": "C04_generic_subject_object",
+        "strict_reuse_group": "C02_generic_subject_object",
         "aspect_ratio": "4:3",
         "subject": "语文",
         "grade_norm": "五年级",
@@ -282,7 +282,7 @@ def test_end_to_end_simplified_reuse_flow():
 
     good_candidate = {
         "asset_kind": "page_image",
-        "strict_reuse_group": "C04_generic_subject_object",
+        "strict_reuse_group": "C02_generic_subject_object",
         "aspect_ratio": "4:3",
         "subject": "语文",
         "grade_norm": "五年级",
@@ -292,7 +292,7 @@ def test_end_to_end_simplified_reuse_flow():
     }
 
     wrong_subject = {**good_candidate, "subject": "物理"}
-    wrong_category = {**good_candidate, "strict_reuse_group": "C03_irreplaceable_entity_event_action"}
+    wrong_category = {**good_candidate, "strict_reuse_group": "C01_irreplaceable_entity_event_action"}
     wrong_aspect = {**good_candidate, "aspect_ratio": "16:9"}
 
     assert _score_reuse_candidate_details(target, wrong_subject)["reject_reason"] == "subject_mismatch"

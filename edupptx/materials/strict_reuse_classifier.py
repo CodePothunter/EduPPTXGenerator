@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import time
 from collections import Counter
 from copy import deepcopy
 from datetime import datetime, timezone
@@ -25,283 +26,68 @@ STRICT_REUSE_VISUAL_CHECK_HTML_FILENAME = "index.html"
 STRICT_REUSE_VISUAL_CHECK_MODE = "strict-reuse-export-check"
 STRICT_REUSE_INDEX_DIRNAME = "strict_reuse_indexes"
 
-# --- 6 active material categories (v7; gapless C00-C05) ---
+# --- 4 active material categories (contiguous IDs; no historical aliases) ---
 C00_STRICT_TEXT_PROBLEM_SKIP = "C00_strict_text_problem_skip"
-C01_LANGUAGE_GLYPH_VISUAL = "C01_language_glyph_visual"
-C02_STRUCTURE_DIAGRAM_VISUAL = "C02_structure_diagram_visual"
-C03_IRREPLACEABLE_ENTITY_EVENT_ACTION = "C03_irreplaceable_entity_event_action"
-C04_GENERIC_SUBJECT_OBJECT = "C04_generic_subject_object"
-C05_SCENE_DECOR_CONTAINER = "C05_scene_decor_container"
-
-# Backward-compatible constants. These names remain importable, but their
-# values normalize to the current active category set.
-C03_SPECIFIC_EVENT_INTERACTION = C03_IRREPLACEABLE_ENTITY_EVENT_ACTION
-C04_TEACHING_BOUND_ENTITY = "C04_teaching_bound_entity"
-C04_SINGLE_SUBJECT_ASSET = C04_GENERIC_SUBJECT_OBJECT
-C05_GENERIC_SUBJECT_ASSET = C04_GENERIC_SUBJECT_OBJECT
-C05_DECOR_LAYOUT_CONTAINER = C05_SCENE_DECOR_CONTAINER
-C06_SCENE_DECOR_CONTAINER = C05_SCENE_DECOR_CONTAINER
-C06_GENERIC_SCENE_ACTIVITY = C05_SCENE_DECOR_CONTAINER
+C01_IRREPLACEABLE_ENTITY_EVENT_ACTION = "C01_irreplaceable_entity_event_action"
+C02_GENERIC_SUBJECT_OBJECT = "C02_generic_subject_object"
+C03_SCENE_DECOR_CONTAINER = "C03_scene_decor_container"
 
 MATERIAL_CATEGORIES = (
     C00_STRICT_TEXT_PROBLEM_SKIP,
-    C01_LANGUAGE_GLYPH_VISUAL,
-    C02_STRUCTURE_DIAGRAM_VISUAL,
-    C03_IRREPLACEABLE_ENTITY_EVENT_ACTION,
-    C04_GENERIC_SUBJECT_OBJECT,
-    C05_SCENE_DECOR_CONTAINER,
+    C01_IRREPLACEABLE_ENTITY_EVENT_ACTION,
+    C02_GENERIC_SUBJECT_OBJECT,
+    C03_SCENE_DECOR_CONTAINER,
 )
 _MATERIAL_CATEGORY_SET = frozenset(MATERIAL_CATEGORIES)
 
-_LEGACY_CATEGORY_MIGRATION = {
-    "c03_specific_event_interaction": C03_IRREPLACEABLE_ENTITY_EVENT_ACTION,
-    "c04_teaching_bound_entity": C03_IRREPLACEABLE_ENTITY_EVENT_ACTION,
-    "c04_single_subject_asset": C04_GENERIC_SUBJECT_OBJECT,
-    "c05_generic_subject_asset": C04_GENERIC_SUBJECT_OBJECT,
-    "c05_decor_layout_container": C05_SCENE_DECOR_CONTAINER,
-    "c06_scene_decor_container": C05_SCENE_DECOR_CONTAINER,
-    "c06_generic_scene_activity": C05_SCENE_DECOR_CONTAINER,
-}
-
-# Legacy v6 prompt before the 2026-05-28 boundary refinement.
-# Kept for audit only; not used at runtime.
-# OLD MATERIAL_CATEGORY_RULES_TEXT:
-# ## strict_reuse_group 7 类分类规则（v6）
-# 全局原则：只根据 content_prompt 字面描述判断。严禁参考 theme、subject、grade_norm 等元数据推断分类。按优先级从高到低检查，命中即停。分类依据是复用时哪些信息不可替换，而不是单个关键词是否出现。
-#
-# 复用宽松度谱系（严→松）：C00 不复用 → C01 符号匹配 → C04 身份匹配 → C03 事件匹配 → C02 结构匹配 → C05 类型匹配 → C06 语境匹配
-#
-# 0. C00_strict_text_problem_skip（精确教学载荷类 — 跳过复用）：
-# 画面核心复用价值依赖不可替换的教学载荷，必须逐字、逐数值、逐符号精确一致。
-# 对语言符号内容，3 个及以下明确语言符号本体教学优先归 C01；附带教学辅助标注（如宽窄比例提示、笔顺标注）不改变此判断。4 个或以上独立教学字词、整段课文、未展开外部指代、标题艺术字或主题文字，只要需要整体精确复现，归本类。
-# 关键词触发条件：content_prompt 出现「课文」「段落」「片段」「原文」「全诗」「歌词」「童谣」等字样时，仅当文字/数据内容本身是画面核心复用价值时才归 C00。如果描述的是涉及文字的动作/活动/工具使用（如标记、圈画、标注序号），画面核心是动作而非文字内容，不归 C00，继续按 C05/C06 判断。
-# 含具体数值且换数值就不能用的数学题/物理题归本类。无具体数值的几何/物理示意图不归本类，继续按 C02 判断。可替换短标签、栏目文字、装饰文字不因可读而归本类。
-#
-# 1. C01_language_glyph_visual（语言符号形式教学类 — 精确符号匹配）：
-# 画面核心是少量（3 个及以下）明确语言符号本身，或其形、音、义、书写、部件、偏旁、构字、字源、演变、组词、搭配。即使画面使用拆分、箭头、对应、演变等图示方式，只要知识对象仍是语言符号本体，就不归 C02。4 个或以上字词或整段语言载荷需要整体复现时，优先按 C00 处理。语言学习中的流程、层级、方法等知识结构图示不归本类，归 C02。本类仅限语言符号（汉字、拼音、笔画等），数学/物理的图示归 C02。
-#
-# 2. C02_structure_diagram_visual（跨学科知识结构图示类 — 结构+主题匹配）：
-# 画面核心是以图形方式呈现知识关系，知识对象不是语言符号本体，匹配关键在于结构/流程/关系走向 + 所属知识主题。
-# 遮住测试：把图中具体文字/数值/名称全部遮住，只看布局/节点/连线/流程走向，还能判断这是什么类型的教学图吗？能→C02。不能→按内容判断其他类。
-# 适用：思维导图、流程图、原理图（光路/几何概念/成像规律）、实验装置示意图（结构关系图，非实拍照片）、对比框架图、带位值/结构关系的教具模板（如数位表）、分类/关系图。
-# 排除：含具体不可替换数值的图→C00；实验实拍场景（核心是可辨识器材/对象在演示现象→C05；大场景/环境→C06）；抽象艺术/装饰插画→C06；通用插画恰巧有组合布局→C05/C06；空白田字格/米字格/方格纸等纯承载容器→C06。
-#
-# 3. C03_specific_event_interaction（不可替换事件命题类 — 事件匹配）：
-# 画面表达不可替换的事件命题。事件三要素必须同时满足：①有可辨识的主体（谁，可以是具名或泛化角色）；②有明确的行为/事件（做了什么/发生了什么）；③该行为具有叙事/情感意义，替换动作会改变画面的故事含义。
-# 叙事意义测试：把动作替换成另一个日常动作，画面传达的故事/情感是否根本改变？是→C03；动作只是例行活动→C06。
-# 排除：静态环境描写不因出自课文而归 C03→C06；单一主体+姿态不构成事件→C05；例行学习/生活活动（朗读、写字、举手、观察）→C06；具名角色共处但无明确行为→C04。
-#
-# 4. C04_teaching_bound_entity（教学指定实体类 — 严格身份匹配）：
-# 画面核心是世界上唯一的/不可替换的特定实体。判断依据只看 content_prompt，严禁参考 theme/subject。
-# 替换测试/唯一性测试：世界上只有这一个/这一位→C04；世界上有很多个同类型→C05。
-# 适用：具名人物肖像、课文具名角色（content_prompt 中出现角色名）、具名/唯一地标建筑、具名文学作品实物、多个具名角色共处但无明确行为。
-# 排除：通用器材类型（换一台同型号不影响教学→C05）；「X的卡通头像」等通用视觉格式（content_prompt 无具名角色→C05）；通用表情/状态插画（非具名人物→C05）。
-#
-# 5. C05_generic_subject_asset（通用主体/道具类 — 类型级匹配）：
-# 画面核心是可辨识的主体或道具，换成同类型的另一个即可。
-# 适用：通用卡通角色、动物头像/单体照片、通用花卉/植物/果实、通用文具/日用品/器材道具、通用主体+简单姿态、实验实拍中核心是可辨识器材/对象在演示现象。
-# 与 C04 区分：世界上有很多同类型→C05；唯一不可替换→C04。与 C06 区分：画面有可辨识的独立主体对象→C05；整体是场景/氛围/容器/活动→C06。
-#
-# 6. C06_scene_decor_container（泛化场景/装饰/容器类 — 语境级匹配）：
-# 画面表达可泛化的环境状态、例行活动、页面装饰或内容容器；复用只需语境/氛围相近，不要求主体身份、姿态动作逐项一致。
-# 适用：风景/场景/氛围图、例行学习/生活活动场景、涉及文字的动作/活动（标记、圈画等动作是核心而非文字内容）、静态环境描写、空白卡片/边框/装饰框/承载容器、空白田字格/米字格/方格纸等纯承载容器、页面背景图、装饰图案/光斑/印章、大场景实验室/教室全景。
-# 若容器内有不可替换文字，按文字内容判断（通常归 C00）。
-# 氛围修饰测试：content_prompt 包含氛围词且定义画面整体感受→C06；去掉氛围词后仍是独立可辨识对象→C05。
-
-# OLD MATERIAL_CATEGORY_RULES_TEXT v6.1 before C03/C04 merge.
-# Kept for audit only; not used at runtime.
-_OLD_MATERIAL_CATEGORY_RULES_TEXT_V61 = (
-    "## strict_reuse_group 7 类分类规则（v6.1）\n"
-    "全局原则：只根据 content_prompt 字面描述判断。"
-    "严禁参考 theme、subject、grade_norm 等元数据推断分类。"
-    "按优先级从高到低检查，命中即停；"
-    "但每类必须通过“复用时不可替换信息”测试，不得只因关键词命中分类。"
-    "分类依据是复用时哪些信息不可替换，而不是单个关键词是否出现。\n"
-    "先判断 content_prompt 是否给出明确语言载荷："
-    "具体汉字、词语、拼音、读音、笔顺、部首、偏旁、笔画等。"
-    "给出明确语言载荷时，优先按 C01/C00 的数量和文本精确性判断；"
-    "未给出具体语言载荷、只描述关系模板时，按 C02 判断。\n"
-    "\n"
-    "复用宽松度谱系（严→松）：C00 不复用 → C01 符号匹配 → C04 身份匹配 → "
-    "C03 事件匹配 → C02 结构匹配 → C05 类型匹配 → C06 语境匹配\n"
-    "\n"
-    "0. C00_strict_text_problem_skip（精确教学载荷类 — 跳过复用）：\n"
-    "画面核心复用价值依赖不可替换的教学载荷，必须逐字、逐数值、逐符号精确一致。\n"
-    "语言符号内容中，1-3 个明确汉字/词语/拼音用于书写、结构、读音、组词、搭配、辨析教学时，"
-    "不归 C00，优先归 C01；宽窄比例提示、笔顺标注、拼音、部首等辅助标注不改变此判断。"
-    "4 个及以上独立教学字词、生字表、整段课文、诗文、题干、选项、解题步骤、完整任务说明，"
-    "只要复用必须整体精确复现，归 C00。\n"
-    "content_prompt 出现“课文”“段落”“片段”“原文”“全诗”“歌词”“童谣”等字样时，"
-    "仅当文字/数据内容本身是画面核心复用价值时才归 C00。"
-    "如果描述的是涉及文字的动作/活动/工具使用（如标记、圈画、标注序号），"
-    "画面核心是动作而非文字内容，不归 C00，继续按 C05/C06 判断。\n"
-    "含具体不可替换数值、题号、选项或作答要求的数学/物理题归 C00；"
-    "无具体不可替换数值的几何、物理原理或装置关系图继续按 C02 判断。"
-    "可替换短标签、栏目文字、装饰文字不因可读而归本类。\n"
-    "\n"
-    "1. C01_language_glyph_visual（语言符号形式教学类 — 精确符号匹配）：\n"
-    "画面核心是少量（1-3 个）明确语言符号本身，或这些明确语言符号的形、音、义、书写、笔顺、部首、偏旁、字源、演变、组词、搭配、"
-    "形近字/同音字/多音字辨析。"
-    "即使画面使用拆分、箭头、对应、颜色标注、演变等图示方式，"
-    "只要 prompt 明确给出具体汉字/词语/拼音/读音对象，且教学对象仍是这些语言符号本体，归 C01。"
-    "组词/搭配若给出明确词语、汉字、读音或具体搭配对象，归 C01；"
-    "若只写“组词搭配素材/模板/示意图”而没有具体词语内容，按语言关系图示归 C02。"
-    "没有具体语言载荷的“左右结构拆分示意图”“部件相加拼新字示意图”“组词搭配卡通素材”等关系模板，"
-    "不归 C01，归 C02。"
-    "4 个或以上字词或整段语言载荷需要整体复现时，优先按 C00 处理。"
-    "本类仅限语言符号；数学/物理的图示归 C02。\n"
-    "\n"
-    "2. C02_structure_diagram_visual（跨学科知识结构图示类 — 结构+主题匹配）：\n"
-    "画面核心是以图形方式呈现知识关系、结构、流程、对应、组合、因果或分类；"
-    "匹配关键在于关系走向 + 知识主题，而不是单个主体外观。\n"
-    "遮住测试：把图中具体文字/数值/名称全部遮住，只看布局/节点/连线/流程走向，"
-    "还能判断这是什么类型的教学图吗？能→C02。不能→按内容判断其他类。\n"
-    "适用：思维导图、流程图、原理图（光路/几何概念/成像规律）、"
-    "实验装置示意图、对比框架图、带位值/结构关系的教具模板、分类/关系图。"
-    "语言学习中，若 prompt 未给出具体汉字/词语内容，而是描述结构拆分、部件组合、组词搭配、构字关系、阅读/写作结构模板，归 C02。"
-    "若图中明确给出 1-3 个具体汉字/词语/拼音/读音，并围绕这些语言符号做书写、读音、组词、搭配或辨析教学，"
-    "归 C01，而非 C02。"
-    "实验实拍/场景若核心只是器材、道具或单体对象，归 C05；"
-    "若核心是明确物理原理、光路、成像、会聚/发散或实验现象因果，归 C02。"
-    "含具体不可替换数值、题号、选项或作答要求的图归 C00。"
-    "抽象艺术/装饰插画→C06；通用插画恰巧有组合布局→C05/C06；"
-    "空白田字格/米字格/方格纸等纯承载容器→C06。\n"
-    "\n"
-    "3. C03_specific_event_interaction（不可替换事件命题类 — 事件匹配）：\n"
-    "画面表达不可替换的事件命题。事件三要素必须同时满足：有可辨识主体；有明确行为/事件/状态变化；"
-    "该行为或状态具有叙事/情感意义，替换后会改变故事含义。"
-    "叙事意义测试：把动作、姿态、表情、道具结果或环境氛围替换掉，画面传达的故事/情感是否根本改变？"
-    "是→C03。"
-    "人物处于低落、痛苦、愤怒、担忧、强忍等明确情绪状态，且姿态/道具/环境改变会改变课文或故事含义时，归 C03。"
-    "单一主体+普通姿态不构成事件，归 C05；"
-    "但姿态、表情、道具结果或环境氛围共同表达明确叙事情绪命题时，归 C03。"
-    "普通站立、蹲坐、举手、看向某物等无冲突、无情绪转折、无事件结果的主体姿态，不归 C03，按 C05/C06 判断。"
-    "例行学习/生活活动（朗读、写字、举手、观察）→C06；"
-    "具名角色共处但无明确行为→C04。\n"
-    "\n"
-    "4. C04_teaching_bound_entity（教学指定实体类 — 严格身份匹配）：\n"
-    "画面核心是世界上唯一的/不可替换的特定实体。"
-    "判断依据只看 content_prompt，严禁参考 theme/subject。\n"
-    "替换测试/唯一性测试：世界上只有这一个/这一位→C04；世界上有很多个同类型→C05。\n"
-    "适用：具名人物肖像、content_prompt 明确出现的课文具名角色、具名/唯一地标建筑、具名文学作品实物、"
-    "多个具名角色共处但无明确事件行为。"
-    "具名角色若正在执行有叙事意义的事件，优先按 C03；无事件、只展示角色身份或形象时归 C04。"
-    "若 X 只是通用类别或视觉主题（如孔雀头像、卡通小昆虫、普通教师），不是具名人物/具名角色，归 C05。"
-    "通用表情/状态插画（非具名人物）不归 C04，按 C05/C03 判断。\n"
-    "\n"
-    "5. C05_generic_subject_asset（通用主体/道具类 — 类型级匹配）：\n"
-    "适用：可辨识的通用主体或道具，换成同类型另一个仍可复用，且画面不依赖特定事件、强情绪命题、知识结构关系或内容容器。"
-    "适用：通用卡通角色、动物头像/单体照片、通用花卉/植物/果实、通用文具/日用品/器材道具、通用主体+普通姿态。"
-    "通用器材/道具单体或器材外观展示归 C05；"
-    "若器材在表达明确物理原理、光路、成像、会聚/发散或实验现象因果，归 C02。"
-    "有明确叙事情绪或事件结果时不归 C05，归 C03；"
-    "主体举着空白卡片、文本框、展示板等承载容器时不归 C05，归 C06。"
-    "与 C04 区分：世界上有很多同类型→C05；唯一不可替换→C04。"
-    "与 C06 区分：画面有可辨识的独立主体对象→C05；整体是场景/氛围/容器/活动→C06。\n"
-    "\n"
-    "6. C06_scene_decor_container（泛化场景/装饰/容器类 — 语境级匹配）：\n"
-    "画面表达可泛化的环境状态、例行活动、页面装饰或内容容器；"
-    "复用只需语境/氛围相近，不要求主体身份、姿态动作逐项一致。\n"
-    "适用：风景/场景/氛围图、例行学习/生活活动场景、"
-    "涉及文字的动作/活动（标记、圈画等动作是核心而非文字内容）、"
-    "静态环境描写、页面背景图、装饰图案/光斑/印章、大场景实验室/教室全景。"
-    "空白卡片、文本框、便签、黑板、展示板、边框、模板、占位区域优先归 C06，即使旁边有通用角色或动物。"
-    "空白田字格/米字格/方格纸等纯承载容器归 C06。"
-    "若卡片/框内已有明确不可替换教学文字、汉字、词语、拼音或题目，按文字内容归 C01 或 C00，而不是 C06。"
-    "自然物体若处在天气、季节、光线、氛围中并定义整体场景感受，归 C06；"
-    "若是白底/孤立展示的单个植物、果实、器物或角色，归 C05。\n"
-    "氛围修饰测试：content_prompt 包含氛围词且定义画面整体感受→C06；"
-    "去掉氛围词后仍是独立可辨识对象→C05。\n"
-)
+_LEGACY_CATEGORY_MIGRATION: dict[str, str] = {}
 
 MATERIAL_CATEGORY_RULES_TEXT = (
-    "## strict_reuse_group 6 类分类规则（v7，无缺号，C03 动作边界收紧）\n"
+    "## strict_reuse_group 4 类分类规则（v2，合并 skip）\n"
     "\n"
     "全局原则：只根据 content_prompt 字面描述判断。"
     "严禁参考 theme、subject、grade_norm、文件名、原始 strict_reuse_group 或其他元数据推断分类。"
-    "分类依据是 content_prompt 自身表达的复用粒度，而不是单个关键词是否出现。"
-    "不得看到某个词就强制归类；必须判断画面核心复用价值属于不可替代命题、主体对象还是场景语境。"
-    "按下面顺序判断；命中高优先级类别后不再下探。"
-    "C03 不能抢走文字题图、语言符号、数学/物理/语文结构图；"
-    "C04 不能抢走不可替代动作；C05 不能抢走可辨识主体或事件。\n"
+    "分类依据是 content_prompt 自身表达的复用粒度。按下面顺序判断，命中高优先级即停。\n"
     "\n"
-    "新分类只允许输出以下 6 个 ID：\n"
+    "只允许输出以下 4 个 ID：\n"
     "C00_strict_text_problem_skip\n"
-    "C01_language_glyph_visual\n"
-    "C02_structure_diagram_visual\n"
-    "C03_irreplaceable_entity_event_action\n"
-    "C04_generic_subject_object\n"
-    "C05_scene_decor_container\n"
+    "C01_irreplaceable_entity_event_action\n"
+    "C02_generic_subject_object\n"
+    "C03_scene_decor_container\n"
     "\n"
-    "复用宽松度谱系（严→松）："
-    "C00 不复用 → C01 符号精确匹配 → C03 实体/事件/动作严格匹配 → "
-    "C02 结构主题匹配 → C04 类型匹配 → C05 语境匹配\n"
+    "复用宽松度谱系（严→松）：C00 不复用 → C01 实体/事件/动作严格匹配 → "
+    "C02 类型匹配 → C03 语境匹配\n"
     "\n"
-    "0. C00_strict_text_problem_skip（精确教学载荷类 — 跳过复用）：\n"
-    "画面核心复用价值依赖不可替换的教学载荷，必须逐字、逐数值、逐符号一致时，归 C00。\n"
-    "适用：4 个及以上独立教学字词、生字表、整段课文/诗文/儿歌/选段、完整题干、选项、"
-    "解题步骤、完整任务说明、不可替换数值题图。\n"
-    "排除：1-3 个明确汉字/词语/拼音用于书写、结构、读音、组词、搭配、辨析教学时，"
-    "不归 C00，归 C01。短栏目标签、装饰文字、角色旁的小牌子，不因可读而归 C00，"
-    "应按画面主体判断。\n"
+    "0. C00_strict_text_problem_skip（精确教学载荷 — 跳过复用）：\n"
+    "画面核心复用价值依赖必须逐字/逐数值/逐符号一致的精确内容，或是语言符号本体教学，"
+    "或是知识结构/原理图示时，归 C00（这三种都不参与复用）。\n"
+    "适用：4 个及以上独立教学字词、生字表、整段课文/诗文/儿歌/选段、完整题干/选项/解题步骤、"
+    "不可替换数值题图（精确文字载荷）；汉字/词语/拼音/笔画/笔顺/部首/字源/演变/构字/结构、"
+    "形近字/同音字/多音字辨析、少量生字教学卡片（语言符号本体）；"
+    "数学几何/统计/数轴/应用题关系图，物理光路/成像/实验装置结构，"
+    "语文阅读/写作/课文结构思维导图，跨学科流程图/关系图/表格（知识结构图示）。\n"
+    "排除：可替换短标签、装饰文字、角色旁小牌子不因可读而归 C00，应按画面主体判断。\n"
     "\n"
-    "1. C01_language_glyph_visual（语言符号形式教学类 — 精确符号匹配）：\n"
-    "画面核心是语言符号本体或语言符号形式教学时，归 C01。\n"
-    "适用：汉字、词语、拼音、读音、笔画、笔顺、部首、偏旁、字源、演变、构字、结构、"
-    "形近字/同音字/多音字辨析、少量生字教学卡片。\n"
-    "即使画面使用拆分、箭头、对比、演变、图标辅助，只要教学对象仍是语言符号本体，归 C01。\n"
-    "排除：课文结构、阅读结构、写作结构、内容梳理、思维导图、人物关系图等，"
-    "核心是信息组织而不是字形/字音/字义本体时，归 C02。"
-    "4 个及以上独立教学字词或整段语言载荷需整体精确复现时，归 C00。"
-    "语言符号本体教学归 C01。\n"
+    "1. C01_irreplaceable_entity_event_action（不可替代实体/事件/动作 — 严格匹配）：\n"
+    "只有 content_prompt 自身已表达不可替代语义命题时才归 C01（匿名主体也可）。"
+    "把画面简化为同类型通用主体/普通姿态后会丢失故事绑定的角色身份、不可互换主体关系、"
+    "有意图/对象/结果的动作、冲突/抗拒/破坏后果/状态转折，或强情绪故事状态，则归 C01。"
+    "这些必须由 content_prompt 自身表达，不得从课文主题或旧 metadata 推断。\n"
+    "不归 C01：普通动物群体、普通人物组合、轻量社交动作、通用主体的简单姿态/普通表情/外观特征，"
+    "不构成不可替代命题时，下探 C02/C03。\n"
     "\n"
-    "2. C02_structure_diagram_visual（知识结构图示类 — 结构+主题匹配）：\n"
-    "画面核心是知识关系、流程、结构、对应、分类、因果、规律、图表或原理说明，"
-    "匹配关键在于结构走向和知识主题时，归 C02。\n"
-    "适用：数学几何/统计/数轴/路线/应用题关系图，物理光路、成像规律、实验装置结构、"
-    "变量对比，语文阅读/写作/课文结构思维导图，跨学科流程图、关系图、表格。\n"
-    "必要条件：遮住具体文字/数值后，仍能看出它是某类知识结构或原理图。\n"
-    "排除：单个工具、道具、器材、普通实验现象或实践场景，"
-    "若没有明确结构关系/变量关系/光路/规律对比，归 C04。"
-    "语言符号本体教学归 C01。不可替换题干/数值/选项归 C00。\n"
+    "2. C02_generic_subject_object（通用主体/对象 — 类型级匹配）：\n"
+    "画面核心是可辨识的通用主体或对象（人物/角色/动物/植物/自然物/工具/器材/道具/小规模组合/普通状态）时归 C02。"
+    "把主体换成同类型另一个、动作简化成普通姿态后仍保留主要复用价值，归 C02。"
+    "若简化会破坏故事绑定身份/关系/结果/强情绪组合，归 C01；"
+    "若主要靠整体环境/天气/远景/氛围/页面承载功能复用，归 C03；"
+    "空白卡片/文本框/边框/模板/占位主导画面归 C03。\n"
     "\n"
-    "3. C03_irreplaceable_entity_event_action（不可替代实体/事件/动作类 — 严格匹配）：\n"
-    "只有 content_prompt 自身已经表达不可替代语义命题时才归 C03。"
-    "C03 不要求主体必须是具名人物、唯一地点、唯一物体或课文专名；匿名主体也可以归 C03。"
-    "判断时必须忽略课文名、theme、subject、grade_norm、teaching_intent、context_summary 和旧分类。"
-    "如果需要依赖课文名、theme、teaching_intent 或教学上下文才不可替代，不归 C03。"
-    "不得看到某个词就强制归类；必须看完整 content_prompt 是否形成不可替代命题。\n"
-    "C03 的核心判断：把画面简化为同类型通用主体/对象、普通姿态或普通动作后，"
-    "是否会丢失 content_prompt 自身表达的核心复用意义。"
-    "如果会丢失，且丢失的是故事绑定的角色身份、主体关系、叙事动作或情绪状态组合，归 C03。\n"
-    "可归 C03 的泛化类型包括：具名或故事绑定的角色身份；"
-    "亲属关系、故事角色关系、角色功能关系等不可互换主体关系；"
-    "有意图、对象或结果的动作；冲突、抗拒、破坏后果、状态转折、关系张力或故事结果；"
-    "姿态、道具、环境或氛围共同表达故事状态的强情绪画面。"
-    "这些类型必须由 content_prompt 自身表达，不得从课文主题或旧 metadata 推断。\n"
-    "不归 C03 的情况：普通动物群体、普通人物组合、轻量社交动作、普通自然状态、"
-    "通用主体的简单姿态、普通表情、外观特征、比喻性视觉特征，"
-    "不构成不可替代语义命题时，应下探到 C04 或 C05。\n"
-    "\n"
-    "4. C04_generic_subject_object（通用主体/道具类 — 类型级匹配）：\n"
-    "画面核心复用价值是可辨识的主体或对象时归 C04。"
-    "主体或对象可以是人物、角色、动物、植物、自然物、工具、器材、道具、小规模主体组合或普通状态。"
-    "简单姿态、普通动作、普通表情、外观特征、比喻性视觉特征、轻量社交动作可以保留在 C04，"
-    "前提是它们没有组成不可替代语义命题。"
-    "如果把主体换成同类型另一个、把动作简化成普通姿态、或移除关系/情绪状态后，"
-    "仍保留主要复用价值，归 C04。"
-    "如果这种简化会破坏 content_prompt 自身表达的故事绑定身份、关系、动作结果或情绪状态组合，归 C03。"
-    "如果画面主要靠整体环境、天气、远景、氛围或页面承载功能复用，归 C05。"
-    "明确知识结构、光路、变量关系或规律图示归 C02。"
-    "空白卡片、文本框、边框、模板、占位区域主导画面归 C05。\n"
-    "\n"
-    "5. C05_scene_decor_container（场景装饰容器类 — 语境级匹配）：\n"
-    "画面核心复用价值是整体场景、天气、氛围、远景、背景、页面装饰、空白容器或内容占位模板时归 C05。"
-    "复用只需语境、氛围或版式功能相近，不要求独立主体对象精确一致。"
-    "视觉具体、季节明确或气氛明显，不会自动提升到 C03。"
-    "如果画面裁出某个主体后仍主要作为该主体对象复用，归 C04。"
-    "如果 content_prompt 自身表达主体绑定的不可替代强叙事命题，归 C03。"
-    "容器内已有不可替换教学文字、题目、段落时，按 C00/C01 判断。\n"
+    "3. C03_scene_decor_container（场景装饰容器 — 语境级匹配）：\n"
+    "画面核心是整体场景/天气/氛围/远景/背景/页面装饰/空白容器/内容占位模板时归 C03。"
+    "复用只需语境/氛围/版式功能相近。裁出某主体后仍主要作为该主体复用则归 C02；"
+    "content_prompt 自身表达主体绑定的不可替代强叙事命题则归 C01；"
+    "容器内已有不可替换教学文字/题目/段落按 C00 判断。\n"
 )
 
 MATERIAL_CATEGORY_RULES_TEXT = MATERIAL_CATEGORY_RULES_TEXT.replace("content_prompt", "query")
@@ -333,91 +119,8 @@ def _build_classify_prompt(payload: dict[str, Any]) -> str:
     )
 
 
-# OLD MATERIAL_CATEGORY_RULES_TEXT v6.2 before C03 event-boundary refinement.
-# Kept below the active prompt for audit only; commented out and not used at runtime.
-#     "## strict_reuse_group 6 类分类规则（v6.2，C03/C04 合并）\n"
-#     "\n"
-#     "全局原则：只根据 content_prompt 字面描述判断。"
-#     "严禁参考 theme、subject、grade_norm 等元数据推断分类。"
-#     "分类依据是复用时哪些信息不可替换，而不是单个关键词是否出现。"
-#     "按下面顺序判断；命中高优先级类别后不再下探。\n"
-#     "\n"
-#     "新分类只允许输出以下 6 个 ID：\n"
-#     "C00_strict_text_problem_skip\n"
-#     "C01_language_glyph_visual\n"
-#     "C02_structure_diagram_visual\n"
-#     "C03_specific_event_interaction\n"
-#     "C05_generic_subject_asset\n"
-#     "C06_scene_decor_container\n"
-#     "\n"
-#     "注意：C04_teaching_bound_entity 是旧版兼容 ID，不允许新分类输出；"
-#     "旧数据中的 C04 会由代码归一到 C03。\n"
-#     "\n"
-#     "复用宽松度谱系（严→松）："
-#     "C00 不复用 → C01 符号精确匹配 → C03 实体/事件严格匹配 → "
-#     "C02 结构主题匹配 → C05 类型匹配 → C06 语境匹配\n"
-#     "\n"
-#     "0. C00_strict_text_problem_skip（精确教学载荷类 — 跳过复用）：\n"
-#     "画面核心复用价值依赖不可替换的教学载荷，必须逐字、逐数值、逐符号一致时，归 C00。\n"
-#     "适用：4 个及以上独立教学字词、生字表、整段课文/诗文/儿歌/选段、完整题干、选项、"
-#     "解题步骤、完整任务说明、不可替换数值题图。\n"
-#     "排除：1-3 个明确汉字/词语/拼音用于书写、结构、读音、组词、搭配、辨析教学时，"
-#     "不归 C00，归 C01。短栏目标签、装饰文字、角色旁的小牌子，不因可读而归 C00，"
-#     "应按画面主体判断。\n"
-#     "\n"
-#     "1. C01_language_glyph_visual（语言符号形式教学类 — 精确符号匹配）：\n"
-#     "画面核心是语言符号本体或语言符号形式教学时，归 C01。\n"
-#     "适用：汉字、词语、拼音、读音、笔画、笔顺、部首、偏旁、字源、演变、构字、结构、"
-#     "形近字/同音字/多音字辨析、少量生字教学卡片。\n"
-#     "即使画面使用拆分、箭头、对比、演变、图标辅助，只要教学对象仍是语言符号本体，归 C01。\n"
-#     "排除：课文结构、阅读结构、写作结构、内容梳理、思维导图、人物关系图等，"
-#     "核心是信息组织而不是字形/字音/字义本体时，归 C02。"
-#     "4 个及以上独立教学字词或整段语言载荷需整体精确复现时，归 C00。\n"
-#     "\n"
-#     "2. C02_structure_diagram_visual（知识结构图示类 — 结构+主题匹配）：\n"
-#     "画面核心是知识关系、流程、结构、对应、分类、因果、规律、图表或原理说明，"
-#     "匹配关键在于结构走向和知识主题时，归 C02。\n"
-#     "适用：数学几何/统计/数轴/路线/应用题关系图，物理光路、成像规律、实验装置结构、"
-#     "变量对比，语文阅读/写作/课文结构思维导图，跨学科流程图、关系图、表格。\n"
-#     "必要条件：遮住具体文字/数值后，仍能看出它是某类知识结构或原理图。\n"
-#     "排除：单个工具、道具、器材、普通实验现象或实践场景，"
-#     "若没有明确结构关系/变量关系/光路/规律对比，归 C05。"
-#     "语言符号本体教学归 C01。不可替换题干/数值/选项归 C00。\n"
-#     "\n"
-#     "3. C03_specific_event_interaction（严格实体/事件类 — 身份或事件匹配）：\n"
-#     "画面核心包含不可替换的具名实体、唯一实体、课文/文学具名角色，或不可替换的故事事件时，归 C03。\n"
-#     "适用：具体人名人物、作者肖像、历史人物、具名文学角色、唯一地标/文物/书籍封面、"
-#     "具名人物共处、具名人物正在做普通展示动作、课文故事关键事件、人物关系事件、"
-#     "冲突/救助/送别/对话等叙事场面。\n"
-#     "合并规则：旧 C04 的“教学指定实体”全部并入 C03。"
-#     "只要 content_prompt 明确给出具体人名、具名角色名、唯一实体名，且不是 C00/C01/C02，就归 C03。\n"
-#     "事件判断：即使没有具体人名，只要画面表达不可替换的叙事情节，"
-#     "替换主体关系、动作结果或事件会改变故事含义，也归 C03。\n"
-#     "排除：通用人物、通用动物、通用表情、单体面容、普通姿态、"
-#     "普通举旗/拿书/讲解/观察等不绑定特定身份或故事事件的主体，归 C05。"
-#     "普通课堂/生活活动场景、背景氛围、空白容器主导画面时，归 C06。\n"
-#     "\n"
-#     "4. C05_generic_subject_asset（通用主体/道具类 — 类型级匹配）：\n"
-#     "画面核心是可辨识的通用主体、角色、动物、植物、工具、器材、道具或普通状态，"
-#     "换成同类型另一个仍可复用时，归 C05。\n"
-#     "适用：通用卡通人物/动物/植物/器物，工具道具，放大镜/老花镜/显微镜实物，"
-#     "普通人物表情或面容，通用主体+普通姿态，举旗、拿书、讲解、观察、带路等非故事关键动作。\n"
-#     "排除：具名人物/具名角色/唯一实体归 C03。"
-#     "明确知识结构、光路、变量关系或规律图示归 C02。"
-#     "空白卡片、文本框、边框、模板、占位区域主导画面归 C06。\n"
-#     "\n"
-#     "5. C06_scene_decor_container（场景装饰容器类 — 语境级匹配）：\n"
-#     "画面核心是泛化场景、氛围、背景、页面装饰、空白容器或内容占位模板，"
-#     "复用只需语境/风格相近时，归 C06。\n"
-#     "适用：风景/天气/自然氛围、课堂/校园/生活泛场景、页面背景、装饰图案、边框、"
-#     "空白卡片、空白文本框、便签、黑板、展示板、模板、PPT 占位区域。\n"
-#     "容器判断：只有容器/占位功能是画面主功能时才归 C06。"
-#     "若短栏目标签、小牌子或卡片只是角色附属道具，应按主视觉主体判断。\n"
-#     "排除：容器内已有不可替换教学文字、题目、段落时，按 C00/C01 判断。"
-#     "具名主体或具名事件归 C03。可辨识通用主体/道具是画面核心时，归 C05。\n"
-
 # Canonical convenience constants (downstream code still imports these names).
-GENERAL_REUSE_GROUP = C05_SCENE_DECOR_CONTAINER
+GENERAL_REUSE_GROUP = C03_SCENE_DECOR_CONTAINER
 CONTENT_REUSE_GROUP = C00_STRICT_TEXT_PROBLEM_SKIP
 STRICT_REUSE_GROUPS = MATERIAL_CATEGORIES
 STRICT_REUSE_SPLIT_GROUPS = MATERIAL_CATEGORIES
@@ -425,7 +128,7 @@ STRICT_REUSE_SPLIT_GROUPS = MATERIAL_CATEGORIES
 _IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif"}
 
 
-def normalize_strict_reuse_group(value: Any, *, default: str = C05_SCENE_DECOR_CONTAINER) -> str:
+def normalize_strict_reuse_group(value: Any, *, default: str = GENERAL_REUSE_GROUP) -> str:
     """Normalize canonical material category labels."""
 
     text = _clean_text(value).casefold()
@@ -437,10 +140,6 @@ def normalize_strict_reuse_group(value: Any, *, default: str = C05_SCENE_DECOR_C
     for cat in MATERIAL_CATEGORIES:
         if text == cat.casefold():
             return cat
-    # Legacy persisted IDs map to the current active category set.
-    migrated = _LEGACY_CATEGORY_MIGRATION.get(text)
-    if migrated is not None:
-        return migrated
     return default
 
 
@@ -485,7 +184,7 @@ def classify_asset_strict_reuse(
     asset_kind = _clean_text(asset.get("asset_kind"))
     if asset_kind == "background":
         return _classification(
-            C06_SCENE_DECOR_CONTAINER,
+            GENERAL_REUSE_GROUP,
             1.0,
             ["background_asset_kind"],
             [],
@@ -1139,3 +838,73 @@ def _as_string_list(value: Any) -> list[str]:
 
 def _clean_text(value: Any) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _build_classify_system_prompt() -> str:
+    return (
+        "你是中文教育课件图片的素材分类器。只根据每个元素的 query 文本判断 strict_reuse_group。\n\n"
+        + MATERIAL_CATEGORY_RULES_TEXT
+        + "\n\n我会给你一个 JSON 数组，每个元素含 query 字段。"
+        "只输出 JSON 数组，长度、顺序与输入一致；每个元素保留 query，"
+        "并新增或覆盖 strict_reuse_group 字段（必须是上面 4 个 ID 之一）。"
+        "不要输出解释、Markdown 或多余文本。"
+    )
+
+
+def _parse_classify_array(raw: str) -> list[dict[str, Any]]:
+    text = str(raw or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        import json_repair
+
+        payload = json_repair.loads(text)
+    if not isinstance(payload, list):
+        raise ValueError("classify response must be a JSON array")
+    return [item for item in payload if isinstance(item, dict)]
+
+
+def classify_records(
+    records: list[dict[str, Any]],
+    client: Any,
+    *,
+    query_field: str = "query",
+    group_field: str = "strict_reuse_group",
+    batch_size: int = 50,
+    sleep_seconds: float = 0.0,
+) -> list[dict[str, Any]]:
+    """Classify each record's query into one of the 4 material categories."""
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be greater than 0")
+    items = list(records)
+    output: list[dict[str, Any]] = []
+    total = len(items)
+    for start in range(0, total, batch_size):
+        batch = items[start : start + batch_size]
+        minimal = [{"query": str(record.get(query_field, "")).strip()} for record in batch]
+        messages = [
+            {"role": "system", "content": _build_classify_system_prompt()},
+            {
+                "role": "user",
+                "content": "现在请处理下面的 JSON 数组：\n"
+                + json.dumps(minimal, ensure_ascii=False, indent=2),
+            },
+        ]
+        max_tokens = max(2048, min(12000, 60 * len(batch) + 1600))
+        raw = client.chat(messages=messages, temperature=0.0, max_tokens=max_tokens)
+        parsed = _parse_classify_array(raw)
+        if len(parsed) != len(batch):
+            raise ValueError(f"expected {len(batch)} classify items, got {len(parsed)}")
+        for original, generated in zip(batch, parsed):
+            item = deepcopy(original)
+            item[group_field] = normalize_strict_reuse_group(generated.get("strict_reuse_group"))
+            output.append(item)
+        if sleep_seconds > 0 and start + batch_size < total:
+            time.sleep(sleep_seconds)
+    return output

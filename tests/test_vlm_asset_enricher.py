@@ -466,7 +466,7 @@ def test_vlm_reuse_group_mismatch_high_confidence_auto_corrects(tmp_path):
                 "asset_kind": "page_image",
                 "image_path": "page.png",
                 "content_prompt": "generic classroom illustration",
-                    "strict_reuse_group": "C04_generic_subject_object",
+                    "strict_reuse_group": "C02_generic_subject_object",
                     "strict_reuse_requires_exact_match": True,
             }
         ]
@@ -474,7 +474,7 @@ def test_vlm_reuse_group_mismatch_high_confidence_auto_corrects(tmp_path):
     payload = {
         "constraint_verification": [],
         "match_quality_score": 0.76,
-            "visual_reuse_group": "C03_irreplaceable_entity_event_action",
+            "visual_reuse_group": "C01_irreplaceable_entity_event_action",
         "visual_reuse_confidence": 0.86,
         "visual_reuse_reason": "The image contains visible exercise text.",
     }
@@ -484,14 +484,14 @@ def test_vlm_reuse_group_mismatch_high_confidence_auto_corrects(tmp_path):
     assert report["accepted_count"] == 1
     assert report["manual_review_count"] == 0
     asset = db["assets"][0]
-    assert asset["strict_reuse_group"] == "C03_irreplaceable_entity_event_action"
+    assert asset["strict_reuse_group"] == "C01_irreplaceable_entity_event_action"
     assert asset["strict_reuse_confidence"] == 0.86
     assert "strict_reuse_requires_exact_match" not in asset
 
     review = json.loads((tmp_path / "ai_image_vlm_review.json").read_text(encoding="utf-8"))["assets"]["page"]
     assert review["strict_reuse_group_mismatch"] is True
     assert review["strict_reuse_auto_corrected"] is True
-    assert review["strict_reuse_group_update"] == "C03_irreplaceable_entity_event_action"
+    assert review["strict_reuse_group_update"] == "C01_irreplaceable_entity_event_action"
     assert review["manual_review_required"] is False
 
 
@@ -507,14 +507,14 @@ def test_vlm_reuse_group_mismatch_low_confidence_goes_to_manual_review(tmp_path)
                 "asset_kind": "page_image",
                 "image_path": "page.png",
                 "content_prompt": "exercise text card",
-                    "strict_reuse_group": "C01_language_glyph_visual",
+                    "strict_reuse_group": "C00_strict_text_problem_skip",
             }
         ]
     }
     payload = {
         "constraint_verification": [],
         "match_quality_score": 0.76,
-        "visual_reuse_group": "C05_scene_decor_container",
+        "visual_reuse_group": "C03_scene_decor_container",
         "visual_reuse_confidence": 0.7,
         "visual_reuse_reason": "The image may only be a blank card.",
     }
@@ -523,7 +523,7 @@ def test_vlm_reuse_group_mismatch_low_confidence_goes_to_manual_review(tmp_path)
 
     assert report["manual_review_count"] == 1
     assert report["manual_review_asset_ids"] == ["page"]
-    assert db["assets"][0]["strict_reuse_group"] == "C01_language_glyph_visual"
+    assert db["assets"][0]["strict_reuse_group"] == "C00_strict_text_problem_skip"
 
     review = json.loads((tmp_path / "ai_image_vlm_review.json").read_text(encoding="utf-8"))["assets"]["page"]
     assert review["manual_review_required"] is True
@@ -532,8 +532,8 @@ def test_vlm_reuse_group_mismatch_low_confidence_goes_to_manual_review(tmp_path)
 
     debug_path = tmp_path / "debug" / "vlm_review_queue.jsonl"
     debug_record = json.loads(debug_path.read_text(encoding="utf-8").splitlines()[0])
-    assert debug_record["visual_reuse_group"] == "C05_scene_decor_container"
-    assert debug_record["llm_reuse_group"] == "C01_language_glyph_visual"
+    assert debug_record["visual_reuse_group"] == "C03_scene_decor_container"
+    assert debug_record["llm_reuse_group"] == "C00_strict_text_problem_skip"
 
 
 def test_keyword_enrichment_preserves_review_fields():
@@ -599,7 +599,7 @@ def test_match_index_keeps_only_review_passthrough_fields(tmp_path):
                 "vlm_match_quality": 0.91,
                 "regenerate": True,
                 "vlm_constraint_visibility": [{"value": "peacock", "presence": "present"}],
-                    "strict_reuse_group": "C04_generic_subject_object",
+                    "strict_reuse_group": "C02_generic_subject_object",
                 "strict_reuse_requires_exact_match": True,
             }
         ],
@@ -613,7 +613,7 @@ def test_match_index_keeps_only_review_passthrough_fields(tmp_path):
     assert match_asset["vlm_match_quality"] == 0.91
     assert match_asset["regenerate"] is True
     assert "padding_capacity" not in match_asset
-    assert match_asset["strict_reuse_group"] == "C04_generic_subject_object"
+    assert match_asset["strict_reuse_group"] == "C02_generic_subject_object"
     for field in ("core_keywords", "semantic_aliases"):
         assert field not in match_asset
     assert "strict_reuse_requires_exact_match" not in match_asset

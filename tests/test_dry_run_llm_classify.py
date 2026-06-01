@@ -57,15 +57,15 @@ def test_llm_reclassify_loads_prompt_list_assets_with_optional_expected_groups(t
             [
                 {
                     "content_prompt": "小蝌蚪和青蛙妈妈在荷叶边团聚的温馨场景",
-                    "expected_strict_reuse_group": "C03_irreplaceable_entity_event_action",
+                    "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action",
                 },
                 {
                     "content_prompt": "北海公园秋天盛开的菊花",
-                    "expected_strict_reuse_group": "C04_generic_subject_object",
+                    "expected_strict_reuse_group": "C02_generic_subject_object",
                 },
                 {
                     "content_prompt": "真实的海岸照片，海浪拍打着岸边的石头",
-                    "expected_strict_reuse_group": "C05_scene_decor_container",
+                    "expected_strict_reuse_group": "C03_scene_decor_container",
                 },
                 {"content_prompt": "米字格中的汉字“雨”"},
             ],
@@ -82,21 +82,21 @@ def test_llm_reclassify_loads_prompt_list_assets_with_optional_expected_groups(t
             "asset_kind": "page_image",
             "content_prompt": "小蝌蚪和青蛙妈妈在荷叶边团聚的温馨场景",
             "strict_reuse_group": "",
-            "expected_strict_reuse_group": "C03_irreplaceable_entity_event_action",
+            "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action",
         },
         {
             "asset_id": "prompt_000002",
             "asset_kind": "page_image",
             "content_prompt": "北海公园秋天盛开的菊花",
             "strict_reuse_group": "",
-            "expected_strict_reuse_group": "C04_generic_subject_object",
+            "expected_strict_reuse_group": "C02_generic_subject_object",
         },
         {
             "asset_id": "prompt_000003",
             "asset_kind": "page_image",
             "content_prompt": "真实的海岸照片，海浪拍打着岸边的石头",
             "strict_reuse_group": "",
-            "expected_strict_reuse_group": "C05_scene_decor_container",
+            "expected_strict_reuse_group": "C03_scene_decor_container",
         },
         {
             "asset_id": "prompt_000004",
@@ -116,15 +116,15 @@ def test_llm_reclassify_prompt_audit_flags_suspicious_boundaries():
     ) == ["c00_possible_short_language_symbol"]
     assert module._audit_flags_for_prompt_classification(
         "小蝌蚪和青蛙妈妈在荷叶边团聚的温馨场景",
-        "C04_generic_subject_object",
+        "C02_generic_subject_object",
     ) == ["c04_possible_irreplaceable_action_or_relation"]
     assert module._audit_flags_for_prompt_classification(
         "卡通兔子头像",
-        "C03_irreplaceable_entity_event_action",
+        "C01_irreplaceable_entity_event_action",
     ) == ["c03_possible_generic_subject"]
     assert module._audit_flags_for_prompt_classification(
         "词语卡片装饰边框，无文字",
-        "C05_scene_decor_container",
+        "C03_scene_decor_container",
     ) == []
 
 
@@ -134,7 +134,7 @@ def test_llm_reclassify_writes_prompt_audit_report(tmp_path):
         {
             "asset_id": "prompt_000001",
             "content_prompt": "小蝌蚪和青蛙妈妈在荷叶边团聚的温馨场景",
-            "strict_reuse_group": "C03_irreplaceable_entity_event_action",
+            "strict_reuse_group": "C01_irreplaceable_entity_event_action",
             "strict_reuse_confidence": 0.91,
             "strict_reuse_reason": "不可替代关系事件",
         }
@@ -144,11 +144,11 @@ def test_llm_reclassify_writes_prompt_audit_report(tmp_path):
 
     payload = json.loads((tmp_path / "prompt_list_audit.json").read_text(encoding="utf-8"))
     assert payload["asset_count"] == 1
-    assert payload["counts"] == {"C03_irreplaceable_entity_event_action": 1}
+    assert payload["counts"] == {"C01_irreplaceable_entity_event_action": 1}
     assert payload["items"][0]["review_flags"] == []
     summary = (tmp_path / "prompt_list_audit_summary.md").read_text(encoding="utf-8")
     assert "prompt_000001" in summary
-    assert "C03_irreplaceable_entity_event_action" in summary
+    assert "C01_irreplaceable_entity_event_action" in summary
 
 
 def test_llm_reclassify_prompt_audit_flags_expected_group_mismatch(tmp_path):
@@ -157,16 +157,16 @@ def test_llm_reclassify_prompt_audit_flags_expected_group_mismatch(tmp_path):
         {
             "asset_id": "prompt_000001",
             "content_prompt": "北海公园秋天盛开的菊花",
-            "strict_reuse_group": "C03_irreplaceable_entity_event_action",
-            "expected_strict_reuse_group": "C04_generic_subject_object",
+            "strict_reuse_group": "C01_irreplaceable_entity_event_action",
+            "expected_strict_reuse_group": "C02_generic_subject_object",
             "strict_reuse_confidence": 0.91,
             "strict_reuse_reason": "incorrectly promoted via lesson context",
         },
         {
             "asset_id": "prompt_000002",
             "content_prompt": "小蝌蚪和青蛙妈妈在荷叶边团聚的温馨场景",
-            "strict_reuse_group": "C03_irreplaceable_entity_event_action",
-            "expected_strict_reuse_group": "C03_irreplaceable_entity_event_action",
+            "strict_reuse_group": "C01_irreplaceable_entity_event_action",
+            "expected_strict_reuse_group": "C01_irreplaceable_entity_event_action",
             "strict_reuse_confidence": 0.91,
             "strict_reuse_reason": "self-contained relationship event",
         },
@@ -176,9 +176,9 @@ def test_llm_reclassify_prompt_audit_flags_expected_group_mismatch(tmp_path):
 
     payload = json.loads((tmp_path / "prompt_list_audit.json").read_text(encoding="utf-8"))
     by_id = {item["asset_id"]: item for item in payload["items"]}
-    assert by_id["prompt_000001"]["expected_strict_reuse_group"] == "C04_generic_subject_object"
+    assert by_id["prompt_000001"]["expected_strict_reuse_group"] == "C02_generic_subject_object"
     assert by_id["prompt_000001"]["review_flags"] == ["expected_group_mismatch"]
-    assert by_id["prompt_000002"]["expected_strict_reuse_group"] == "C03_irreplaceable_entity_event_action"
+    assert by_id["prompt_000002"]["expected_strict_reuse_group"] == "C01_irreplaceable_entity_event_action"
     assert by_id["prompt_000002"]["review_flags"] == []
     summary = (tmp_path / "prompt_list_audit_summary.md").read_text(encoding="utf-8")
     assert "expected_group_mismatch" in summary
@@ -193,22 +193,22 @@ def test_llm_reclassify_boundary_fixture_loads_expected_groups():
     assert len(assets) == 16
     by_prompt = {asset["content_prompt"]: asset for asset in assets}
     expected = {
-        "小蝌蚪和青蛙妈妈在荷叶边团聚的温馨场景": "C03_irreplaceable_entity_event_action",
-        "卡通雾孩子把大海、太阳、城市一个个藏进身后的口袋里的插画": "C03_irreplaceable_entity_event_action",
-        "雾孩子的不同卡通形象，分别是捣蛋鬼、魔术师、小画家的样子": "C03_irreplaceable_entity_event_action",
-        "母亲拿着外套，笑着邀请轮椅上的儿子出门": "C03_irreplaceable_entity_event_action",
-        "母亲站在门外，贴着墙悄悄听房间里的动静，神情担忧": "C03_irreplaceable_entity_event_action",
-        "母亲站在床边温柔劝说男孩的场景": "C03_irreplaceable_entity_event_action",
-        "男孩在房间摔东西拒绝出门的场景": "C03_irreplaceable_entity_event_action",
-        "年轻男子坐在轮椅上，表情痛苦愤怒，身旁有被摔碎的杯子": "C03_irreplaceable_entity_event_action",
-        "年轻人坐在轮椅上背对窗户，姿态低落的插画，氛围压抑": "C03_irreplaceable_entity_event_action",
-        "池塘里一群小蝌蚪围着青蛙妈妈游动的卡通场景": "C03_irreplaceable_entity_event_action",
-        "史铁生肖像": "C03_irreplaceable_entity_event_action",
-        "北海公园秋天盛开的菊花": "C04_generic_subject_object",
-        "秋天的雨中飘落的金黄银杏叶": "C04_generic_subject_object",
-        "松鼠尾巴撑开像降落伞的卡通插图": "C04_generic_subject_object",
-        "小动物们挥手告别的卡通场景": "C04_generic_subject_object",
-        "真实的海岸照片，海浪拍打着岸边的石头": "C05_scene_decor_container",
+        "小蝌蚪和青蛙妈妈在荷叶边团聚的温馨场景": "C01_irreplaceable_entity_event_action",
+        "卡通雾孩子把大海、太阳、城市一个个藏进身后的口袋里的插画": "C01_irreplaceable_entity_event_action",
+        "雾孩子的不同卡通形象，分别是捣蛋鬼、魔术师、小画家的样子": "C01_irreplaceable_entity_event_action",
+        "母亲拿着外套，笑着邀请轮椅上的儿子出门": "C01_irreplaceable_entity_event_action",
+        "母亲站在门外，贴着墙悄悄听房间里的动静，神情担忧": "C01_irreplaceable_entity_event_action",
+        "母亲站在床边温柔劝说男孩的场景": "C01_irreplaceable_entity_event_action",
+        "男孩在房间摔东西拒绝出门的场景": "C01_irreplaceable_entity_event_action",
+        "年轻男子坐在轮椅上，表情痛苦愤怒，身旁有被摔碎的杯子": "C01_irreplaceable_entity_event_action",
+        "年轻人坐在轮椅上背对窗户，姿态低落的插画，氛围压抑": "C01_irreplaceable_entity_event_action",
+        "池塘里一群小蝌蚪围着青蛙妈妈游动的卡通场景": "C01_irreplaceable_entity_event_action",
+        "史铁生肖像": "C01_irreplaceable_entity_event_action",
+        "北海公园秋天盛开的菊花": "C02_generic_subject_object",
+        "秋天的雨中飘落的金黄银杏叶": "C02_generic_subject_object",
+        "松鼠尾巴撑开像降落伞的卡通插图": "C02_generic_subject_object",
+        "小动物们挥手告别的卡通场景": "C02_generic_subject_object",
+        "真实的海岸照片，海浪拍打着岸边的石头": "C03_scene_decor_container",
     }
     assert set(by_prompt) == set(expected)
     for prompt, expected_group in expected.items():
@@ -222,7 +222,7 @@ def test_llm_reclassify_classification_prompt_uses_content_prompt_only_payload()
             "assets": [
                 {
                     "asset_id": "page",
-                    "strict_reuse_group": "C04_generic_subject_object",
+                    "strict_reuse_group": "C02_generic_subject_object",
                     "strict_reuse_confidence": 0.93,
                     "strict_reuse_reason": "content_prompt 自身是可辨识主体对象",
                 }
@@ -242,13 +242,13 @@ def test_llm_reclassify_classification_prompt_uses_content_prompt_only_payload()
         "aspect_ratio": "16:9",
         "context_summary": "must not be sent",
         "teaching_intent": "must not be sent",
-        "strict_reuse_group": "C03_irreplaceable_entity_event_action",
+        "strict_reuse_group": "C01_irreplaceable_entity_event_action",
     }
 
     classified, warnings = module._classify_assets_with_llm([asset], client, batch_size=1)
 
     assert warnings == []
-    assert classified[0]["strict_reuse_group"] == "C04_generic_subject_object"
+    assert classified[0]["strict_reuse_group"] == "C02_generic_subject_object"
     call = client.calls[0]
     system_prompt = call["messages"][0]["content"]
     user_message = call["messages"][1]["content"]
@@ -283,7 +283,7 @@ def test_llm_reclassify_valid_response_updates_only_classification_fields():
             "assets": [
                 {
                     "asset_id": "page",
-                    "strict_reuse_group": "C03_irreplaceable_entity_event_action",
+                    "strict_reuse_group": "C01_irreplaceable_entity_event_action",
                     "strict_reuse_confidence": 0.88,
                     "strict_reuse_reason": "属于角色物件画面：小动物告别场景",
                 }
@@ -298,7 +298,7 @@ def test_llm_reclassify_valid_response_updates_only_classification_fields():
         "teaching_intent": "原教学用途",
         "subject": "语文",
         "grade_norm": "一年级",
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
         "strict_reuse_confidence": 0.6,
         "strict_reuse_reason": "旧分类",
     }
@@ -309,7 +309,7 @@ def test_llm_reclassify_valid_response_updates_only_classification_fields():
     assert classified == [
         {
             **asset,
-            "strict_reuse_group": "C03_irreplaceable_entity_event_action",
+            "strict_reuse_group": "C01_irreplaceable_entity_event_action",
             "strict_reuse_confidence": 0.88,
             "strict_reuse_reason": "属于角色物件画面：小动物告别场景",
         }
@@ -325,7 +325,7 @@ def test_llm_reclassify_ignores_non_classification_response_fields():
                     "asset_id": "page",
                     "content_prompt": "LLM returned this extra field",
                     "context_summary": "LLM returned another extra field",
-                    "strict_reuse_group": "C03_irreplaceable_entity_event_action",
+                    "strict_reuse_group": "C01_irreplaceable_entity_event_action",
                     "strict_reuse_confidence": 0.88,
                     "strict_reuse_reason": "属于角色物件画面：小动物告别场景",
                 }
@@ -336,7 +336,7 @@ def test_llm_reclassify_ignores_non_classification_response_fields():
         "asset_id": "page",
         "asset_kind": "page_image",
         "content_prompt": "小动物们挥手告别的卡通场景",
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
         "strict_reuse_confidence": 0.6,
         "strict_reuse_reason": "旧分类",
     }
@@ -347,7 +347,7 @@ def test_llm_reclassify_ignores_non_classification_response_fields():
     assert classified == [
         {
             **asset,
-            "strict_reuse_group": "C03_irreplaceable_entity_event_action",
+            "strict_reuse_group": "C01_irreplaceable_entity_event_action",
             "strict_reuse_confidence": 0.88,
             "strict_reuse_reason": "属于角色物件画面：小动物告别场景",
         }
@@ -367,7 +367,7 @@ def test_llm_reclassify_apply_merges_only_classification_fields(tmp_path, monkey
         "content_prompt": "original prompt",
         "context_summary": "original context",
         "teaching_intent": "original intent",
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
         "strict_reuse_confidence": 0.6,
         "strict_reuse_reason": "old classification",
     }
@@ -392,7 +392,7 @@ def test_llm_reclassify_apply_merges_only_classification_fields(tmp_path, monkey
                 "content_prompt": "rewritten prompt must not be applied",
                 "context_summary": "rewritten context must not be applied",
                 "teaching_intent": "rewritten intent must not be applied",
-                "strict_reuse_group": "C01_language_glyph_visual",
+                "strict_reuse_group": "C00_strict_text_problem_skip",
                 "strict_reuse_confidence": 0.91,
                 "strict_reuse_reason": "classification only",
             }
@@ -428,7 +428,7 @@ def test_llm_reclassify_apply_merges_only_classification_fields(tmp_path, monkey
     assert updated_asset["content_prompt"] == "original prompt"
     assert updated_asset["context_summary"] == "original context"
     assert updated_asset["teaching_intent"] == "original intent"
-    assert updated_asset["strict_reuse_group"] == "C01_language_glyph_visual"
+    assert updated_asset["strict_reuse_group"] == "C00_strict_text_problem_skip"
     assert updated_asset["strict_reuse_confidence"] == 0.91
     assert updated_asset["strict_reuse_reason"] == "classification only"
     assert "keyword_builder" not in captured["db"]
@@ -438,7 +438,7 @@ def test_llm_reclassify_apply_merges_only_classification_fields(tmp_path, monkey
     assert "general→content" not in summary
     assert "content→general" not in summary
     assert "- Group changed: 1" in summary
-    assert "- Changed directions: C05_scene_decor_container→C01_language_glyph_visual: 1" in summary
+    assert "- Changed directions: C03_scene_decor_container→C00_strict_text_problem_skip: 1" in summary
     diff_rows = [
         json.loads(line)
         for line in (report_dir / "diff.jsonl").read_text(encoding="utf-8").splitlines()
@@ -459,7 +459,7 @@ def test_llm_reclassify_apply_can_explicitly_rebuild_embedding(tmp_path, monkeyp
                 "asset_id": "page",
                 "asset_kind": "page_image",
                 "content_prompt": "original prompt",
-                "strict_reuse_group": "C05_scene_decor_container",
+                "strict_reuse_group": "C03_scene_decor_container",
             }
         ],
         "warnings": [],
@@ -475,7 +475,7 @@ def test_llm_reclassify_apply_can_explicitly_rebuild_embedding(tmp_path, monkeyp
         return [
             {
                 **assets[0],
-                "strict_reuse_group": "C01_language_glyph_visual",
+                "strict_reuse_group": "C00_strict_text_problem_skip",
                 "strict_reuse_confidence": 0.91,
                 "strict_reuse_reason": "classification only",
             }
@@ -586,18 +586,18 @@ def test_llm_reclassify_merges_all_split_json_when_current_files_exist(tmp_path)
     module = importlib.import_module("scripts.dry_run_llm_classify")
     split_dir = tmp_path / "strict_reuse_indexes"
     split_dir.mkdir()
-    (split_dir / "C05_scene_decor_container.json").write_text(
+    (split_dir / "C03_scene_decor_container.json").write_text(
         json.dumps(
             {
                 "schema_version": 12,
-                "strict_reuse_group": "C05_scene_decor_container",
+                "strict_reuse_group": "C03_scene_decor_container",
                 "asset_root": str(tmp_path),
                 "assets": [
                     {
                         "asset_id": "current_page",
                         "asset_kind": "page_image",
                         "image_path": "ai_images/current.png",
-                        "strict_reuse_group": "C05_scene_decor_container",
+                        "strict_reuse_group": "C03_scene_decor_container",
                     }
                 ],
             },
@@ -639,6 +639,6 @@ def test_llm_reclassify_direction_counts_use_actual_group_ids():
     module = importlib.import_module("scripts.dry_run_llm_classify")
     counts = {}
 
-    module._increment_direction_count(counts, "C11_background", "C05_scene_decor_container")
+    module._increment_direction_count(counts, "C11_background", "C03_scene_decor_container")
 
-    assert counts["C11_background→C05_scene_decor_container"] == 1
+    assert counts["C11_background→C03_scene_decor_container"] == 1

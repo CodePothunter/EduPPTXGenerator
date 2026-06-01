@@ -336,7 +336,7 @@ def test_phase2c_background_enqueues_sqlite_job_with_in_memory_seed(tmp_path, mo
                 "grade_norm": "八年级",
                 "grade_band": "high",
                 "general": False,
-                "strict_reuse_group": "C05_scene_decor_container",
+                "strict_reuse_group": "C03_scene_decor_container",
             }
         },
         query_embedding_cache={},
@@ -354,7 +354,7 @@ def test_phase2c_background_enqueues_sqlite_job_with_in_memory_seed(tmp_path, mo
     asset = job["payload"]["assets"][0]
     assert asset["caption"] == caption
     assert asset["context_summary"] == "in-memory match summary"
-    assert asset["strict_reuse_group"] == "C05_scene_decor_container"
+    assert asset["strict_reuse_group"] == "C03_scene_decor_container"
 
 
 def test_reuse_query_cache_only_persists_when_debug_artifacts_enabled(tmp_path):

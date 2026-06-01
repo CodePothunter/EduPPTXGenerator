@@ -114,12 +114,12 @@ def test_update_ppt_actual_dimensions_writes_transparent_padded_derivative(tmp_p
     split_dir.mkdir(parents=True)
 
     Image.new("RGBA", (120, 100), (20, 80, 160, 255)).save(image_dir / "asset.png")
-    index_path = split_dir / "C05_scene_decor_container.json"
+    index_path = split_dir / "C03_scene_decor_container.json"
     index_path.write_text(
         json.dumps(
             {
                 "schema_version": 13,
-                "strict_reuse_group": "C05_scene_decor_container",
+                "strict_reuse_group": "C03_scene_decor_container",
                 "asset_count": 1,
                 "assets": [
                     {
@@ -171,12 +171,12 @@ def test_update_ppt_actual_dimensions_keeps_other_images_unpadded(tmp_path):
     split_dir.mkdir(parents=True)
 
     Image.new("RGBA", (100, 1200), (200, 40, 40, 255)).save(image_dir / "tall.png")
-    index_path = split_dir / "C05_scene_decor_container.json"
+    index_path = split_dir / "C03_scene_decor_container.json"
     index_path.write_text(
         json.dumps(
             {
                 "schema_version": 13,
-                "strict_reuse_group": "C05_scene_decor_container",
+                "strict_reuse_group": "C03_scene_decor_container",
                 "asset_count": 1,
                 "assets": [
                     {
@@ -213,10 +213,10 @@ def test_update_ppt_actual_dimensions_dry_run_does_not_write_padded_files_or_jso
     split_dir.mkdir(parents=True)
 
     Image.new("RGBA", (120, 100), (20, 80, 160, 255)).save(image_dir / "asset.png")
-    index_path = split_dir / "C05_scene_decor_container.json"
+    index_path = split_dir / "C03_scene_decor_container.json"
     original_payload = {
         "schema_version": 13,
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
         "asset_count": 1,
         "assets": [
             {

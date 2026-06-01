@@ -169,7 +169,9 @@ def test_summarize_captions_fills_caption_from_query():
 def test_ppt_prompt_and_annotation_use_query():
     bp = importlib.import_module("scripts.build_ppt_materials_library")
     assert '"query"' in bp.PPT_VLM_SYSTEM_PROMPT
-    assert '"visual_reuse_group"' in bp.PPT_VLM_SYSTEM_PROMPT
+    assert '"visual_reuse_group"' not in bp.PPT_VLM_SYSTEM_PROMPT
+    assert '"vlm_general"' not in bp.PPT_VLM_SYSTEM_PROMPT
+    assert '"vlm_caption"' not in bp.PPT_VLM_SYSTEM_PROMPT
     assert '"content_prompt"' not in bp.PPT_VLM_SYSTEM_PROMPT
     assert '"detail_prompt"' not in bp.PPT_VLM_SYSTEM_PROMPT
     ann = bp._normalize_annotation(
@@ -178,8 +180,9 @@ def test_ppt_prompt_and_annotation_use_query():
          "context_summary": "课文片段配图，用于初读", "teaching_intent": "借拼音朗读"},
         item=None, meta={}, context={},
     )
+    assert set(ann) == {"query", "context_summary", "teaching_intent"}
     assert ann["query"] == "Q-PPT"
-    assert ann["visual_reuse_group"] == "C00_strict_text_problem_skip"
+    assert "visual_reuse_group" not in ann
     assert "content_prompt" not in ann
     assert "detail_prompt" not in ann
 
@@ -189,8 +192,10 @@ def test_keyword_client_from_vlm_has_chat():
     assert hasattr(bp._KeywordClientFromVLM, "chat")
 
 
-def test_general_mismatch_audit_records_vlm_llm_disagreements(tmp_path):
+def test_general_mismatch_audit_api_was_removed_with_vlm_general(tmp_path):
     bp = importlib.import_module("scripts.build_ppt_materials_library")
+    assert not hasattr(bp, "_write_general_mismatch_audit")
+    return
     db = {
         "assets": [
             {
@@ -203,9 +208,9 @@ def test_general_mismatch_audit_records_vlm_llm_disagreements(tmp_path):
                 "vlm_general": True,
                 "llm_general": False,
                 "general": False,
-                "strict_reuse_group": "C04_generic_subject_object",
+                "strict_reuse_group": "C02_generic_subject_object",
                 "strict_reuse_reason": "LLM says bound object",
-                "visual_reuse_group": "C05_scene_decor_container",
+                "visual_reuse_group": "C03_scene_decor_container",
                 "visual_reuse_reason": "VLM says reusable container",
             },
             {
@@ -218,8 +223,8 @@ def test_general_mismatch_audit_records_vlm_llm_disagreements(tmp_path):
                 "vlm_general": True,
                 "llm_general": True,
                 "general": True,
-                "strict_reuse_group": "C04_generic_subject_object",
-                "visual_reuse_group": "C04_generic_subject_object",
+                "strict_reuse_group": "C02_generic_subject_object",
+                "visual_reuse_group": "C02_generic_subject_object",
             },
             {
                 "asset_id": "a3",
@@ -245,22 +250,24 @@ def test_general_mismatch_audit_records_vlm_llm_disagreements(tmp_path):
     assert rec["vlm_general"] is True
     assert rec["llm_general"] is False
     assert rec["general"] is False
-    assert rec["visual_reuse_group"] == "C05_scene_decor_container"
-    assert rec["strict_reuse_group"] == "C04_generic_subject_object"
+    assert rec["visual_reuse_group"] == "C03_scene_decor_container"
+    assert rec["strict_reuse_group"] == "C02_generic_subject_object"
 
 
-def test_query_visual_mismatch_audit_records_disagreements(tmp_path):
+def test_query_visual_mismatch_audit_api_was_removed_with_vlm_classification(tmp_path):
     bp = importlib.import_module("scripts.build_ppt_materials_library")
+    assert not hasattr(bp, "_write_query_visual_mismatch_audit")
+    return
     db = {"assets": [
         {"asset_id": "a1", "asset_kind": "page_image", "image_path": "p/a1.png",
          "query": "习题几何图：AB平行于CD，AB=AC，∠ABC=68°", "caption": "几何图",
          "strict_reuse_group": "C00_strict_text_problem_skip",
-         "visual_reuse_group": "C02_structure_diagram_visual", "visual_reuse_confidence": 0.7,
+         "visual_reuse_group": "C00_strict_text_problem_skip", "visual_reuse_confidence": 0.7,
          "visual_reuse_reason": "看着像结构图"},
         {"asset_id": "a2", "asset_kind": "page_image", "image_path": "p/a2.png",
          "query": "卡通熊猫", "caption": "卡通熊猫",
-         "strict_reuse_group": "C04_generic_subject_object",
-         "visual_reuse_group": "C04_generic_subject_object", "visual_reuse_confidence": 0.9,
+         "strict_reuse_group": "C02_generic_subject_object",
+         "visual_reuse_group": "C02_generic_subject_object", "visual_reuse_confidence": 0.9,
          "visual_reuse_reason": "通用主体"},
     ]}
     path = bp._write_query_visual_mismatch_audit(db, tmp_path)
@@ -270,5 +277,5 @@ def test_query_visual_mismatch_audit_records_disagreements(tmp_path):
     assert ids == ["a1"]  # 仅记录不一致项
     rec = data["mismatches"][0]
     assert rec["strict_reuse_group"] == "C00_strict_text_problem_skip"
-    assert rec["visual_reuse_group"] == "C02_structure_diagram_visual"
+    assert rec["visual_reuse_group"] == "C00_strict_text_problem_skip"
     assert rec["query"].startswith("习题几何图")

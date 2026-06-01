@@ -23,22 +23,13 @@ from edupptx.materials.reuse_policy import (
 
 EXPECTED_CATEGORY_LEVELS = {
     "C00_strict_text_problem_skip": "skip",
-    "C01_language_glyph_visual": "strict",
-    "C02_structure_diagram_visual": "strict",
-    "C03_irreplaceable_entity_event_action": "strict",
-    "C04_generic_subject_object": "medium",
-    "C05_scene_decor_container": "loose",
-    "C03_specific_event_interaction": "strict",
-    "C04_teaching_bound_entity": "strict",
-    "C04_single_subject_asset": "medium",
-    "C05_generic_subject_asset": "medium",
-    "C05_decor_layout_container": "loose",
-    "C06_scene_decor_container": "loose",
-    "C06_generic_scene_activity": "loose",
+    "C01_irreplaceable_entity_event_action": "strict",
+    "C02_generic_subject_object": "medium",
+    "C03_scene_decor_container": "loose",
 }
 
 
-def _page(group: str = "C04_generic_subject_object", **extra) -> dict:
+def _page(group: str = "C02_generic_subject_object", **extra) -> dict:
     return {
         "asset_kind": "page_image",
         "strict_reuse_group": group,
@@ -55,12 +46,12 @@ def _background(**extra) -> dict:
 
 def test_plan_a_material_category_tables_are_the_policy_source():
     assert MATERIAL_CATEGORY_REUSE_LEVEL == EXPECTED_CATEGORY_LEVELS
-    assert len(MATERIAL_CATEGORY_REUSE_LEVEL) == 13  # 6 active + 7 legacy aliases
+    assert len(MATERIAL_CATEGORY_REUSE_LEVEL) == 4
 
 
 def test_normalize_policy_derives_from_strict_reuse_group_only():
     asset = _page(
-        "C04_generic_subject_object",
+        "C02_generic_subject_object",
         reuse_level="strict",
         generic_support_allowed=True,
     )
@@ -74,7 +65,7 @@ def test_normalize_policy_derives_from_strict_reuse_group_only():
 
 
 def test_loose_material_categories_enable_generic_support():
-    for group in ("C05_scene_decor_container",):
+    for group in ("C03_scene_decor_container",):
         policy = normalize_reuse_policy_fields(_page(group))
         assert policy["reuse_level"] == "loose"
         assert policy["generic_support_allowed"] is True
@@ -92,10 +83,10 @@ def test_missing_or_unknown_group_defaults_to_medium_policy():
 
 def test_asset_metadata_derives_from_material_category():
     metadata = normalize_asset_metadata(
-        _page("C01_language_glyph_visual")
+        _page("C00_strict_text_problem_skip")
     )
 
-    assert metadata.reuse_level == "strict"
+    assert metadata.reuse_level == "skip"
     assert metadata.generic_support_allowed is False
     result_dict = metadata.to_dict()
     assert "asset_category" not in result_dict
@@ -112,7 +103,7 @@ def test_reuse_thresholds_follow_material_category_level():
 
 
 def test_explicit_reuse_threshold_is_clamped():
-    target = _page("C04_generic_subject_object")
+    target = _page("C02_generic_subject_object")
 
     assert reuse_threshold_for_target(target, explicit_threshold=0.42) == 0.42
     assert reuse_threshold_for_target(target, explicit_threshold=-2) == 0.0
@@ -122,7 +113,7 @@ def test_explicit_reuse_threshold_is_clamped():
 def test_c00_target_is_rejected_before_similarity():
     result = evaluate_reuse_filter(
         _page("C00_strict_text_problem_skip"),
-        _page("C04_generic_subject_object"),
+        _page("C02_generic_subject_object"),
         {"keyword_score": 1.0, "embedding_score": 1.0, "accepted_by": "bm25_threshold"},
     )
 
@@ -133,7 +124,7 @@ def test_c00_target_is_rejected_before_similarity():
 
 def test_c00_candidate_is_rejected_before_similarity():
     result = evaluate_reuse_filter(
-        _page("C04_generic_subject_object"),
+        _page("C02_generic_subject_object"),
         _page("C00_strict_text_problem_skip"),
         {"keyword_score": 1.0, "embedding_score": 1.0, "accepted_by": "bm25_threshold"},
     )
@@ -145,7 +136,7 @@ def test_c00_candidate_is_rejected_before_similarity():
 
 def test_asset_kind_mismatch_rejects():
     result = evaluate_reuse_filter(
-        _page("C04_generic_subject_object"),
+        _page("C02_generic_subject_object"),
         _background(),
         {"keyword_score": 1.0},
     )

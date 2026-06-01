@@ -126,7 +126,7 @@ def test_generated_asset_reuses_match_stage_metadata_from_query_cache(tmp_path: 
         "context_summary": "cached context summary",
         "teaching_intent": "cached teaching intent",
         "general": True,
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
         "strict_reuse_confidence": 0.91,
         "strict_reuse_reason": "cached reuse group",
     }
@@ -143,7 +143,7 @@ def test_generated_asset_reuses_match_stage_metadata_from_query_cache(tmp_path: 
     assert asset["context_summary"] == "cached context summary"
     assert asset["teaching_intent"] == "cached teaching intent"
     assert asset["general"] is True
-    assert asset["strict_reuse_group"] == "C05_scene_decor_container"
+    assert asset["strict_reuse_group"] == "C03_scene_decor_container"
     assert asset["strict_reuse_reason"] == "cached reuse group"
 
 
@@ -199,7 +199,7 @@ def test_asset_library_update_skips_llm_when_match_metadata_seeded(tmp_path: Pat
         "context_summary": "cached context summary",
         "teaching_intent": "cached teaching intent",
         "general": True,
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
         "strict_reuse_confidence": 0.91,
         "strict_reuse_reason": "cached reuse group",
     }
@@ -220,7 +220,7 @@ def test_asset_library_update_skips_llm_when_match_metadata_seeded(tmp_path: Pat
     )
 
     assert db["assets"][0]["context_summary"] == "cached context summary"
-    assert db["assets"][0]["strict_reuse_group"] == "C05_scene_decor_container"
+    assert db["assets"][0]["strict_reuse_group"] == "C03_scene_decor_container"
 
 
 def test_background_asset_reuses_match_stage_metadata_from_query_cache(tmp_path: Path):
@@ -260,7 +260,7 @@ def test_background_asset_reuses_match_stage_metadata_from_query_cache(tmp_path:
         "context_summary": "cached background context",
         "teaching_intent": "cached background intent",
         "general": True,
-        "strict_reuse_group": "C05_scene_decor_container",
+        "strict_reuse_group": "C03_scene_decor_container",
         "strict_reuse_confidence": 0.92,
         "strict_reuse_reason": "cached background group",
     }
@@ -277,4 +277,4 @@ def test_background_asset_reuses_match_stage_metadata_from_query_cache(tmp_path:
     assert asset["normalized_prompt"] == "cached normalized background"
     assert asset["color_temperature"] == "cool"
     assert asset["context_summary"] == "cached background context"
-    assert asset["strict_reuse_group"] == "C05_scene_decor_container"
+    assert asset["strict_reuse_group"] == "C03_scene_decor_container"
