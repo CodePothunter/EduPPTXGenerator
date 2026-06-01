@@ -1,0 +1,14 @@
+[
+  {"query": "抱着橡果的卡通松鼠", "general": true},
+  {"query": "双目光学显微镜实物", "general": true},
+  {"query": "水墨山水风景插画", "general": true},
+  {"query": "水墨白玉兰花枝插画", "general": true},
+  {"query": "手握黄绿色直尺", "general": true},
+  {"query": "顶部花边的空白装饰文本框", "general": true},
+  {"query": "带装饰的空白对话气泡贴纸", "general": true},
+  {"query": "青铜鼎", "general": false},
+  {"query": "竹林亭边两位古人饮茶对坐的国画", "general": false},
+  {"query": "戴圆框眼镜的朱自清肖像", "general": false},
+  {"query": "李白工笔肖像画", "general": false},
+  {"query": "绿色对话气泡框内的“精读”文字", "general": false}
+]
