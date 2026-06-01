@@ -400,9 +400,10 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
             self.messages = kwargs["messages"]
             return {
                 "query": "blue rectangle teaching illustration",
+                "vlm_caption": "blue rectangle",
                 "context_summary": "visual support image",
                 "teaching_intent": "support explanation",
-                "general": True,
+                "vlm_general": True,
                 "visual_reuse_group": "C05_scene_decor_container",
                 "visual_reuse_confidence": 0.82,
                 "visual_reuse_reason": "plain visual support image",
@@ -417,20 +418,28 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
 
     class FakeKeywordClient:
         messages = None
+        call_count = 0
 
         def chat_json(self, messages, **kwargs):
             self.messages = messages
-            payload = json.loads(messages[-1]["content"].split("\n", 1)[1])
+            self.call_count += 1
+            payload = json.loads(messages[-1]["content"])
             asset_id = payload["assets"][0]["asset_id"]
             return {
                 "assets": [
                     {
                         "asset_id": asset_id,
-                        "context_summary": "keyword context should not replace VLM context",
-                        "teaching_intent": "keyword intent should not replace VLM intent",
-                        "context_summary_keywords": ["visual support"],
-                        "core_keywords": ["blue rectangle", "teaching illustration", "visual support"],
-                        "semantic_aliases": {"blue rectangle": ["blue block"]},
+                        "caption": "LLM caption",
+                        "llm_general": False,
+                        "subject": "other",
+                        "grade_norm": "other",
+                        "grade_band": "other",
+                        "strict_reuse_group": "C04_generic_subject_object",
+                        "strict_reuse_confidence": 0.77,
+                        "strict_reuse_reason": "LLM canonical classification",
+                        "context_summary": "LLM context must be ignored",
+                        "teaching_intent": "LLM intent must be ignored",
+                        "core_keywords": ["must be ignored"],
                     }
                 ],
             }
@@ -456,20 +465,26 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
     )
 
     asset = db["assets"][0]
+    assert keyword_client.call_count == 1
     assert asset["query"] == "blue rectangle teaching illustration"
     assert "content_prompt" not in asset
     assert "detail_prompt" not in asset
     # caption 由 summarize_records 从 query 概括；FakeKeywordClient 无 .chat，降级用 query
-    assert asset["caption"] == "blue rectangle teaching illustration"
+    assert asset["vlm_caption"] == "blue rectangle"
+    assert asset["caption"] == "LLM caption"
     assert asset["context_summary"] == "visual support image"
     assert asset["teaching_intent"] == "support explanation"
+    assert asset["vlm_general"] is True
+    assert asset["llm_general"] is False
+    assert asset["general"] is False
     assert "query_aliases" not in asset
     # padding_capacity is computed at annotation time from pixel edges; the
     # synthesized blue rectangle test image has fully colored borders → low.
     assert "padding_capacity" not in asset
     # VLM 视觉组落盘作交叉校验；strict_reuse_group canonical 来自 query 分类（此处 keyword LLM 未覆盖 → 沿用视觉种子）
     assert asset["visual_reuse_group"] == "C05_scene_decor_container"
-    assert asset["strict_reuse_group"] == "C05_scene_decor_container"
+    assert asset["strict_reuse_group"] == "C04_generic_subject_object"
+    assert asset["strict_reuse_reason"] == "LLM canonical classification"
     assert "transform_advice" not in asset
     for deleted_field in ("context_summary_keywords", "constraints", "core_keywords", "semantic_aliases"):
         assert deleted_field not in asset
@@ -483,6 +498,8 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
     system_prompt = vlm_client.messages[0]["content"]
     assert '"query"' in system_prompt
     assert '"visual_reuse_group"' in system_prompt
+    assert '"vlm_caption"' in system_prompt
+    assert '"vlm_general": false' in system_prompt
     assert "若要重新生成这张图" in system_prompt
     assert "20-40 个汉字" in system_prompt
     assert "教学载体 + 具体教学内容" in system_prompt
@@ -503,6 +520,39 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
     ):
         assert disallowed_field not in system_prompt
     assert '"query": "blue rectangle teaching illustration"' in keyword_client.messages[-1]["content"]
+    assert '"vlm_caption": "blue rectangle"' in keyword_client.messages[-1]["content"]
+
+
+def test_ppt_one_pass_llm_prompt_contract():
+    asset = {
+        "asset_id": "ppt_asset",
+        "asset_kind": "page_image",
+        "query": "blue rectangle teaching illustration",
+        "vlm_caption": "blue rectangle",
+        "context_summary": "visual support image",
+        "teaching_intent": "support explanation",
+        "vlm_general": True,
+        "visual_reuse_group": "C05_scene_decor_container",
+        "theme": "demo lesson",
+        "subject": "language",
+        "grade_norm": "grade5",
+        "grade_band": "upper",
+        "page_type": "content",
+        "aspect_ratio": "4:3",
+    }
+
+    messages = MODULE._build_ppt_llm_enrichment_messages([asset])
+
+    system = messages[0]["content"]
+    payload = json.loads(messages[-1]["content"])
+    assert "llm_general" in system
+    assert "caption" in system
+    assert "Do not output context_summary or teaching_intent" in system
+    assert "core_keywords" in system
+    assert payload["assets"][0]["vlm_caption"] == "blue rectangle"
+    assert payload["assets"][0]["vlm_general"] is True
+    assert payload["assets"][0]["context_summary"] == "visual support image"
+    assert payload["assets"][0]["teaching_intent"] == "support explanation"
 
 
 def test_ppt_theme_is_compact_without_inserted_spaces():
@@ -563,6 +613,14 @@ def _raw_ppt_image_for_general_test():
     )
 
 
+def test_ppt_vlm_prompt_requests_caption_and_general_comparison_fields():
+    assert '"vlm_caption"' in MODULE.PPT_VLM_SYSTEM_PROMPT
+    assert '"vlm_general": false' in MODULE.PPT_VLM_SYSTEM_PROMPT
+    assert "VLM comparison fields" in MODULE.PPT_VLM_SYSTEM_PROMPT
+    assert "do not output canonical caption/content_prompt/detail_prompt" in MODULE.PPT_VLM_SYSTEM_PROMPT
+    assert "core_keywords" in MODULE.PPT_VLM_SYSTEM_PROMPT
+
+
 def test_ppt_vlm_prompt_requests_general_boolean():
     assert '"general": false' in MODULE.PPT_VLM_SYSTEM_PROMPT
     assert "general 必须是布尔值" in MODULE.PPT_VLM_SYSTEM_PROMPT
@@ -591,6 +649,53 @@ def test_ppt_annotation_normalizes_boolean_general():
     )
 
     assert annotation["general"] is True
+
+
+def test_ppt_annotation_normalizes_legacy_general_to_vlm_general():
+    item = _raw_ppt_image_for_general_test()
+
+    annotation = MODULE._normalize_annotation(
+        {
+            "query": "decorated blank speech bubble sticker",
+            "context_summary": "VLM context",
+            "teaching_intent": "VLM intent",
+            "general": True,
+            "visual_reuse_group": "C05_scene_decor_container",
+            "visual_reuse_confidence": 0.9,
+            "visual_reuse_reason": "blank reusable container",
+        },
+        item,
+        {"file_name": "demo.pptx", "course": {"subject": "language"}},
+        {"slide_text": "classroom display", "slide_title_guess": "intro"},
+    )
+
+    assert annotation["vlm_general"] is True
+    assert annotation["general"] is True
+    assert annotation.get("vlm_caption", "") == ""
+
+
+def test_ppt_annotation_normalizes_vlm_caption():
+    item = _raw_ppt_image_for_general_test()
+
+    annotation = MODULE._normalize_annotation(
+        {
+            "query": "decorated blank speech bubble sticker",
+            "vlm_caption": "blank speech bubble",
+            "context_summary": "VLM context",
+            "teaching_intent": "VLM intent",
+            "vlm_general": False,
+            "visual_reuse_group": "C05_scene_decor_container",
+            "visual_reuse_confidence": 0.9,
+            "visual_reuse_reason": "blank reusable container",
+        },
+        item,
+        {},
+        {},
+    )
+
+    assert annotation["vlm_caption"] == "blank speech bubble"
+    assert annotation["vlm_general"] is False
+    assert annotation["general"] is False
 
 
 def test_ppt_asset_persists_general_from_annotation():
@@ -625,6 +730,44 @@ def test_ppt_asset_persists_general_from_annotation():
     )
 
     assert asset["general"] is True
+
+
+def test_ppt_asset_persists_vlm_comparison_fields_from_annotation():
+    item = _raw_ppt_image_for_general_test()
+    annotation = {
+        "query": "decorated blank speech bubble sticker without readable text",
+        "vlm_caption": "blank speech bubble",
+        "context_summary": "VLM context",
+        "teaching_intent": "VLM intent",
+        "vlm_general": True,
+        "general": True,
+        "visual_reuse_group": "C05_scene_decor_container",
+        "visual_reuse_confidence": 0.9,
+        "visual_reuse_reason": "blank reusable container",
+    }
+
+    asset = MODULE._build_asset_from_annotation(
+        asset_id="ppt_asset",
+        image_rel="pptx_images/ppt_asset.png",
+        original_image_rel="pptx_images_original/ppt_asset.png",
+        image_fields={
+            "actual_width": 400,
+            "actual_height": 300,
+            "padded_width": 400,
+            "padded_height": 300,
+            "aspect_ratio": "4:3",
+        },
+        item=item,
+        meta={"file_name": "demo.pptx", "course": {"subject": "other", "grade": "grade5"}},
+        context={"slide_text": "classroom display", "slide_title_guess": "intro"},
+        annotation=annotation,
+    )
+
+    assert asset["vlm_caption"] == "blank speech bubble"
+    assert asset["vlm_general"] is True
+    assert asset["general"] is True
+    assert asset["context_summary"] == "VLM context"
+    assert asset["teaching_intent"] == "VLM intent"
 
 
 def test_ppt_annotation_normalization_maps_legacy_content_prompt_to_query():

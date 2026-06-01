@@ -281,6 +281,44 @@ def test_write_match_index_persists_general_boolean_to_split_indexes(tmp_path):
     assert payload["assets"][0]["general"] is True
 
 
+def test_match_index_preserves_ppt_vlm_llm_comparison_fields():
+    db = {
+        "schema_version": 10,
+        "assets": [
+            {
+                "asset_id": "ppt_compare",
+                "asset_kind": "page_image",
+                "image_path": "pptx_images/ppt_compare.png",
+                "aspect_ratio": "1:1",
+                "query": "plain classroom icon",
+                "caption": "LLM caption",
+                "vlm_caption": "VLM caption",
+                "vlm_general": True,
+                "llm_general": False,
+                "general": False,
+                "context_summary": "VLM context",
+                "teaching_intent": "VLM intent",
+                "strict_reuse_group": "C04_generic_subject_object",
+                "strict_reuse_confidence": 0.91,
+                "strict_reuse_reason": "LLM says subject object",
+                "visual_reuse_group": "C05_scene_decor_container",
+                "visual_reuse_confidence": 0.82,
+                "visual_reuse_reason": "VLM says scene",
+            }
+        ],
+    }
+
+    index = build_ai_image_match_index(db)
+
+    asset = index["assets"][0]
+    assert asset["vlm_caption"] == "VLM caption"
+    assert asset["vlm_general"] is True
+    assert asset["llm_general"] is False
+    assert asset["general"] is False
+    assert asset["visual_reuse_group"] == "C05_scene_decor_container"
+    assert asset["strict_reuse_group"] == "C04_generic_subject_object"
+
+
 def test_split_indexes_write_backgrounds_to_dedicated_json(tmp_path):
     match_index = {
         "schema_version": 14,

@@ -328,9 +328,15 @@ _STRICT_REUSE_PASSTHROUGH_FIELDS = (
     "strict_reuse_reason",
     "strict_reuse_signals",
 )
+_PPT_COMPARISON_PASSTHROUGH_FIELDS = (
+    "vlm_caption",
+    "vlm_general",
+    "llm_general",
+)
 _METADATA_PASSTHROUGH_FIELDS = (
     *_REVIEW_PASSTHROUGH_FIELDS,
     *_STRICT_REUSE_PASSTHROUGH_FIELDS,
+    *_PPT_COMPARISON_PASSTHROUGH_FIELDS,
 )
 _REUSE_TARGET_METADATA_SEEDED_FIELD = "_reuse_target_metadata_seeded"
 _PAGE_REUSE_TARGET_METADATA_FIELDS = (

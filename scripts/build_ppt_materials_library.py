@@ -46,7 +46,6 @@ from edupptx.llm_client import create_llm_client, create_vlm_client
 from edupptx.materials.ai_image_asset_db import (
     DEFAULT_KEYWORD_BATCH_SIZE,
     DEFAULT_MATCH_INDEX_FILENAME,
-    enrich_ai_image_asset_db_keywords,
     extract_topic_refs,
     normalize_grade_info,
     read_ai_image_split_match_index,
@@ -114,9 +113,10 @@ PPT_VLM_SYSTEM_PROMPT = """你是教学课件素材库的图片标注助手。�
 输出 JSON 结构：
 {
   "query": "可重新生成该图的完整中文 prompt，保留全部可见文字/数值/标注/图形关系",
+  "vlm_caption": "VLM 生成的中文短 caption，用于和后续 LLM caption 做能力对比",
   "context_summary": "一句 20-40 个汉字的短句，描述画面内容和页面功能",
   "teaching_intent": "该图服务的教学动作或学习目标",
-  "general": false,
+  "vlm_general": false,
   "visual_reuse_group": "<C00-C05 material category ID>",
   "visual_reuse_confidence": 0.0,
   "visual_reuse_reason": "一句中文判断依据"
@@ -137,7 +137,7 @@ PPT_VLM_SYSTEM_PROMPT = """你是教学课件素材库的图片标注助手。�
 
 7. visual_reuse_group 是你看图直接给出的素材分类（C00-C05），作为对 query 文本分类的交叉校验；visual_reuse_confidence 为 0-1，visual_reuse_reason 用一句中文说明画面依据。
 
-8. 不要输出 caption、content_prompt、detail_prompt、core_keywords、semantic_aliases、query_aliases 或结构之外的任何字段。
+8. 输出 vlm_caption 作为 VLM 对比 caption；不要输出 canonical caption、content_prompt、detail_prompt、core_keywords、semantic_aliases、query_aliases 或结构之外的任何字段。
 """
 
 
@@ -146,8 +146,11 @@ PPT_VLM_SYSTEM_PROMPT += (
     "- visual_reuse_group must be one of the 6 material category IDs below (C00-C05).\n"
     "- C00_strict_text_problem_skip means skip reuse and skip library ingestion.\n"
     "- 用 query 作为唯一的图片本体描述字段；不要输出 caption/content_prompt/detail_prompt。\n"
-    '- Output "general": false in every JSON object unless the image is clearly reusable across subjects.\n'
-    "- general 必须是布尔值 true 或 false；你是严格保守的跨学科通用复用分类器，模糊时输出 false。\n"
+    "- Output VLM comparison fields only: vlm_caption and vlm_general.\n"
+    "- Output vlm_caption for capability comparison, but do not output canonical caption/content_prompt/detail_prompt.\n"
+    '- Output "vlm_general": false in every JSON object unless the image is clearly reusable across subjects.\n'
+    '- Legacy compatibility note: do not output top-level "general": false; map this decision to vlm_general.\n'
+    "- vlm_general 必须是布尔值 true 或 false；你是严格保守的跨学科通用复用分类器，模糊时输出 false。\n"
     + MATERIAL_CATEGORY_RULES_TEXT
 )
 
@@ -429,29 +432,11 @@ def build_ppt_image_materials_library(
         warnings=report["warnings"],
     )
     if use_keyword_enrichment and keyword_client is not None:
-        from edupptx.materials.caption_rules import summarize_records
-
-        page_assets = [
-            a for a in (db.get("assets") or [])
-            if isinstance(a, dict)
-            and _clean_text(a.get("asset_kind")) != "background"
-            and not _clean_text(a.get("caption"))
-        ]
-        if page_assets:
-            records = [{"query": _clean_text(a.get("query"))} for a in page_assets]
-            try:
-                summarized = summarize_records(records, keyword_client, query_field="query", caption_field="caption")
-                for asset, item in zip(page_assets, summarized):
-                    asset["caption"] = _clean_text(item.get("caption")) or _clean_text(asset.get("query"))
-            except Exception as exc:
-                report["warnings"].append(f"caption_summarize_failed:{type(exc).__name__}: {exc}")
-                for asset in page_assets:
-                    asset["caption"] = _clean_text(asset.get("query"))
-        enrich_ai_image_asset_db_keywords(
+        _enrich_ppt_assets_with_llm(
             db,
             keyword_client,
             batch_size=keyword_batch_size,
-            preserve_existing_context_fields=True,
+            warnings=report["warnings"],
         )
     elif use_keyword_enrichment:
         report["warnings"].append("keyword_enrichment_skipped: no LLM or VLM client configured")
@@ -462,6 +447,8 @@ def build_ppt_image_materials_library(
         report["near_duplicates"] = near_duplicate_report["groups"]
     mismatch_audit_path = _write_query_visual_mismatch_audit(db, library_root)
     report["query_visual_mismatch_audit_path"] = str(mismatch_audit_path)
+    general_mismatch_audit_path = _write_general_mismatch_audit(db, library_root)
+    report["general_mismatch_audit_path"] = str(general_mismatch_audit_path)
     _strip_ppt_internal_asset_fields(db)
     db["asset_count"] = len(db.get("assets", []) if isinstance(db.get("assets"), list) else [])
     db["warnings"] = _dedupe(
@@ -1025,6 +1012,213 @@ def _delete_ppt_duplicate_image(asset: dict[str, Any], library_root: Path) -> st
 
 
 QUERY_VISUAL_MISMATCH_AUDIT_FILENAME = "query_visual_group_mismatch.json"
+GENERAL_MISMATCH_AUDIT_FILENAME = "general_mismatch_audit.json"
+PPT_LLM_ENRICHMENT_METHOD = "ppt_one_pass_llm_caption_and_reuse_metadata"
+
+PPT_ALLOWED_SUBJECTS = {"语文", "数学", "物理", "其他", "other"}
+PPT_ALLOWED_GRADE_NORMS = {
+    "一年级",
+    "二年级",
+    "三年级",
+    "四年级",
+    "五年级",
+    "六年级",
+    "七年级",
+    "八年级",
+    "九年级",
+    "高一",
+    "高二",
+    "高三",
+    "其他",
+    "other",
+}
+PPT_ALLOWED_GRADE_BANDS = {"低年级", "高年级", "其他", "other", "upper", "lower"}
+
+
+def _build_ppt_llm_enrichment_messages(batch: list[dict[str, Any]]) -> list[dict[str, str]]:
+    items: list[dict[str, Any]] = []
+    for asset in batch:
+        item = {
+            "asset_id": _clean_text(asset.get("asset_id")),
+            "asset_kind": _clean_text(asset.get("asset_kind")),
+            "query": _clean_text(asset.get("query")),
+            "vlm_caption": _clean_text(asset.get("vlm_caption")),
+            "context_summary": _clean_text(asset.get("context_summary")),
+            "teaching_intent": _clean_text(asset.get("teaching_intent")),
+            "vlm_general": _optional_bool(asset.get("vlm_general")),
+            "visual_reuse_group": _clean_text(asset.get("visual_reuse_group")),
+            "visual_reuse_reason": _clean_text(asset.get("visual_reuse_reason")),
+            "theme": _clean_text(asset.get("theme")),
+            "subject_hint": _clean_text(asset.get("subject")),
+            "grade_hint": _clean_text(asset.get("grade_norm")),
+            "page_type": _clean_text(asset.get("page_type")),
+            "aspect_ratio": _clean_text(asset.get("aspect_ratio")),
+        }
+        if _clean_text(asset.get("asset_kind")) == "background":
+            item["normalized_prompt"] = _clean_text(asset.get("normalized_prompt"))
+            item["color_temperature"] = _clean_text(asset.get("color_temperature"))
+        items.append(item)
+
+    system = (
+        "Return strict JSON only. The top-level object must contain an assets array. "
+        "For page_image output only: asset_id, caption, llm_general, subject, "
+        "grade_norm, grade_band, strict_reuse_group, strict_reuse_confidence, "
+        "strict_reuse_reason. For background output only: asset_id, normalized_prompt, "
+        "color_temperature, llm_general, subject, grade_norm, grade_band, "
+        "strict_reuse_group, strict_reuse_confidence, strict_reuse_reason. "
+        "Do not output context_summary or teaching_intent; those are VLM-owned and "
+        "must not be rewritten. Produce caption from the full query, not from "
+        "vlm_caption. Use conservative cross-subject reuse rules for llm_general. "
+        "Subject must be one of: 语文, 数学, 物理, 其他. "
+        "Grade_norm must be one of 一年级 through 九年级, 高一, 高二, 高三, 其他. "
+        "Grade_band must be one of: 低年级, 高年级, 其他. "
+        "Do not output core_keywords, semantic_aliases, query_aliases, constraints, "
+        "context_summary_keywords, or explanations outside JSON. "
+        "strict_reuse_group must be one of the material category IDs below. "
+        + MATERIAL_CATEGORY_RULES_TEXT
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps({"assets": items}, ensure_ascii=False, indent=2)},
+    ]
+
+
+def _call_ppt_llm_enrichment(client: Any, batch: list[dict[str, Any]]) -> dict[str, Any] | list[Any]:
+    messages = _build_ppt_llm_enrichment_messages(batch)
+    max_tokens = max(2048, min(12000, 700 * len(batch) + 1600))
+    chat_json = getattr(client, "chat_json", None)
+    if callable(chat_json):
+        try:
+            return chat_json(messages=messages, temperature=0.0, max_tokens=max_tokens, max_retries=1)
+        except TypeError:
+            return chat_json(messages, temperature=0.0, max_tokens=max_tokens)
+    chat = getattr(client, "chat", None)
+    if not callable(chat):
+        raise TypeError("PPT enrichment client must provide chat_json() or chat()")
+    raw = chat(messages=messages, temperature=0.0, max_tokens=max_tokens)
+    text = str(raw or "").strip()
+    if text.startswith("```"):
+        lines = text.splitlines()[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        text = "\n".join(lines).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        import json_repair
+
+        return json_repair.loads(text)
+
+
+def _ppt_llm_payload_by_asset_id(response: dict[str, Any] | list[Any]) -> dict[str, dict[str, Any]]:
+    items = response.get("assets") if isinstance(response, dict) else response
+    if not isinstance(items, list):
+        raise ValueError("PPT enrichment response must contain an assets array")
+    by_id: dict[str, dict[str, Any]] = {}
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        asset_id = _clean_text(item.get("asset_id"))
+        if asset_id:
+            by_id[asset_id] = item
+    return by_id
+
+
+def _normalize_ppt_enum(value: Any, allowed: set[str], default: str = "其他") -> str:
+    text = _clean_text(value)
+    return text if text in allowed else default
+
+
+def _apply_ppt_llm_payload(asset: dict[str, Any], payload: dict[str, Any], warnings: list[Any]) -> None:
+    asset_id = _clean_text(asset.get("asset_id"))
+    asset["subject"] = _normalize_ppt_enum(payload.get("subject"), PPT_ALLOWED_SUBJECTS)
+    asset["grade_norm"] = _normalize_ppt_enum(payload.get("grade_norm"), PPT_ALLOWED_GRADE_NORMS)
+    asset["grade_band"] = _normalize_ppt_enum(payload.get("grade_band"), PPT_ALLOWED_GRADE_BANDS)
+
+    llm_general = _optional_bool(payload.get("llm_general"))
+    if llm_general is None:
+        warnings.append(f"ppt_llm_enrichment_missing_llm_general:{asset_id}")
+        llm_general = _optional_bool(asset.get("general"))
+        if llm_general is None:
+            llm_general = False
+    asset["llm_general"] = llm_general
+    asset["general"] = llm_general
+
+    if _clean_text(asset.get("asset_kind")) == "background":
+        normalized_prompt = _clean_text(payload.get("normalized_prompt")) or _clean_text(asset.get("normalized_prompt"))
+        if normalized_prompt:
+            asset["normalized_prompt"] = normalized_prompt
+        color_temperature = _clean_text(payload.get("color_temperature")) or _clean_text(asset.get("color_temperature"))
+        if color_temperature:
+            asset["color_temperature"] = color_temperature
+    else:
+        caption = _clean_text(payload.get("caption"))
+        if not caption:
+            warnings.append(f"ppt_llm_enrichment_missing_caption:{asset_id}")
+            caption = _clean_text(asset.get("vlm_caption")) or _clean_text(asset.get("query"))
+        asset["caption"] = caption
+
+    existing_group = _clean_text(asset.get("strict_reuse_group"))
+    strict_group = _clean_text(payload.get("strict_reuse_group")) or existing_group
+    asset["strict_reuse_group"] = _normalize_material_category(strict_group)
+    confidence = _safe_float(payload.get("strict_reuse_confidence"))
+    if confidence <= 0:
+        confidence = _safe_float(asset.get("strict_reuse_confidence")) or 0.8
+    asset["strict_reuse_confidence"] = round(max(0.0, min(1.0, confidence)), 4)
+    asset["strict_reuse_reason"] = (
+        _clean_text(payload.get("strict_reuse_reason"))
+        or _clean_text(asset.get("strict_reuse_reason"))
+        or "PPT one-pass LLM reuse classification"
+    )
+    asset["strict_reuse_signals"] = _dedupe(
+        [
+            *[str(x) for x in (asset.get("strict_reuse_signals") or []) if str(x).strip()],
+            "ppt_one_pass_llm_reuse_group",
+        ]
+    )
+
+
+def _enrich_ppt_assets_with_llm(
+    db: dict[str, Any],
+    client: Any,
+    *,
+    batch_size: int,
+    warnings: list[Any],
+) -> None:
+    assets = [asset for asset in (db.get("assets") or []) if isinstance(asset, dict)]
+    if not assets:
+        return
+    size = max(1, int(batch_size or DEFAULT_KEYWORD_BATCH_SIZE))
+    db["keyword_built_at"] = datetime.now(timezone.utc).isoformat()
+    db["keyword_builder"] = {
+        "method": PPT_LLM_ENRICHMENT_METHOD,
+        "batch_size": size,
+        "model": _clean_text(getattr(client, "_model", "")),
+    }
+    for start in range(0, len(assets), size):
+        batch = assets[start : start + size]
+        by_id: dict[str, dict[str, Any]] = {}
+        try:
+            response = _call_ppt_llm_enrichment(client, batch)
+            by_id = _ppt_llm_payload_by_asset_id(response)
+        except Exception as exc:
+            warnings.append(f"ppt_llm_enrichment_batch_failed:{type(exc).__name__}: {exc}")
+            for asset in batch:
+                asset_id = _clean_text(asset.get("asset_id"))
+                try:
+                    response = _call_ppt_llm_enrichment(client, [asset])
+                    by_id.update(_ppt_llm_payload_by_asset_id(response))
+                except Exception as single_exc:
+                    warnings.append(
+                        f"ppt_llm_enrichment_asset_failed:{asset_id}:{type(single_exc).__name__}: {single_exc}"
+                    )
+        for asset in batch:
+            asset_id = _clean_text(asset.get("asset_id"))
+            payload = by_id.get(asset_id)
+            if not payload:
+                warnings.append(f"ppt_llm_enrichment_payload_missing:{asset_id}")
+                continue
+            _apply_ppt_llm_payload(asset, payload, warnings)
 
 
 def _write_query_visual_mismatch_audit(db: dict[str, Any], library_root: str | Path) -> Path:
@@ -1058,6 +1252,44 @@ def _write_query_visual_mismatch_audit(db: dict[str, Any], library_root: str | P
     path = debug_dir / QUERY_VISUAL_MISMATCH_AUDIT_FILENAME
     payload = {
         "note": "classification is query-based (canonical); these assets disagree with the VLM visual group, review manually",
+        "mismatch_count": len(mismatches),
+        "mismatches": mismatches,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+def _write_general_mismatch_audit(db: dict[str, Any], library_root: str | Path) -> Path:
+    assets = db.get("assets") if isinstance(db.get("assets"), list) else []
+    mismatches: list[dict[str, Any]] = []
+    for asset in assets:
+        if not isinstance(asset, dict) or _clean_text(asset.get("asset_kind")) != "page_image":
+            continue
+        vlm_general = _optional_bool(asset.get("vlm_general"))
+        llm_general = _optional_bool(asset.get("llm_general"))
+        if vlm_general is None or llm_general is None or vlm_general == llm_general:
+            continue
+        mismatches.append(
+            {
+                "asset_id": _clean_text(asset.get("asset_id")),
+                "image_path": _clean_text(asset.get("image_path")),
+                "query": _clean_text(asset.get("query")),
+                "vlm_caption": _clean_text(asset.get("vlm_caption")),
+                "caption": _clean_text(asset.get("caption")),
+                "vlm_general": vlm_general,
+                "llm_general": llm_general,
+                "general": _optional_bool(asset.get("general")),
+                "visual_reuse_group": _clean_text(asset.get("visual_reuse_group")),
+                "strict_reuse_group": _clean_text(asset.get("strict_reuse_group")),
+                "visual_reuse_reason": _clean_text(asset.get("visual_reuse_reason")),
+                "strict_reuse_reason": _clean_text(asset.get("strict_reuse_reason")),
+            }
+        )
+    debug_dir = Path(library_root) / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    path = debug_dir / GENERAL_MISMATCH_AUDIT_FILENAME
+    payload = {
+        "note": "general uses LLM as canonical; mismatches are for manual review",
         "mismatch_count": len(mismatches),
         "mismatches": mismatches,
     }
@@ -1164,6 +1396,7 @@ def _normalize_annotation(
     query = _clean_text(raw.get("query")) or _clean_text(raw.get("content_prompt"))
     if not query:
         query = _fallback_annotation(item, meta, context, "missing_query")["content_prompt"]
+    vlm_caption = _clean_text(raw.get("vlm_caption"))
     context_summary = _clean_text(raw.get("context_summary")) or _fallback_ppt_context_summary(context)
     teaching_intent = _clean_text(raw.get("teaching_intent")) or "辅助课堂教学说明"
     visual_reuse_group = _normalize_material_category(
@@ -1173,7 +1406,9 @@ def _normalize_annotation(
     if visual_reuse_confidence <= 0:
         visual_reuse_confidence = 0.5 if visual_reuse_group == "C05_scene_decor_container" else 0.75
     visual_reuse_reason = _clean_text(raw.get("visual_reuse_reason")) or "PPT VLM visual reuse group"
-    general = _optional_bool(raw.get("general"))
+    vlm_general = _optional_bool(raw.get("vlm_general"))
+    if vlm_general is None:
+        vlm_general = _optional_bool(raw.get("general"))
     ann = {
         "query": query,
         "context_summary": context_summary,
@@ -1182,8 +1417,11 @@ def _normalize_annotation(
         "visual_reuse_confidence": round(visual_reuse_confidence, 4),
         "visual_reuse_reason": visual_reuse_reason,
     }
-    if general is not None:
-        ann["general"] = general
+    if vlm_caption:
+        ann["vlm_caption"] = vlm_caption
+    if vlm_general is not None:
+        ann["vlm_general"] = vlm_general
+        ann["general"] = vlm_general
     return ann
 
 
@@ -1226,6 +1464,7 @@ def _build_asset_from_annotation(
         "unit_ref": unit_ref,
         "topic_refs": topic_refs,
         "query": query,
+        "vlm_caption": _clean_text(annotation.get("vlm_caption")),
         "context_summary": annotation["context_summary"],
         "teaching_intent": annotation["teaching_intent"],
         "asset_category": "background" if asset_kind == "background" else "unknown",
@@ -1238,6 +1477,9 @@ def _build_asset_from_annotation(
         "strict_reuse_reason": annotation.get("visual_reuse_reason") or "PPT VLM visual reuse group (pre-query-classify)",
         "strict_reuse_signals": ["ppt_vlm_visual_reuse_group"],
     }
+    vlm_general = _optional_bool(annotation.get("vlm_general"))
+    if vlm_general is not None:
+        asset["vlm_general"] = vlm_general
     general = _optional_bool(annotation.get("general"))
     if general is not None:
         asset["general"] = general

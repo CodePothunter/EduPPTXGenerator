@@ -189,6 +189,66 @@ def test_keyword_client_from_vlm_has_chat():
     assert hasattr(bp._KeywordClientFromVLM, "chat")
 
 
+def test_general_mismatch_audit_records_vlm_llm_disagreements(tmp_path):
+    bp = importlib.import_module("scripts.build_ppt_materials_library")
+    db = {
+        "assets": [
+            {
+                "asset_id": "a1",
+                "asset_kind": "page_image",
+                "image_path": "p/a1.png",
+                "query": "decorated blank speech bubble sticker",
+                "vlm_caption": "blank speech bubble",
+                "caption": "speech bubble sticker",
+                "vlm_general": True,
+                "llm_general": False,
+                "general": False,
+                "strict_reuse_group": "C04_generic_subject_object",
+                "strict_reuse_reason": "LLM says bound object",
+                "visual_reuse_group": "C05_scene_decor_container",
+                "visual_reuse_reason": "VLM says reusable container",
+            },
+            {
+                "asset_id": "a2",
+                "asset_kind": "page_image",
+                "image_path": "p/a2.png",
+                "query": "plain pencil icon",
+                "vlm_caption": "pencil icon",
+                "caption": "pencil icon",
+                "vlm_general": True,
+                "llm_general": True,
+                "general": True,
+                "strict_reuse_group": "C04_generic_subject_object",
+                "visual_reuse_group": "C04_generic_subject_object",
+            },
+            {
+                "asset_id": "a3",
+                "asset_kind": "page_image",
+                "image_path": "p/a3.png",
+                "query": "missing LLM decision",
+                "vlm_general": False,
+                "general": False,
+            },
+        ],
+    }
+
+    path = bp._write_general_mismatch_audit(db, tmp_path)
+
+    import json as _json
+
+    data = _json.loads(path.read_text(encoding="utf-8"))
+    assert data["mismatch_count"] == 1
+    rec = data["mismatches"][0]
+    assert rec["asset_id"] == "a1"
+    assert rec["vlm_caption"] == "blank speech bubble"
+    assert rec["caption"] == "speech bubble sticker"
+    assert rec["vlm_general"] is True
+    assert rec["llm_general"] is False
+    assert rec["general"] is False
+    assert rec["visual_reuse_group"] == "C05_scene_decor_container"
+    assert rec["strict_reuse_group"] == "C04_generic_subject_object"
+
+
 def test_query_visual_mismatch_audit_records_disagreements(tmp_path):
     bp = importlib.import_module("scripts.build_ppt_materials_library")
     db = {"assets": [
