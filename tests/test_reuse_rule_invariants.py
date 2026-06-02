@@ -30,3 +30,20 @@ def test_caption_preserves_named_identity_form_and_forbids_fabricated_action():
     assert "确定呈现形态" in CAPTION_RULE
     assert "升格为主体谓语" in CAPTION_RULE
     assert "不写“图片/插画/这张图”等元词" in CAPTION_RULE
+
+
+def test_c00_excludes_blank_scaffold_includes_symbol_gesture():
+    # 空白脚手架不归 C00；语言符号本体（含手势）与无数字关系图归 C00。
+    assert "空白脚手架" in MATERIAL_CATEGORY_RULES_TEXT
+    assert "语言符号" in MATERIAL_CATEGORY_RULES_TEXT
+    assert "手势" in MATERIAL_CATEGORY_RULES_TEXT
+    assert "无数字" in MATERIAL_CATEGORY_RULES_TEXT
+
+
+def test_c01_named_entity_overrides_diagram_and_has_dual_tag():
+    # 具名实体优先于图示/文字分支；地标场景图产出 C03 副标签。
+    assert "具名压过形态" in MATERIAL_CATEGORY_RULES_TEXT
+    assert "strict_reuse_secondary_group" in MATERIAL_CATEGORY_RULES_TEXT
+    # 分类仍读 query，不读 caption/content_prompt。
+    assert "content_prompt" not in MATERIAL_CATEGORY_RULES_TEXT
+    assert "caption" not in MATERIAL_CATEGORY_RULES_TEXT

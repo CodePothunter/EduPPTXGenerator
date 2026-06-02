@@ -54,3 +54,45 @@ def test_ingest_ai_image_asset_job_uses_seeded_metadata_without_llm(tmp_path: Pa
     assert ingested["context_summary"] == "seeded context summary"
     assert ingested["strict_reuse_group"] == "C03_scene_decor_container"
     assert (library_dir / "ai_images" / "aiimg_seeded_job.png").exists()
+
+
+def test_ingest_ai_image_asset_job_skips_c00_assets_without_copying(tmp_path: Path, monkeypatch):
+    monkeypatch.setenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", "1")
+    session_dir = tmp_path / "output" / "session_c00"
+    materials_dir = session_dir / "materials"
+    materials_dir.mkdir(parents=True)
+    image_path = materials_dir / "page_01_illustration_1.png"
+    Image.new("RGB", (16, 12), "white").save(image_path)
+    library_dir = tmp_path / "materials_library"
+
+    asset = {
+        "asset_id": "aiimg_c00_job",
+        "asset_kind": "page_image",
+        "image_path": "materials/page_01_illustration_1.png",
+        "aspect_ratio": "4:3",
+        "caption": "exact text worksheet",
+        "context_summary": "exact text page",
+        "teaching_intent": "answer a specific text problem",
+        "subject": "math",
+        "grade_norm": "grade2",
+        "grade_band": "lower",
+        "general": False,
+        "strict_reuse_group": "C00_strict_text_problem_skip",
+        "_reuse_target_metadata_seeded": True,
+    }
+
+    db, target = ingest_ai_image_asset_job(
+        {
+            "job_id": "job_c00",
+            "session_dir": str(session_dir),
+            "library_dir": str(library_dir),
+            "assets": [asset],
+        },
+        keyword_client=None,
+    )
+
+    assert target == library_dir.resolve() / "strict_reuse_indexes"
+    assert db["asset_count"] == 0
+    assert db["assets"] == []
+    assert not (library_dir / "ai_images" / "aiimg_c00_job.png").exists()
+    assert any("skipped C00 asset" in warning for warning in db.get("warnings", []))

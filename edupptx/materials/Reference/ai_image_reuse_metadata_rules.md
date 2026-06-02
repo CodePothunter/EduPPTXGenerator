@@ -9,7 +9,7 @@
 ```json
 {
   "asset_id": "",
-  "content_prompt": "",
+  "caption": "",
   "context_summary": "",
   "teaching_intent": "",
   "subject": "其他",
@@ -17,6 +17,7 @@
   "grade_band": "其他",
   "general": false,
   "strict_reuse_group": "",
+  "strict_reuse_secondary_group": "",
   "strict_reuse_confidence": 0.0,
   "strict_reuse_reason": ""
 }
@@ -36,6 +37,7 @@
   "grade_band": "其他",
   "general": false,
   "strict_reuse_group": "",
+  "strict_reuse_secondary_group": "",
   "strict_reuse_confidence": 0.0,
   "strict_reuse_reason": ""
 }
@@ -51,7 +53,7 @@
 
 `grade_band` 必须只从以下枚举中选择：`低年级`、`高年级`、`其他`。
 
-请根据 `theme`、`content_prompt`、`subject_hint`、`grade_hint` 和用户显式线索自行判断并归一这三个字段。即使输入字段已有值，也必须重新输出上述枚举，不要复制非枚举格式。无法判断、不确定或缺少线索时输出 `其他`。不要依赖固定格式；只要内容语义能明确指向某个学科、年级或学段，就给出对应枚举。
+请根据 `theme`、`caption`、`subject_hint`、`grade_hint` 和用户显式线索自行判断并归一这三个字段。即使输入字段已有值，也必须重新输出上述枚举，不要复制非枚举格式。无法判断、不确定或缺少线索时输出 `其他`。不要依赖固定格式；只要内容语义能明确指向某个学科、年级或学段，就给出对应枚举。
 
 ## 通用复用字段
 
@@ -65,17 +67,19 @@
 
 ## 检索字段
 
-页面图片检索只使用 `content_prompt + "\n" + context_summary`。
+页面图片检索只使用 `caption`。
 
-背景图检索只使用 `normalized_prompt + "\n" + context_summary`。
+背景图检索只使用 `normalized_prompt`。
 
-`teaching_intent` 只作为素材库元数据保留，不作为检索文本。
+`context_summary` 和 `teaching_intent` 只作为素材库元数据保留，不作为检索文本。
 
 ## 类别路由
 
-`strict_reuse_group` 必须是当前 v7 无缺号体系的 6 个素材类别 ID 之一：`C00_strict_text_problem_skip`、`C00_strict_text_problem_skip`、`C00_strict_text_problem_skip`、`C01_irreplaceable_entity_event_action`、`C02_generic_subject_object`、`C03_scene_decor_container`。`C00_strict_text_problem_skip` 表示图片需要精确匹配文字、数字、公式、符号、题目、选项或原文段落；这类素材跳过复用，也不写入可复用匹配索引。
+`strict_reuse_group` 必须是当前 4 个素材类别主类 ID 之一：`C00_strict_text_problem_skip`、`C01_irreplaceable_entity_event_action`、`C02_generic_subject_object`、`C03_scene_decor_container`。`C00_strict_text_problem_skip` 表示图片需要精确匹配文字、数字、公式、符号、题目、选项或原文段落；这类素材跳过复用，也不写入可复用匹配索引。
 
-`strict_reuse_group` 分类只能依据 `content_prompt` 的字面内容。不要用 `page_type`、`subject`、`grade_norm`、`grade_band`、`image_role` 来判断类别。
+`strict_reuse_secondary_group` 只在主类为 `C01_irreplaceable_entity_event_action` 的具名地标图、且周边场景本身也可作氛围复用时输出 `C03_scene_decor_container`。纯肖像、角色、文献、结构图及其它情况省略该字段。本版该字段只作标注，不双写进 C03 split。
+
+`strict_reuse_group` 分类只能依据 `query` 的字面内容。不要用 `page_type`、`subject`、`grade_norm`、`grade_band`、`image_role` 来判断类别。
 
 ## 背景规范化
 

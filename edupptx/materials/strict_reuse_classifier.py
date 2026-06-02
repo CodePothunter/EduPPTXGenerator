@@ -43,57 +43,63 @@ _MATERIAL_CATEGORY_SET = frozenset(MATERIAL_CATEGORIES)
 _LEGACY_CATEGORY_MIGRATION: dict[str, str] = {}
 
 MATERIAL_CATEGORY_RULES_TEXT = (
-    "## strict_reuse_group 4 类分类规则（v2，合并 skip）\n"
+    "## strict_reuse_group 4 类分类规则（v3，复用不变量锐化）\n"
     "\n"
-    "全局原则：只根据 content_prompt 字面描述判断。"
-    "严禁参考 theme、subject、grade_norm、文件名、原始 strict_reuse_group 或其他元数据推断分类。"
-    "分类依据是 content_prompt 自身表达的复用粒度。按下面顺序判断，命中高优先级即停。\n"
+    "全局原则：只根据 query 字面描述判断复用粒度。严禁参考 theme、subject、grade_norm、文件名、"
+    "原始 strict_reuse_group 或其他元数据。按 C00→C01→C02→C03 顺序判断，命中高优先即停。\n"
     "\n"
-    "只允许输出以下 4 个 ID：\n"
+    "只允许输出以下 4 个主类 ID：\n"
     "C00_strict_text_problem_skip\n"
     "C01_irreplaceable_entity_event_action\n"
     "C02_generic_subject_object\n"
     "C03_scene_decor_container\n"
     "\n"
-    "复用宽松度谱系（严→松）：C00 不复用 → C01 实体/事件/动作严格匹配 → "
-    "C02 类型匹配 → C03 语境匹配\n"
+    "复用宽松度谱系（严→松）：C00 不复用 → C01 实体/事件/动作严格匹配 → C02 类型匹配 → C03 语境匹配\n"
     "\n"
-    "0. C00_strict_text_problem_skip（精确教学载荷 — 跳过复用）：\n"
-    "画面核心复用价值依赖必须逐字/逐数值/逐符号一致的精确内容，或是语言符号本体教学，"
-    "或是知识结构/原理图示时，归 C00（这三种都不参与复用）。\n"
-    "适用：4 个及以上独立教学字词、生字表、整段课文/诗文/儿歌/选段、完整题干/选项/解题步骤、"
-    "不可替换数值题图（精确文字载荷）；汉字/词语/拼音/笔画/笔顺/部首/字源/演变/构字/结构、"
-    "形近字/同音字/多音字辨析、少量生字教学卡片（语言符号本体）；"
-    "数学几何/统计/数轴/应用题关系图，物理光路/成像/实验装置结构，"
-    "语文阅读/写作/课文结构思维导图，跨学科流程图/关系图/表格（知识结构图示）。\n"
-    "排除（替换不变性判据）：看字/数值是否必须逐字逐值复现的教学载荷——换一组就丧失该教学功能才算；"
-    "不看是否出现数字/文字。可替换短标签、装饰文字、角色旁小牌子，以及通用主体（工具/器材/实物/场景）"
-    "附带印着的刻度、标号、标签（如尺/量角器/温度计/钟表上的刻度数字）换成同类另一组仍服务同样复用，"
-    "都不归 C00，按画面主体判 C01/C02/C03；数轴分解、竖式、算式、题干、生字表、整段诗文等逐字载荷才归 C00。\n"
+    "C00↔C01 优先级例外（避免具名实体被图示/文字分支抢先）：先判画面核心是什么——\n"
+    "画面核心是逐字文字/符号载荷本身（整段课文/题干/生字/拼音/公式/竖式）→ C00 优先；\n"
+    "画面核心是具名/特定实体本身（具名人物/角色/地标/文献/文物），即便呈现为结构图、布局图、"
+    "含手写字或场景 → C01 优先，不落 C00（赵州桥结构图、故宫平面布局图、黄文秀日记都按 C01）；\n"
+    "二者都不是、而是通用知识结构图示（无名几何/光路/思维导图/泛结构图）→ 回到 C00 图示分支。\n"
     "\n"
-    "1. C01_irreplaceable_entity_event_action（不可替代实体/事件/动作 — 严格匹配）：\n"
-    "只有 content_prompt 自身已表达不可替代语义命题时才归 C01（匿名主体也可）。"
-    "把画面简化为同类型通用主体/普通姿态后会丢失故事绑定的角色身份、不可互换主体关系、"
-    "有意图/对象/结果的动作、冲突/抗拒/破坏后果/状态转折，或强情绪故事状态，则归 C01。"
-    "这些必须由 content_prompt 自身表达，不得从课文主题或旧 metadata 推断。\n"
-    "不归 C01：普通动物群体、普通人物组合、轻量社交动作、通用主体的简单姿态/普通表情/外观特征，"
-    "不构成不可替代命题时，下探 C02/C03。\n"
+    "0. C00_strict_text_problem_skip（精确不可替换载荷 — 跳过复用）：\n"
+    "画面复用价值依赖必须逐一复现的精确内容时归 C00：\n"
+    "(a) 字面文字/数字/公式：整段课文/诗文/题干/选项/解题步骤、生字表、竖式算式；\n"
+    "(b) 语言符号本体（含手势/口型演示）：汉字/拼音/笔顺/部首/字源；拼音手指操、口型手势也算"
+    "——教的是那个特定符号，换一个就丧失教学功能；\n"
+    "(c) 精确教学关系/结构（即使无数字）：几何带数据图、光路/成像/实验装置结构、思维导图/流程图/关系图；"
+    "无数字但表达特定平衡/对应关系的图（如天平两端特定物体平衡）也算——关系本身是必须复现的载荷。\n"
+    "排除（替换不变性判据）：换一组仍服务同样复用的就不算 C00。空白脚手架（空网格/空坐标系/空数位表/"
+    "空白田字格模板/空烧杯线稿）无任何要复现的载荷，按主体走 C02/C03；通用量具印着的刻度/标号、"
+    "装饰文字、可替换短标签都不算载荷。\n"
     "\n"
-    "2. C02_generic_subject_object（通用主体/对象 — 类型级匹配）：\n"
-    "画面核心是可辨识的通用主体或对象（人物/角色/动物/植物/自然物/工具/器材/道具/小规模组合/普通状态）时归 C02。"
-    "把主体换成同类型另一个、动作简化成普通姿态后仍保留主要复用价值，归 C02。"
-    "若简化会破坏故事绑定身份/关系/结果/强情绪组合，归 C01；"
-    "若主要靠整体环境/天气/远景/氛围/页面承载功能复用，归 C03；"
-    "空白卡片/文本框/边框/模板/占位主导画面归 C03。"
-    "自然物按离散主体与整体景观二分：可单独指代、可替换的离散自然主体（一棵树/一只鹤/一朵花）归 C02；"
-    "整片山水/景观/远景（山峦、山水、云海、田野、天际），尤其以装饰/插画/纹样/卷轴/剪影/背景形态出现时归 C03"
-    "——不看名词是山峦还是山水，看它被当作可替换的具体主体，还是整片景致与装饰底。\n"
+    "1. C01_irreplaceable_entity_event_action（不可替换具名/特定身份 或 复杂动作叙事 — 严格匹配）：\n"
+    "满足任一即归 C01：具名/特定人物（含肖像/照片/塑像，如李白、鲁迅、黄文秀）；具名/特定角色"
+    "（即使静态，如孙悟空、猪八戒、哆啦A梦）；具名/特定地标或地点（即使呈现为场景、结构图或平面布局图，"
+    "如卢沟桥、故宫、赵州桥、望湖楼）；具名/特定实物/文献/文物（如黄文秀扶贫日记）；复杂动作/叙事/"
+    "人物关系（儿子发火母亲门口偷看、纪昌学射、红军翻越雪山，有意图/对象/结果的动作、冲突/抗拒/后果/"
+    "状态转折、强情绪故事状态）。\n"
+    "不归 C01：匿名通用主体的简单姿态/普通表情、无名拟人形象、通用演示手势，不构成不可替换命题时"
+    "下探 C02/C03。\n"
+    "地标双用副标签：当主类为 C01 的具名地标图，其周边场景本身也可作氛围复用（具名地标嵌在可迁移场景里，"
+    "如寒山寺江景、望湖楼雨景）时，额外输出 strict_reuse_secondary_group=C03_scene_decor_container；"
+    "纯肖像/角色/文献/结构图不输出。\n"
+    "\n"
+    "2. C02_generic_subject_object（通用/匿名主体对象 — 类型级匹配）：\n"
+    "画面核心是可辨识但通用、匿名、可替换的主体或对象：匿名人物/动物/植物、无名拟人形象"
+    "（卡通雾孩子、拟人化蚂蚁）；通用工具/器材/技术件（空数位表、计数器、量角器、温度计、直尺、"
+    "钟表表盘、汽车轮胎、邮票）；通用操作/姿势手势（执笔姿势、折纸的手）——与 C00 语言符号手势区分："
+    "教通用动作=C02，教特定拼音/字符符号=C00；通用物附带的品牌/标识/标签字不升级类别"
+    "（米其林轮胎、带水印的手电筒光束仍 C02）。自然物按离散主体与整体景观二分：可单独指代、可替换的"
+    "离散主体（一棵树/一只鹤）归 C02。\n"
     "\n"
     "3. C03_scene_decor_container（场景装饰容器 — 语境级匹配）：\n"
-    "画面核心是整体场景/天气/氛围/远景/背景/页面装饰/空白容器/内容占位模板时归 C03。"
-    "复用只需语境/氛围/版式功能相近。裁出某主体后仍主要作为该主体复用则归 C02；"
-    "content_prompt 自身表达主体绑定的不可替代强叙事命题则归 C01；"
-    "容器内已有不可替换教学文字/题目/段落按 C00 判断。\n"
+    "画面核心是无具名焦点主体的整体景观/场景/氛围/装饰/容器：泛山水/泛场景/远景（泛江南水乡、"
+    "云海红日、整体景观如山峦山水）；匿名小人物融入的场景（山居秋暝里匿名浣女与渔夫）；氛围/天气/版式/"
+    "留白容器/边框/装饰图案/内容占位模板。裁出某主体后仍主要作该主体复用则回 C02。\n"
+    "\n"
+    "速记：手势——教特定符号→C00，教通用动作→C02；具名压过形态——具名地标/人物即便是图示/结构图/"
+    "场景也按 C01；空白 vs 填充——空白脚手架无载荷→C02/C03，承载特定字符/数据/关系→C00。\n"
 )
 
 MATERIAL_CATEGORY_RULES_TEXT = MATERIAL_CATEGORY_RULES_TEXT.replace("content_prompt", "query")
@@ -147,6 +153,27 @@ def normalize_strict_reuse_group(value: Any, *, default: str = GENERAL_REUSE_GRO
         if text == cat.casefold():
             return cat
     return default
+
+
+SECONDARY_REUSE_GROUP_FIELD = "strict_reuse_secondary_group"
+
+
+def normalize_secondary_reuse_group(value: Any, *, primary: Any) -> str:
+    """Normalize the lazy C03 dual tag carried on a C01 primary asset.
+
+    This version is annotation-only (never double-written into the C03 split).
+    Only ``C03`` attached to a ``C01`` primary is meaningful; anything else
+    collapses to ``""``.
+    """
+
+    primary_norm = normalize_strict_reuse_group(primary, default="")
+    secondary = normalize_strict_reuse_group(value, default="")
+    if (
+        primary_norm == C01_IRREPLACEABLE_ENTITY_EVENT_ACTION
+        and secondary == C03_SCENE_DECOR_CONTAINER
+    ):
+        return secondary
+    return ""
 
 
 SKIP_FROM_INDEX_VLM_QUALITY_THRESHOLD = 0.3
@@ -666,6 +693,14 @@ def _apply_classification(asset: dict[str, Any], result: dict[str, Any]) -> None
         asset["strict_reuse_signals"] = signals
     else:
         asset.pop("strict_reuse_signals", None)
+    secondary = normalize_secondary_reuse_group(
+        asset.get(SECONDARY_REUSE_GROUP_FIELD),
+        primary=result["strict_reuse_group"],
+    )
+    if secondary:
+        asset[SECONDARY_REUSE_GROUP_FIELD] = secondary
+    else:
+        asset.pop(SECONDARY_REUSE_GROUP_FIELD, None)
 
 
 def _classification(

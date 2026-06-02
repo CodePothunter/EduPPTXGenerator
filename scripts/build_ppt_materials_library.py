@@ -30,6 +30,7 @@ import sqlite3
 import sys
 import zipfile
 import xml.etree.ElementTree as ET
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -44,6 +45,8 @@ if str(REPO_ROOT) not in sys.path:
 from edupptx.config import Config
 from edupptx.llm_client import create_llm_client, create_vlm_client
 from edupptx.materials.ai_image_asset_db import (
+    DEFAULT_EMBEDDING_INDEX_FILENAME,
+    DEFAULT_EMBEDDING_META_FILENAME,
     DEFAULT_KEYWORD_BATCH_SIZE,
     DEFAULT_MATCH_INDEX_FILENAME,
     extract_topic_refs,
@@ -60,6 +63,10 @@ EXTRACTOR_VERSION = "ppt_materials_library.v10"
 DEFAULT_LIBRARY_DIR = Path("materials_library_ppt")
 DEFAULT_IMAGE_DIR = "pptx_images"
 DEFAULT_ORIGINAL_IMAGE_DIR = "pptx_images_original"
+DEFAULT_SKIP_IMAGE_DIR = "skip_images"
+DEFAULT_PPT_KEYWORD_BATCH_SIZE = 1
+DEFAULT_PPT_VLM_WORKERS = 15
+DEFAULT_PPT_LLM_WORKERS = 15
 PPT_ASPECT_MAX_LOSS = 0.50
 PPT_ASPECT_RATIO_PAIRS = {
     "1:1": (1, 1),
@@ -202,6 +209,13 @@ def _infer_teach_kb_root_from_pptx_dir(pptx_root: Path) -> Path:
     return pptx_root
 
 
+def _positive_int(value: Any, default: int) -> int:
+    try:
+        return max(1, int(value if value is not None else default))
+    except (TypeError, ValueError):
+        return max(1, int(default))
+
+
 def build_ppt_image_materials_library(
     *,
     teach_kb_root: str | Path,
@@ -219,7 +233,9 @@ def build_ppt_image_materials_library(
     flush_each_ppt: bool = True,
     env_file: str | Path = ".env",
     vlm_max_side: int = 1280,
-    keyword_batch_size: int = DEFAULT_KEYWORD_BATCH_SIZE,
+    keyword_batch_size: int = DEFAULT_PPT_KEYWORD_BATCH_SIZE,
+    vlm_workers: int = DEFAULT_PPT_VLM_WORKERS,
+    llm_workers: int = DEFAULT_PPT_LLM_WORKERS,
 ) -> tuple[dict[str, Any], Path, dict[str, Any]]:
     """Extract PPTX images into an isolated library compatible with reuse DB fields.
 
@@ -236,6 +252,9 @@ def build_ppt_image_materials_library(
 
     library_root.mkdir(parents=True, exist_ok=True)
     image_root.mkdir(parents=True, exist_ok=True)
+    keyword_batch_size = _positive_int(keyword_batch_size, DEFAULT_PPT_KEYWORD_BATCH_SIZE)
+    vlm_workers = _positive_int(vlm_workers, DEFAULT_PPT_VLM_WORKERS)
+    llm_workers = _positive_int(llm_workers, DEFAULT_PPT_LLM_WORKERS)
 
     config: Config | None = None
     if use_vlm and vlm_client is None:
@@ -269,6 +288,9 @@ def build_ppt_image_materials_library(
         "match_index_path": str(index_target),
         "use_vlm": bool(use_vlm),
         "use_keyword_enrichment": bool(use_keyword_enrichment and keyword_client is not None),
+        "vlm_workers": vlm_workers if use_vlm else 0,
+        "llm_workers": llm_workers if use_keyword_enrichment and keyword_client is not None else 0,
+        "keyword_batch_size": keyword_batch_size,
         "pptx_count": 0,
         "raw_picture_count": 0,
         "kept_asset_count": 0,
@@ -283,116 +305,163 @@ def build_ppt_image_materials_library(
     total_assets_before = len(assets_by_id)
     ppt_asset_source_by_id: dict[str, dict[str, Any]] = {}
     iter_pptx_paths = selected_pptx_paths if selected_pptx_paths else None
-    for pptx_path in _iter_pptx_files(pptx_root, iter_pptx_paths, limit):
-        if max_assets and report["kept_asset_count"] >= max_assets:
-            break
-        if not pptx_path.exists():
-            _add_skip(report, str(pptx_path), "pptx_missing")
-            continue
+    if use_keyword_enrichment and keyword_client is None:
+        report["warnings"].append("keyword_enrichment_skipped: no LLM or VLM client configured")
 
-        meta = _load_pptx_metadata(kb_db_path, pptx_path, pptx_root)
-        markdown_excerpt = _extract_markitdown_excerpt(pptx_path)
-        raw_items = _extract_raw_ppt_images(pptx_path)
-        wide_repeated = _repeated_wide_hashes(raw_items)
-        pptx_summary = {
-            "pptx_path": str(pptx_path),
-            "raw_picture_count": len(raw_items),
-            "kept": 0,
-            "skipped": 0,
-        }
-        report["pptx_count"] += 1
-        report["raw_picture_count"] += len(raw_items)
+    vlm_executor = ThreadPoolExecutor(max_workers=vlm_workers) if use_vlm else None
+    llm_executor = (
+        ThreadPoolExecutor(max_workers=llm_workers)
+        if use_keyword_enrichment and keyword_client is not None
+        else None
+    )
 
-        for item in raw_items:
+    def submit_llm_or_store(asset: dict[str, Any], futures: dict[Any, str]) -> None:
+        asset_id = _clean_text(asset.get("asset_id"))
+        if llm_executor is None:
+            if asset_id:
+                assets_by_id[asset_id] = asset
+            return
+        future = llm_executor.submit(
+            _enrich_single_ppt_asset_with_llm,
+            dict(asset),
+            keyword_client,
+            batch_size=keyword_batch_size,
+        )
+        futures[future] = asset_id
+
+    try:
+        for pptx_path in _iter_pptx_files(pptx_root, iter_pptx_paths, limit):
             if max_assets and report["kept_asset_count"] >= max_assets:
                 break
-            reason = _classify_exclusion(item, wide_repeated)
-            if reason:
-                _add_skip(report, _usage_label(item), reason)
-                pptx_summary["skipped"] += 1
+            if not pptx_path.exists():
+                _add_skip(report, str(pptx_path), "pptx_missing")
                 continue
 
-            asset_id = _asset_id_for_sha(item.sha256)
-            image_rel = f"{DEFAULT_IMAGE_DIR}/{asset_id}.png"
-            original_image_rel = f"{DEFAULT_ORIGINAL_IMAGE_DIR}/{asset_id}.png"
-            image_abs = library_root / image_rel
-            original_image_abs = library_root / original_image_rel
-            try:
-                image_fields = _save_ppt_image_derivatives(
-                    item.data,
-                    original_path=original_image_abs,
-                    runtime_path=image_abs,
-                )
-            except Exception as exc:
-                _add_skip(report, _usage_label(item), f"image_save_failed:{type(exc).__name__}")
-                pptx_summary["skipped"] += 1
-                continue
+            meta = _load_pptx_metadata(kb_db_path, pptx_path, pptx_root)
+            markdown_excerpt = _extract_markitdown_excerpt(pptx_path)
+            raw_items = _extract_raw_ppt_images(pptx_path)
+            wide_repeated = _repeated_wide_hashes(raw_items)
+            pptx_summary = {
+                "pptx_path": str(pptx_path),
+                "raw_picture_count": len(raw_items),
+                "kept": 0,
+                "skipped": 0,
+            }
+            report["pptx_count"] += 1
+            report["raw_picture_count"] += len(raw_items)
+            vlm_futures: dict[Any, str] = {}
+            llm_futures: dict[Any, str] = {}
 
-            ppt_asset_source_by_id[asset_id] = _ppt_asset_source_meta(item)
-            if asset_id in assets_by_id:
-                existing_asset = assets_by_id[asset_id]
-                existing_asset.update(image_fields)
-                existing_asset["image_path"] = image_rel
-                existing_asset["original_image_path"] = original_image_rel
-                existing_asset["asset_kind"] = _ppt_asset_kind(item)
-                if existing_asset["asset_kind"] == "background":
-                    existing_asset["asset_category"] = "background"
-                    existing_asset["normalized_prompt"] = _clean_text(
-                        existing_asset.get("normalized_prompt") or existing_asset.get("content_prompt")
-                    )
-                for removed_key in ("aspect_bucket", "role", "padding_capacity"):
-                    existing_asset.pop(removed_key, None)
-                pptx_summary["kept"] += 1
-                report["kept_asset_count"] += 1
-                continue
+            for item in raw_items:
+                if max_assets and report["kept_asset_count"] >= max_assets:
+                    break
+                reason = _classify_exclusion(item, wide_repeated)
+                if reason:
+                    _add_skip(report, _usage_label(item), reason)
+                    pptx_summary["skipped"] += 1
+                    continue
 
-            context = _build_context(item, meta, markdown_excerpt)
-            annotation: dict[str, Any]
-            if use_vlm:
+                asset_id = _asset_id_for_sha(item.sha256)
+                image_rel = f"{DEFAULT_IMAGE_DIR}/{asset_id}.png"
+                original_image_rel = f"{DEFAULT_ORIGINAL_IMAGE_DIR}/{asset_id}.png"
+                image_abs = library_root / image_rel
+                original_image_abs = library_root / original_image_rel
                 try:
-                    annotation = _annotate_with_vlm(
+                    image_fields = _save_ppt_image_derivatives(
+                        item.data,
+                        original_path=original_image_abs,
+                        runtime_path=image_abs,
+                    )
+                except Exception as exc:
+                    _add_skip(report, _usage_label(item), f"image_save_failed:{type(exc).__name__}")
+                    pptx_summary["skipped"] += 1
+                    continue
+
+                ppt_asset_source_by_id[asset_id] = _ppt_asset_source_meta(item)
+                if asset_id in assets_by_id:
+                    existing_asset = dict(assets_by_id[asset_id])
+                    existing_asset.update(image_fields)
+                    existing_asset["image_path"] = image_rel
+                    existing_asset["original_image_path"] = original_image_rel
+                    existing_asset["asset_kind"] = _ppt_asset_kind(item)
+                    if existing_asset["asset_kind"] == "background":
+                        existing_asset["asset_category"] = "background"
+                        existing_asset["normalized_prompt"] = _clean_text(
+                            existing_asset.get("normalized_prompt") or existing_asset.get("content_prompt")
+                        )
+                    for removed_key in ("aspect_bucket", "role", "padding_capacity"):
+                        existing_asset.pop(removed_key, None)
+                    submit_llm_or_store(existing_asset, llm_futures)
+                    pptx_summary["kept"] += 1
+                    report["kept_asset_count"] += 1
+                    continue
+
+                context = _build_context(item, meta, markdown_excerpt)
+                if vlm_executor is not None:
+                    vlm_futures[vlm_executor.submit(
+                        _annotate_and_build_ppt_asset,
                         vlm_client=vlm_client,
                         image_path=original_image_abs,
+                        asset_id=asset_id,
+                        image_rel=image_rel,
+                        original_image_rel=original_image_rel,
+                        image_fields=image_fields,
                         item=item,
                         meta=meta,
                         context=context,
                         vlm_max_side=vlm_max_side,
+                    )] = _usage_label(item)
+                else:
+                    asset = _build_fallback_ppt_asset(
+                        asset_id=asset_id,
+                        image_rel=image_rel,
+                        original_image_rel=original_image_rel,
+                        image_fields=image_fields,
+                        item=item,
+                        meta=meta,
+                        context=context,
+                    )
+                    submit_llm_or_store(asset, llm_futures)
+                pptx_summary["kept"] += 1
+                report["kept_asset_count"] += 1
+
+            for future in as_completed(vlm_futures):
+                usage = vlm_futures[future]
+                try:
+                    asset, task_warnings = future.result()
+                    report["warnings"].extend(task_warnings)
+                    submit_llm_or_store(asset, llm_futures)
+                except Exception as exc:
+                    report["warnings"].append(f"{usage} VLM pipeline failed: {type(exc).__name__}: {exc}")
+
+            for future in as_completed(llm_futures):
+                asset_id = llm_futures[future]
+                try:
+                    asset, task_warnings = future.result()
+                    report["warnings"].extend(task_warnings)
+                    if asset_id:
+                        assets_by_id[asset_id] = asset
+                except Exception as exc:
+                    report["warnings"].append(f"{asset_id or 'unknown_asset'} LLM pipeline failed: {type(exc).__name__}: {exc}")
+
+            report["processed_pptx"].append(pptx_summary)
+            if write_match_index and flush_each_ppt:
+                try:
+                    _write_incremental_match_index(
+                        assets_by_id=assets_by_id,
+                        library_root=library_root,
+                        existing_db=existing_db,
+                        teach_root=teach_root,
+                        report=report,
+                        ppt_asset_source_by_id=ppt_asset_source_by_id,
                     )
                 except Exception as exc:
-                    annotation = _fallback_annotation(item, meta, context, f"vlm_failed:{type(exc).__name__}")
-                    report["warnings"].append(f"{_usage_label(item)} VLM failed: {exc}")
-            else:
-                annotation = _fallback_annotation(item, meta, context, "vlm_skipped")
-
-            annotation = _normalize_annotation(annotation, item, meta, context, image_path=original_image_abs)
-
-            asset = _build_asset_from_annotation(
-                asset_id=asset_id,
-                image_rel=image_rel,
-                original_image_rel=original_image_rel,
-                image_fields=image_fields,
-                item=item,
-                meta=meta,
-                context=context,
-                annotation=annotation,
-            )
-            assets_by_id[asset_id] = asset
-            pptx_summary["kept"] += 1
-            report["kept_asset_count"] += 1
-
-        report["processed_pptx"].append(pptx_summary)
-        if write_match_index and flush_each_ppt:
-            try:
-                _write_incremental_match_index(
-                    assets_by_id=assets_by_id,
-                    library_root=library_root,
-                    existing_db=existing_db,
-                    teach_root=teach_root,
-                    report=report,
-                    ppt_asset_source_by_id=ppt_asset_source_by_id,
-                )
-            except Exception as exc:
-                report["warnings"].append(f"incremental_match_index_failed:{type(exc).__name__}: {exc}")
+                    report["warnings"].append(f"incremental_match_index_failed:{type(exc).__name__}: {exc}")
+    finally:
+        if vlm_executor is not None:
+            vlm_executor.shutdown(wait=True)
+        if llm_executor is not None:
+            llm_executor.shutdown(wait=True)
 
     db = _build_library_db_snapshot(
         assets_by_id=assets_by_id,
@@ -400,16 +469,23 @@ def build_ppt_image_materials_library(
         existing_db=existing_db,
         teach_root=teach_root,
         warnings=report["warnings"],
+        include_skip=True,
     )
     if use_keyword_enrichment and keyword_client is not None:
-        _enrich_ppt_assets_with_llm(
-            db,
-            keyword_client,
-            batch_size=keyword_batch_size,
-            warnings=report["warnings"],
-        )
-    elif use_keyword_enrichment:
-        report["warnings"].append("keyword_enrichment_skipped: no LLM or VLM client configured")
+        db["keyword_built_at"] = datetime.now(timezone.utc).isoformat()
+        db["keyword_builder"] = {
+            "method": PPT_LLM_ENRICHMENT_METHOD,
+            "batch_size": keyword_batch_size,
+            "workers": llm_workers,
+            "model": _clean_text(getattr(keyword_client, "_model", "")),
+        }
+    skip_archive_report = _archive_ppt_skip_images(
+        db,
+        library_root=library_root,
+        warnings=report["warnings"],
+    )
+    report["skip_image_archive_count"] = skip_archive_report["archived_count"]
+    report["skip_image_archive_missing_count"] = skip_archive_report["missing_count"]
     _attach_ppt_source_metadata(db, ppt_asset_source_by_id)
     near_duplicate_report = _dedupe_ppt_near_duplicate_assets(db, library_root)
     report["near_duplicate_count"] = near_duplicate_report["removed_count"]
@@ -432,10 +508,12 @@ def build_ppt_image_materials_library(
     index_path = index_target
     if write_match_index:
         try:
-            _index, index_path = write_ai_image_match_index(
+            match_index, index_path = write_ai_image_match_index(
                 db,
                 library_root,
             )
+            if not (match_index.get("assets") if isinstance(match_index.get("assets"), list) else []):
+                _remove_ppt_embedding_sidecars(library_root, warnings=report["warnings"])
             report["match_index_path"] = str(index_path)
         except Exception as exc:
             report["warnings"].append(f"match_index_failed:{type(exc).__name__}: {exc}")
@@ -935,6 +1013,107 @@ def _is_skip_material_category(value: Any) -> bool:
     return _normalize_material_category(value) == "C00_strict_text_problem_skip"
 
 
+def _archive_ppt_skip_images(
+    db: dict[str, Any],
+    *,
+    library_root: Path,
+    warnings: list[Any],
+) -> dict[str, int]:
+    assets = db.get("assets")
+    if not isinstance(assets, list):
+        return {"archived_count": 0, "missing_count": 0}
+
+    archived_count = 0
+    missing_count = 0
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        if not _is_skip_material_category(asset.get("strict_reuse_group")):
+            continue
+        asset_id = _clean_text(asset.get("asset_id"))
+        if not asset_id:
+            missing_count += 1
+            warnings.append("ppt_skip_image_archive_missing_asset_id")
+            continue
+
+        runtime_rel = _clean_text(asset.get("image_path"))
+        original_rel = _clean_text(asset.get("original_image_path"))
+        runtime_target_rel = f"{DEFAULT_SKIP_IMAGE_DIR}/{asset_id}.png"
+        original_target_rel = f"{DEFAULT_SKIP_IMAGE_DIR}/{asset_id}_original.png"
+
+        runtime_moved = _move_library_file(library_root, runtime_rel, runtime_target_rel)
+        if not runtime_moved:
+            missing_count += 1
+            warnings.append(f"ppt_skip_image_archive_missing:{asset_id}:{runtime_rel}")
+            continue
+        asset["image_path"] = runtime_target_rel
+
+        if original_rel and original_rel != runtime_rel:
+            original_moved = _move_library_file(library_root, original_rel, original_target_rel)
+            if original_moved:
+                asset["original_image_path"] = original_target_rel
+            else:
+                missing_count += 1
+                warnings.append(f"ppt_skip_image_archive_missing_original:{asset_id}:{original_rel}")
+                asset["original_image_path"] = runtime_target_rel
+        else:
+            asset["original_image_path"] = runtime_target_rel
+
+        archived_count += 1
+
+    return {"archived_count": archived_count, "missing_count": missing_count}
+
+
+def _move_library_file(library_root: Path, source_rel: str, dest_rel: str) -> bool:
+    source = _library_file_path(library_root, source_rel)
+    if source is None or not source.exists():
+        return False
+    dest = library_root / dest_rel
+    root = library_root.resolve()
+    try:
+        source_resolved = source.resolve()
+        dest_resolved = dest.resolve()
+        source_resolved.relative_to(root)
+        dest_resolved.parent.relative_to(root)
+    except ValueError:
+        return False
+    if source_resolved == dest_resolved:
+        return True
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    source.replace(dest)
+    return True
+
+
+def _library_file_path(library_root: Path, value: Any) -> Path | None:
+    text = _clean_text(value)
+    if not text:
+        return None
+    path = Path(text)
+    if path.is_absolute():
+        return path
+    return library_root / path
+
+
+def _remove_ppt_embedding_sidecars(library_root: Path, *, warnings: list[Any]) -> None:
+    targets = [
+        library_root / DEFAULT_EMBEDDING_INDEX_FILENAME,
+        library_root / DEFAULT_EMBEDDING_META_FILENAME,
+    ]
+    targets.extend(
+        [
+            path.with_name(f"{path.stem}.checkpoint{path.suffix}")
+            if path.suffix != ".json"
+            else path.with_name(f"{path.stem}.checkpoint.json")
+            for path in targets
+        ]
+    )
+    for path in targets:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError as exc:
+            warnings.append(f"ppt_embedding_sidecar_cleanup_failed:{path.name}:{type(exc).__name__}")
+
+
 def _record_duplicate_asset_id(target: dict[str, Any], duplicate_id: str) -> None:
     duplicate_id = _clean_text(duplicate_id)
     if not duplicate_id:
@@ -1002,6 +1181,69 @@ PPT_ALLOWED_GRADE_BANDS = {"低年级", "高年级", "其他", "other", "upper",
 def _normalize_ppt_enum(value: Any, allowed: set[str], default: str = "其他") -> str:
     text = _clean_text(value)
     return text if text in allowed else default
+
+
+def _enrich_single_ppt_asset_with_llm(
+    asset: dict[str, Any],
+    client: Any,
+    *,
+    batch_size: int,
+) -> tuple[dict[str, Any], list[str]]:
+    from edupptx.materials.caption_rules import summarize_records
+    from edupptx.materials.general_rules import judge_records
+    from edupptx.materials.reuse_policy import reuse_level_from_material_category
+    from edupptx.materials.strict_reuse_classifier import classify_records
+
+    item = dict(asset)
+    warnings: list[str] = []
+    if _clean_text(item.get("asset_kind")) != "page_image" or not _clean_text(item.get("query")):
+        return item, warnings
+
+    size = max(1, int(batch_size or DEFAULT_PPT_KEYWORD_BATCH_SIZE))
+    asset_id = _clean_text(item.get("asset_id")) or "unknown_asset"
+    try:
+        classified = classify_records([item], client, batch_size=size)
+        result = classified[0] if classified else {}
+        item["strict_reuse_group"] = normalize_strict_reuse_group(result.get("strict_reuse_group"))
+        item["strict_reuse_signals"] = _dedupe(
+            [
+                *[str(entry) for entry in (item.get("strict_reuse_signals") or []) if str(entry).strip()],
+                "ppt_independent_llm_classify",
+            ]
+        )
+    except Exception as exc:
+        warnings.append(f"{asset_id} ppt_classify_failed:{type(exc).__name__}: {exc}")
+        return item, warnings
+
+    if reuse_level_from_material_category(item.get("strict_reuse_group")) == "skip":
+        return item, warnings
+
+    try:
+        summarized = summarize_records(
+            [item],
+            client,
+            query_field="query",
+            caption_field="caption",
+            batch_size=size,
+        )
+        result = summarized[0] if summarized else {}
+        item["caption"] = _clean_text(result.get("caption")) or _clean_text(item.get("query"))
+    except Exception as exc:
+        warnings.append(f"{asset_id} ppt_caption_failed:{type(exc).__name__}: {exc}")
+
+    try:
+        judged = judge_records(
+            [item],
+            client,
+            query_field="query",
+            general_field="general",
+            batch_size=size,
+        )
+        result = judged[0] if judged else {}
+        item["general"] = bool(result.get("general"))
+    except Exception as exc:
+        warnings.append(f"{asset_id} ppt_general_failed:{type(exc).__name__}: {exc}")
+    return item, warnings
 
 
 def _enrich_ppt_assets_with_llm(
@@ -1135,6 +1377,70 @@ def _annotate_with_vlm(
         },
     ]
     return vlm_client.chat_vlm_json(messages=messages, temperature=0.1, max_tokens=4096)
+
+
+def _annotate_and_build_ppt_asset(
+    *,
+    vlm_client: Any,
+    image_path: Path,
+    asset_id: str,
+    image_rel: str,
+    original_image_rel: str,
+    image_fields: dict[str, int | str],
+    item: RawPptImage,
+    meta: dict[str, Any],
+    context: dict[str, Any],
+    vlm_max_side: int,
+) -> tuple[dict[str, Any], list[str]]:
+    warnings: list[str] = []
+    try:
+        annotation = _annotate_with_vlm(
+            vlm_client=vlm_client,
+            image_path=image_path,
+            item=item,
+            meta=meta,
+            context=context,
+            vlm_max_side=vlm_max_side,
+        )
+    except Exception as exc:
+        annotation = _fallback_annotation(item, meta, context, f"vlm_failed:{type(exc).__name__}")
+        warnings.append(f"{_usage_label(item)} VLM failed: {exc}")
+    normalized = _normalize_annotation(annotation, item, meta, context, image_path=image_path)
+    asset = _build_asset_from_annotation(
+        asset_id=asset_id,
+        image_rel=image_rel,
+        original_image_rel=original_image_rel,
+        image_fields=image_fields,
+        item=item,
+        meta=meta,
+        context=context,
+        annotation=normalized,
+    )
+    return asset, warnings
+
+
+def _build_fallback_ppt_asset(
+    *,
+    asset_id: str,
+    image_rel: str,
+    original_image_rel: str,
+    image_fields: dict[str, int | str],
+    item: RawPptImage,
+    meta: dict[str, Any],
+    context: dict[str, Any],
+) -> dict[str, Any]:
+    annotation = _fallback_annotation(item, meta, context, "vlm_skipped")
+    normalized = _normalize_annotation(annotation, item, meta, context)
+    return _build_asset_from_annotation(
+        asset_id=asset_id,
+        image_rel=image_rel,
+        original_image_rel=original_image_rel,
+        image_fields=image_fields,
+        item=item,
+        meta=meta,
+        context=context,
+        annotation=normalized,
+    )
 
 
 def _image_data_url(image_path: Path, max_side: int) -> str:
@@ -1352,9 +1658,16 @@ def _build_library_db_snapshot(
     existing_db: dict[str, Any],
     teach_root: Path,
     warnings: Iterable[Any],
+    include_skip: bool = False,
 ) -> dict[str, Any]:
+    snapshot_assets = list(assets_by_id.values())
+    if not include_skip:
+        snapshot_assets = [
+            asset for asset in snapshot_assets
+            if not _is_skip_material_category(asset.get("strict_reuse_group"))
+        ]
     assets = sorted(
-        [asset for asset in assets_by_id.values() if not _is_skip_material_category(asset.get("strict_reuse_group"))],
+        snapshot_assets,
         key=lambda asset: (
             _clean_text(asset.get("asset_kind")),
             _clean_text(asset.get("image_path")),
@@ -1516,6 +1829,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-match-index", action="store_true", help="Do not write split reuse indexes")
     parser.add_argument("--no-incremental-index", action="store_true", help="Only write split reuse indexes after all PPTX files finish")
     parser.add_argument("--vlm-max-side", type=int, default=1280)
+    parser.add_argument("--keyword-batch-size", type=int, default=DEFAULT_PPT_KEYWORD_BATCH_SIZE)
+    parser.add_argument("--vlm-workers", type=int, default=DEFAULT_PPT_VLM_WORKERS)
+    parser.add_argument("--llm-workers", type=int, default=DEFAULT_PPT_LLM_WORKERS)
     return parser
 
 
@@ -1534,6 +1850,9 @@ def main(argv: list[str] | None = None) -> None:
         flush_each_ppt=not args.no_incremental_index,
         env_file=args.env_file,
         vlm_max_side=args.vlm_max_side,
+        keyword_batch_size=args.keyword_batch_size,
+        vlm_workers=args.vlm_workers,
+        llm_workers=args.llm_workers,
     )
     print(
         json.dumps(

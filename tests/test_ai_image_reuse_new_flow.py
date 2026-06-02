@@ -131,9 +131,10 @@ def test_library_copy_outputs_transparent_padded_png(tmp_path):
         assert img.getpixel((100, 56))[3] == 255
 
 
-def test_page_retrieval_text_uses_content_prompt_and_context_only():
+def test_page_retrieval_text_uses_caption_only():
     asset = {
         "asset_kind": "page_image",
+        "caption": "visible apple card",
         "content_prompt": "visible apple card",
         "context_summary": "used for object recognition",
         "teaching_intent": "do not retrieve teaching intent",
@@ -145,7 +146,7 @@ def test_page_retrieval_text_uses_content_prompt_and_context_only():
 
     for text in (_asset_embedding_text(asset), _target_embedding_text(asset), _candidate_hybrid_text(asset)):
         assert "visible apple card" in text
-        assert "used for object recognition" in text
+        assert "used for object recognition" not in text
         assert "do not retrieve teaching intent" not in text
         assert "deleted core keyword" not in text
         assert "deleted alias" not in text
@@ -154,7 +155,7 @@ def test_page_retrieval_text_uses_content_prompt_and_context_only():
         assert "deleted context keyword" not in text
 
 
-def test_background_retrieval_text_uses_normalized_prompt_and_context_only():
+def test_background_retrieval_text_uses_normalized_prompt_only():
     asset = {
         "asset_kind": "background",
         "content_prompt": "do not retrieve raw background prompt",
@@ -168,7 +169,7 @@ def test_background_retrieval_text_uses_normalized_prompt_and_context_only():
 
     for text in (_asset_embedding_text(asset), _target_embedding_text(asset), _candidate_hybrid_text(asset)):
         assert "light blue paper texture" in text
-        assert "low-noise classroom background" in text
+        assert "low-noise classroom background" not in text
         assert "do not retrieve raw background prompt" not in text
         assert "do not retrieve background teaching intent" not in text
         assert "deleted background keyword" not in text

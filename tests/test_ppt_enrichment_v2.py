@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+from edupptx.materials.ai_image_asset_db import _build_keyword_messages
+from edupptx.materials.caption_rules import CAPTION_RULE
 from scripts.build_ppt_materials_library import (
     PPT_VLM_SYSTEM_PROMPT,
     RawPptImage,
@@ -103,3 +105,19 @@ def test_enrich_skip_shortcircuits_caption_and_general():
     assert reusable_asset["strict_reuse_group"] == "C02_generic_subject_object"
     assert reusable_asset["caption"] and isinstance(reusable_asset["general"], bool)
     assert reusable_asset["subject"] == "数学"
+
+
+def test_keyword_prompt_embeds_caption_rule_and_secondary_and_four_classes():
+    messages = _build_keyword_messages(
+        [{"asset_id": "a", "asset_kind": "page_image", "query": "卢沟桥的水墨江景"}]
+    )
+    system = messages[0]["content"]
+    # caption 字段遵循 CAPTION_RULE。
+    assert CAPTION_RULE in system
+    assert "可复用的主体内容" in system
+    assert "形态噪声词" in system
+    # 输出 C03 副标签字段 + dual 指引。
+    assert "strict_reuse_secondary_group" in system
+    # 修正陈旧的“6 个素材类别”。
+    assert "6 个素材类别" not in system
+    assert "4 个素材类别" in system

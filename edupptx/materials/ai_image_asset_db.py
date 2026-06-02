@@ -324,6 +324,7 @@ _REVIEW_PASSTHROUGH_FIELDS = (
 )
 _STRICT_REUSE_PASSTHROUGH_FIELDS = (
     "strict_reuse_group",
+    "strict_reuse_secondary_group",
     "strict_reuse_confidence",
     "strict_reuse_reason",
     "strict_reuse_signals",
@@ -348,6 +349,7 @@ _PAGE_REUSE_TARGET_METADATA_FIELDS = (
     "grade_band",
     "general",
     "strict_reuse_group",
+    "strict_reuse_secondary_group",
     "strict_reuse_confidence",
     "strict_reuse_reason",
     "strict_reuse_signals",
@@ -362,6 +364,7 @@ _BACKGROUND_REUSE_TARGET_METADATA_FIELDS = (
     "grade_band",
     "general",
     "strict_reuse_group",
+    "strict_reuse_secondary_group",
     "strict_reuse_confidence",
     "strict_reuse_reason",
     "strict_reuse_signals",
@@ -994,7 +997,7 @@ def build_ai_image_match_index(
         "input_asset_count": len(raw_assets) if isinstance(raw_assets, list) else 0,
         "asset_count": len(deduped_assets),
         "assets": deduped_assets,
-        "warnings": _dedupe_warnings(warnings),
+        "warnings": _dedupe_warnings([*_as_string_list(db.get("warnings")), *warnings]),
     }
     if skip_reuse_assets:
         index["skip_reuse_assets"] = skip_reuse_assets
@@ -4412,6 +4415,7 @@ def _build_keyword_messages(
     from edupptx.materials.strict_reuse_classifier import (
         MATERIAL_CATEGORY_RULES_TEXT as _MATERIAL_CATEGORY_RULES_TEXT,
     )
+    from edupptx.materials.caption_rules import CAPTION_RULE as _CAPTION_RULE
     items: list[dict[str, Any]] = []
     for asset in batch:
         items.append(
@@ -4436,9 +4440,9 @@ def _build_keyword_messages(
     system = (
         "必须只返回严格 JSON，顶层对象必须包含 assets 数组。"
         "page_image 只允许输出这些字段：asset_id、caption、context_summary、teaching_intent、"
-        "subject、grade_norm、grade_band、general、strict_reuse_group、strict_reuse_confidence、strict_reuse_reason。"
+        "subject、grade_norm、grade_band、general、strict_reuse_group、strict_reuse_secondary_group、strict_reuse_confidence、strict_reuse_reason。"
         "background 只允许输出这些字段：asset_id、normalized_prompt、color_temperature、context_summary、"
-        "teaching_intent、subject、grade_norm、grade_band、general、strict_reuse_group、strict_reuse_confidence、strict_reuse_reason。"
+        "teaching_intent、subject、grade_norm、grade_band、general、strict_reuse_group、strict_reuse_secondary_group、strict_reuse_confidence、strict_reuse_reason。"
         "subject 必须只从以下枚举中选择：语文、数学、物理、其他。"
         "grade_norm 必须只从以下枚举中选择：一年级、二年级、三年级、四年级、五年级、六年级、七年级、八年级、九年级、高一、高二、高三、其他。"
         "grade_band 必须只从以下枚举中选择：低年级、高年级、其他。"
@@ -4472,7 +4476,9 @@ def _build_keyword_messages(
         "男孩在房间摔东西拒绝出门的场景=>false；池塘里一群小蝌蚪围着青蛙妈妈游动的卡通场景=>false；"
         "年轻男子坐在轮椅上，表情痛苦愤怒，身旁有被摔碎的杯子=>false；秋日黄昏，母亲和孩子并肩走在铺满落叶的路上a的温暖场景=>false。"
         "不要输出 core_keywords、semantic_aliases、constraints、context_summary_keywords、asset_category、query_aliases。"
-        "strict_reuse_group 必须是下方 6 个素材类别 ID 之一（v7 无缺号体系）。"
+        "strict_reuse_group 必须是下方 4 个素材类别主类 ID 之一。"
+        "strict_reuse_secondary_group 只在主类为 C01 的具名地标图、其周边场景本身也可作氛围复用时，"
+        "输出 C03_scene_decor_container；纯肖像/角色/文献/结构图及其它情况一律省略该字段。"
         "C00_strict_text_problem_skip 表示图片需要精确匹配文字、数字或符号，将跳过复用和素材库入库。"
         "page_image 的 context_summary 描述可见内容和页面用途；teaching_intent 描述教学动作。"
         "strict_reuse_group 分类只能基于 query 的完整描述内容（保留数值、汉字、标注、图形关系）。"
@@ -4485,6 +4491,7 @@ def _build_keyword_messages(
         "strict_reuse_reason 格式：『属于<类别中文名>：<被描述的主体>』。"
     )
     user = "请按结构规范化以下素材：\n" + json.dumps({"assets": items}, ensure_ascii=False, indent=2)
+    system += "\n\ncaption 字段按下述规则产出（与 plan 侧共用同一规则）：\n" + _CAPTION_RULE
     system += "\n\n" + _load_keyword_reuse_rules_reference().replace("content_prompt", "query")
     return [
         {"role": "system", "content": system},
@@ -5060,11 +5067,11 @@ def _clean_keyword(value: Any) -> str:
 
 
 def _page_retrieval_text(asset: dict[str, Any]) -> str:
-    return _join_texts(_asset_caption(asset), asset.get("context_summary"))
+    return _asset_caption(asset)
 
 
 def _background_retrieval_text(asset: dict[str, Any]) -> str:
-    return _join_texts(asset.get("normalized_prompt"), asset.get("context_summary"))
+    return _clean_text(asset.get("normalized_prompt"))
 
 
 def _build_match_text(asset: dict[str, Any]) -> str:
@@ -5665,10 +5672,14 @@ def _asset_content_prompt(asset: dict[str, Any]) -> str:
 
 
 def _asset_caption(asset: dict[str, Any]) -> str:
-    """Caption-first accessor. Falls back to legacy content_prompt/prompt so the
-    library keeps working before the offline caption backfill runs."""
+    """Caption-first accessor.
+
+    Falls back to verbose fields so unbackfilled libraries still work before
+    the offline caption backfill runs; retrieval still excludes context_summary.
+    """
     return (
         _clean_text(asset.get("caption"))
+        or _clean_text(asset.get("query"))
         or _clean_text(asset.get("content_prompt"))
         or _clean_text(asset.get("prompt"))
     )
@@ -7702,6 +7713,11 @@ def _preserve_review_fields(asset: dict[str, Any]) -> dict[str, Any]:
 
 
 def _apply_strict_reuse_group_from_payload(asset: dict[str, Any], payload: dict[str, Any]) -> None:
+    from edupptx.materials.strict_reuse_classifier import (
+        SECONDARY_REUSE_GROUP_FIELD,
+        normalize_secondary_reuse_group,
+    )
+
     payload_has_group = bool(_clean_text(payload.get("strict_reuse_group")))
     existing_has_group = bool(_clean_text(asset.get("strict_reuse_group")))
 
@@ -7742,6 +7758,17 @@ def _apply_strict_reuse_group_from_payload(asset: dict[str, Any], payload: dict[
     else:
         prior_signals = _as_string_list(asset.get("strict_reuse_signals"))
     asset["strict_reuse_signals"] = _dedupe_terms([*prior_signals, signal])
+
+    secondary_source = (
+        payload.get(SECONDARY_REUSE_GROUP_FIELD)
+        if _clean_text(payload.get(SECONDARY_REUSE_GROUP_FIELD))
+        else asset.get(SECONDARY_REUSE_GROUP_FIELD)
+    )
+    secondary = normalize_secondary_reuse_group(secondary_source, primary=group)
+    if secondary:
+        asset[SECONDARY_REUSE_GROUP_FIELD] = secondary
+    else:
+        asset.pop(SECONDARY_REUSE_GROUP_FIELD, None)
 
 
 def _normalize_binary_reuse_group(value: Any, *, default: str = _GENERAL_REUSE_GROUP) -> str:

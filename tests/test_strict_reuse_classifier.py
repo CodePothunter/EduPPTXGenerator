@@ -54,7 +54,7 @@ def test_material_category_prompt_exposes_only_gapless_active_outputs():
     rules = MATERIAL_CATEGORY_RULES_TEXT
 
     assert "4 类分类规则" in rules
-    assert "只允许输出以下 4 个 ID" in rules
+    assert "只允许输出以下 4 个主类 ID" in rules
     for group in MATERIAL_CATEGORIES:
         assert group in rules
     assert "C01_language_glyph_visual" not in rules
@@ -80,34 +80,33 @@ def test_previous_v62_prompt_is_removed_from_classifier_source():
 def test_material_category_prompt_merges_language_symbol_and_structure_into_skip():
     rules = MATERIAL_CATEGORY_RULES_TEXT
 
-    assert "4 个及以上独立教学字词" in rules
-    assert "语言符号本体教学" in rules
-    assert "知识结构/原理图示" in rules
-    assert "汉字/词语/拼音/笔画/笔顺/部首/字源/演变/构字/结构" in rules
-    assert "语文阅读/写作/课文结构思维导图" in rules
+    assert "逐字文字/符号载荷本身" in rules
+    assert "语言符号本体" in rules
+    assert "精确教学关系/结构" in rules
+    assert "汉字/拼音/笔顺/部首/字源" in rules
+    assert "思维导图/流程图/关系图" in rules
 
 
 def test_material_category_prompt_protects_merged_skip_before_c03():
     rules = MATERIAL_CATEGORY_RULES_TEXT
 
-    assert "按下面顺序判断，命中高优先级即停" in rules
-    assert "4 个及以上独立教学字词" in rules
-    assert "语言符号本体教学" in rules
-    assert "知识结构图示" in rules
+    assert "按 C00→C01→C02→C03 顺序判断，命中高优先即停" in rules
+    assert "空白脚手架" in rules
+    assert "无数字但表达特定平衡/对应关系" in rules
+    assert "承载特定字符/数据/关系→C00" in rules
 
 
 def test_material_category_prompt_uses_query_reuse_granularity():
     rules = MATERIAL_CATEGORY_RULES_TEXT
 
-    assert "C01_irreplaceable_entity_event_action（不可替代实体/事件/动作" in rules
-    assert "分类依据是 query 自身表达的复用粒度" in rules
-    assert "不可替代语义命题" in rules
-    assert "不得从课文主题或旧 metadata 推断" in rules
-    assert "故事绑定的角色身份" in rules
+    assert "C01_irreplaceable_entity_event_action（不可替换具名/特定身份" in rules
+    assert "只根据 query 字面描述判断复用粒度" in rules
+    assert "具名压过形态" in rules
+    assert "strict_reuse_secondary_group=C03_scene_decor_container" in rules
+    assert "纯肖像/角色/文献/结构图不输出" in rules
     assert "有意图/对象/结果的动作" in rules
-    assert "把主体换成同类型另一个、动作简化成普通姿态后" in rules
-    assert "普通动物群体、普通人物组合、轻量社交动作" in rules
-    assert "整体场景/天气/氛围/远景/背景/页面装饰/空白容器" in rules
+    assert "匿名通用主体的简单姿态/普通表情" in rules
+    assert "无具名焦点主体的整体景观/场景/氛围/装饰/容器" in rules
     assert "团聚、寻找、告别" not in rules
     assert "把东西藏进口袋、摔东西拒绝出门" not in rules
     assert "轮椅上背对窗户" not in rules

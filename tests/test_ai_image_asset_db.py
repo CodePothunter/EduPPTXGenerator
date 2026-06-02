@@ -1013,6 +1013,7 @@ def test_reuse_routing_is_always_split(tmp_path):
 def test_embedding_and_hybrid_text_use_current_fields_only():
     page = {
         "asset_kind": "page_image",
+        "caption": "visible apple card",
         "content_prompt": "visible apple card",
         "context_summary": "object recognition",
         "teaching_intent": "kept but not retrieved",
@@ -1034,13 +1035,13 @@ def test_embedding_and_hybrid_text_use_current_fields_only():
 
     for text in (_asset_embedding_text(page), _candidate_hybrid_text(page)):
         assert "visible apple card" in text
-        assert "object recognition" in text
+        assert "object recognition" not in text
         assert "kept but not retrieved" not in text
         assert "deleted" not in text
 
     for text in (_asset_embedding_text(background), _candidate_hybrid_text(background)):
         assert "light paper texture" in text
-        assert "low noise background" in text
+        assert "low noise background" not in text
         assert "raw background prompt" not in text
         assert "kept but not retrieved" not in text
         assert "deleted" not in text

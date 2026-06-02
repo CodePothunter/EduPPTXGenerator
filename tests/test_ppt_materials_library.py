@@ -3,6 +3,7 @@ import importlib.util
 import json
 import sqlite3
 import sys
+import threading
 import zipfile
 
 from PIL import Image, ImageDraw
@@ -104,6 +105,139 @@ def _write_minimal_pptx(
         zf.write(image_path, "ppt/media/image1.png")
 
 
+def _write_two_picture_pptx(pptx_path: Path, first_image_path: Path, second_image_path: Path) -> None:
+    slide_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:sld xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main"
+       xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"
+       xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <p:cSld>
+    <p:spTree>
+      <p:sp>
+        <p:txBody><a:p><a:r><a:t>Pipeline lesson image page</a:t></a:r></a:p></p:txBody>
+      </p:sp>
+      <p:pic>
+        <p:nvPicPr><p:cNvPr id="2" name="Picture 1"/></p:nvPicPr>
+        <p:blipFill><a:blip r:embed="rId1"/></p:blipFill>
+        <p:spPr><a:xfrm><a:off x="914400" y="914400"/><a:ext cx="1828800" cy="1371600"/></a:xfrm></p:spPr>
+      </p:pic>
+      <p:pic>
+        <p:nvPicPr><p:cNvPr id="3" name="Picture 2"/></p:nvPicPr>
+        <p:blipFill><a:blip r:embed="rId2"/></p:blipFill>
+        <p:spPr><a:xfrm><a:off x="3657600" y="914400"/><a:ext cx="1828800" cy="1371600"/></a:xfrm></p:spPr>
+      </p:pic>
+    </p:spTree>
+  </p:cSld>
+</p:sld>
+"""
+    rels_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+    Target="../media/image1.png"/>
+  <Relationship Id="rId2"
+    Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+    Target="../media/image2.png"/>
+</Relationships>
+"""
+    presentation_xml = """<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<p:presentation xmlns:p="http://schemas.openxmlformats.org/presentationml/2006/main">
+  <p:sldSz cx="12192000" cy="6858000"/>
+</p:presentation>
+"""
+    with zipfile.ZipFile(pptx_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("ppt/presentation.xml", presentation_xml)
+        zf.writestr("ppt/slides/slide1.xml", slide_xml)
+        zf.writestr("ppt/slides/_rels/slide1.xml.rels", rels_xml)
+        zf.write(first_image_path, "ppt/media/image1.png")
+        zf.write(second_image_path, "ppt/media/image2.png")
+
+
+def test_build_ppt_arg_parser_defaults_to_pipeline_workers_and_single_item_batches():
+    args = MODULE.build_arg_parser().parse_args([])
+
+    assert args.keyword_batch_size == 1
+    assert args.vlm_workers == 15
+    assert args.llm_workers == 15
+
+
+def test_build_ppt_materials_library_pipelines_llm_after_each_vlm_completion(tmp_path):
+    teach_kb_root = tmp_path / "teach-kb"
+    pptx_dir = teach_kb_root / "data" / "uploads" / "pptx"
+    pptx_dir.mkdir(parents=True)
+    first_image = tmp_path / "first.png"
+    second_image = tmp_path / "second.png"
+    Image.new("RGB", (400, 300), (120, 180, 220)).save(first_image)
+    Image.new("RGB", (400, 300), (20, 80, 180)).save(second_image)
+    _write_two_picture_pptx(pptx_dir / "lesson.pptx", first_image, second_image)
+
+    lock = threading.Lock()
+    events: list[str] = []
+    first_llm_started = threading.Event()
+
+    def record(event: str) -> None:
+        with lock:
+            events.append(event)
+
+    class PipelineVlmClient:
+        _model = "fake-vlm"
+
+        def chat_vlm_json(self, *, messages, temperature=0.1, max_tokens=4096):
+            user_content = messages[-1]["content"]
+            payload_text = user_content[0]["text"]
+            payload = json.loads(payload_text[payload_text.index("{") :])
+            source_media_path = payload["image"]["source_media_path"]
+            is_first = source_media_path.endswith("image1.png")
+            label = "first" if is_first else "second"
+            record(f"vlm_start_{label}")
+            if not is_first:
+                if not first_llm_started.wait(timeout=0.5):
+                    record("second_vlm_finished_before_first_llm")
+            record(f"vlm_done_{label}")
+            return {
+                "query": f"{label} teaching object",
+                "context_summary": f"{label} context",
+                "teaching_intent": f"{label} intent",
+            }
+
+    class PipelineKeywordClient:
+        _model = "fake-llm"
+
+        def chat(self, messages, temperature=0.0, max_tokens=4096):
+            system = messages[0]["content"]
+            payload = json.loads(messages[-1]["content"][messages[-1]["content"].index("[") :])
+            query = payload[0]["query"]
+            label = "first" if query.startswith("first") else "second"
+            record(f"llm_start_{label}")
+            if label == "first":
+                first_llm_started.set()
+            if "strict_reuse_group" in system or "分类器" in system:
+                return json.dumps(
+                    [{"query": query, "strict_reuse_group": "C02_generic_subject_object"}],
+                    ensure_ascii=False,
+                )
+            if "general" in system:
+                return json.dumps([{"query": query, "general": True}], ensure_ascii=False)
+            return json.dumps([{"query": query, "caption": query}], ensure_ascii=False)
+
+    db, _index_path, report = build_ppt_image_materials_library(
+        teach_kb_root=pptx_dir,
+        output_library_dir=tmp_path / "materials_library_ppt",
+        vlm_client=PipelineVlmClient(),
+        keyword_client=PipelineKeywordClient(),
+        use_vlm=True,
+        use_keyword_enrichment=True,
+        write_match_index=False,
+        vlm_workers=2,
+        llm_workers=1,
+        keyword_batch_size=1,
+    )
+
+    assert report["kept_asset_count"] == 2
+    assert db["asset_count"] == 2
+    assert "second_vlm_finished_before_first_llm" not in events
+    assert events.index("llm_start_first") < events.index("vlm_done_second")
+
+
 def test_build_ppt_image_materials_library_writes_match_index_and_embedding_sidecars(tmp_path, monkeypatch):
     _patch_embedding_encoder(monkeypatch)
     teach_kb_root = tmp_path / "teach-kb"
@@ -160,6 +294,71 @@ def test_build_ppt_image_materials_library_writes_match_index_and_embedding_side
     assert "ppt_context" not in asset
     assert "vlm_visual_style" not in asset
     assert not asset["context_summary"].startswith(("来自", "图片来自", "该图来自"))
+
+
+def test_build_ppt_materials_library_archives_c00_images_to_skip_images(tmp_path, monkeypatch):
+    _patch_embedding_encoder(monkeypatch)
+
+    class C00KeywordClient:
+        _model = "fake-c00-classifier"
+
+        def __init__(self):
+            self.calls = []
+
+        def chat(self, messages, temperature=0.0, max_tokens=4096):
+            self.calls.append(messages)
+            payload = json.loads(messages[-1]["content"][messages[-1]["content"].index("[") :])
+            return json.dumps(
+                [
+                    {
+                        "query": item["query"],
+                        "strict_reuse_group": "C00_strict_text_problem_skip",
+                    }
+                    for item in payload
+                ],
+                ensure_ascii=False,
+            )
+
+    teach_kb_root = tmp_path / "teach-kb"
+    pptx_dir = teach_kb_root / "data" / "uploads" / "pptx"
+    pptx_dir.mkdir(parents=True)
+    image_path = tmp_path / "source.png"
+    Image.new("RGB", (400, 300), (120, 180, 220)).save(image_path)
+    pptx_path = pptx_dir / "lesson.pptx"
+    _write_minimal_pptx(pptx_path, image_path)
+
+    library_dir = tmp_path / "materials_library_ppt"
+    db, _index_path, report = build_ppt_image_materials_library(
+        teach_kb_root=pptx_dir,
+        output_library_dir=library_dir,
+        use_vlm=False,
+        keyword_client=C00KeywordClient(),
+        use_keyword_enrichment=True,
+        write_match_index=True,
+    )
+
+    assert report["skip_image_archive_count"] == 1
+    assert report["skip_image_archive_missing_count"] == 0
+    assert db["asset_count"] == 1
+    asset = db["assets"][0]
+    assert asset["strict_reuse_group"] == "C00_strict_text_problem_skip"
+    assert asset["image_path"].startswith("skip_images/")
+    assert asset["original_image_path"].startswith("skip_images/")
+    assert (library_dir / asset["image_path"]).exists()
+    assert (library_dir / asset["original_image_path"]).exists()
+    assert not (library_dir / "pptx_images" / f"{asset['asset_id']}.png").exists()
+    assert not (library_dir / "pptx_images_original" / f"{asset['asset_id']}.png").exists()
+
+    c00_payload = json.loads(
+        (library_dir / "strict_reuse_indexes" / "C00_strict_text_problem_skip.json").read_text(encoding="utf-8")
+    )
+    assert [item["asset_id"] for item in c00_payload["assets"]] == [asset["asset_id"]]
+    assert c00_payload["assets"][0]["image_path"].startswith("skip_images/")
+    assert c00_payload["assets"][0]["original_image_path"].startswith("skip_images/")
+
+    merged, _split_dir = MODULE.read_ai_image_split_match_index(library_dir)
+    assert asset["asset_id"] not in {item["asset_id"] for item in merged["assets"]}
+    assert not (library_dir / "ai_image_embedding_meta.json").exists()
 
 
 def test_build_ppt_materials_library_preserves_original_and_writes_padded_runtime_image(tmp_path, monkeypatch):
