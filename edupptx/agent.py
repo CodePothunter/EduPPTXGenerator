@@ -26,6 +26,10 @@ from edupptx.models import (
 from edupptx.session import Session
 
 
+# 复用 policy/LLM-review 阶段跨图外层默认并发数（可被 EDUPPTX_REUSE_POLICY_WORKERS 覆盖）。
+DEFAULT_REUSE_POLICY_WORKERS = 5
+
+
 def _uses_structured_table(page: PagePlan | None) -> bool:
     if page is None:
         return False
@@ -948,9 +952,9 @@ class PPTXAgent:
         # they know the deployment can absorb it.
         policy_max_workers_env = os.environ.get("EDUPPTX_REUSE_POLICY_WORKERS")
         try:
-            policy_max_workers = int(policy_max_workers_env) if policy_max_workers_env else 4
+            policy_max_workers = int(policy_max_workers_env) if policy_max_workers_env else DEFAULT_REUSE_POLICY_WORKERS
         except ValueError:
-            policy_max_workers = 4
+            policy_max_workers = DEFAULT_REUSE_POLICY_WORKERS
         policy_max_workers = max(1, min(policy_max_workers, len(reuse_specs) or 1))
 
         def _run_policy(index: int):

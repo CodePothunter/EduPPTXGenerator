@@ -126,6 +126,7 @@ def _build_classify_prompt(payload: dict[str, Any]) -> str:
     return (
         "Classify this material into exactly one strict_reuse_group using only the query field.\n\n"
         + MATERIAL_CATEGORY_RULES_TEXT
+        + "\n\nWhen the C01 landmark dual-use rule applies, also output optional strict_reuse_secondary_group=C03_scene_decor_container."
         + "\n\nInput JSON:\n"
         + json.dumps(request, ensure_ascii=False, indent=2)
     )
@@ -883,6 +884,7 @@ def _clean_text(value: Any) -> str:
 
 def _build_classify_system_prompt() -> str:
     return (
+        "When the C01 landmark dual-use rule applies, also output optional strict_reuse_secondary_group=C03_scene_decor_container.\n\n"
         "你是中文教育课件图片的素材分类器。只根据每个元素的 query 文本判断 strict_reuse_group。\n\n"
         + MATERIAL_CATEGORY_RULES_TEXT
         + "\n\n我会给你一个 JSON 数组，每个元素含 query 字段。"
@@ -944,7 +946,16 @@ def classify_records(
             raise ValueError(f"expected {len(batch)} classify items, got {len(parsed)}")
         for original, generated in zip(batch, parsed):
             item = deepcopy(original)
-            item[group_field] = normalize_strict_reuse_group(generated.get("strict_reuse_group"))
+            group = normalize_strict_reuse_group(generated.get("strict_reuse_group"))
+            item[group_field] = group
+            secondary = normalize_secondary_reuse_group(
+                generated.get(SECONDARY_REUSE_GROUP_FIELD),
+                primary=group,
+            )
+            if secondary:
+                item[SECONDARY_REUSE_GROUP_FIELD] = secondary
+            else:
+                item.pop(SECONDARY_REUSE_GROUP_FIELD, None)
             output.append(item)
         if sleep_seconds > 0 and start + batch_size < total:
             time.sleep(sleep_seconds)

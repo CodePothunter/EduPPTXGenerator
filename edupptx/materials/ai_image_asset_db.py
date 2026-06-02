@@ -78,6 +78,15 @@ def _get_llm_max_workers() -> int:
     return MAX_LLM_REVIEW_WORKERS
 
 
+def _review_worker_count(num_review_targets: int) -> int:
+    """单个 target 的候选复审并发数。
+
+    受每查询复审预算约束，绝不超过实际会被复审的候选数
+    （≤ MAX_LLM_REVIEWS_PER_QUERY），同时尊重 _get_llm_max_workers() 这一全局上限。
+    """
+    return max(1, min(_get_llm_max_workers(), MAX_LLM_REVIEWS_PER_QUERY, max(0, int(num_review_targets))))
+
+
 ASPECT_REUSE_BUCKETS = ("1:1", "3:4", "4:3", "9:16", "16:9", "other")
 _ASPECT_REUSE_BUCKET_VALUES = {
     "1:1": 1.0,
@@ -211,6 +220,7 @@ class ReuseSearchContext:
     )
     target_keyword_cache: dict[str, Any] = field(default_factory=dict)
     query_embedding_cache: dict[str, Any] = field(default_factory=dict)
+    eligible_static_cache: dict[tuple[str, str, str, str], list[dict[str, Any]]] = field(default_factory=dict)
     cache_lock: Any = field(default_factory=threading.RLock, repr=False)
 
 BACKGROUND_REUSE_GATE_THRESHOLDS = {
@@ -1729,6 +1739,26 @@ def _enrich_reuse_target_keywords_once(
     return enriched
 
 
+def _reuse_target_keyword_batch_size() -> int:
+    raw = os.environ.get("EDUPPTX_REUSE_TARGET_KEYWORD_BATCH_SIZE", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return 1
+
+
+def _reuse_target_keyword_workers() -> int:
+    raw = os.environ.get("EDUPPTX_REUSE_TARGET_KEYWORD_WORKERS", "").strip()
+    if raw:
+        try:
+            return max(1, int(raw))
+        except ValueError:
+            pass
+    return 15
+
+
 # Default batch size for the prewarm. Kept aligned with the canonical keyword
 # batch size so replay, live generation, and library ingest use the same
 # throughput/latency trade-off unless a caller explicitly overrides it.
@@ -1746,8 +1776,8 @@ def _prewarm_reuse_target_keywords(
     keyword_client: Any | None,
     target_keyword_cache: dict[str, Any],
     *,
-    batch_size: int = PREWARM_KEYWORD_BATCH_SIZE,
-    max_workers: int = PREWARM_KEYWORD_MAX_WORKERS,
+    batch_size: int | None = None,
+    max_workers: int | None = None,
     on_batch_cached: Callable[[int, int], None] | None = None,
 ) -> int:
     """Batch-enrich plan targets so per-slot search can reuse the cached payload.
@@ -1778,8 +1808,8 @@ def _prewarm_reuse_target_keywords(
     if not pending:
         return 0
 
-    batch_size = max(1, int(batch_size or PREWARM_KEYWORD_BATCH_SIZE))
-    max_workers = max(1, int(max_workers or PREWARM_KEYWORD_MAX_WORKERS))
+    batch_size = max(1, int(batch_size if batch_size is not None else _reuse_target_keyword_batch_size()))
+    max_workers = max(1, int(max_workers if max_workers is not None else _reuse_target_keyword_workers()))
 
     pending_batches: list[list[tuple[str, dict[str, Any]]]] = [
         pending[start:start + batch_size]
@@ -2334,7 +2364,7 @@ def _apply_reuse_policy_to_ranked_candidates(
             index, review = review_one(review_targets[0])
             review_results_by_index[index] = review
         else:
-            max_workers = min(_get_llm_max_workers(), len(review_targets))
+            max_workers = _review_worker_count(len(review_targets))
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
                 future_to_index = {executor.submit(review_one, index): index for index in review_targets}
                 for future in as_completed(future_to_index):
@@ -3020,24 +3050,47 @@ def find_reusable_ai_image_asset(
     debug_record["threshold_used"] = threshold
     debug_record["target"] = _reuse_debug_asset_payload(target)
     score_details_cache: dict[int, dict[str, Any]] = {}
-    debug_record["candidate_scores"] = _collect_reuse_candidate_debug(
+    if debug_path is not None and reuse_debug_mode != "off":
+        # 仅调试路径扫描全量池，保留"候选为何被硬过滤"的可见性；生产路径跳过此开销。
+        debug_record["candidate_scores"] = _collect_reuse_candidate_debug(
+            target,
+            assets,
+            library_root,
+            score_details_cache=score_details_cache,
+        )
+
+    eligible_assets, hard_filter_summary = _eligible_reuse_assets(
         target,
         assets,
+        reuse_search_context,
         library_root,
-        score_details_cache=score_details_cache,
+        target_route_group,
     )
+    debug_record["hard_filter"] = hard_filter_summary
+    if not eligible_assets:
+        if _collect_candidates_only:
+            return {
+                "_reuse_candidate_collection": True,
+                "target": target,
+                "threshold": threshold,
+                "candidates": [],
+                "debug_record": debug_record,
+                "empty_reason": "no_eligible_candidate_after_hard_filter",
+                "embedding_status": embedding_status,
+            }
+        return finish("no_eligible_candidate_after_hard_filter")
 
     pool_limit = max(DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE, int(candidate_limit or DEFAULT_REUSE_CANDIDATE_LIMIT))
     bm25_ranked_candidates = _rank_reuse_candidates(
         target,
-        assets,
+        eligible_assets,
         library_root=library_root,
         limit=pool_limit,
         score_details_cache=score_details_cache,
     )
     embedding_ranked_candidates = _rank_embedding_candidates(
         target,
-        assets,
+        eligible_assets,
         library_root=library_root,
         embedding_index=embedding_index,
         limit=pool_limit,
@@ -3045,13 +3098,13 @@ def find_reusable_ai_image_asset(
     )
     substring_ranked_candidates = _rank_substring_candidates(
         target,
-        assets,
+        eligible_assets,
         library_root=library_root,
         limit=pool_limit,
     )
     ranked_candidates = _rank_hybrid_reuse_candidates(
         target,
-        assets,
+        eligible_assets,
         library_root=library_root,
         bm25_ranked=bm25_ranked_candidates,
         embedding_ranked=embedding_ranked_candidates,
@@ -6114,6 +6167,84 @@ def _copy_transform_policy(target: dict[str, Any], candidate: dict[str, Any], *,
         "target_aspect_ratio": _asset_aspect_ratio_label(target),
         "reason": reason,
     }
+
+
+def _reuse_static_filter_reject_reason(target: dict[str, Any], candidate: dict[str, Any]) -> str:
+    """与 per-image aspect 无关的确定性硬拒。
+
+    只依赖候选自身 + plan 常量目标字段（asset_kind / subject），因此 ""==eligible
+    的判定可按 (library, group, subject, kind) 缓存。等价于 _reuse_hard_filter_reject_reason
+    去掉 aspect 检查，再加上 _score_reuse_candidate_details 在上游做的 asset_kind 等值。
+    作布尔使用（""==通过），分支顺序不影响结果集合。
+    """
+    if _clean_text(target.get("asset_kind")) != _clean_text(candidate.get("asset_kind")):
+        return "asset_kind_mismatch"
+    target_group = _normalize_binary_reuse_group(target.get("strict_reuse_group"), default="")
+    candidate_group = _normalize_binary_reuse_group(candidate.get("strict_reuse_group"), default="")
+    if target_group == _CONTENT_REUSE_GROUP:
+        return "material_category_skip"
+    if candidate_group == _CONTENT_REUSE_GROUP:
+        return "candidate_material_category_skip"
+    if target_group and candidate_group and target_group != candidate_group:
+        return "strict_reuse_group_mismatch"
+    subject_decision = _subject_scope_decision(target, candidate)
+    if _candidate_unknown_fields_for_reuse(candidate, subject_decision):
+        return "candidate_metadata_unknown"
+    if not subject_decision["compatible"]:
+        return "subject_mismatch"
+    return ""
+
+
+def _eligible_reuse_assets(
+    target: dict[str, Any],
+    assets: list[Any],
+    reuse_search_context: "ReuseSearchContext | None",
+    library_root: Any,
+    route_group: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """召回前剪枝：静态层（可缓存）+ 每图 aspect 层。
+
+    静态层只依赖候选与 plan 常量（subject/asset_kind），按
+    (library, group, subject, kind) 缓存；aspect 随图变化，不缓存。
+    """
+    asset_kind = _clean_text(target.get("asset_kind"))
+    subject = _normalize_subject_value(target.get("subject"))
+    cache_key = (str(library_root), route_group, subject, asset_kind)
+
+    static_subset: list[dict[str, Any]] | None = None
+    if reuse_search_context is not None:
+        with reuse_search_context.cache_lock:
+            static_subset = reuse_search_context.eligible_static_cache.get(cache_key)
+    cache_hit = static_subset is not None
+
+    if static_subset is None:
+        static_subset = [
+            candidate
+            for candidate in assets
+            if isinstance(candidate, dict)
+            and _reuse_static_filter_reject_reason(target, candidate) == ""
+        ]
+        if reuse_search_context is not None:
+            with reuse_search_context.cache_lock:
+                # setdefault: 并发首次构建时所有线程共享同一子集
+                static_subset = reuse_search_context.eligible_static_cache.setdefault(cache_key, static_subset)
+
+    aspect_filtered = 0
+    eligible: list[dict[str, Any]] = []
+    for candidate in static_subset:
+        if _aspect_ratio_penalty(target, candidate) < 0:
+            aspect_filtered += 1
+            continue
+        eligible.append(candidate)
+
+    summary = {
+        "routed_count": sum(1 for candidate in assets if isinstance(candidate, dict)),
+        "static_subset_count": len(static_subset),
+        "aspect_filtered_count": aspect_filtered,
+        "eligible_count": len(eligible),
+        "static_cache_hit": cache_hit,
+    }
+    return eligible, summary
 
 
 def _reuse_hard_filter_reject_reason(target: dict[str, Any], candidate: dict[str, Any]) -> str:
