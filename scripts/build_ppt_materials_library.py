@@ -117,29 +117,39 @@ NS = {
     "pr": "http://schemas.openxmlformats.org/package/2006/relationships",
 }
 
-PPT_VLM_SYSTEM_PROMPT = """你是教学课件素材库的图片标注助手。给定一张从 PPT 中提取的图片以及它所在课件、页码和前后页文本，你只输出三个字段。
+PPT_VLM_SYSTEM_PROMPT = """你是教学课件素材库的图片标注助手。给定一张从 PPT 中提取的图片以及它所在课件、页码和前后页文本，你只输出四个字段。
 
 输出 JSON 结构：
 {
   "query": "重新生成该图的中文 prompt（见下方契约）",
   "context_summary": "一句 20-40 个汉字的短句，描述画面内容和页面功能",
-  "teaching_intent": "该图服务的教学动作或学习目标"
+  "teaching_intent": "该图服务的教学动作或学习目标",
+  "is_backdrop": true
 }
 
+is_backdrop 判定（与画幅是否满铺无关，只看画面内容）：
+- true：画面是可在其上叠加文字/卡片的版式/底图/氛围背景——含命名地标/主题场景作氛围底图。
+- false：画面本身就是要传达的内容——含大段正文/题干/题目载荷、人物动作叙事、或作主标识的可读标题。
+
 query 契约——写“画面是什么”，不写“用在哪”：
-1. 识别具名/具体被摄实体：当主体是可借页面上下文确认身份的具名人物/具名地点/具名物体/具体作品时，
-   query 必须写出其专名（如“朱自清”“万里长城”“辽宁舰”），不要泛化成“民国男性”“古代城墙”。
-2. 保留教学原子值：画面里可读的汉字/拼音/数字/公式/标签及其数量、顺序、对应、因果、空间、比较关系，
+1. 图像支撑身份才安专名（B1）：专名只在图像本身足以支撑该身份时才写——清晰肖像、可辨识地标、带可读题名/标签的实物。
+   当图像是泛化匿名呈现（背影、泛人群、泛山泛水、无个体特征的群体）时，即使页面文字提到某具名实体，也不要把该专名安到主体上，
+   只写图像可证的内容（如“科考队徒步背影”，不写“某团队成员”）。
+2. 真实自然粒度，不阉割也不臆造（B2）：如实写主体的自然类别名（青铜簋就写“青铜簋”、瀑布就写“瀑布”），
+   既不许泛化成“一种器物”丢信息，也不许把类型升格成唯一专名（除非图/图内文字确证）。
+3. 保留教学原子值：画面里可读的汉字/拼音/数字/公式/标签及其数量、顺序、对应、因果、空间、比较关系，
    绝不省略（这些是后续分类依据）。
-3. 删除法医式装饰：服饰、发型、无关小物件、纯色背景等与身份/教学无关的细节不写；
-   收紧到“自然生成意图”的简洁程度，而非逐像素复刻。
-4. 仍禁用途语境：年级、学科、课时、页面功能、课程名、文件名等“用在哪”的来源语境一律不写。
-5. 通用工具或空白底图：query 显式说明不含具体可读内容（如“不含具体汉字、拼音或文字”），避免被误用为含字底图。
+4. 删除法医式装饰：服饰、发型、无关小物件、构图等与身份/教学无关的细节不写；收紧到“自然生成意图”的简洁程度。
+5. 保留区分性属性（B4）：删某属性前先问“删掉它本图会不会和同主体的另一张图无法区分？会就保留”。
+   场景/风景的天气（晴/阴/雨/雪）、时段（晨昏夜）、季节、光照氛围是主体的区分性属性，不是无关装饰，必须保留。
+6. 空白脚手架显式标注（B3）：空白脚手架（空坐标系/空网格/空数位表/空田字格/空烧杯线稿）query 必须显式写“空白/不含具体题目文字”，
+   且不得把脚手架自带的轴刻度/网格标号当题目数值逐一列出（“x 轴 -4 到 7”是刻度，不是要复现的题目载荷）。
+7. 仍禁用途语境：年级、学科、课时、页面功能、课程名、文件名等“用在哪”的来源语境一律不写。
 
 context_summary 保持短句（20-40 汉字），写“画面内容 + 页面功能”，先说主体/动作/关系再说页面功能。
 teaching_intent 写教学动作或学习目标，不重复 context_summary，也不重复来源信息。
 
-不要输出上述三个字段之外的任何字段；尤其不要输出 caption、分类、通用复用判断、
+不要输出上述四个字段之外的任何字段；尤其不要输出 caption、分类、通用复用判断、
 关键词、语义别名、查询别名或其他结构外字段。
 """
 
@@ -386,7 +396,12 @@ def build_ppt_image_materials_library(
                     existing_asset.update(image_fields)
                     existing_asset["image_path"] = image_rel
                     existing_asset["original_image_path"] = original_image_rel
-                    existing_asset["asset_kind"] = _ppt_asset_kind(item)
+                    stored_backdrop = existing_asset.get("is_backdrop")
+                    existing_asset["asset_kind"] = (
+                        _resolve_ppt_asset_kind(item, _as_bool(stored_backdrop, default=False))
+                        if stored_backdrop is not None
+                        else _ppt_asset_kind(item)
+                    )
                     if existing_asset["asset_kind"] == "background":
                         existing_asset["asset_category"] = "background"
                         existing_asset["normalized_prompt"] = _clean_text(
@@ -801,6 +816,12 @@ def _ppt_asset_kind(item: RawPptImage) -> str:
     return "background" if _is_full_slide_background(item) else "page_image"
 
 
+def _resolve_ppt_asset_kind(item: RawPptImage, is_backdrop: bool) -> str:
+    if not _is_full_slide_background(item):
+        return "page_image"
+    return "background" if is_backdrop else "page_image"
+
+
 def _ppt_asset_source_meta(item: RawPptImage) -> dict[str, Any]:
     bbox = item.bbox if isinstance(item.bbox, dict) else {}
     display_width = float(bbox.get("width") or 0.0)
@@ -1212,6 +1233,37 @@ def _apply_ppt_classification_result(asset: dict[str, Any], result: dict[str, An
         asset.pop(SECONDARY_REUSE_GROUP_FIELD, None)
 
 
+def _apply_secondary_scene_caption(item: dict[str, Any], client: Any, *, batch_size: int) -> list[str]:
+    from edupptx.materials.caption_rules import summarize_secondary_scene_records
+    from edupptx.materials.strict_reuse_classifier import (
+        C01_IRREPLACEABLE_ENTITY_EVENT_ACTION,
+        C03_SCENE_DECOR_CONTAINER,
+        normalize_secondary_reuse_group,
+        normalize_strict_reuse_group,
+    )
+
+    primary = normalize_strict_reuse_group(item.get("strict_reuse_group"), default="")
+    secondary = normalize_secondary_reuse_group(item.get(SECONDARY_REUSE_GROUP_FIELD), primary=primary)
+    if not (primary == C01_IRREPLACEABLE_ENTITY_EVENT_ACTION and secondary == C03_SCENE_DECOR_CONTAINER):
+        item.pop("secondary_reuse_caption", None)
+        return []
+    if not _clean_text(item.get("query")):
+        return []
+    try:
+        rows = summarize_secondary_scene_records(
+            [item],
+            client,
+            query_field="query",
+            batch_size=max(1, int(batch_size or 1)),
+        )
+        caption = _clean_text(rows[0].get("secondary_reuse_caption")) if rows else ""
+        if caption:
+            item["secondary_reuse_caption"] = caption
+        return []
+    except Exception as exc:
+        return [f"ppt_secondary_caption_failed:{type(exc).__name__}: {exc}"]
+
+
 def _enrich_single_ppt_asset_with_llm(
     asset: dict[str, Any],
     client: Any,
@@ -1272,6 +1324,7 @@ def _enrich_single_ppt_asset_with_llm(
         item["general"] = bool(result.get("general"))
     except Exception as exc:
         warnings.append(f"{asset_id} ppt_general_failed:{type(exc).__name__}: {exc}")
+    warnings.extend(_apply_secondary_scene_caption(item, client, batch_size=size))
     return item, warnings
 
 
@@ -1352,6 +1405,8 @@ def _enrich_ppt_assets_with_llm(
             asset["general"] = bool(result.get("general"))
     except Exception as exc:
         warnings.append(f"ppt_general_failed:{type(exc).__name__}: {exc}")
+    for asset in reusable:
+        warnings.extend(_apply_secondary_scene_caption(asset, client, batch_size=size))
 
 
 def _strip_ppt_internal_asset_fields(db: dict[str, Any]) -> None:
@@ -1500,6 +1555,19 @@ def _fallback_annotation(item: RawPptImage, meta: dict[str, Any], context: dict[
     }
 
 
+def _as_bool(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    text = _clean_text(value).casefold()
+    if text in {"true", "1", "yes", "是"}:
+        return True
+    if text in {"false", "0", "no", "否"}:
+        return False
+    return default
+
+
 def _normalize_annotation(
     annotation: dict[str, Any],
     item: RawPptImage,
@@ -1518,6 +1586,7 @@ def _normalize_annotation(
         "query": query,
         "context_summary": context_summary,
         "teaching_intent": teaching_intent,
+        "is_backdrop": _as_bool(raw.get("is_backdrop"), default=False),
     }
 
 
@@ -1540,7 +1609,8 @@ def _build_asset_from_annotation(
     lesson_ref = course.get("lesson") or Path(meta.get("file_name") or item.pptx_path.name).stem
     unit_ref = _clean_text(course.get("unit"))
     topic_refs = extract_topic_refs(lesson_ref)
-    asset_kind = _ppt_asset_kind(item)
+    is_backdrop = bool(annotation.get("is_backdrop"))
+    asset_kind = _resolve_ppt_asset_kind(item, is_backdrop)
     query = annotation["query"]
     asset = {
         "asset_id": asset_id,
@@ -1560,6 +1630,7 @@ def _build_asset_from_annotation(
         "unit_ref": unit_ref,
         "topic_refs": topic_refs,
         "query": query,
+        "is_backdrop": is_backdrop,
         "context_summary": annotation["context_summary"],
         "teaching_intent": annotation["teaching_intent"],
         "asset_category": "background" if asset_kind == "background" else "unknown",

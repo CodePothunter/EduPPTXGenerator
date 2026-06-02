@@ -65,6 +65,8 @@
 
 仅在未命中强排除时，空白卡片、便签、空白对话气泡、空白文本框、边框、相框、装饰图案、教师、学生、教室、校园、普通学习动作、文具、书本、书包、普通动物、植物、简单装饰物可以输出 `true`。
 
+整体山水/风景/园林/场景/氛围图（任何媒介，含国画/水墨/水彩/写实）输出 `false`（偏语文 register）；离散单主体（单个动植物、日常物件、通用工具、卡通角色、装饰/边框/空白容器）即便用国画/水墨风格仍可 `true`。国画/水墨笔法本身不触发 `false`。
+
 ## 检索字段
 
 页面图片检索只使用 `caption`。
@@ -77,7 +79,9 @@
 
 `strict_reuse_group` 必须是当前 4 个素材类别主类 ID 之一：`C00_strict_text_problem_skip`、`C01_irreplaceable_entity_event_action`、`C02_generic_subject_object`、`C03_scene_decor_container`。`C00_strict_text_problem_skip` 表示图片需要精确匹配文字、数字、公式、符号、题目、选项或原文段落；这类素材跳过复用，也不写入可复用匹配索引。
 
-`strict_reuse_secondary_group` 只在主类为 `C01_irreplaceable_entity_event_action` 的具名地标图、且周边场景本身也可作氛围复用时输出 `C03_scene_decor_container`。纯肖像、角色、文献、结构图及其它情况省略该字段。本版该字段只作标注，不双写进 C03 split。
+`strict_reuse_secondary_group` 只在主类为 `C01_irreplaceable_entity_event_action` 的具名地标图、且周边场景本身也可作氛围复用时输出 `C03_scene_decor_container`。纯肖像、角色、文献、结构图及其它情况省略该字段。
+
+启用真双写：主类 C01、副类 C03 的具名地标场景图，会以去名通用场景 caption（删地标/人物专名、保留天气/场景等区分属性）投影写入 C03 split；投影条目带 `secondary_projection` 标记，canonical 仍以 C01 为准。
 
 `strict_reuse_group` 分类只能依据 `query` 的字面内容。不要用 `page_type`、`subject`、`grade_norm`、`grade_band`、`image_role` 来判断类别。
 

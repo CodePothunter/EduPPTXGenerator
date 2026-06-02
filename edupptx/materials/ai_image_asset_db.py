@@ -335,6 +335,7 @@ _REVIEW_PASSTHROUGH_FIELDS = (
 _STRICT_REUSE_PASSTHROUGH_FIELDS = (
     "strict_reuse_group",
     "strict_reuse_secondary_group",
+    "secondary_reuse_caption",
     "strict_reuse_confidence",
     "strict_reuse_reason",
     "strict_reuse_signals",
@@ -360,6 +361,7 @@ _PAGE_REUSE_TARGET_METADATA_FIELDS = (
     "general",
     "strict_reuse_group",
     "strict_reuse_secondary_group",
+    "secondary_reuse_caption",
     "strict_reuse_confidence",
     "strict_reuse_reason",
     "strict_reuse_signals",
@@ -1039,6 +1041,36 @@ def write_ai_image_match_index(
     return index, split_dir
 
 
+def _c01_secondary_c03_projections(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    from edupptx.materials.strict_reuse_classifier import (
+        C01_IRREPLACEABLE_ENTITY_EVENT_ACTION,
+        C03_SCENE_DECOR_CONTAINER,
+        normalize_secondary_reuse_group,
+    )
+
+    projections: list[dict[str, Any]] = []
+    for asset in assets:
+        if not isinstance(asset, dict) or _is_background_asset(asset):
+            continue
+        primary = _normalize_binary_reuse_group(asset.get("strict_reuse_group"), default=_GENERAL_REUSE_GROUP)
+        if primary != C01_IRREPLACEABLE_ENTITY_EVENT_ACTION:
+            continue
+        secondary = normalize_secondary_reuse_group(asset.get("strict_reuse_secondary_group"), primary=primary)
+        if secondary != C03_SCENE_DECOR_CONTAINER:
+            continue
+        projection = deepcopy(asset)
+        asset_id = _clean_text(asset.get("asset_id"))
+        projection["strict_reuse_group"] = C03_SCENE_DECOR_CONTAINER
+        denamed = _clean_text(asset.get("secondary_reuse_caption")) or _clean_text(asset.get("caption"))
+        projection["caption"] = denamed
+        projection["secondary_projection"] = True
+        projection["secondary_projection_of"] = asset_id
+        projection.pop("strict_reuse_secondary_group", None)
+        projection.pop("secondary_reuse_caption", None)
+        projections.append(projection)
+    return projections
+
+
 def write_ai_image_split_match_indexes(
     match_index: dict[str, Any],
     library_dir: str | Path,
@@ -1075,6 +1107,8 @@ def write_ai_image_split_match_indexes(
             copied = deepcopy(asset)
             copied["strict_reuse_group"] = group
             group_assets.append(copied)
+        if group == _GENERAL_REUSE_GROUP:
+            group_assets.extend(_c01_secondary_c03_projections(split_source_assets))
         payload = {
             "schema_version": match_index.get("schema_version", MATCH_INDEX_SCHEMA_VERSION),
             "strict_reuse_group": group,
@@ -1163,6 +1197,8 @@ def read_ai_image_split_match_index(
             if not isinstance(item, dict):
                 continue
             asset = deepcopy(item)
+            if asset.get("secondary_projection") is True:
+                continue
             asset["strict_reuse_group"] = _normalize_binary_reuse_group(
                 asset.get("strict_reuse_group") or payload.get("strict_reuse_group") or group,
                 default=_GENERAL_REUSE_GROUP,

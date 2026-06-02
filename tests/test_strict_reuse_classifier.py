@@ -12,6 +12,7 @@ from edupptx.materials.strict_reuse_classifier import (
     MATERIAL_CATEGORIES,
     MATERIAL_CATEGORY_RULES_TEXT,
     classify_asset_strict_reuse,
+    classify_records,
     classify_strict_reuse_groups,
     classify_strict_reuse_library,
     export_strict_reuse_visual_check,
@@ -99,7 +100,7 @@ def test_material_category_prompt_protects_merged_skip_before_c03():
 def test_material_category_prompt_uses_query_reuse_granularity():
     rules = MATERIAL_CATEGORY_RULES_TEXT
 
-    assert "C01_irreplaceable_entity_event_action（不可替换具名/特定身份" in rules
+    assert "C01_irreplaceable_entity_event_action（唯一不可替换具名个体" in rules
     assert "只根据 query 字面描述判断复用粒度" in rules
     assert "具名压过形态" in rules
     assert "strict_reuse_secondary_group=C03_scene_decor_container" in rules
@@ -113,6 +114,39 @@ def test_material_category_prompt_uses_query_reuse_granularity():
     assert "雾孩子的不同卡通形象" not in rules
     assert "母亲站在床边温柔劝说男孩" not in rules
     assert "池塘里一群小蝌蚪围着青蛙妈妈游动" not in rules
+
+
+def test_rules_have_c01_uniqueness_invariant():
+    t = MATERIAL_CATEGORY_RULES_TEXT
+    assert "唯一" in t and "类型" in t
+    assert "换一件同类" in t
+    assert "空白脚手架" in t and "刻度" in t
+    assert "附带" in t
+
+
+class _ClassifyClient:
+    def chat(self, messages, temperature=0.0, max_tokens=4096):
+        return json.dumps(
+            [
+                {
+                    "query": "named landmark river scene",
+                    "strict_reuse_group": C01_IRREPLACEABLE_ENTITY_EVENT_ACTION,
+                    "strict_reuse_secondary_group": C03_SCENE_DECOR_CONTAINER,
+                }
+            ],
+            ensure_ascii=False,
+        )
+
+
+def test_classify_records_preserves_valid_c01_c03_secondary_group():
+    output = classify_records(
+        [{"query": "named landmark river scene"}],
+        _ClassifyClient(),
+        batch_size=1,
+    )
+
+    assert output[0]["strict_reuse_group"] == C01_IRREPLACEABLE_ENTITY_EVENT_ACTION
+    assert output[0]["strict_reuse_secondary_group"] == C03_SCENE_DECOR_CONTAINER
 
 
 def test_legacy_reuse_group_field_is_ignored_by_v3_classification():

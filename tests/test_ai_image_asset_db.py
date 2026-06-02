@@ -33,6 +33,7 @@ from edupptx.materials.ai_image_asset_db import (
     _subject_scope_decision,
     _target_metadata_unknown_fields,
     _normalize_subject_value,
+    _normalize_asset_for_match,
     _save_reusable_png_with_transparent_padding,
     build_ai_image_match_index,
     find_reusable_ai_image_asset,
@@ -240,6 +241,77 @@ def test_split_indexes_write_gapless_active_group_names(tmp_path):
 
     scene_payload = json.loads((split_dir / "C03_scene_decor_container.json").read_text(encoding="utf-8"))
     assert [asset["asset_id"] for asset in scene_payload["assets"]] == ["scene", "invalid_subject", "invalid_scene"]
+
+
+def test_match_index_preserves_secondary_reuse_caption():
+    asset = {
+        "asset_id": "lm",
+        "asset_kind": "page_image",
+        "image_path": "x.png",
+        "aspect_ratio": "16:9",
+        "caption": "西湖晴天湖景",
+        "strict_reuse_group": "C01_irreplaceable_entity_event_action",
+        "strict_reuse_secondary_group": "C03_scene_decor_container",
+        "secondary_reuse_caption": "晴天湖景",
+    }
+    out = _normalize_asset_for_match(asset)
+    assert out["secondary_reuse_caption"] == "晴天湖景"
+    assert out["strict_reuse_secondary_group"] == "C03_scene_decor_container"
+
+
+def test_c01_landmark_dual_writes_denamed_projection_into_c03(tmp_path):
+    match_index = {
+        "schema_version": 1,
+        "assets": [
+            {
+                "asset_id": "lm",
+                "asset_kind": "page_image",
+                "image_path": "x.png",
+                "aspect_ratio": "16:9",
+                "caption": "西湖晴天湖景",
+                "strict_reuse_group": "C01_irreplaceable_entity_event_action",
+                "strict_reuse_secondary_group": "C03_scene_decor_container",
+                "secondary_reuse_caption": "晴天湖景",
+            }
+        ],
+    }
+    write_ai_image_split_match_indexes(match_index, tmp_path)
+    split = tmp_path / "strict_reuse_indexes"
+    c01 = json.loads((split / "C01_irreplaceable_entity_event_action.json").read_text(encoding="utf-8"))
+    c03 = json.loads((split / "C03_scene_decor_container.json").read_text(encoding="utf-8"))
+    a01 = next(a for a in c01["assets"] if a["asset_id"] == "lm")
+    assert a01["caption"] == "西湖晴天湖景"
+    assert "secondary_projection" not in a01
+    a03 = next(a for a in c03["assets"] if a["asset_id"] == "lm")
+    assert a03["caption"] == "晴天湖景"
+    assert a03["strict_reuse_group"] == "C03_scene_decor_container"
+    assert a03["secondary_projection"] is True
+    assert a03["secondary_projection_of"] == "lm"
+    assert "strict_reuse_secondary_group" not in a03
+
+
+def test_read_split_skips_secondary_projection_keeps_canonical_c01(tmp_path):
+    match_index = {
+        "schema_version": 1,
+        "assets": [
+            {
+                "asset_id": "lm",
+                "asset_kind": "page_image",
+                "image_path": "x.png",
+                "aspect_ratio": "16:9",
+                "caption": "西湖晴天湖景",
+                "strict_reuse_group": "C01_irreplaceable_entity_event_action",
+                "strict_reuse_secondary_group": "C03_scene_decor_container",
+                "secondary_reuse_caption": "晴天湖景",
+            }
+        ],
+    }
+    write_ai_image_split_match_indexes(match_index, tmp_path)
+    db, _ = read_ai_image_split_match_index(tmp_path)
+    matches = [a for a in db["assets"] if a["asset_id"] == "lm"]
+    assert len(matches) == 1
+    assert matches[0]["strict_reuse_group"] == "C01_irreplaceable_entity_event_action"
+    assert matches[0]["caption"] == "西湖晴天湖景"
 
 
 def test_write_match_index_retains_c00_split_file_but_excludes_c00_from_matching(tmp_path):
