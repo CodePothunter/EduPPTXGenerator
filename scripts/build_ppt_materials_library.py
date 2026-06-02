@@ -54,7 +54,10 @@ from edupptx.materials.ai_image_asset_db import (
     read_ai_image_split_match_index,
     write_ai_image_match_index,
 )
+from edupptx.materials.ppt_dedupe import dedupe_ppt_db_assets
 from edupptx.materials.strict_reuse_classifier import (
+    SECONDARY_REUSE_GROUP_FIELD,
+    normalize_secondary_reuse_group,
     normalize_strict_reuse_group,
 )
 
@@ -487,10 +490,23 @@ def build_ppt_image_materials_library(
     report["skip_image_archive_count"] = skip_archive_report["archived_count"]
     report["skip_image_archive_missing_count"] = skip_archive_report["missing_count"]
     _attach_ppt_source_metadata(db, ppt_asset_source_by_id)
-    near_duplicate_report = _dedupe_ppt_near_duplicate_assets(db, library_root)
-    report["near_duplicate_count"] = near_duplicate_report["removed_count"]
-    if near_duplicate_report["groups"]:
-        report["near_duplicates"] = near_duplicate_report["groups"]
+    dedupe_report = dedupe_ppt_db_assets(
+        db,
+        library_root=library_root,
+        apply=True,
+        mode="build_apply",
+    )
+    report["dedupe_removed_count"] = int(dedupe_report.get("applied_removed_count") or 0)
+    report["dedupe_bucket_counts"] = dedupe_report.get("buckets", {})
+    report["dedupe_report_path"] = _clean_text(dedupe_report.get("report_path"))
+    if dedupe_report.get("groups"):
+        report["dedupe_groups"] = dedupe_report["groups"]
+    for item in dedupe_report.get("missing_images", []):
+        if isinstance(item, dict):
+            report["warnings"].append(
+                "ppt_dedupe_missing_image:"
+                f"{item.get('bucket')}:{item.get('asset_id')}:{item.get('image_path')}"
+            )
     _strip_ppt_internal_asset_fields(db)
     db["asset_count"] = len(db.get("assets", []) if isinstance(db.get("assets"), list) else [])
     db["warnings"] = _dedupe(
@@ -1183,6 +1199,19 @@ def _normalize_ppt_enum(value: Any, allowed: set[str], default: str = "其他") 
     return text if text in allowed else default
 
 
+def _apply_ppt_classification_result(asset: dict[str, Any], result: dict[str, Any]) -> None:
+    group = normalize_strict_reuse_group(result.get("strict_reuse_group"))
+    asset["strict_reuse_group"] = group
+    secondary = normalize_secondary_reuse_group(
+        result.get(SECONDARY_REUSE_GROUP_FIELD),
+        primary=group,
+    )
+    if secondary:
+        asset[SECONDARY_REUSE_GROUP_FIELD] = secondary
+    else:
+        asset.pop(SECONDARY_REUSE_GROUP_FIELD, None)
+
+
 def _enrich_single_ppt_asset_with_llm(
     asset: dict[str, Any],
     client: Any,
@@ -1204,7 +1233,7 @@ def _enrich_single_ppt_asset_with_llm(
     try:
         classified = classify_records([item], client, batch_size=size)
         result = classified[0] if classified else {}
-        item["strict_reuse_group"] = normalize_strict_reuse_group(result.get("strict_reuse_group"))
+        _apply_ppt_classification_result(item, result)
         item["strict_reuse_signals"] = _dedupe(
             [
                 *[str(entry) for entry in (item.get("strict_reuse_signals") or []) if str(entry).strip()],
@@ -1281,7 +1310,7 @@ def _enrich_ppt_assets_with_llm(
     try:
         classified = classify_records(page_assets, client, batch_size=size)
         for asset, result in zip(page_assets, classified):
-            asset["strict_reuse_group"] = normalize_strict_reuse_group(result.get("strict_reuse_group"))
+            _apply_ppt_classification_result(asset, result)
             asset["strict_reuse_signals"] = _dedupe(
                 [
                     *[str(item) for item in (asset.get("strict_reuse_signals") or []) if str(item).strip()],

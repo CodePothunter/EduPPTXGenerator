@@ -296,6 +296,68 @@ def test_build_ppt_image_materials_library_writes_match_index_and_embedding_side
     assert not asset["context_summary"].startswith(("来自", "图片来自", "该图来自"))
 
 
+def test_build_ppt_materials_library_runs_bucketed_dedupe_before_writing_indexes(tmp_path, monkeypatch):
+    _patch_embedding_encoder(monkeypatch)
+
+    class SameC03KeywordClient:
+        _model = "fake-c03-classifier"
+
+        def chat(self, messages, temperature=0.0, max_tokens=4096):
+            system = messages[0]["content"]
+            payload = json.loads(messages[-1]["content"][messages[-1]["content"].index("[") :])
+            if "strict_reuse_group" in system:
+                return json.dumps(
+                    [
+                        {
+                            "query": item["query"],
+                            "strict_reuse_group": "C03_scene_decor_container",
+                        }
+                        for item in payload
+                    ],
+                    ensure_ascii=False,
+                )
+            if "general" in system:
+                return json.dumps(
+                    [{"query": item["query"], "general": True} for item in payload],
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                [{"query": item["query"], "caption": "blue blank classroom frame"} for item in payload],
+                ensure_ascii=False,
+            )
+
+    teach_kb_root = tmp_path / "teach-kb"
+    pptx_dir = teach_kb_root / "data" / "uploads" / "pptx"
+    pptx_dir.mkdir(parents=True)
+    first_image = tmp_path / "first.png"
+    second_image = tmp_path / "second.png"
+    Image.new("RGB", (400, 300), (120, 180, 220)).save(first_image)
+    Image.new("RGB", (400, 300), (121, 181, 221)).save(second_image)
+    _write_two_picture_pptx(pptx_dir / "lesson.pptx", first_image, second_image)
+
+    library_dir = tmp_path / "materials_library_ppt"
+    db, _index_path, report = build_ppt_image_materials_library(
+        teach_kb_root=pptx_dir,
+        output_library_dir=library_dir,
+        use_vlm=False,
+        keyword_client=SameC03KeywordClient(),
+        use_keyword_enrichment=True,
+        write_match_index=True,
+    )
+
+    assert report["kept_asset_count"] == 2
+    assert report["dedupe_removed_count"] == 1
+    assert report["dedupe_bucket_counts"]["C03"] == 2
+    assert Path(report["dedupe_report_path"]).exists()
+    assert db["asset_count"] == 1
+    assert len(db["assets"][0]["duplicate_asset_ids"]) == 1
+    c03_payload = json.loads(
+        (library_dir / "strict_reuse_indexes" / "C03_scene_decor_container.json").read_text(encoding="utf-8")
+    )
+    assert c03_payload["asset_count"] == 1
+    assert len(c03_payload["assets"][0]["duplicate_asset_ids"]) == 1
+
+
 def test_build_ppt_materials_library_archives_c00_images_to_skip_images(tmp_path, monkeypatch):
     _patch_embedding_encoder(monkeypatch)
 

@@ -951,7 +951,7 @@ def test_target_subject_other_uses_general_filter_and_writes_debug(tmp_path):
     payload = json.loads(debug_path.read_text(encoding="utf-8"))
     query = payload["queries"][0]
     decision = query["decision"]
-    assert decision["reason"] == "no_candidate_above_reuse_threshold"
+    assert decision["reason"] == "no_eligible_candidate_after_hard_filter"
     assert "unknown_fields" not in decision
     assert query["candidate_scores"][0]["score_details"]["subject_filter"]["subject_filter_mode"] == "target_subject_unknown"
 
