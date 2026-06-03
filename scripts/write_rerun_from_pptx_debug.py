@@ -17,6 +17,7 @@ DEFAULT_TEACH_KB_PPTX_ROOT = Path("/srv/teach-kb/data/uploads/pptx")
 DEFAULT_STATUSES = ("unconfirmed", "partial_asset_hash_match", "extract_failed", "pptx_missing")
 DEFAULT_SCRIPT_FILENAME = "rerun_debug_pptx.sh"
 DEFAULT_PATHS_FILENAME = "rerun_debug_pptx_paths.txt"
+DEFAULT_FAILED_FILENAME = "rerun_debug_pptx_failed.txt"
 
 
 def write_rerun_from_pptx_debug(
@@ -96,22 +97,37 @@ def _write_paths(path: Path, paths: list[str]) -> None:
 
 
 def _write_script(path: Path, *, paths: list[str], teach_kb_root: Path, library_root: Path) -> None:
+    failed_path = library_root / DEFAULT_FAILED_FILENAME
     lines = [
         "#!/usr/bin/env bash",
-        "set -euo pipefail",
+        "set -uo pipefail",
+        f"FAILED_LOG={_sh_quote(str(failed_path))}",
+        ": > \"$FAILED_LOG\"",
         "",
     ]
     for pptx_path in paths:
         lines.extend(
             [
-                "uv run python scripts/build_ppt_materials_library.py \\",
+                f"echo {_sh_quote('RUN: ' + pptx_path)}",
+                "if ! uv run python scripts/build_ppt_materials_library.py \\",
                 f"  --teach-kb-root {_sh_quote(str(teach_kb_root))} \\",
                 f"  --library-dir {_sh_quote(str(library_root))} \\",
                 f"  --pptx {_sh_quote(pptx_path)} \\",
-                "  --flush-every 1",
+                "  --flush-every 1; then",
+                f"  echo {_sh_quote('FAILED: ' + pptx_path)} | tee -a \"$FAILED_LOG\"",
+                "fi",
                 "",
             ]
         )
+    lines.extend(
+        [
+            "if [ -s \"$FAILED_LOG\" ]; then",
+            "  echo \"Some PPTX failed. See: $FAILED_LOG\"",
+            "else",
+            "  echo \"All PPTX rerun commands completed.\"",
+            "fi",
+        ]
+    )
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines), encoding="utf-8")
     try:

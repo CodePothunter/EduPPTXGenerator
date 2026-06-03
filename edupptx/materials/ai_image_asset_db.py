@@ -41,7 +41,7 @@ DEFAULT_EMBEDDING_INDEX_FILENAME = "ai_image_embedding_index.npz"
 DEFAULT_EMBEDDING_META_FILENAME = "ai_image_embedding_meta.json"
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 MATCH_INDEX_SCHEMA_VERSION = 14
-EMBEDDING_INDEX_SCHEMA_VERSION = 4
+EMBEDDING_INDEX_SCHEMA_VERSION = 5
 DEFAULT_KEYWORD_BATCH_SIZE = 8
 DEFAULT_EMBEDDING_BATCH_SIZE = 16
 DEFAULT_REUSE_MAX_WORKERS = 4
@@ -517,6 +517,7 @@ _ALLOWED_GRADE_NORMS = frozenset(
 _ALLOWED_GRADE_BANDS = frozenset((_LOW_GRADE_BAND, _HIGH_GRADE_BAND, _OTHER_GRADE))
 _ALLOWED_SUBJECTS = frozenset(("语文", "数学", "物理", _OTHER_SUBJECT))
 _KNOWN_SUBJECTS = frozenset({"语文", "数学", "物理"})
+_LOW_GRADE_NORMS = frozenset(("一年级", "二年级", "三年级"))
 
 
 def build_ai_image_asset_db(
@@ -1304,8 +1305,6 @@ def write_ai_image_embedding_index(
 
     rows: list[tuple[str, str]] = []
     background_color_bias_rows: list[tuple[str, str]] = []
-    context_rows: list[tuple[str, str]] = []
-    constraint_rows: list[tuple[str, str]] = []
     for asset in assets:
         if not isinstance(asset, dict):
             continue
@@ -1316,9 +1315,6 @@ def write_ai_image_embedding_index(
         color_bias = _background_color_bias(asset) if _is_background_asset(asset) else ""
         if asset_id and color_bias:
             background_color_bias_rows.append((asset_id, color_bias))
-        context_text = _candidate_context_embedding_text(asset)
-        if asset_id and context_text:
-            context_rows.append((asset_id, context_text))
     if not rows:
         return {
             "enabled": False,
@@ -1365,20 +1361,6 @@ def write_ai_image_embedding_index(
             "ids_key": "background_color_bias_asset_ids",
             "texts_key": None,
             "vectors_key": "background_color_bias_vectors",
-        },
-        {
-            "name": "context",
-            "rows": context_rows,
-            "ids_key": "context_asset_ids",
-            "texts_key": None,
-            "vectors_key": "context_vectors",
-        },
-        {
-            "name": "constraint",
-            "rows": constraint_rows,
-            "ids_key": "constraint_asset_ids",
-            "texts_key": "constraint_texts",
-            "vectors_key": "constraint_vectors",
         },
     ]
     total_counts = {spec["name"]: len(spec["rows"]) for spec in category_specs}
@@ -1583,8 +1565,6 @@ def write_ai_image_embedding_index(
         "index_filename": index_filename,
         "asset_count": len(rows),
         "background_color_bias_asset_count": len(background_color_bias_rows),
-        "context_asset_count": len(context_rows),
-        "constraint_asset_count": len(constraint_rows),
         "vector_dim": int(vectors.shape[1]) if len(vectors.shape) == 2 else 0,
         "assets": [
             {"asset_id": asset_id, "embedding_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]}
@@ -1593,17 +1573,6 @@ def write_ai_image_embedding_index(
         "background_color_bias_assets": [
             {"asset_id": asset_id, "embedding_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]}
             for asset_id, text in background_color_bias_rows
-        ],
-        "context_assets": [
-            {"asset_id": asset_id, "embedding_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]}
-            for asset_id, text in context_rows
-        ],
-        "constraint_assets": [
-            {
-                "asset_id": asset_id,
-                "constraint_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
-            }
-            for asset_id, text in constraint_rows
         ],
     }
     write_npz_atomic(index_path, final_payload)
@@ -1620,8 +1589,6 @@ def write_ai_image_embedding_index(
         "meta_path": _relative_output_path(meta_path),
         "asset_count": len(rows),
         "background_color_bias_asset_count": len(background_color_bias_rows),
-        "context_asset_count": len(context_rows),
-        "constraint_asset_count": len(constraint_rows),
         "vector_dim": meta["vector_dim"],
     }
 
@@ -2884,6 +2851,7 @@ def find_reusable_ai_image_asset(
     theme: str = "",
     grade: str = "",
     subject: str = "",
+    grade_band: str = "",
     page_title: str = "",
     page_type: str = "",
     role: str = "",
@@ -2937,6 +2905,7 @@ def find_reusable_ai_image_asset(
                 role=role,
                 aspect_ratio=aspect_ratio,
                 caption=caption,
+                grade_band=grade_band,
                 keyword_client=keyword_client,
                 candidate_limit=candidate_limit,
                 min_keyword_score=min_keyword_score,
@@ -2968,6 +2937,7 @@ def find_reusable_ai_image_asset(
                 role=role,
                 aspect_ratio=aspect_ratio,
                 caption=caption,
+                grade_band=grade_band,
             ),
             min_keyword_score,
         )
@@ -3021,6 +2991,7 @@ def find_reusable_ai_image_asset(
         role=role,
         aspect_ratio=aspect_ratio,
         caption=caption,
+        grade_band=grade_band,
     )
 
     debug_record = _new_reuse_debug_record(
@@ -3470,6 +3441,7 @@ def evaluate_ai_image_reuse_matches_from_plan(
         "theme": _clean_text(draft.meta.topic),
         "grade": _clean_text(getattr(draft.meta, "grade", "")),
         "subject": _clean_text(getattr(draft.meta, "subject", "")),
+        "grade_band": _clean_text(getattr(draft.meta, "grade_band", "")),
     }
     reuse_session_state: dict[str, Any] = {
         "strict_asset_use_counts": {},
@@ -3553,6 +3525,7 @@ def evaluate_ai_image_reuse_matches_from_plan(
             theme=context["theme"],
             grade=context["grade"],
             subject=context["subject"],
+            grade_band=context["grade_band"],
             page_title=spec["page_title"],
             page_type=spec["page_type"],
             role=spec["role"],
@@ -3595,6 +3568,7 @@ def evaluate_ai_image_reuse_matches_from_plan(
             theme=context["theme"],
             grade=context["grade"],
             subject=context["subject"],
+            grade_band=context["grade_band"],
             page_title=spec["page_title"],
             page_type=spec["page_type"],
             role=spec["role"],
@@ -4584,18 +4558,45 @@ def _build_keyword_messages(
             }
         )
 
+    if include_match_keywords:
+        page_image_fields = (
+            "asset_id、caption、context_summary、teaching_intent、general、strict_reuse_group、"
+            "strict_reuse_secondary_group、secondary_reuse_query、secondary_reuse_caption、"
+            "strict_reuse_confidence、strict_reuse_reason。"
+        )
+        background_fields = (
+            "asset_id、normalized_prompt、color_temperature、context_summary、teaching_intent、general、"
+            "strict_reuse_group、strict_reuse_secondary_group、strict_reuse_confidence、strict_reuse_reason。"
+        )
+        deck_metadata_instruction = (
+            "subject、grade_norm 和 grade_band 已由 PPT/deck 级流程归一化，输入中仅作为固定上下文；"
+            "不要输出、不要重新判断、不要覆盖这三个字段。"
+        )
+    else:
+        page_image_fields = (
+            "asset_id、caption、context_summary、teaching_intent、subject、grade_norm、grade_band、"
+            "general、strict_reuse_group、strict_reuse_secondary_group、secondary_reuse_query、"
+            "secondary_reuse_caption、strict_reuse_confidence、strict_reuse_reason。"
+        )
+        background_fields = (
+            "asset_id、normalized_prompt、color_temperature、context_summary、teaching_intent、"
+            "subject、grade_norm、grade_band、general、strict_reuse_group、strict_reuse_secondary_group、"
+            "strict_reuse_confidence、strict_reuse_reason。"
+        )
+        deck_metadata_instruction = (
+            "subject 必须只从以下枚举中选择：语文、数学、物理、其他。"
+            "grade_norm 必须只从以下枚举中选择：一年级、二年级、三年级、四年级、五年级、六年级、七年级、八年级、九年级、高一、高二、高三、其他。"
+            "grade_band 必须只从以下枚举中选择：低年级、高年级、其他。"
+            "subject、grade_norm 和 grade_band 由你根据 theme、caption、subject_hint、grade_hint 以及用户显式线索自行判断并归一；"
+            "即使输入 subject 或 grade 已有值，也必须重新输出上述枚举，不要复制非枚举格式。"
+            "如果字段缺失、无法判断或不确定，一律输出其他。"
+        )
+
     system = (
         "必须只返回严格 JSON，顶层对象必须包含 assets 数组。"
-        "page_image 只允许输出这些字段：asset_id、caption、context_summary、teaching_intent、"
-        "subject、grade_norm、grade_band、general、strict_reuse_group、strict_reuse_secondary_group、secondary_reuse_query、secondary_reuse_caption、strict_reuse_confidence、strict_reuse_reason。"
-        "background 只允许输出这些字段：asset_id、normalized_prompt、color_temperature、context_summary、"
-        "teaching_intent、subject、grade_norm、grade_band、general、strict_reuse_group、strict_reuse_secondary_group、strict_reuse_confidence、strict_reuse_reason。"
-        "subject 必须只从以下枚举中选择：语文、数学、物理、其他。"
-        "grade_norm 必须只从以下枚举中选择：一年级、二年级、三年级、四年级、五年级、六年级、七年级、八年级、九年级、高一、高二、高三、其他。"
-        "grade_band 必须只从以下枚举中选择：低年级、高年级、其他。"
-        "subject、grade_norm 和 grade_band 由你根据 theme、caption、subject_hint、grade_hint 以及用户显式线索自行判断并归一；"
-        "即使输入 subject 或 grade 已有值，也必须重新输出上述枚举，不要复制非枚举格式。"
-        "如果字段缺失、无法判断或不确定，一律输出其他。"
+        f"page_image 只允许输出这些字段：{page_image_fields}"
+        f"background 只允许输出这些字段：{background_fields}"
+        f"{deck_metadata_instruction}"
         "general 必须是布尔值 true 或 false，表示当前素材本身是否可跨语文、数学、物理通用复用。"
         "page_image 和 background 输出示例都必须包含 \"general\": true 或 false 布尔字段，示例值不代表默认值。"
         "general 字段按下述共享规则判定：\n"
@@ -4618,7 +4619,20 @@ def _build_keyword_messages(
     )
     user = "请按结构规范化以下素材：\n" + json.dumps({"assets": items}, ensure_ascii=False, indent=2)
     system += "\n\ncaption 字段按下述规则产出（与 plan 侧共用同一规则）：\n" + _CAPTION_RULE
-    system += "\n\n" + _load_keyword_reuse_rules_reference().replace("content_prompt", "query")
+    keyword_rules = _load_keyword_reuse_rules_reference().replace("content_prompt", "query")
+    if include_match_keywords:
+        keyword_rules = re.sub(
+            r"## 学科与年级字段.*?## 通用复用字段",
+            (
+                "## 学科与年级字段\n\n"
+                "`subject`、`grade_norm`、`grade_band` 是 PPT/deck 级固定上下文字段。"
+                "target keyword enrich 不输出、不重新判断、不覆盖这些字段。\n\n"
+                "## 通用复用字段"
+            ),
+            keyword_rules,
+            flags=re.S,
+        )
+    system += "\n\n" + keyword_rules
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
@@ -4701,6 +4715,14 @@ def _normalize_grade_band_value(value: Any) -> str:
     return text if text in _ALLOWED_GRADE_BANDS else _OTHER_GRADE
 
 
+def _effective_grade_band(asset: dict[str, Any]) -> str:
+    """存量资产 band=其他 但 grade_norm 已知时，派生出有效 band（避免幽灵 unknown 拦截）。"""
+    band = _normalize_grade_band_value(asset.get("grade_band"))
+    if band != _OTHER_GRADE:
+        return band
+    return grade_band_from_norm(asset.get("grade_norm"))
+
+
 def _normalize_subject_value(value: Any) -> str:
     text = _clean_text(value)
     return text if text in _ALLOWED_SUBJECTS else _OTHER_SUBJECT
@@ -4722,7 +4744,7 @@ def _target_metadata_unknown_fields(asset: dict[str, Any]) -> list[str]:
         unknown.append("subject")
     if _normalize_grade_norm_value(asset.get("grade_norm")) == _OTHER_GRADE:
         unknown.append("grade_norm")
-    if _normalize_grade_band_value(asset.get("grade_band")) == _OTHER_GRADE:
+    if _effective_grade_band(asset) == _OTHER_GRADE:
         unknown.append("grade_band")
     return unknown
 
@@ -4766,8 +4788,16 @@ def _apply_keyword_payload(
 ) -> None:
     preserved_review_fields = _preserve_review_fields(asset)
     padding_capacity = normalize_padding_capacity(asset.get("padding_capacity"))
-    grade_info = _grade_info_from_payload(payload)
-    subject = _normalize_subject_value(payload.get("subject"))
+    preserve_deck_metadata = bool(include_match_keywords)
+    if preserve_deck_metadata:
+        grade_info = normalize_grade_info(
+            asset.get("grade_norm") or asset.get("grade"),
+            asset.get("grade_band"),
+        )
+        subject = _normalize_subject_value(asset.get("subject"))
+    else:
+        grade_info = _grade_info_from_payload(payload)
+        subject = _normalize_subject_value(payload.get("subject"))
     normalized_prompt = _clean_text(payload.get("normalized_prompt")) or _default_normalized_prompt(asset)
     color_temperature = _clean_text(payload.get("color_temperature"))
     if preserve_existing_context_fields:
@@ -5604,17 +5634,7 @@ def _asset_content_prompt(asset: dict[str, Any]) -> str:
 
 
 def _asset_caption(asset: dict[str, Any]) -> str:
-    """Caption-first accessor.
-
-    Falls back to verbose fields so unbackfilled libraries still work before
-    the offline caption backfill runs; retrieval still excludes context_summary.
-    """
-    return (
-        _clean_text(asset.get("caption"))
-        or _clean_text(asset.get("query"))
-        or _clean_text(asset.get("content_prompt"))
-        or _clean_text(asset.get("prompt"))
-    )
+    return _clean_text(asset.get("caption"))
 
 
 def _asset_query(asset: dict[str, Any]) -> str:
@@ -5679,6 +5699,7 @@ def _build_reuse_target_asset(
     aspect_ratio: str,
     background_route: dict[str, Any] | None = None,
     caption: str = "",
+    grade_band: str = "",
 ) -> dict[str, Any]:
     route = _clean_prompt_route(prompt_route)
     bg_route = _clean_background_route(background_route)
@@ -5689,7 +5710,7 @@ def _build_reuse_target_asset(
             _clean_text(bg_route.get("background_color_bias")),
         )
     asset_key = "|".join([asset_kind, content_prompt, grade, subject, aspect_ratio])
-    grade_info = normalize_grade_info(grade, "")
+    grade_info = normalize_grade_info(grade, grade_band)
     target = {
         "asset_id": "target_" + hashlib.sha256(asset_key.encode("utf-8")).hexdigest()[:16],
         "asset_kind": asset_kind,
@@ -5813,23 +5834,6 @@ def _rank_embedding_candidates(
                 _clean_text(asset_id): float(color_scores[idx])
                 for idx, asset_id in enumerate(color_bias_asset_ids)
             }
-        context_scores_by_id: dict[str, float] = {}
-        context_vectors = embedding_index.get("context_vectors")
-        context_asset_ids = embedding_index.get("context_asset_ids")
-        target_context = _target_context_embedding_text(target)
-        if (
-            not _is_background_asset(target)
-            and target_context
-            and context_vectors is not None
-            and isinstance(context_asset_ids, list)
-            and context_asset_ids
-        ):
-            context_query_vector = query_vector_for(target_context, "context")
-            context_scores = np.asarray(context_vectors).dot(context_query_vector)
-            context_scores_by_id = {
-                _clean_text(asset_id): float(context_scores[idx])
-                for idx, asset_id in enumerate(context_asset_ids)
-            }
     except Exception:
         return []
 
@@ -5859,8 +5863,6 @@ def _rank_embedding_candidates(
                 float(background_color_bias_scores_by_id[clean_asset_id]),
                 4,
             )
-        if clean_asset_id in context_scores_by_id:
-            row["context_embedding_score"] = round(float(context_scores_by_id[clean_asset_id]), 4)
         scored.append(row)
     scored.sort(key=lambda item: float(item.get("embedding_score") or 0.0), reverse=True)
     return scored[: max(1, int(limit or DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE))]
@@ -5945,11 +5947,6 @@ def _rank_hybrid_reuse_candidates(
                     float(candidate.get("background_color_bias_embedding_score") or 0.0),
                     float(item.get("background_color_bias_embedding_score") or 0.0),
                 )
-            if "context_embedding_score" in item:
-                candidate["context_embedding_score"] = max(
-                    float(candidate.get("context_embedding_score") or 0.0),
-                    float(item.get("context_embedding_score") or 0.0),
-                )
             if score_key == "substring_score":
                 candidate["substring_hits"] = _dedupe_terms(
                     [*(candidate.get("substring_hits") or []), *(item.get("substring_hits") or [])]
@@ -5993,15 +5990,7 @@ def _rank_hybrid_reuse_candidates(
             candidate["keyword_score"] = round(float(score_details.get("score") or 0.0), 4)
             candidate["background_reuse_score"] = candidate["keyword_score"]
         else:
-            score_details = _score_reuse_candidate_details(
-                target,
-                asset,
-                context_embedding_score=(
-                    float(candidate.get("context_embedding_score") or 0.0)
-                    if "context_embedding_score" in candidate
-                    else None
-                ),
-            )
+            score_details = _score_reuse_candidate_details(target, asset)
             bm25_score = float(score_details.get("score") or 0.0)
             candidate["keyword_score"] = round(max(float(candidate.get("keyword_score") or 0.0), bm25_score), 4)
         candidate["rrf_score"] = round(rrf_scores.get(asset_id, 0.0), 6)
@@ -6014,7 +6003,6 @@ def _rank_hybrid_reuse_candidates(
                 "substring_score": candidate.get("substring_score"),
                 "substring_hits": candidate.get("substring_hits"),
                 "background_color_bias_embedding_score": candidate.get("background_color_bias_embedding_score"),
-                "context_embedding_score": candidate.get("context_embedding_score"),
                 "rrf_score": candidate.get("rrf_score"),
                 "hybrid_score": candidate.get("hybrid_score"),
                 "retrieval_ranks": candidate.get("retrieval_ranks"),
@@ -6207,8 +6195,6 @@ def _normalize_subject_scope(value: Any) -> str:
 def _score_reuse_candidate_details(
     target: dict[str, Any],
     candidate: dict[str, Any],
-    *,
-    context_embedding_score: float | None = None,
 ) -> dict[str, Any]:
     if _clean_text(target.get("asset_kind")) != _clean_text(candidate.get("asset_kind")):
         return {"score": 0.0, "reject_reason": "asset_kind_mismatch"}
@@ -6231,8 +6217,6 @@ def _score_reuse_candidate_details(
             "core_hits": [],
             "missing_core_groups": [],
             "aspect_score": 0.0,
-            "context_score": 0.0,
-            "context_hits": [],
             "raw_score_before_transform_penalty": 0.0,
         }
 
@@ -6264,13 +6248,8 @@ def _score_reuse_candidate_details(
             "core_hits": bm25_hits,
             "missing_core_groups": [],
             "aspect_score": 1.0,
-            "context_score": 0.0,
-            "context_hits": [],
             "transform_policy": transform_policy,
             "raw_score_before_transform_penalty": 0.0,
-            "context_embedding_score": _optional_score(context_embedding_score),
-            "context_substring_score": substring_score,
-            "context_substring_hits": substring_hits,
         }
     return {
         "score": max(0.0, min(1.0, score)),
@@ -6283,13 +6262,8 @@ def _score_reuse_candidate_details(
         "core_hits": bm25_hits,
         "missing_core_groups": [],
         "aspect_score": 1.0,
-        "context_score": 0.0,
-        "context_hits": [],
         "transform_policy": transform_policy,
         "raw_score_before_transform_penalty": max(0.0, min(1.0, score)),
-        "context_embedding_score": _optional_score(context_embedding_score),
-        "context_substring_score": substring_score,
-        "context_substring_hits": substring_hits,
     }
 
 
@@ -6333,8 +6307,6 @@ def _score_background_reuse_candidate_details(
             "core_hits": [],
             "missing_core_groups": [],
             "aspect_score": 0.0,
-            "context_score": 0.0,
-            "context_hits": [],
             "transform_policy": transform_policy,
             "raw_score_before_transform_penalty": 0.0,
         }
@@ -6413,8 +6385,6 @@ def _score_background_reuse_candidate_details(
         "core_hits": prompt_bm25_hits,
         "missing_core_groups": [],
         "aspect_score": 0.0,
-        "context_score": 0.0,
-        "context_hits": [],
         "transform_policy": transform_policy,
         "raw_score_before_transform_penalty": max(0.0, min(1.0, raw_score)),
     }
@@ -6479,50 +6449,6 @@ def _weighted_hybrid_signal(
         total_weight += HYBRID_SUBSTRING_WEIGHT
         total_score += HYBRID_SUBSTRING_WEIGHT * _optional_score(substring_score)
     return total_score / max(total_weight, 1e-9)
-
-
-def _context_score_details(
-    target: dict[str, Any],
-    candidate: dict[str, Any],
-    *,
-    context_embedding_score: float | None = None,
-) -> dict[str, Any]:
-    target_terms = _target_context_summary_terms(target)
-    candidate_text = _candidate_context_embedding_text(candidate)
-    if not target_terms or not candidate_text:
-        return {
-            "context_score": 0.0,
-            "context_hits": [],
-            "context_bm25_score": 0.0,
-            "context_bm25_hits": [],
-            "context_embedding_score": _optional_score(context_embedding_score),
-            "context_substring_score": 0.0,
-            "context_substring_hits": [],
-        }
-
-    context_bm25_score, context_bm25_hits = _bm25_similarity_with_hits(
-        _bm25_tokens_from_values([target_terms]),
-        _bm25_tokens_from_values([candidate_text]),
-    )
-    context_substring_score, context_substring_hits = _background_substring_similarity(
-        target_terms,
-        candidate_text,
-    )
-    context_score = _weighted_hybrid_signal(
-        bm25_score=context_bm25_score,
-        embedding_score=context_embedding_score,
-        substring_score=context_substring_score,
-        use_hybrid=True,
-    )
-    return {
-        "context_score": max(0.0, min(1.0, context_score)),
-        "context_hits": context_bm25_hits,
-        "context_bm25_score": context_bm25_score,
-        "context_bm25_hits": context_bm25_hits,
-        "context_embedding_score": _optional_score(context_embedding_score),
-        "context_substring_score": context_substring_score,
-        "context_substring_hits": context_substring_hits,
-    }
 
 
 def _route_score_details(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
@@ -6616,13 +6542,6 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
             float(details.get("raw_score_before_transform_penalty") or 0.0),
             4,
         ),
-        "context_score": round(float(details.get("context_score") or 0.0), 4),
-        "context_hits": details.get("context_hits") or [],
-        "context_bm25_score": round(float(details.get("context_bm25_score") or 0.0), 4),
-        "context_bm25_hits": details.get("context_bm25_hits") or [],
-        "context_embedding_score": round(float(details.get("context_embedding_score") or 0.0), 4),
-        "context_substring_score": round(float(details.get("context_substring_score") or 0.0), 4),
-        "context_substring_hits": details.get("context_substring_hits") or [],
         "embedding_score": round(float(details.get("embedding_score") or 0.0), 4),
         "substring_score": round(float(details.get("substring_score") or 0.0), 4),
         "substring_hits": details.get("substring_hits") or [],
@@ -6657,20 +6576,6 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
         ),
         "background_color_bias_substring_hits": details.get("background_color_bias_substring_hits") or [],
     }
-
-
-def _target_context_summary_terms(asset: dict[str, Any]) -> list[str]:
-    return _background_text_terms(_clean_text(asset.get("context_summary")))[:12]
-
-
-def _target_context_embedding_text(asset: dict[str, Any]) -> str:
-    return _clean_text(asset.get("context_summary"))
-
-
-def _candidate_context_embedding_text(asset: dict[str, Any]) -> str:
-    if _is_background_asset(asset):
-        return ""
-    return _clean_text(asset.get("context_summary"))
 
 
 def _bm25_tokens_from_values(values: list[Any]) -> list[str]:
@@ -7327,8 +7232,6 @@ def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: 
             "meta_path": _relative_output_path(meta_path),
             "asset_count": expected_count,
             "background_color_bias_asset_count": int(meta.get("background_color_bias_asset_count") or 0),
-            "context_asset_count": int(meta.get("context_asset_count") or 0),
-            "constraint_asset_count": int(meta.get("constraint_asset_count") or 0),
             "vector_dim": int(meta.get("vector_dim") or 0),
         }
     PROGRESS_LOGGER.info(
@@ -7377,22 +7280,6 @@ def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], 
                 str(item) for item in data["background_color_bias_asset_ids"].tolist()
             ]
             background_color_bias_vectors = np.asarray(data["background_color_bias_vectors"], dtype="float32")
-        context_asset_ids: list[str] = []
-        context_vectors = None
-        if "context_asset_ids" in data.files and "context_vectors" in data.files:
-            context_asset_ids = [str(item) for item in data["context_asset_ids"].tolist()]
-            context_vectors = np.asarray(data["context_vectors"], dtype="float32")
-        constraint_asset_ids: list[str] = []
-        constraint_texts: list[str] = []
-        constraint_vectors = None
-        if (
-            "constraint_asset_ids" in data.files
-            and "constraint_texts" in data.files
-            and "constraint_vectors" in data.files
-        ):
-            constraint_asset_ids = [str(item) for item in data["constraint_asset_ids"].tolist()]
-            constraint_texts = [str(item) for item in data["constraint_texts"].tolist()]
-            constraint_vectors = np.asarray(data["constraint_vectors"], dtype="float32")
         meta = _read_json_if_exists(meta_path)
     except Exception as exc:
         return {}, {
@@ -7406,16 +7293,6 @@ def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], 
         "vectors": vectors,
         "background_color_bias_asset_ids": background_color_bias_asset_ids,
         "background_color_bias_vectors": background_color_bias_vectors,
-        "context_asset_ids": context_asset_ids,
-        "context_vectors": context_vectors,
-        "constraint_asset_ids": constraint_asset_ids,
-        "constraint_texts": constraint_texts,
-        "constraint_vectors": constraint_vectors,
-        "constraint_vectors_by_asset": _constraint_vectors_by_asset(
-            constraint_asset_ids,
-            constraint_texts,
-            constraint_vectors,
-        ),
         "meta": meta,
     }, {
         "enabled": True,
@@ -7424,28 +7301,8 @@ def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], 
         "meta_path": _relative_output_path(meta_path),
         "asset_count": len(asset_ids),
         "background_color_bias_asset_count": len(background_color_bias_asset_ids),
-        "context_asset_count": len(context_asset_ids),
-        "constraint_asset_count": len(constraint_asset_ids),
         "vector_dim": int(vectors.shape[1]) if len(vectors.shape) == 2 else 0,
     }
-
-
-def _constraint_vectors_by_asset(
-    asset_ids: list[str],
-    texts: list[str],
-    vectors: Any,
-) -> dict[str, dict[str, Any]]:
-    if vectors is None or not asset_ids or not texts:
-        return {}
-    out: dict[str, dict[str, Any]] = {}
-    for idx, asset_id in enumerate(asset_ids):
-        if idx >= len(texts):
-            break
-        text = _clean_text(texts[idx])
-        if not asset_id or not text:
-            continue
-        out.setdefault(_clean_text(asset_id), {})[text] = vectors[idx]
-    return out
 
 
 def _file_sha256(path: Path) -> str:
@@ -7788,10 +7645,11 @@ def _dedupe_warnings(values: list[str]) -> list[str]:
 
 def normalize_grade_info(*texts: Any) -> dict[str, Any]:
     values = list(texts)
-    return {
-        "grade_norm": _normalize_grade_norm_value(values[0] if values else ""),
-        "grade_band": _normalize_grade_band_value(values[1] if len(values) > 1 else ""),
-    }
+    grade_norm = _normalize_grade_norm_value(values[0] if values else "")
+    grade_band = _normalize_grade_band_value(values[1] if len(values) > 1 else "")
+    if grade_band == _OTHER_GRADE:
+        grade_band = grade_band_from_norm(grade_norm)
+    return {"grade_norm": grade_norm, "grade_band": grade_band}
 
 
 def infer_grade(*texts: Any) -> str:
@@ -7804,6 +7662,225 @@ def infer_grade_band(*texts: Any) -> str:
     """Return a valid LLM-provided grade band enum, or ``其他`` when absent/invalid."""
 
     return _normalize_grade_band_value(next((text for text in texts if _clean_text(text)), ""))
+
+
+def grade_band_from_norm(grade_norm: Any) -> str:
+    """从 grade_norm 派生学段：一-三年级→低年级；四年级及以上(含初/高中)→高年级；其他→其他。"""
+    norm = _normalize_grade_norm_value(grade_norm)
+    if norm == _OTHER_GRADE:
+        return _OTHER_GRADE
+    return _LOW_GRADE_BAND if norm in _LOW_GRADE_NORMS else _HIGH_GRADE_BAND
+
+
+def infer_subject(*texts: Any) -> str:
+    """返回合法学科枚举，缺失/越界时返回其他。"""
+    return _normalize_subject_value(next((text for text in texts if _clean_text(text)), ""))
+
+
+def _is_standard_subject_value(value: Any) -> bool:
+    text = _clean_text(value)
+    return bool(text) and text in _ALLOWED_SUBJECTS
+
+
+def _is_standard_grade_norm_value(value: Any) -> bool:
+    text = _clean_text(value)
+    return bool(text) and text in _ALLOWED_GRADE_NORMS
+
+
+def _is_standard_grade_band_value(value: Any) -> bool:
+    text = _clean_text(value)
+    return bool(text) and text in _ALLOWED_GRADE_BANDS
+
+
+def _meta_grade_subject_fields_are_standard(
+    *,
+    subject: Any,
+    grade: Any,
+    grade_band: Any,
+) -> bool:
+    return (
+        _is_standard_subject_value(subject)
+        and _is_standard_grade_norm_value(grade)
+        and _is_standard_grade_band_value(grade_band)
+    )
+
+
+def _normalize_meta_grade_subject_payload(payload: Any) -> dict[str, str]:
+    data: dict[str, Any]
+    if isinstance(payload, list):
+        data = _dict(payload[0]) if payload else {}
+    else:
+        data = _dict(payload)
+    if isinstance(data.get("meta"), dict):
+        data = _dict(data.get("meta"))
+    if isinstance(data.get("deck_metadata"), dict):
+        data = _dict(data.get("deck_metadata"))
+
+    grade = infer_grade(data.get("grade", data.get("grade_norm")))
+    band = infer_grade_band(data.get("grade_band"))
+    if band == _OTHER_GRADE:
+        band = grade_band_from_norm(grade)
+    return {
+        "subject": infer_subject(data.get("subject")),
+        "grade": grade,
+        "grade_band": band,
+    }
+
+
+def _build_meta_grade_subject_normalizer_messages(
+    *,
+    subject_hint: Any = "",
+    grade_hint: Any = "",
+    grade_band_hint: Any = "",
+    topic: Any = "",
+    audience: Any = "",
+    requirements: Any = "",
+) -> list[dict[str, str]]:
+    payload = {
+        "subject_hint": _clean_text(subject_hint),
+        "grade_hint": _clean_text(grade_hint),
+        "grade_band_hint": _clean_text(grade_band_hint),
+        "topic": _clean_text(topic),
+        "audience": _clean_text(audience),
+        "requirements": _clean_text(requirements),
+    }
+    system = (
+        "你只做 PPT/deck 级学科与年级字段归一化。必须只返回严格 JSON 对象，"
+        "字段只能包含 subject、grade、grade_band。"
+        "subject 只能是：语文、数学、物理、其他。"
+        "grade 只能是：一年级、二年级、三年级、四年级、五年级、六年级、七年级、八年级、九年级、高一、高二、高三、其他。"
+        "grade_band 只能是：低年级、高年级、其他。"
+        "根据输入 hints、topic、audience、requirements 归一化；无法判断时输出其他。"
+        "不要输出图片级字段，不要判断具体图片。"
+    )
+    return [
+        {"role": "system", "content": system},
+        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, indent=2)},
+    ]
+
+
+def _call_meta_grade_subject_normalizer(
+    client: Any,
+    *,
+    subject_hint: Any = "",
+    grade_hint: Any = "",
+    grade_band_hint: Any = "",
+    topic: Any = "",
+    audience: Any = "",
+    requirements: Any = "",
+) -> dict[str, str]:
+    messages = _build_meta_grade_subject_normalizer_messages(
+        subject_hint=subject_hint,
+        grade_hint=grade_hint,
+        grade_band_hint=grade_band_hint,
+        topic=topic,
+        audience=audience,
+        requirements=requirements,
+    )
+    chat_json = getattr(client, "chat_json", None)
+    if callable(chat_json):
+        try:
+            response = chat_json(messages=messages, temperature=0.0, max_tokens=800, max_retries=1)
+        except TypeError:
+            response = chat_json(messages, temperature=0.0, max_tokens=800)
+    else:
+        chat = getattr(client, "chat", None)
+        if not callable(chat):
+            raise TypeError("meta normalizer client must provide chat_json() or chat()")
+        response = _load_json_response(chat(messages=messages, temperature=0.0, max_tokens=800))
+    return _normalize_meta_grade_subject_payload(response)
+
+
+_GRADE_ARABIC_TO_CN = {"1": "一", "2": "二", "3": "三", "4": "四", "5": "五",
+                       "6": "六", "7": "七", "8": "八", "9": "九"}
+_JUNIOR_ALIASES = (("初一", "七年级"), ("初二", "八年级"), ("初三", "九年级"))
+_SENIOR_ALIASES = (("高一", "高一"), ("高二", "高二"), ("高三", "高三"))
+
+
+def _extract_grade_token(text: Any) -> str:
+    """从自由文本里抽出 grade_norm 枚举，抽不到返回其他。"""
+    t = _clean_text(text)
+    if not t:
+        return _OTHER_GRADE
+    for alias, norm in _SENIOR_ALIASES:
+        if alias in t:
+            return norm
+    for alias, norm in _JUNIOR_ALIASES:
+        if alias in t:
+            return norm
+    m = re.search(r"([一二三四五六七八九])年级", t)
+    if m:
+        return f"{m.group(1)}年级"
+    m = re.search(r"([1-9])\s*年级", t)
+    if m:
+        return f"{_GRADE_ARABIC_TO_CN[m.group(1)]}年级"
+    return _OTHER_GRADE
+
+
+def _extract_subject_token(text: Any) -> str:
+    """从自由文本里抽出学科枚举，抽不到返回其他。"""
+    t = _clean_text(text)
+    for subject in ("语文", "数学", "物理"):
+        if subject in t:
+            return subject
+    return _OTHER_SUBJECT
+
+
+def resolve_meta_grade_subject(
+    *,
+    llm_subject: Any = "",
+    llm_grade: Any = "",
+    llm_grade_band: Any = "",
+    topic: Any = "",
+    audience: Any = "",
+    requirements: Any = "",
+    normalizer_client: Any | None = None,
+) -> dict[str, str]:
+    """deck 级判定一次：LLM 优先，缺失则从 topic/audience/requirements 抽，band 最后从 grade 派生。"""
+    if _meta_grade_subject_fields_are_standard(
+        subject=llm_subject,
+        grade=llm_grade,
+        grade_band=llm_grade_band,
+    ):
+        return {
+            "subject": _normalize_subject_value(llm_subject),
+            "grade": _normalize_grade_norm_value(llm_grade),
+            "grade_band": _normalize_grade_band_value(llm_grade_band),
+        }
+
+    if normalizer_client is not None:
+        try:
+            return _call_meta_grade_subject_normalizer(
+                normalizer_client,
+                subject_hint=llm_subject,
+                grade_hint=llm_grade,
+                grade_band_hint=llm_grade_band,
+                topic=topic,
+                audience=audience,
+                requirements=requirements,
+            )
+        except Exception as exc:
+            PROGRESS_LOGGER.warning("Deck metadata LLM normalization skipped: {}", str(exc)[:160])
+
+    source_text = " ".join(
+        _clean_text(t)
+        for t in (llm_subject, llm_grade, llm_grade_band, topic, audience, requirements)
+        if _clean_text(t)
+    )
+
+    subject = infer_subject(llm_subject)
+    if subject == _OTHER_SUBJECT:
+        subject = _extract_subject_token(source_text)
+
+    grade = infer_grade(llm_grade)
+    if grade == _OTHER_GRADE:
+        grade = _extract_grade_token(source_text)
+
+    band = infer_grade_band(llm_grade_band)
+    if band == _OTHER_GRADE:
+        band = grade_band_from_norm(grade)
+
+    return {"subject": subject, "grade": grade, "grade_band": band}
 
 
 def _iter_session_dirs(root: Path):

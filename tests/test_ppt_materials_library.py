@@ -350,6 +350,30 @@ def test_build_ppt_materials_library_writes_source_pptx_refs_to_split_index(tmp_
     ]
 
 
+def test_build_ppt_materials_library_skips_failed_pptx_and_continues(tmp_path):
+    teach_kb_root = tmp_path / "teach-kb"
+    pptx_dir = teach_kb_root / "data" / "uploads" / "pptx"
+    pptx_dir.mkdir(parents=True)
+    image_path = tmp_path / "source.png"
+    Image.new("RGB", (400, 300), (120, 180, 220)).save(image_path)
+    _write_minimal_pptx(pptx_dir / "good.pptx", image_path)
+    (pptx_dir / "bad.pptx").write_text("not a zip package", encoding="utf-8")
+
+    db, _index_path, report = build_ppt_image_materials_library(
+        teach_kb_root=pptx_dir,
+        output_library_dir=tmp_path / "materials_library_ppt",
+        use_vlm=False,
+        use_keyword_enrichment=False,
+        write_match_index=False,
+    )
+
+    assert db["asset_count"] == 1
+    assert report["pptx_count"] == 1
+    assert report["failed_pptx_count"] == 1
+    assert report["failed_pptx"][0]["pptx_path"].endswith("bad.pptx")
+    assert report["failed_pptx"][0]["reason"].startswith("pptx_process_failed:")
+
+
 def test_build_ppt_materials_library_runs_bucketed_dedupe_before_writing_indexes(tmp_path, monkeypatch):
     _patch_embedding_encoder(monkeypatch)
 
@@ -751,6 +775,8 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
             self.messages.append(messages)
             self.call_count += 1
             system = messages[0]["content"]
+            if "PPT/deck 级学科与年级字段归一化" in system:
+                return json.dumps({"subject": "其他", "grade": "其他", "grade_band": "其他"}, ensure_ascii=False)
             payload = json.loads(messages[-1]["content"][messages[-1]["content"].index("[") :])
             query = payload[0]["query"]
             if "strict_reuse_group" in system or "分类器" in system:
@@ -780,7 +806,7 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
     )
 
     asset = db["assets"][0]
-    assert keyword_client.call_count == 3
+    assert keyword_client.call_count == 4
     assert asset["query"] == "blue rectangle teaching illustration"
     assert "content_prompt" not in asset
     assert "detail_prompt" not in asset
@@ -832,7 +858,7 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
         "asset_category",
     ):
         assert disallowed_field not in system_prompt
-    for messages in keyword_client.messages:
+    for messages in keyword_client.messages[1:]:
         user_payload = json.loads(messages[-1]["content"][messages[-1]["content"].index("[") :])
         assert user_payload == [{"query": "blue rectangle teaching illustration"}]
 
@@ -1060,6 +1086,84 @@ def test_ppt_asset_does_not_persist_general_from_annotation():
     )
 
     assert "general" not in asset
+
+
+class _DeckMetaClient:
+    def __init__(self, payload: dict):
+        self.payload = payload
+        self.calls = 0
+
+    def chat_json(self, *args, **kwargs):
+        self.calls += 1
+        return self.payload
+
+
+def test_ppt_deck_metadata_is_normalized_once_and_copied_to_assets():
+    item = _raw_ppt_image_for_general_test()
+    meta = {
+        "file_name": "刷子李.pptx",
+        "description": "初二语文课件",
+        "subject": "小学语文",
+        "grade": "初二",
+        "lesson": "《刷子李》",
+    }
+    client = _DeckMetaClient({"subject": "语文", "grade": "八年级", "grade_band": "高年级"})
+
+    deck_metadata = MODULE._resolve_ppt_deck_metadata(
+        meta,
+        item.pptx_path,
+        "课件内容围绕刷子李人物描写",
+        client,
+    )
+    meta = {**meta, "deck_metadata": deck_metadata}
+
+    first = MODULE._build_asset_from_annotation(
+        asset_id="ppt_asset_one",
+        image_rel="pptx_images/ppt_asset_one.png",
+        original_image_rel="pptx_images_original/ppt_asset_one.png",
+        image_fields={
+            "actual_width": 400,
+            "actual_height": 300,
+            "padded_width": 400,
+            "padded_height": 300,
+            "aspect_ratio": "4:3",
+        },
+        item=item,
+        meta=meta,
+        context={"slide_text": "课堂展示", "slide_title_guess": "导入"},
+        annotation={
+            "query": "人物插画",
+            "context_summary": "人物描写插图",
+            "teaching_intent": "理解人物形象",
+        },
+    )
+    second = MODULE._build_asset_from_annotation(
+        asset_id="ppt_asset_two",
+        image_rel="pptx_images/ppt_asset_two.png",
+        original_image_rel="pptx_images_original/ppt_asset_two.png",
+        image_fields={
+            "actual_width": 400,
+            "actual_height": 300,
+            "padded_width": 400,
+            "padded_height": 300,
+            "aspect_ratio": "4:3",
+        },
+        item=item,
+        meta=meta,
+        context={"slide_text": "课堂展示", "slide_title_guess": "讲解"},
+        annotation={
+            "query": "课堂配图",
+            "context_summary": "课堂讲解配图",
+            "teaching_intent": "辅助讲解",
+        },
+    )
+
+    assert client.calls == 1
+    assert deck_metadata == {"subject": "语文", "grade_norm": "八年级", "grade_band": "高年级"}
+    for asset in (first, second):
+        assert asset["subject"] == "语文"
+        assert asset["grade_norm"] == "八年级"
+        assert asset["grade_band"] == "高年级"
 
 
 def test_ppt_asset_does_not_persist_vlm_comparison_fields_from_annotation():

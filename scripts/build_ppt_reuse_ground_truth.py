@@ -13,7 +13,7 @@ from typing import Any
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-OUTPUT_PATH = REPO_ROOT / "tests" / "fixtures" / "ppt_reuse_ground_truth.json"
+OUTPUT_PATH = REPO_ROOT / "test_reuse" / "fixtures" / "ppt_reuse_ground_truth.json"
 LIBRARY_INDEX_ROOT = REPO_ROOT / "materials_library_ppt" / "strict_reuse_indexes"
 
 SESSIONS = [

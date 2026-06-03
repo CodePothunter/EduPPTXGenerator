@@ -1,36 +1,37 @@
 # test_reuse
 
-Independent staged evaluation flow for AI-image material reuse.
+`test_reuse` 是 PPT 生图素材复用的生产等价分阶段评估工具。
 
-This folder does not select lessons or generate a test set. It consumes frozen
-plan JSON files and existing material libraries, then writes reusable evaluation
-artifacts for each stage.
+核心原则：
 
-## Step-by-step Run
+- `output/session_*/plan.json` 是测试输入，target 生成和复用逻辑走生产路径。
+- `goldset.json` 只用于统计指标，不参与 target 生成、候选召回、策略判断或最终选择。
+- VLM 当前不调用；`review --review --allow-llm` 只启用候选 LLM review。
+- `prepare` 是唯一会生成 target LLM 字段的阶段，后续阶段复用 `targets.jsonl`，不重复调用 target LLM。
+
+## 分阶段流程
+
+第一步必须真实调用 LLM，生成并固化 target enrichment：
 
 ```powershell
 python -m test_reuse prepare `
-  --plan path\to\lesson_plan.json `
+  --plan output\session_20260603_150913\plan.json `
+  --goldset test_reuse\fixtures\reuse_caption_goldset_20260603\goldset.json `
   --output-dir report `
-  --run-id reuse_eval_manual
-
-python -m test_reuse hard-filter `
-  --run-dir report\reuse_eval_manual `
-  --library-dir materials_library_ppt
-
-python -m test_reuse retrieve `
-  --run-dir report\reuse_eval_manual `
-  --library-dir materials_library_ppt
-
-python -m test_reuse review `
-  --run-dir report\reuse_eval_manual
-
-python -m test_reuse summarize `
-  --run-dir report\reuse_eval_manual
+  --run-id reuse_eval_manual `
+  --allow-llm
 ```
 
-Add `--review --allow-llm` only when you want the final policy stage to make
-LLM review calls and the environment has LLM credentials configured:
+后续阶段复用同一个 `--run-dir`：
+
+```powershell
+python -m test_reuse hard-filter --run-dir report\reuse_eval_manual --library-dir materials_library_ppt
+python -m test_reuse retrieve --run-dir report\reuse_eval_manual --library-dir materials_library_ppt
+python -m test_reuse review --run-dir report\reuse_eval_manual
+python -m test_reuse summarize --run-dir report\reuse_eval_manual
+```
+
+需要启用最终候选 LLM review 时，只在 review 阶段添加：
 
 ```powershell
 python -m test_reuse review `
@@ -39,23 +40,31 @@ python -m test_reuse review `
   --allow-llm
 ```
 
-To run every stage in one command:
+## 一次性运行
+
+`run-all` 也需要 `--allow-llm`，因为它内部会先执行生产等价 `prepare`：
 
 ```powershell
 python -m test_reuse run-all `
-  --plan path\to\lesson_plan.json `
+  --plan output\session_20260603_150913\plan.json `
+  --goldset test_reuse\fixtures\reuse_caption_goldset_20260603\goldset.json `
   --library-dir materials_library_ppt `
   --output-dir report `
-  --run-id reuse_eval_manual
+  --run-id reuse_eval_manual `
+  --allow-llm
 ```
 
-## Outputs
+## 输出文件
 
-Each run writes `report/<run_id>/`:
+每次运行写入 `report/<run_id>/`：
 
 - `manifest.json`
+- `plans/`
 - `plan_needs.jsonl`
 - `targets.jsonl`
+- `target_enrichment.jsonl`
+- `target_enrichment_summary.json`
+- `target_classification_summary.json`
 - `hard_filter_pairs.jsonl`
 - `hard_filter_summary.json`
 - `candidate_collections.jsonl`
@@ -63,10 +72,11 @@ Each run writes `report/<run_id>/`:
 - `threshold_candidates.jsonl`
 - `threshold_summary.json`
 - `llm_reviews.jsonl`
+- `llm_review_summary.json`
 - `final_matches.jsonl`
 - `failure_cases.jsonl`
 - `prompt_issue_log.jsonl`
 - `metrics.json`
 - `report.md`
 
-`test_set.json` is intentionally not generated here.
+`test_set.json` 和 `labeled_plans/` 不会在这里生成。

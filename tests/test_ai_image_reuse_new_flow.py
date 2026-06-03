@@ -154,6 +154,16 @@ def test_page_retrieval_text_uses_caption_only():
         assert "deleted constraint" not in text
         assert "deleted context keyword" not in text
 
+    no_caption = {
+        "asset_kind": "page_image",
+        "query": "legacy query should not be retrieved",
+        "content_prompt": "legacy content prompt should not be retrieved",
+        "prompt": "legacy prompt should not be retrieved",
+    }
+    assert _asset_embedding_text(no_caption) == ""
+    assert _target_embedding_text(no_caption) == ""
+    assert _candidate_hybrid_text(no_caption) == ""
+
 
 def test_background_retrieval_text_uses_normalized_prompt_only():
     asset = {
@@ -274,6 +284,7 @@ def test_end_to_end_simplified_reuse_flow():
         "asset_kind": "page_image",
         "strict_reuse_group": "C02_generic_subject_object",
         "aspect_ratio": "4:3",
+        "caption": "red apple cartoon illustration",
         "subject": "语文",
         "grade_norm": "五年级",
         "grade_band": "高年级",
@@ -285,6 +296,7 @@ def test_end_to_end_simplified_reuse_flow():
         "asset_kind": "page_image",
         "strict_reuse_group": "C02_generic_subject_object",
         "aspect_ratio": "4:3",
+        "caption": "red apple cartoon illustration",
         "subject": "语文",
         "grade_norm": "五年级",
         "grade_band": "高年级",

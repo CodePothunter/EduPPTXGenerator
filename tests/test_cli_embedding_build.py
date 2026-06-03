@@ -32,6 +32,7 @@ def test_embedding_build_command_writes_sidecars_and_updates_match_index(tmp_pat
                 "asset_id": "kbpptx_1",
                 "asset_kind": "page_image",
                 "image_path": "pptx_images/page.png",
+                "caption": "line diagram showing a multiplication relationship",
                 "content_prompt": "线段图展示倍数关系",
                 "context_summary": "线段图呈现数量倍数关系",
                 "teaching_intent": "辅助理解倍数应用题",

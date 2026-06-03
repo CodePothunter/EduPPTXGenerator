@@ -60,6 +60,9 @@ def test_writes_default_rerun_script_for_all_uncertain_statuses(tmp_path):
     assert "--pptx \"/srv/teach-kb/data/uploads/pptx/a.pptx\"" in script
     assert "--flush-every 1" in script
     assert "bad.pptx" in script
+    assert "FAILED:" in script
+    assert "rerun_debug_pptx_failed.txt" in script
+    assert "if ! uv run python scripts/build_ppt_materials_library.py \\" in script
 
 
 def test_can_include_extract_failed_when_requested(tmp_path):

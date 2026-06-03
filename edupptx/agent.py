@@ -705,6 +705,7 @@ class PPTXAgent:
             theme=reuse_context["theme"],
             grade=reuse_context["grade"],
             subject=reuse_context["subject"],
+            grade_band=reuse_context["grade_band"],
             aspect_ratio="16:9",
             keyword_client=keyword_client,
             debug_path=(
@@ -818,6 +819,7 @@ class PPTXAgent:
                         theme=reuse_context["theme"],
                         grade=reuse_context["grade"],
                         subject=reuse_context["subject"],
+                        grade_band=reuse_context["grade_band"],
                         page_title=page.title,
                         page_type=page.page_type,
                         role=need.role,
@@ -880,6 +882,7 @@ class PPTXAgent:
                 theme=reuse_context["theme"],
                 grade=reuse_context["grade"],
                 subject=reuse_context["subject"],
+                grade_band=reuse_context["grade_band"],
                 page_title=spec["page"].title,
                 page_type=spec["page"].page_type,
                 role=need.role,
@@ -1150,6 +1153,7 @@ class PPTXAgent:
         theme: str,
         grade: str,
         subject: str,
+        grade_band: str = "",
         aspect_ratio: str,
         keyword_client,
         page_title: str = "",
@@ -1177,6 +1181,7 @@ class PPTXAgent:
                 theme=theme,
                 grade=grade,
                 subject=subject,
+                grade_band=grade_band,
                 page_title=page_title,
                 page_type=page_type,
                 role=role,
@@ -1200,6 +1205,7 @@ class PPTXAgent:
             "theme": draft.meta.topic,
             "grade": getattr(draft.meta, "grade", ""),
             "subject": getattr(draft.meta, "subject", ""),
+            "grade_band": getattr(draft.meta, "grade_band", ""),
         }
 
     @staticmethod

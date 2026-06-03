@@ -24,6 +24,29 @@ from edupptx.planning.prompts import (
 )
 
 
+def _resolve_meta_grade_subject_inplace(
+    draft: PlanningDraft,
+    requirements: str = "",
+    *,
+    normalizer_client=None,
+) -> None:
+    """deck 级判定一次：LLM 优先，缺失从 topic/audience/requirements 抽，回写 meta。"""
+    from edupptx.materials.ai_image_asset_db import resolve_meta_grade_subject
+
+    resolved = resolve_meta_grade_subject(
+        llm_subject=getattr(draft.meta, "subject", ""),
+        llm_grade=getattr(draft.meta, "grade", ""),
+        llm_grade_band=getattr(draft.meta, "grade_band", ""),
+        topic=draft.meta.topic,
+        audience=draft.meta.audience,
+        requirements=requirements,
+        normalizer_client=normalizer_client,
+    )
+    draft.meta.subject = resolved["subject"]
+    draft.meta.grade = resolved["grade"]
+    draft.meta.grade_band = resolved["grade_band"]
+
+
 def generate_planning_outline(
     ctx: InputContext,
     config: Config,
@@ -46,6 +69,7 @@ def generate_planning_outline(
     ])
 
     draft = _parse_draft(response, ensure_reveals=False)
+    _resolve_meta_grade_subject_inplace(draft, requirements=ctx.requirements, normalizer_client=client)
     logger.info("Stage-1 outline: {} pages", len(draft.pages))
     return draft
 
@@ -74,6 +98,7 @@ def refine_planning_draft(
     ])
 
     draft = _parse_draft(response, ensure_reveals=False)
+    _resolve_meta_grade_subject_inplace(draft, requirements="", normalizer_client=client)
     logger.info("Stage-2 refined draft: {} pages before reveal expansion", len(draft.pages))
     return draft
 

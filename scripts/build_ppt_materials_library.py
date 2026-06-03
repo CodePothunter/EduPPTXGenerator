@@ -52,6 +52,7 @@ from edupptx.materials.ai_image_asset_db import (
     extract_topic_refs,
     normalize_grade_info,
     read_ai_image_split_match_index,
+    resolve_meta_grade_subject,
     write_ai_image_match_index,
 )
 from edupptx.materials.ppt_dedupe import dedupe_ppt_db_assets
@@ -336,6 +337,8 @@ def build_ppt_image_materials_library(
         "skipped_count": 0,
         "warnings": [],
         "processed_pptx": [],
+        "failed_pptx": [],
+        "failed_pptx_count": 0,
         "skipped": [],
     }
 
@@ -372,13 +375,24 @@ def build_ppt_image_materials_library(
             if max_assets and report["kept_asset_count"] >= max_assets:
                 break
             if not pptx_path.exists():
-                _add_skip(report, str(pptx_path), "pptx_missing")
+                _add_failed_pptx(report, pptx_path, "pptx_missing")
                 continue
 
-            meta = _load_pptx_metadata(kb_db_path, pptx_path, pptx_root)
-            markdown_excerpt = _extract_markitdown_excerpt(pptx_path)
-            raw_items = _extract_raw_ppt_images(pptx_path)
-            wide_repeated = _repeated_wide_hashes(raw_items)
+            try:
+                meta = _load_pptx_metadata(kb_db_path, pptx_path, pptx_root)
+                markdown_excerpt = _extract_markitdown_excerpt(pptx_path)
+                deck_metadata = _resolve_ppt_deck_metadata(
+                    meta,
+                    pptx_path,
+                    markdown_excerpt,
+                    keyword_client if use_keyword_enrichment else None,
+                )
+                meta = {**meta, "deck_metadata": deck_metadata}
+                raw_items = _extract_raw_ppt_images(pptx_path)
+                wide_repeated = _repeated_wide_hashes(raw_items)
+            except Exception as exc:
+                _add_failed_pptx(report, pptx_path, f"pptx_process_failed:{type(exc).__name__}: {exc}")
+                continue
             pptx_summary = {
                 "pptx_path": str(pptx_path),
                 "raw_picture_count": len(raw_items),
@@ -419,6 +433,10 @@ def build_ppt_image_materials_library(
                 if asset_id in assets_by_id:
                     existing_asset = dict(assets_by_id[asset_id])
                     _append_source_pptx_ref(existing_asset, _ppt_source_ref(item, meta))
+                    deck_metadata = _ppt_deck_metadata_from_meta(meta)
+                    existing_asset["subject"] = deck_metadata["subject"]
+                    existing_asset["grade_norm"] = deck_metadata["grade_norm"]
+                    existing_asset["grade_band"] = deck_metadata["grade_band"]
                     existing_asset.update(image_fields)
                     existing_asset["image_path"] = image_rel
                     existing_asset["original_image_path"] = original_image_rel
@@ -1683,8 +1701,7 @@ def _build_asset_from_annotation(
     annotation: dict[str, Any],
 ) -> dict[str, Any]:
     course = _course_block(meta)
-    grade_info = normalize_grade_info(course.get("grade"), course.get("course_path"), course.get("lesson"))
-    subject = _clean_text(course.get("subject"))
+    deck_metadata = _ppt_deck_metadata_from_meta(meta)
     page_type = _infer_page_type(item.slide_no, context.get("slide_text"), context.get("slide_title_guess"))
     theme = _theme_from_course(course)
     lesson_ref = course.get("lesson") or Path(meta.get("file_name") or item.pptx_path.name).stem
@@ -1705,9 +1722,9 @@ def _build_asset_from_annotation(
         "aspect_ratio": image_fields["aspect_ratio"],
         "page_type": page_type,
         "theme": theme,
-        "subject": subject,
-        "grade_norm": grade_info["grade_norm"],
-        "grade_band": grade_info["grade_band"],
+        "subject": deck_metadata["subject"],
+        "grade_norm": deck_metadata["grade_norm"],
+        "grade_band": deck_metadata["grade_band"],
         "unit_ref": unit_ref,
         "topic_refs": topic_refs,
         "query": query,
@@ -1792,6 +1809,56 @@ def _course_block(meta: dict[str, Any]) -> dict[str, str]:
     }
     values["course_path"] = "/".join([value for value in values.values() if value])
     return values
+
+
+def _resolve_ppt_deck_metadata(
+    meta: dict[str, Any],
+    pptx_path: Path,
+    markdown_excerpt: str = "",
+    normalizer_client: Any | None = None,
+) -> dict[str, str]:
+    course = _course_block(meta)
+    context_text = " ".join(
+        text
+        for text in (
+            _clean_text(meta.get("description")),
+            _clean_text(course.get("course_path")),
+            _clean_text(markdown_excerpt)[:1600],
+        )
+        if text
+    )
+    resolved = resolve_meta_grade_subject(
+        llm_subject=course.get("subject"),
+        llm_grade=course.get("grade"),
+        llm_grade_band=meta.get("grade_band", ""),
+        topic=course.get("lesson") or Path(meta.get("file_name") or pptx_path.name).stem,
+        audience=course.get("period"),
+        requirements=context_text,
+        normalizer_client=normalizer_client,
+    )
+    return {
+        "subject": resolved["subject"],
+        "grade_norm": resolved["grade"],
+        "grade_band": resolved["grade_band"],
+    }
+
+
+def _ppt_deck_metadata_from_meta(meta: dict[str, Any]) -> dict[str, str]:
+    seeded = meta.get("deck_metadata")
+    if isinstance(seeded, dict):
+        grade_info = normalize_grade_info(seeded.get("grade_norm") or seeded.get("grade"), seeded.get("grade_band"))
+        return {
+            "subject": _clean_text(seeded.get("subject")) or "其他",
+            "grade_norm": grade_info["grade_norm"],
+            "grade_band": grade_info["grade_band"],
+        }
+    course = _course_block(meta)
+    grade_info = normalize_grade_info(course.get("grade"), meta.get("grade_band"))
+    return {
+        "subject": _clean_text(course.get("subject")) or "其他",
+        "grade_norm": grade_info["grade_norm"],
+        "grade_band": grade_info["grade_band"],
+    }
 
 
 def _build_context(item: RawPptImage, meta: dict[str, Any], markdown_excerpt: str) -> dict[str, Any]:
@@ -1959,6 +2026,12 @@ def _usage_label(item: RawPptImage) -> str:
 def _add_skip(report: dict[str, Any], item: str, reason: str) -> None:
     report["skipped_count"] += 1
     report["skipped"].append({"item": item, "reason": reason})
+
+
+def _add_failed_pptx(report: dict[str, Any], pptx_path: Path, reason: str) -> None:
+    report["failed_pptx_count"] = int(report.get("failed_pptx_count") or 0) + 1
+    report.setdefault("failed_pptx", []).append({"pptx_path": str(pptx_path), "reason": reason})
+    report.setdefault("warnings", []).append(f"pptx_failed:{pptx_path}:{reason}")
 
 
 def _read_json_if_exists(path: Path) -> dict[str, Any]:

@@ -282,6 +282,9 @@ class PlanningMeta(BaseModel):
     purpose: str = ""
     style_direction: str = ""
     total_pages: int = 0
+    subject: str = Field(default="", description="学科枚举：语文/数学/物理/其他")
+    grade: str = Field(default="", description="年级枚举(grade_norm)：一年级…高三/其他")
+    grade_band: str = Field(default="", description="学段枚举：低年级/高年级/其他")
 
 
 class VisualPlan(BaseModel):

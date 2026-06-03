@@ -750,6 +750,42 @@ def test_apply_keyword_payload_uses_llm_grade_enums():
     assert asset["grade_band"] == "高年级"
 
 
+def test_apply_keyword_payload_preserves_deck_metadata_for_reuse_targets():
+    asset = {
+        "asset_id": "target_asset",
+        "asset_kind": "page_image",
+        "image_path": "",
+        "aspect_ratio": "1:1",
+        "content_prompt": "刷子李人物插画",
+        "theme": "八年级语文课",
+        "subject": "语文",
+        "grade_norm": "八年级",
+        "grade_band": "高年级",
+    }
+
+    _apply_keyword_payload(
+        asset,
+        {
+            "asset_id": "target_asset",
+            "caption": "人物插画",
+            "context_summary": "人物描写课文插画",
+            "teaching_intent": "理解人物形象",
+            "subject": "数学",
+            "grade_norm": "三年级",
+            "grade_band": "低年级",
+            "general": False,
+            "strict_reuse_group": "C02_generic_subject_object",
+        },
+        include_match_keywords=True,
+    )
+
+    assert asset["subject"] == "语文"
+    assert asset["grade_norm"] == "八年级"
+    assert asset["grade_band"] == "高年级"
+    assert asset["strict_reuse_group"] == "C02_generic_subject_object"
+    assert asset["caption"] == "人物插画"
+
+
 def test_apply_keyword_payload_persists_boolean_general():
     asset = {
         "asset_id": "asset_general",
@@ -1052,7 +1088,9 @@ def test_embedding_and_hybrid_text_use_current_fields_only():
     page = {
         "asset_kind": "page_image",
         "caption": "visible apple card",
-        "content_prompt": "visible apple card",
+        "query": "legacy query must not be retrieved",
+        "content_prompt": "legacy content prompt must not be retrieved",
+        "prompt": "legacy prompt must not be retrieved",
         "context_summary": "object recognition",
         "teaching_intent": "kept but not retrieved",
         "core_keywords": ["deleted"],
@@ -1073,9 +1111,21 @@ def test_embedding_and_hybrid_text_use_current_fields_only():
 
     for text in (_asset_embedding_text(page), _candidate_hybrid_text(page)):
         assert "visible apple card" in text
+        assert "legacy query" not in text
+        assert "legacy content prompt" not in text
+        assert "legacy prompt" not in text
         assert "object recognition" not in text
         assert "kept but not retrieved" not in text
         assert "deleted" not in text
+
+    no_caption_page = {
+        "asset_kind": "page_image",
+        "query": "legacy query must not be retrieved",
+        "content_prompt": "legacy content prompt must not be retrieved",
+        "prompt": "legacy prompt must not be retrieved",
+    }
+    assert _asset_embedding_text(no_caption_page) == ""
+    assert _candidate_hybrid_text(no_caption_page) == ""
 
     for text in (_asset_embedding_text(background), _candidate_hybrid_text(background)):
         assert "light paper texture" in text

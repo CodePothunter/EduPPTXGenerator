@@ -29,6 +29,7 @@ def test_rebuilds_embedding_sidecars_from_existing_split_index(tmp_path, monkeyp
                         "image_path": "pptx_images/asset-a.png",
                         "caption": "blue teaching card",
                         "query": "blue teaching card",
+                        "context_summary": "legacy context must not get its own vector",
                     }
                 ]
             },
@@ -44,3 +45,15 @@ def test_rebuilds_embedding_sidecars_from_existing_split_index(tmp_path, monkeyp
     assert (library / "ai_image_embedding_meta.json").exists()
     meta = json.loads((library / "ai_image_embedding_meta.json").read_text(encoding="utf-8"))
     assert meta["asset_count"] == 1
+    assert "context_asset_count" not in meta
+    assert "constraint_asset_count" not in meta
+    import numpy as np
+
+    with np.load(library / "ai_image_embedding_index.npz") as data:
+        assert "asset_ids" in data.files
+        assert "vectors" in data.files
+        assert "context_asset_ids" not in data.files
+        assert "context_vectors" not in data.files
+        assert "constraint_asset_ids" not in data.files
+        assert "constraint_texts" not in data.files
+        assert "constraint_vectors" not in data.files
