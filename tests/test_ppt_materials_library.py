@@ -510,10 +510,24 @@ def test_build_ppt_image_materials_library_keeps_full_slide_backgrounds(tmp_path
     )
 
     library_dir = tmp_path / "materials_library_ppt"
+
+    class _BackdropVLM:
+        _model = "fake-vlm"
+
+        def chat_vlm_json(self, **kwargs):
+            # Background classification now requires the VLM to flag is_backdrop.
+            return {
+                "query": "浅蓝色渐变全幅背景底图",
+                "context_summary": "用作版式底图的浅蓝背景",
+                "teaching_intent": "承载叠加文字内容",
+                "is_backdrop": True,
+            }
+
     db, index_path, report = build_ppt_image_materials_library(
         teach_kb_root=pptx_dir,
         output_library_dir=library_dir,
-        use_vlm=False,
+        vlm_client=_BackdropVLM(),
+        use_vlm=True,
         use_keyword_enrichment=False,
     )
 
@@ -752,7 +766,7 @@ def test_build_ppt_image_materials_library_uses_vlm_metadata(tmp_path):
     assert '"vlm_general"' not in system_prompt
     assert "专名" in system_prompt
     assert "20-40 个汉字" in system_prompt
-    assert "不含具体汉字、拼音或文字" in system_prompt
+    assert "不含具体题目文字" in system_prompt
     assert '"content_prompt"' not in system_prompt
     assert '"detail_prompt"' not in system_prompt
     assert "transform_advice" not in system_prompt
@@ -847,6 +861,7 @@ def test_ppt_annotation_normalization_keeps_only_vlm_semantics():
         "query": "汉字“傻”生字教学卡，含拼音、田字格、笔画与部首，标注音量图标与连续/分步按钮",
         "context_summary": "汉字“傻”的生字卡，承担课堂上的读音与书写讲解",
         "teaching_intent": "辅助学生识记生字",
+        "is_backdrop": False,
     }
 
 
@@ -928,6 +943,7 @@ def test_ppt_annotation_drops_legacy_general_and_visual_group():
         "query": "decorated blank speech bubble sticker",
         "context_summary": "VLM context",
         "teaching_intent": "VLM intent",
+        "is_backdrop": False,
     }
 
 
@@ -954,6 +970,7 @@ def test_ppt_annotation_drops_vlm_caption():
         "query": "decorated blank speech bubble sticker",
         "context_summary": "VLM context",
         "teaching_intent": "VLM intent",
+        "is_backdrop": False,
     }
 
 

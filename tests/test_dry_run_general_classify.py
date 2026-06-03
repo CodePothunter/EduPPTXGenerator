@@ -5,36 +5,31 @@ from pathlib import Path
 
 class _FakeGeneralClient:
     def __init__(self, response):
-        self.response = response
+        # judge_records calls client.chat and expects a JSON array string;
+        # asset_id is re-attached from the input records by order.
+        self.response = response  # list of {"general": bool}
         self.calls = []
 
-    def chat_json(self, messages, temperature=0.0, max_tokens=4096, max_retries=1):
+    def chat(self, messages, temperature=0.0, max_tokens=4096):
         self.calls.append(
             {
                 "messages": messages,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
-                "max_retries": max_retries,
             }
         )
-        return self.response
+        return json.dumps(self.response, ensure_ascii=False)
 
 
 class _EchoGeneralClient:
     def __init__(self):
         self.calls = []
 
-    def chat_json(self, messages, temperature=0.0, max_tokens=4096, max_retries=1):
+    def chat(self, messages, temperature=0.0, max_tokens=4096):
         user_content = messages[1]["content"]
-        payload = json.loads(user_content[user_content.index("{") :])
-        items = payload["assets"]
-        self.calls.append([item["asset_id"] for item in items])
-        return {
-            "assets": [
-                {"asset_id": item["asset_id"], "general": True}
-                for item in items
-            ]
-        }
+        items = json.loads(user_content[user_content.index("[") :])
+        self.calls.append([item.get("query") for item in items])
+        return json.dumps([{"general": True} for _ in items], ensure_ascii=False)
 
 
 def _asset(asset_id="a1", prompt="带装饰的空白对话气泡贴纸", subject="其他", general=None):
@@ -103,59 +98,18 @@ def test_general_classify_prompt_uses_minimal_input_and_boolean_schema():
     messages = module._build_general_messages([_asset()])
 
     system = messages[0]["content"]
-    user_payload = json.loads(messages[1]["content"][messages[1]["content"].index("{") :])
-    item = user_payload["assets"][0]
+    user_array = json.loads(messages[1]["content"][messages[1]["content"].index("[") :])
+    item = user_array[0]
 
+    # GENERAL_RULE injected via build_general_system_prompt: ordered strong-false
+    # decision rules + boolean general schema; input is minimal (query only).
     assert "general" in system
-    assert "asset_id、general" in system
-    assert "严格保守" in system
-    assert "只能根据 content_prompt 判断" in system
-    assert "content_prompt 没写出的信息一律视为未知" in system
-    assert "不是判断同类型图片是否可替换" in system
-    assert "general 决策顺序必须固定：先判断强 general=false，再判断直接 general=true" in system
-    assert "强 false 命中时不能被通用白名单覆盖" in system
-    assert "具体故事情节、冲突、拒绝、后果、事故、损坏、救助、疾病、痛苦、愤怒、恐惧、孤独等强情绪或故事状态" in system
-    assert "具名人物、具名地点、具名建筑、具名工程、IP、品牌、赛事" in system
-    assert "学科专用工具或器材" in system
-    assert "计算器、圆规、台秤、显微镜、望远镜、天平、实验装置" in system
-    assert "通用装饰背景" in system
-    assert "通用图标或头像" in system
-    assert "普通动物头像" in system
-    assert "通用教学或学习动作" in system
-    assert "普通校园或课堂场景" in system
-    assert "自然可见的人数不是题设" in system
-    assert "泛指课文、句子、段落、绘本、书本、资料、页面的朗读、圈画、划线、标序号等普通学习动作" in system
-    assert "没有具体可读课程文字、标题、生字拼音或固定语文知识点时可以输出 true" in system
-    assert "普通观察、记录、放大、聚焦用途的工具或视觉隐喻" in system
-    assert "不展示物理光路、成像原理、公式标签或具体可读文字时可以输出 true" in system
-    assert "具体可读文字、公式、光路图、成像原理图、带标注仪器结构" in system
-    assert "小朋友坐着大声朗读课文=>true" in system
-    assert "小朋友用横线画课文中的句子=>true" in system
-    assert "铅笔给课文段落标序号=>true" in system
-    assert "带圈画图案和铅笔的打开绘本插画=>true" in system
-    assert "五个背书包的小学生并肩同行的背影插画=>true" in system
-    assert "中式空白挂轴装饰画=>true" in system
-    assert "卡通熊猫头像=>true" in system
-    assert "普通森林背景插画=>true" in system
-    assert "老花镜=>true" in system
-    assert "照相机镜头特写=>true" in system
-    assert "放大镜放大文字=>true" in system
-    assert "黑色台式电子计算器实物=>false" in system
-    assert "圆规绘图工具=>false" in system
-    assert "老式台秤（机械杠杆式台秤）=>false" in system
-    assert "双目光学显微镜实物=>false" in system
-    assert "贵州平塘大窝凼的FAST天眼望远镜=>false" in system
-    assert "印有流氓兔图案的长方形布艺枕头=>false" in system
-    assert "《比尾巴》课文标题插画=>false" in system
-    assert "课文原文段落朗读卡片=>false" in system
-    assert "男孩在房间摔东西拒绝出门的场景=>false" in system
-    assert "池塘里一群小蝌蚪围着青蛙妈妈游动的卡通场景=>false" in system
-    assert "年轻男子坐在轮椅上，表情痛苦愤怒，身旁有被摔碎的杯子=>false" in system
-    assert "秋日黄昏，母亲和孩子并肩走在铺满落叶的路上a的温暖场景=>false" in system
-    assert "context_summary" not in system
-    assert "subject" not in system
+    assert "跨学科通用复用判断器" in system
+    assert "强-false（命中任一即 false）" in system
+    assert "判定顺序：先查强-false" in system
+    assert "general（true 或 false）" in system
     assert "strict_reuse_group" not in system
-    assert set(item) == {"asset_id", "content_prompt"}
+    assert set(item) == {"query"}
 
 
 def test_general_payload_parser_accepts_only_boolean_general():
@@ -172,7 +126,7 @@ def test_general_payload_parser_accepts_only_boolean_general():
 
 def test_classify_assets_with_llm_updates_only_general():
     module = importlib.import_module("scripts.dry_run_general_classify")
-    client = _FakeGeneralClient({"assets": [{"asset_id": "a1", "general": True}]})
+    client = _FakeGeneralClient([{"general": True}])
     before = _asset(general=False)
 
     classified, warnings = module._classify_assets_with_llm([before], client, batch_size=1, workers=1)

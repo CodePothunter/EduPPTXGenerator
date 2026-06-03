@@ -6230,11 +6230,6 @@ def _score_reuse_candidate_details(
         "context_embedding_score": _optional_score(context_embedding_score),
         "context_substring_score": substring_score,
         "context_substring_hits": substring_hits,
-        "target_core_keywords": [],
-        "target_semantic_aliases": [],
-        "target_semantic_alias_groups": [],
-        "target_context_summary_keywords": [],
-        "candidate_core_keywords": [],
     }
 
 
@@ -6282,11 +6277,6 @@ def _score_background_reuse_candidate_details(
             "context_hits": [],
             "transform_policy": transform_policy,
             "raw_score_before_transform_penalty": 0.0,
-            "target_core_keywords": [],
-            "candidate_core_keywords": [],
-            "target_semantic_aliases": [],
-            "target_semantic_alias_groups": [],
-            "target_context_summary_keywords": [],
         }
 
     prompt_bm25_score, prompt_bm25_hits = _bm25_similarity_with_hits(
@@ -6367,11 +6357,6 @@ def _score_background_reuse_candidate_details(
         "context_hits": [],
         "transform_policy": transform_policy,
         "raw_score_before_transform_penalty": max(0.0, min(1.0, raw_score)),
-        "target_core_keywords": [],
-        "candidate_core_keywords": [],
-        "target_semantic_aliases": [],
-        "target_semantic_alias_groups": [],
-        "target_context_summary_keywords": [],
     }
 
 
@@ -6585,11 +6570,6 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
         "hybrid_score": round(float(details.get("hybrid_score") or 0.0), 4),
         "retrieval_ranks": details.get("retrieval_ranks") or {},
         "accepted_by": _clean_text(details.get("accepted_by")),
-        "target_core_keywords": details.get("target_core_keywords") or [],
-        "candidate_core_keywords": details.get("candidate_core_keywords") or [],
-        "target_semantic_aliases": details.get("target_semantic_aliases") or [],
-        "target_semantic_alias_groups": details.get("target_semantic_alias_groups") or [],
-        "target_context_summary_keywords": details.get("target_context_summary_keywords") or [],
         "background_reuse_score": round(float(details.get("background_reuse_score") or 0.0), 4),
         "background_prompt_match_score": round(float(details.get("background_prompt_match_score") or 0.0), 4),
         "background_prompt_bm25_score": round(float(details.get("background_prompt_bm25_score") or 0.0), 4),

@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import sqlite3
 from pathlib import Path
 from typing import Any
+
+from scripts.report_missing_pptx_materials import _read_db_pptx_rows
 
 
 DEFAULT_LIBRARY_DIR = Path("materials_library_ppt")
@@ -98,9 +99,7 @@ def archive_unindexed_ppt_skip_images(
             except Exception as exc:
                 report["warnings"].append(f"original_move_failed:{rel}:{type(exc).__name__}: {exc}")
 
-    db_count = _count_db_pptx(resolved_db_path, report["warnings"])
-    report["db_pptx_count"] = db_count
-    report["missing_ppt_count"] = max(0, db_count - len(extracted_themes)) if db_count is not None else None
+    report.update(_summarize_db_theme_coverage(resolved_db_path, extracted_themes, report["warnings"]))
     report["warning_count"] = len(report["warnings"])
 
     output_path = Path(report_path).expanduser().resolve() if report_path else library_root / "skip_image_report.json"
@@ -157,20 +156,26 @@ def _infer_teach_kb_db_path(teach_kb_root: str | Path) -> Path:
     return teach_root / "data" / "db" / "teach_kb.db"
 
 
-def _count_db_pptx(db_path: Path, warnings: list[Any]) -> int | None:
+def _summarize_db_theme_coverage(db_path: Path, extracted_themes: set[str], warnings: list[Any]) -> dict[str, Any]:
     if not db_path.exists():
         warnings.append(f"db_missing:{db_path}")
-        return None
-    try:
-        con = sqlite3.connect(str(db_path))
-        try:
-            value = con.execute("SELECT COUNT(*) FROM pptx_files").fetchone()
-        finally:
-            con.close()
-        return int(value[0]) if value is not None else 0
-    except Exception as exc:
-        warnings.append(f"db_count_failed:{type(exc).__name__}: {exc}")
-        return None
+        return {
+            "db_pptx_count": None,
+            "db_indexed_theme_row_count": None,
+            "unique_theme_gap": None,
+            "missing_ppt_count": None,
+            "missing_ppt_count_method": "db_row_theme_membership",
+        }
+    db_rows = _read_db_pptx_rows(db_path, warnings)
+    db_count = len(db_rows)
+    indexed_theme_row_count = sum(1 for row in db_rows if _clean_text(row.get("theme")) in extracted_themes)
+    return {
+        "db_pptx_count": db_count,
+        "db_indexed_theme_row_count": indexed_theme_row_count,
+        "unique_theme_gap": max(0, db_count - len(extracted_themes)),
+        "missing_ppt_count": db_count - indexed_theme_row_count,
+        "missing_ppt_count_method": "db_row_theme_membership",
+    }
 
 
 def _read_json_object(path: Path) -> dict[str, Any]:

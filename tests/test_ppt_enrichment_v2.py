@@ -124,7 +124,7 @@ def test_vlm_prompt_declares_is_backdrop_field():
 
 def test_vlm_query_contract_has_four_invariants():
     p = PPT_VLM_SYSTEM_PROMPT
-    assert "图像本身" in p and "匿名" in p
+    assert "画面本身" in p and "匿名" in p
     assert "自然类别" in p and "一种器物" in p
     assert "空白脚手架" in p and "刻度" in p
     assert "天气" in p and "区分" in p
@@ -140,8 +140,11 @@ class _FakeLLM:
         out = []
         for item in arr:
             query = item["query"]
-            if "通用场景摘要器" in system or "secondary_reuse_caption" in system:
+            if "通用场景摘要器" in system:
                 out.append({"query": query, "secondary_reuse_caption": query.replace("西湖", "").strip() or "通用场景"})
+                continue
+            if "语义摘要器" in system:
+                out.append({"query": query, "caption": query[:6] or "通用图"})
                 continue
             if "dual landmark" in query and "strict_reuse_group" in system:
                 out.append(
