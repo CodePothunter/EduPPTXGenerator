@@ -418,6 +418,7 @@ def build_ppt_image_materials_library(
                 ppt_asset_source_by_id[asset_id] = _ppt_asset_source_meta(item)
                 if asset_id in assets_by_id:
                     existing_asset = dict(assets_by_id[asset_id])
+                    _append_source_pptx_ref(existing_asset, _ppt_source_ref(item, meta))
                     existing_asset.update(image_fields)
                     existing_asset["image_path"] = image_rel
                     existing_asset["original_image_path"] = original_image_rel
@@ -868,6 +869,52 @@ def _ppt_asset_source_meta(item: RawPptImage) -> dict[str, Any]:
         "_ppt_display_pixels": display_width * display_height,
         "_ppt_display_area_ratio": float(bbox.get("area_ratio") or 0.0),
     }
+
+
+def _ppt_source_ref(item: RawPptImage, meta: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "pptx_id": _clean_text(meta.get("id")),
+        "period_id": _clean_text(meta.get("period_id")),
+        "file_path": _clean_text(meta.get("file_path")) or str(item.pptx_path.resolve()),
+        "file_name": _clean_text(meta.get("file_name")) or item.pptx_path.name,
+        "absolute_path": str(item.pptx_path.resolve()),
+        "slide_no": int(item.slide_no or 0),
+        "shape_idx": int(item.shape_idx or 0),
+        "source_media_path": _clean_text(item.source_media_path),
+        "source": "builder",
+    }
+
+
+def _append_source_pptx_ref(asset: dict[str, Any], ref: dict[str, Any]) -> None:
+    refs = asset.get("source_pptx_refs")
+    if not isinstance(refs, list):
+        refs = []
+    key = (
+        _clean_text(ref.get("pptx_id")),
+        _clean_text(ref.get("file_path")),
+        _clean_text(ref.get("absolute_path")),
+        _clean_text(ref.get("slide_no")),
+        _clean_text(ref.get("shape_idx")),
+        _clean_text(ref.get("source_media_path")),
+        _clean_text(ref.get("source")),
+    )
+    for existing in refs:
+        if not isinstance(existing, dict):
+            continue
+        existing_key = (
+            _clean_text(existing.get("pptx_id")),
+            _clean_text(existing.get("file_path")),
+            _clean_text(existing.get("absolute_path")),
+            _clean_text(existing.get("slide_no")),
+            _clean_text(existing.get("shape_idx")),
+            _clean_text(existing.get("source_media_path")),
+            _clean_text(existing.get("source")),
+        )
+        if existing_key == key:
+            asset["source_pptx_refs"] = refs
+            return
+    refs.append(ref)
+    asset["source_pptx_refs"] = refs
 
 
 def _attach_ppt_source_metadata(db: dict[str, Any], source_by_id: dict[str, dict[str, Any]]) -> None:
@@ -1669,6 +1716,7 @@ def _build_asset_from_annotation(
         "teaching_intent": annotation["teaching_intent"],
         "asset_category": "background" if asset_kind == "background" else "unknown",
         "duplicate_asset_ids": [],
+        "source_pptx_refs": [_ppt_source_ref(item, meta)],
     }
     if asset_kind == "background":
         asset["normalized_prompt"] = query

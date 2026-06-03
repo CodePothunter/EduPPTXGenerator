@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 import importlib.util
 import json
@@ -294,6 +296,58 @@ def test_build_ppt_image_materials_library_writes_match_index_and_embedding_side
     assert "ppt_context" not in asset
     assert "vlm_visual_style" not in asset
     assert not asset["context_summary"].startswith(("来自", "图片来自", "该图来自"))
+
+
+def test_build_ppt_materials_library_writes_source_pptx_refs_to_split_index(tmp_path, monkeypatch):
+    _patch_embedding_encoder(monkeypatch)
+    teach_kb_root = tmp_path / "teach-kb"
+    pptx_dir = teach_kb_root / "data" / "uploads" / "pptx"
+    db_dir = teach_kb_root / "data" / "db"
+    pptx_dir.mkdir(parents=True)
+    db_dir.mkdir(parents=True)
+    image_path = tmp_path / "source.png"
+    Image.new("RGB", (400, 300), (120, 180, 220)).save(image_path)
+    pptx_path = pptx_dir / "lesson.pptx"
+    _write_minimal_pptx(pptx_path, image_path)
+
+    con = sqlite3.connect(db_dir / "teach_kb.db")
+    try:
+        con.execute("CREATE TABLE hierarchy (id TEXT, parent_id TEXT, name TEXT, subject TEXT)")
+        con.execute(
+            "CREATE TABLE pptx_files (id TEXT, period_id TEXT, file_path TEXT, file_name TEXT, file_size INTEGER, description TEXT)"
+        )
+        con.execute(
+            "INSERT INTO pptx_files (id, period_id, file_path, file_name, file_size, description) VALUES (?, ?, ?, ?, ?, ?)",
+            ("pptx-id", "period-id", "pptx/lesson.pptx", "lesson.pptx", pptx_path.stat().st_size, ""),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    library_dir = tmp_path / "materials_library_ppt"
+    build_ppt_image_materials_library(
+        teach_kb_root=pptx_dir,
+        output_library_dir=library_dir,
+        use_vlm=False,
+        use_keyword_enrichment=False,
+        write_match_index=True,
+    )
+
+    index = json.loads((library_dir / "strict_reuse_indexes" / "C03_scene_decor_container.json").read_text(encoding="utf-8"))
+    refs = index["assets"][0]["source_pptx_refs"]
+    assert refs == [
+        {
+            "pptx_id": "pptx-id",
+            "period_id": "period-id",
+            "file_path": "pptx/lesson.pptx",
+            "file_name": "lesson.pptx",
+            "absolute_path": str(pptx_path.resolve()),
+            "slide_no": 1,
+            "shape_idx": 1,
+            "source_media_path": "ppt/media/image1.png",
+            "source": "builder",
+        }
+    ]
 
 
 def test_build_ppt_materials_library_runs_bucketed_dedupe_before_writing_indexes(tmp_path, monkeypatch):

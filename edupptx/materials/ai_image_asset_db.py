@@ -5225,6 +5225,9 @@ def _normalize_asset_for_match(
             "teaching_intent": _clean_text(item.get("teaching_intent")),
             "duplicate_asset_ids": _dedupe_terms(_as_string_list(item.get("duplicate_asset_ids"))),
         }
+    source_refs = _source_pptx_refs_for_asset(item)
+    if source_refs:
+        match_asset["source_pptx_refs"] = source_refs
     match_asset.update(_image_dimension_fields(item))
     match_asset.update(_preserve_review_fields(item))
     general = _optional_bool(item.get("general"))
@@ -5273,6 +5276,9 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
             "context_summary": context_summary,
             "teaching_intent": teaching_intent,
         }
+        source_refs = _source_pptx_refs_for_asset(asset)
+        if source_refs:
+            cleaned["source_pptx_refs"] = source_refs
         if general is not None:
             cleaned["general"] = general
         cleaned.update(_image_dimension_fields(asset))
@@ -5300,6 +5306,9 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
         "teaching_intent": teaching_intent,
         "duplicate_asset_ids": _dedupe_terms(_as_string_list(asset.get("duplicate_asset_ids"))),
     }
+    source_refs = _source_pptx_refs_for_asset(asset)
+    if source_refs:
+        cleaned["source_pptx_refs"] = source_refs
     detail_prompt = _clean_text(asset.get("detail_prompt"))
     if detail_prompt:
         cleaned["detail_prompt"] = detail_prompt
@@ -5309,6 +5318,57 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
     cleaned.update(preserved_review_fields)
     asset.clear()
     asset.update(cleaned)
+
+
+def _source_pptx_refs_for_asset(asset: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_refs = asset.get("source_pptx_refs")
+    if not isinstance(raw_refs, list):
+        return []
+    refs: list[dict[str, Any]] = []
+    seen: set[tuple[str, ...]] = set()
+    for raw in raw_refs:
+        if not isinstance(raw, dict):
+            continue
+        ref: dict[str, Any] = {
+            "pptx_id": _clean_text(raw.get("pptx_id")),
+            "period_id": _clean_text(raw.get("period_id")),
+            "file_path": _clean_text(raw.get("file_path")),
+            "file_name": _clean_text(raw.get("file_name")),
+            "absolute_path": _clean_text(raw.get("absolute_path")),
+            "source": _clean_text(raw.get("source")),
+        }
+        slide_no = _clean_text(raw.get("slide_no"))
+        shape_idx = _clean_text(raw.get("shape_idx"))
+        source_media_path = _clean_text(raw.get("source_media_path"))
+        if slide_no:
+            try:
+                ref["slide_no"] = int(slide_no)
+            except ValueError:
+                ref["slide_no"] = slide_no
+        if shape_idx:
+            try:
+                ref["shape_idx"] = int(shape_idx)
+            except ValueError:
+                ref["shape_idx"] = shape_idx
+        if source_media_path:
+            ref["source_media_path"] = source_media_path
+        ref = {key: value for key, value in ref.items() if value not in ("", None)}
+        if not any(ref.get(key) for key in ("pptx_id", "file_path", "file_name", "absolute_path")):
+            continue
+        key = (
+            _clean_text(ref.get("pptx_id")),
+            _clean_text(ref.get("file_path")),
+            _clean_text(ref.get("absolute_path")),
+            _clean_text(ref.get("slide_no")),
+            _clean_text(ref.get("shape_idx")),
+            _clean_text(ref.get("source_media_path")),
+            _clean_text(ref.get("source")),
+        )
+        if key in seen:
+            continue
+        seen.add(key)
+        refs.append(ref)
+    return refs
 
 
 def _clean_core_keyword_terms(terms: list[str]) -> tuple[list[str], list[str]]:
