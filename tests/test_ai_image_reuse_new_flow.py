@@ -325,3 +325,97 @@ def test_end_to_end_simplified_reuse_flow():
     candidates_low = [{"hybrid_score": 0.20, "asset_id": "low"}]
     decision = decide_reuse(candidates_low)
     assert decision["decision"] == "no_match"
+
+
+# --- Plan B: decide_reuse is the wired score-tier authority -------------------
+# These prove the previously-unreachable three-tier decision (and the LLM-review
+# pass) now actually drive _apply_reuse_policy_to_ranked_candidates, keyed on the
+# absolute keyword_score with the per-target threshold as the discard line.
+
+
+def _tier_target():
+    return {
+        "asset_kind": "page_image",
+        "strict_reuse_group": "C02_generic_subject_object",
+        "subject": "语文",
+        "aspect_ratio": "4:3",
+        "grade_norm": "五年级",
+        "grade_band": "高年级",
+        "content_prompt": "红色卡通苹果",
+        "caption": "红色卡通苹果",
+    }
+
+
+def _tier_candidate(asset_id, keyword_score):
+    asset = {
+        "asset_id": asset_id,
+        "asset_kind": "page_image",
+        "strict_reuse_group": "C02_generic_subject_object",
+        "subject": "语文",
+        "aspect_ratio": "4:3",
+        "grade_norm": "五年级",
+        "grade_band": "高年级",
+        "image_path": f"ai_images/{asset_id}.png",
+    }
+    return {
+        "asset": asset,
+        "candidate_image_path": f"ai_images/{asset_id}.png",
+        "keyword_score": keyword_score,
+        "score_details": {"keyword_score": keyword_score},
+    }
+
+
+def _run_policy(candidates, *, threshold=0.55, keyword_client=None, llm_review_enabled=False):
+    from edupptx.materials.ai_image_asset_db import _apply_reuse_policy_to_ranked_candidates
+
+    return _apply_reuse_policy_to_ranked_candidates(
+        _tier_target(),
+        candidates,
+        threshold=threshold,
+        embedding_status={},
+        df_ratio_lookup={},
+        keyword_client=keyword_client,
+        reuse_session_state=None,
+        llm_review_enabled=llm_review_enabled,
+    )
+
+
+def test_apply_policy_high_score_direct_reuse():
+    out = _run_policy([_tier_candidate("hi", 0.82), _tier_candidate("mid", 0.40)])
+    accepted = out["accepted_candidates"]
+    assert len(accepted) == 1
+    assert accepted[0]["asset"]["asset_id"] == "hi"
+    assert accepted[0]["reuse_policy"]["reason"] == "decide_reuse_direct_reuse"
+    assert out["llm_reviews_used"] == 0
+
+
+def test_apply_policy_below_per_target_threshold_discarded():
+    # 0.40 passes evaluate's T_LOW (0.35) but is below per-target threshold 0.55,
+    # so the tier discards it instead of the old auto-accept.
+    out = _run_policy([_tier_candidate("a", 0.40), _tier_candidate("b", 0.30)])
+    assert out["accepted_candidates"] == []
+    a_policy = out["rejected_by_policy"][0]["reuse_policy"]
+    assert a_policy["reason"] == "decide_reuse_below_threshold"
+
+
+def test_apply_policy_midband_cluster_routes_to_llm_review_and_accepts():
+    class _AcceptClient:
+        def chat_json(self, *, messages, temperature=0.0, max_tokens=1200, max_retries=1):
+            return {"score": 0.99, "brief_reason": "ok"}
+
+    out = _run_policy(
+        [_tier_candidate("c1", 0.62), _tier_candidate("c2", 0.60)],
+        keyword_client=_AcceptClient(),
+        llm_review_enabled=True,
+    )
+    assert out["llm_reviews_used"] >= 1
+    accepted = out["accepted_candidates"]
+    assert len(accepted) == 1
+    assert accepted[0]["reuse_policy"]["llm_review_performed"] is True
+
+
+def test_apply_policy_midband_not_auto_accepted_when_llm_disabled():
+    # The old code returned full_match (auto-accept) for this band; the fix holds
+    # it back (routed to llm_review, which is disabled here) instead of reusing.
+    out = _run_policy([_tier_candidate("c1", 0.62), _tier_candidate("c2", 0.60)])
+    assert out["accepted_candidates"] == []

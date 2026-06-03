@@ -4,13 +4,13 @@ from edupptx.materials.strict_reuse_classifier import (
 )
 
 
-def test_rules_text_says_judge_by_caption():
-    assert "只根据 caption" in MATERIAL_CATEGORY_RULES_TEXT
+def test_rules_text_says_judge_by_query():
+    assert "只根据 query" in MATERIAL_CATEGORY_RULES_TEXT
     assert "只根据 content_prompt" not in MATERIAL_CATEGORY_RULES_TEXT
 
 
-def test_classify_prompt_reads_caption_field():
-    prompt = _build_classify_prompt({"caption": "kids playing games", "asset_id": "a1"})
+def test_classify_prompt_reads_query_field():
+    prompt = _build_classify_prompt({"query": "kids playing games", "asset_id": "a1"})
     assert "kids playing games" in prompt
     assert "content_prompt" not in prompt
 

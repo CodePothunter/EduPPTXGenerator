@@ -58,26 +58,43 @@ T_GAP = 0.05
 CLUSTER_MAX = 3
 
 
-def decide_reuse(candidates: list[dict[str, Any]]) -> dict[str, Any]:
+def decide_reuse(
+    candidates: list[dict[str, Any]],
+    *,
+    score_key: str = "hybrid_score",
+    t_high: float = T_HIGH,
+    t_low: float = T_LOW,
+    t_gap: float = T_GAP,
+    cluster_max: int = CLUSTER_MAX,
+) -> dict[str, Any]:
+    """Spec §4 three-tier decision over a ranked candidate list.
+
+    ``candidates`` must be sorted best-first on ``score_key``. The default
+    ``score_key="hybrid_score"`` keeps the standalone (test) contract. The
+    production wiring passes ``score_key="keyword_score"`` (an absolute
+    content-match score in [0, 1]) together with the per-target accept
+    threshold as ``t_low`` — because the production ``hybrid_score`` is RRF
+    *normalized* (top1 is always 1.0) and cannot drive the high/low cut.
+    """
     if not candidates:
         return {"decision": "no_match", "reason": "empty_candidates"}
 
     top1 = candidates[0]
-    top1_score = float(top1.get("hybrid_score") or 0.0)
+    top1_score = float(top1.get(score_key) or 0.0)
     top1_id = top1.get("asset_id", "")
 
-    if top1_score >= T_HIGH:
+    if top1_score >= t_high:
         return {"decision": "direct_reuse", "asset_id": top1_id, "reason": "score_above_t_high", "score": top1_score}
 
-    if top1_score < T_LOW:
+    if top1_score < t_low:
         return {"decision": "no_match", "reason": "score_below_t_low", "score": top1_score}
 
-    cluster = [c for c in candidates if top1_score - float(c.get("hybrid_score") or 0.0) <= T_GAP]
+    cluster = [c for c in candidates if top1_score - float(c.get(score_key) or 0.0) <= t_gap]
 
     if len(cluster) <= 1:
         return {"decision": "direct_reuse", "asset_id": top1_id, "reason": "single_leader", "score": top1_score}
 
-    cluster = cluster[:CLUSTER_MAX]
+    cluster = cluster[:cluster_max]
     return {
         "decision": "llm_review",
         "reason": "cluster_detected",

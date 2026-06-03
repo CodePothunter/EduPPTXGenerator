@@ -27,7 +27,6 @@ from edupptx.materials.ai_image_asset_db import (
     _reuse_hard_filter_reject_reason,
     _reuse_review_accept_score_threshold,
     _route_match_index_for_target,
-    _score_gate_review_skip_safe,
     _score_reuse_candidate_details,
     _subject_scope_compatible,
     _subject_scope_decision,
@@ -554,14 +553,6 @@ def test_reuse_gate_thresholds_are_single_cross_ppt_values():
     assert BACKGROUND_REUSE_GATE_THRESHOLDS["keyword_min"] == 0.0
 
 
-def test_score_gate_review_skip_safe_uses_single_threshold_mode():
-    assert _score_gate_review_skip_safe(
-        {"asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container"},
-        {"reason": "keyword_led_gray_review"},
-        {"keyword_score": 0.10, "embedding_score": 0.59, "substring_score": 0.0},
-    )
-
-
 def test_keyword_prompt_requests_llm_subject_and_grade_enums():
     messages = _build_keyword_messages(
         [
@@ -618,37 +609,12 @@ def test_keyword_prompt_requests_general_boolean_and_rules():
 
     assert "general" in system
     assert "general 必须是布尔值" in system
-    assert "严格保守的 PPT 素材跨学科通用复用分类器" in system
-    assert "强排除" in system
-    assert "general 决策顺序必须固定：先判断强 general=false，再判断通用 general=true" in system
-    assert "强 false 命中时不能被通用白名单覆盖" in system
-    assert "具体故事情节、冲突、拒绝、后果、事故、损坏、救助、疾病、痛苦、愤怒、恐惧、孤独等强情绪或故事状态" in system
-    assert "课文或故事来源绑定的角色关系、母子叙事关系、青蛙妈妈和小蝌蚪等故事关系" in system
-    assert "温暖陪伴、秋日离别、压抑氛围等氛围本身是素材含义的场景" in system
-    assert "普通人物、动物、植物、教师、学生、教室、校园只有在非叙事、无强情绪、无故事后果、无来源绑定关系时可以输出 general=true" in system
-    assert "泛指课文、句子、段落、绘本、书本、资料、页面的朗读、圈画、划线、标序号等普通学习动作" in system
-    assert "没有具体可读课程文字、标题、生字拼音或固定语文知识点时可以输出 general=true" in system
-    assert "general 判断以 caption 描述的可见画面为主" in system
-    assert "theme、context_summary、subject、topic_refs 中的课文名或语文学科来源不等于画面含有可读课文内容" in system
-    assert "普通观察、记录、放大、聚焦用途的工具或视觉隐喻" in system
-    assert "不展示物理光路、成像原理、公式标签或具体可读文字时可以输出 general=true" in system
-    assert "具体可读文字、公式、光路图、成像原理图、带标注仪器结构" in system
-    assert "小朋友坐着大声朗读课文=>true" in system
-    assert "小朋友用横线画课文中的句子=>true" in system
-    assert "铅笔给课文段落标序号=>true" in system
-    assert "带圈画图案和铅笔的打开绘本插画=>true" in system
-    assert "老花镜=>true" in system
-    assert "照相机镜头特写=>true" in system
-    assert "放大镜放大文字=>true" in system
-    assert "《比尾巴》课文标题插画=>false" in system
-    assert "课文原文段落朗读卡片=>false" in system
-    assert "男孩在房间摔东西拒绝出门的场景=>false" in system
-    assert "池塘里一群小蝌蚪围着青蛙妈妈游动的卡通场景=>false" in system
-    assert "年轻男子坐在轮椅上，表情痛苦愤怒，身旁有被摔碎的杯子=>false" in system
-    assert "秋日黄昏，母亲和孩子并肩走在铺满落叶的路上a的温暖场景=>false" in system
-    assert "带装饰的空白对话气泡贴纸" in system
-    assert "足球管理员和学生对话场景，标注一共有36个足球" in system
-    assert '"general": false' in system
+    # GENERAL_RULE injected: ordered strong-false decision rules present.
+    assert "强-false（命中任一即 false）" in system
+    assert "判定顺序：先查强-false" in system
+    assert "具名或故事身份" in system
+    # NOTE: GENERAL_RULE's exact example wording lives in general_rules.py and is
+    # covered there; this test only verifies the keyword prompt injects the rule.
 
 
 def test_subject_normalization_accepts_only_current_chinese_enums():

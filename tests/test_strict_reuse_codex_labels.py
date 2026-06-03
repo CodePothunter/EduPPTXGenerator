@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from scripts.strict_reuse_v6_codex_labels import (
+from scripts.strict_reuse_codex_labels import (
     CATEGORY_ORDER,
     aggregate_split_assets,
     build_review_payload,

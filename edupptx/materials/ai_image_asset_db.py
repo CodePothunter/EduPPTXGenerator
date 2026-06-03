@@ -21,6 +21,9 @@ from loguru import logger as PROGRESS_LOGGER
 
 from edupptx.materials.reuse_policy import (
     BACKGROUND_REUSE_THRESHOLD,
+    T_HIGH,
+    T_LOW,
+    decide_reuse,
     evaluate_aspect_transform,
     evaluate_reuse_filter,
     normalize_reuse_policy_fields,
@@ -2248,26 +2251,6 @@ def _review_keyword_score(score_details: dict[str, Any]) -> float:
     )
 
 
-def _score_gate_review_skip_safe(target: dict[str, Any], policy_result: dict[str, Any], score_details: dict[str, Any]) -> bool:
-    if _reuse_gate_profile(target) not in {"loose", "medium"}:
-        return False
-    reason = _clean_text(score_details.get("accepted_by") or policy_result.get("reason"))
-    keyword_score = _review_keyword_score(score_details)
-    embedding_score = _review_score_value(score_details, "embedding_score")
-    substring_score = _review_score_value(score_details, "substring_score")
-    if reason == "keyword_led_gray_review":
-        return (
-            keyword_score < KEYWORD_LED_LLM_REVIEW_MIN_KEYWORD
-            and embedding_score < KEYWORD_LED_LLM_REVIEW_MIN_EMBEDDING
-        )
-    if reason == "embedding_led_gray_review":
-        return (
-            keyword_score < EMBEDDING_LED_LLM_REVIEW_MIN_KEYWORD
-            and substring_score < EMBEDDING_LED_LLM_REVIEW_MIN_SUBSTRING
-        )
-    return False
-
-
 def _llm_review_priority(record: dict[str, Any]) -> tuple[float, float, float, float, float]:
     score_details = _dict(record.get("score_details"))
     policy_result = _dict(record.get("policy_result"))
@@ -2370,17 +2353,81 @@ def _apply_reuse_policy_to_ranked_candidates(
         )
         if floor_reject is not None:
             policy_result = {**policy_result, **floor_reject}
-        if (
-            _clean_text(policy_result.get("decision")) == "llm_review"
-            and _score_gate_review_skip_safe(target, policy_result, score_details)
-        ):
-            policy_result = {**policy_result, "llm_skip_safe": True}
         pre_records.append({
             "candidate": candidate,
             "candidate_asset": candidate_asset,
             "score_details": score_details,
             "policy_result": policy_result,
         })
+
+    # ----- Pass 1b: three-tier decision authority (spec §4 / decide_reuse) -
+    # The wired evaluate_reuse_filter only yields full_match/reject and never
+    # routes the borderline band to llm_review, so the LLM-review pass below
+    # was unreachable and the per-target threshold was ignored. decide_reuse
+    # now owns the score tier for non-background page images: it keys on the
+    # absolute keyword_score with the per-target accept threshold as the
+    # discard line (production hybrid_score is RRF-normalized and unusable for
+    # the high/low cut). Pass-1 hard rejects (skip / kind / subject / aspect /
+    # consistency gap / pre-LLM floor) are preserved untouched.
+    if not _is_background_asset(target):
+        tier_items = [
+            {
+                "_index": index,
+                "asset_id": _clean_text(_dict(record["candidate_asset"]).get("asset_id")),
+                "keyword_score": float(record["score_details"].get("keyword_score") or 0.0),
+            }
+            for index, record in enumerate(pre_records)
+            if _clean_text(record["policy_result"].get("decision")) != "reject"
+        ]
+        if tier_items:
+            tier_items.sort(key=lambda item: item["keyword_score"], reverse=True)
+            tier = decide_reuse(
+                tier_items,
+                score_key="keyword_score",
+                t_high=T_HIGH,
+                t_low=threshold if threshold and threshold > 0 else T_LOW,
+            )
+            tier_decision = _clean_text(tier.get("decision"))
+            if tier_decision == "direct_reuse":
+                selected_index = tier_items[0]["_index"]
+                for item in tier_items:
+                    record = pre_records[item["_index"]]
+                    if item["_index"] == selected_index:
+                        record["policy_result"] = {
+                            **record["policy_result"],
+                            "decision": "full_match",
+                            "reason": "decide_reuse_direct_reuse",
+                        }
+                    else:
+                        record["policy_result"] = {
+                            **record["policy_result"],
+                            "decision": "reject",
+                            "reason": "decide_reuse_not_selected",
+                        }
+            elif tier_decision == "llm_review":
+                cluster_indices = {item["_index"] for item in (tier.get("cluster") or [])}
+                for item in tier_items:
+                    record = pre_records[item["_index"]]
+                    if item["_index"] in cluster_indices:
+                        record["policy_result"] = {
+                            **record["policy_result"],
+                            "decision": "llm_review",
+                            "reason": "decide_reuse_cluster",
+                        }
+                    else:
+                        record["policy_result"] = {
+                            **record["policy_result"],
+                            "decision": "reject",
+                            "reason": "decide_reuse_not_selected",
+                        }
+            else:  # no_match
+                for item in tier_items:
+                    record = pre_records[item["_index"]]
+                    record["policy_result"] = {
+                        **record["policy_result"],
+                        "decision": "reject",
+                        "reason": "decide_reuse_below_threshold",
+                    }
 
     # Identify the slice that needs an LLM review, capped by budget.
     review_targets: list[int] = []
@@ -3207,10 +3254,6 @@ def find_reusable_ai_image_asset(
         candidate["asset_root"] = str(library_root)
         candidate["library_search_order"] = _library_search_order
         candidate["_reuse_embedding_status"] = embedding_status
-        candidate["_reuse_constraint_embeddings"] = _constraint_embeddings_for_candidate(
-            embedding_index,
-            _dict(candidate.get("asset")),
-        )
 
     if _collect_candidates_only:
         debug_record["decision"] = {
@@ -4960,155 +5003,6 @@ def _context_exclusions(asset: dict[str, Any]) -> set[str]:
     return {item for item in exclusions if item}
 
 
-def _clean_recall_core_keywords(
-    value: Any,
-    *,
-    exclude: set[str] | None = None,
-    max_items: int,
-) -> list[str]:
-    cleaned, _style_terms = _clean_core_keyword_terms(
-        _keyword_list(
-            value,
-            max_items=max_items * 4,
-            exclude=(exclude or set()) | _NOISE_TOKENS,
-        )
-    )
-    results: list[str] = []
-    for term in cleaned:
-        if _should_skip_recall_core_keyword(term):
-            continue
-        results.append(term)
-        if len(results) >= max_items:
-            break
-    return _dedupe_terms(results)[:max_items]
-
-
-_FALLBACK_TEXT_SPLITTER = re.compile(
-    r"[\s,，。、；;:：!！?？/／()（）\[\]【】「」『』\"'…—\-_"
-    r"的着了和与及或里中上下前后内外"
-    r"各种一些若干许多很多多种各类"
-    r"一只一群一条一头一个其中"
-    r"0123456789０１２３４５６７８９%％]+"
-)
-
-
-def _fallback_core_keywords_from_text(
-    text: str,
-    *,
-    exclude: set[str],
-    max_items: int,
-) -> list[str]:
-    """Last-resort core_keywords extraction from a raw text source.
-
-    Used only when the LLM payload omits core_keywords and the asset would
-    otherwise ship with an empty list (breaking BM25/substring recall).
-    Splits on Chinese particles and punctuation and keeps short atomic
-    fragments that pass the existing recall-keyword filter. This is a safety
-    net, not a real tokenizer.
-    """
-
-    if not text:
-        return []
-    parts = _FALLBACK_TEXT_SPLITTER.split(str(text))
-    results: list[str] = []
-    seen: set[str] = set()
-    for part in parts:
-        token = _clean_keyword(part)
-        if not token or token in seen:
-            continue
-        compact = token.replace(" ", "")
-        if len(compact) < 2 or len(compact) > 8:
-            continue
-        if not re.search(r"[一-鿿]", compact):
-            continue
-        if _should_skip_recall_core_keyword(token):
-            continue
-        if _is_excluded_keyword(token, exclude):
-            continue
-        seen.add(token)
-        results.append(token)
-        if len(results) >= max_items:
-            break
-    return results
-
-
-def _resolve_page_core_keywords(
-    asset: dict[str, Any],
-    payload: dict[str, Any],
-    *,
-    exclude: set[str],
-    max_items: int,
-) -> list[str]:
-    """Resolve page_image core_keywords with a three-tier fallback.
-
-    Order: (1) LLM payload core_keywords, (2) fallback extracted from
-    content_prompt, (3) fallback extracted from normalized_prompt, (4) theme
-    tokens. Each tier is filtered through the standard recall skip rules and
-    the running exclude set so we never inject grade/subject/style noise.
-    """
-
-    primary = _clean_recall_core_keywords(
-        payload.get("core_keywords"),
-        exclude=exclude,
-        max_items=max_items,
-    )
-    if primary:
-        return primary
-
-    for source in (
-        _asset_content_prompt(asset),
-        _clean_text(payload.get("normalized_prompt")) or _clean_text(asset.get("normalized_prompt")),
-    ):
-        fallback = _fallback_core_keywords_from_text(
-            source,
-            exclude=exclude,
-            max_items=max_items,
-        )
-        if fallback:
-            LOGGER.warning(
-                "page_image_core_keywords_fallback asset_id=%s source=%s tokens=%s",
-                _clean_text(asset.get("asset_id")),
-                "content_prompt" if source == _asset_content_prompt(asset) else "normalized_prompt",
-                fallback,
-            )
-            return fallback
-
-    theme_tokens = _fallback_core_keywords_from_text(
-        _clean_text(asset.get("theme")),
-        exclude=exclude,
-        max_items=max_items,
-    )
-    if theme_tokens:
-        LOGGER.warning(
-            "page_image_core_keywords_fallback asset_id=%s source=theme tokens=%s",
-            _clean_text(asset.get("asset_id")),
-            theme_tokens,
-        )
-    return theme_tokens
-
-
-def _warn_missing_page_core_keywords(asset: dict[str, Any]) -> None:
-    LOGGER.warning(
-        "page_image_core_keywords_empty asset_id=%s image_path=%s",
-        _clean_text(asset.get("asset_id")),
-        _clean_text(asset.get("image_path")),
-    )
-
-
-def _should_skip_recall_core_keyword(term: str) -> bool:
-    text = _clean_keyword(term)
-    compact = text.replace(" ", "")
-    if not text or _is_generic_core_term(text) or _looks_like_style_or_usage_term(text):
-        return True
-    if "的" in compact:
-        return True
-    if len(compact) > 18:
-        return True
-    if any(mark in compact for mark in ("，", "。", "；", "！", "？", "如果", "用于", "适合")):
-        return True
-    return False
-
-
 def _keyword_list(value: Any, *, max_items: int, exclude: set[str] | None = None) -> list[str]:
     if isinstance(value, str):
         raw_items: list[Any] = re.split(r"[,;\n、，；]+", value)
@@ -5251,22 +5145,6 @@ def _encode_embedding_texts(
     if len(vectors.shape) == 1:
         vectors = vectors.reshape(1, -1)
     return np.asarray(vectors, dtype="float32")
-
-
-def _score_constraint_embedding_pairs(target: dict[str, Any], candidate: dict[str, Any]) -> list[dict[str, Any]]:
-    # Constraints were removed in v4. Always return empty.
-    return []
-
-
-def _score_constraint_embedding_pairs_cached(
-    target: dict[str, Any],
-    candidate: dict[str, Any],
-    *,
-    target_constraint_embedding_cache: dict[str, Any] | None = None,
-    candidate_constraint_embeddings: dict[str, Any] | None = None,
-) -> list[dict[str, Any]]:
-    # Constraints were removed in v4. Always return empty.
-    return []
 
 
 def _build_match_key(asset: dict[str, Any]) -> str:
@@ -5498,95 +5376,6 @@ def _strip_empty_match_fields(asset: dict[str, Any]) -> dict[str, Any]:
             continue
         cleaned[key] = value
     return cleaned
-
-
-def _semantic_alias_terms(asset: dict[str, Any]) -> list[str]:
-    aliases = asset.get("semantic_aliases")
-    if not isinstance(aliases, dict):
-        return []
-    terms: list[str] = []
-    for key, values in aliases.items():
-        terms.append(_clean_keyword(key))
-        terms.extend(_keyword_list(values, max_items=8))
-    return _dedupe_terms(terms)
-
-
-def _semantic_alias_groups(asset: dict[str, Any], core_keywords: list[str] | None = None) -> list[dict[str, Any]]:
-    core_terms = core_keywords if core_keywords is not None else _keyword_list(asset.get("core_keywords"), max_items=16)
-    aliases = _clean_semantic_aliases(asset.get("semantic_aliases"))
-    groups: list[dict[str, Any]] = []
-    consumed_alias_keys: set[str] = set()
-
-    for core in core_terms:
-        group_terms = [core]
-        for alias_key, alias_values in aliases.items():
-            alias_terms = _dedupe_terms([alias_key, *alias_values])
-            if _terms_match(alias_key, core) or any(_terms_match(core, alias_term) for alias_term in alias_terms):
-                group_terms.extend(alias_terms)
-                consumed_alias_keys.add(alias_key)
-        terms = _dedupe_terms(group_terms)
-        if terms:
-            groups.append({"concept": core, "terms": terms})
-
-    for alias_key, alias_values in aliases.items():
-        if alias_key in consumed_alias_keys:
-            continue
-        terms = _dedupe_terms([alias_key, *alias_values])
-        if not terms:
-            continue
-        overlaps_existing = any(
-            _terms_match(term, existing_term)
-            for term in terms
-            for group in groups
-            for existing_term in group.get("terms", [])
-        )
-        if not overlaps_existing:
-            groups.append({"concept": alias_key, "terms": terms})
-
-    return groups[:16]
-
-
-def _grouped_core_similarity_with_hits(
-    groups: list[dict[str, Any]],
-    doc_tokens: list[str],
-) -> tuple[float, list[dict[str, Any]], list[str]]:
-    if not groups or not doc_tokens:
-        return 0.0, [], [_clean_text(group.get("concept")) for group in groups if _clean_text(group.get("concept"))]
-
-    doc_text = " ".join(doc_tokens)
-    total = 0.0
-    hits: list[dict[str, Any]] = []
-    missing: list[str] = []
-    for group in groups:
-        concept = _clean_text(group.get("concept"))
-        terms = _dedupe_terms([str(term) for term in group.get("terms", [])])
-        best_score = 0.0
-        best_term = ""
-        best_hits: list[dict[str, str]] = []
-        for term in terms:
-            if _term_in_text(term, doc_text):
-                score = 1.0
-                term_hits = [{"target": term, "candidate": term}]
-            else:
-                score, term_hits = _bm25_similarity_with_hits(_bm25_tokens_from_values([term]), doc_tokens)
-            if score > best_score:
-                best_score = score
-                best_term = term
-                best_hits = term_hits
-        total += best_score
-        if best_score > 0:
-            hits.append(
-                {
-                    "concept": concept,
-                    "matched_term": best_term,
-                    "group_score": round(best_score, 4),
-                    "aliases": [term for term in terms if term != concept],
-                    "token_hits": best_hits,
-                }
-            )
-        else:
-            missing.append(concept)
-    return max(0.0, min(1.0, total / len(groups))), hits, missing
 
 
 def _dedupe_terms(values: list[str]) -> list[str]:
@@ -7617,14 +7406,6 @@ def _constraint_vectors_by_asset(
             continue
         out.setdefault(_clean_text(asset_id), {})[text] = vectors[idx]
     return out
-
-
-def _constraint_embeddings_for_candidate(
-    embedding_index: dict[str, Any],
-    candidate_asset: dict[str, Any],
-) -> dict[str, Any]:
-    # Constraints were removed in v4. Return empty so callers still work.
-    return {}
 
 
 def _file_sha256(path: Path) -> str:

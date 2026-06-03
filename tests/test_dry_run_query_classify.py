@@ -1,4 +1,4 @@
-from scripts.dry_run_caption_classify import compare_caption_classification
+from scripts.dry_run_query_classify import compare_caption_classification
 
 
 class _FakeClassifier:

@@ -114,7 +114,7 @@ import importlib
 
 
 def test_dry_run_audit_classifies_on_query():
-    mod = importlib.import_module("scripts.dry_run_caption_classify")
+    mod = importlib.import_module("scripts.dry_run_query_classify")
     item = mod._caption_input_item({"asset_id": "a1", "query": "Q-VERBOSE", "caption": "c-lossy"})
     assert item["query"] == "Q-VERBOSE"
     assert "caption" not in item
@@ -180,7 +180,7 @@ def test_ppt_prompt_and_annotation_use_query():
          "context_summary": "课文片段配图，用于初读", "teaching_intent": "借拼音朗读"},
         item=None, meta={}, context={},
     )
-    assert set(ann) == {"query", "context_summary", "teaching_intent"}
+    assert set(ann) == {"query", "context_summary", "teaching_intent", "is_backdrop"}
     assert ann["query"] == "Q-PPT"
     assert "visual_reuse_group" not in ann
     assert "content_prompt" not in ann

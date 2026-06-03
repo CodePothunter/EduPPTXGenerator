@@ -1,4 +1,10 @@
-"""Dry-run caption-based strict_reuse_group classification for material assets."""
+"""Dry-run query-based strict_reuse_group classification for material assets.
+
+Audit classification (``_build_caption_classification_messages``) mirrors the
+production classifier and decides on the verbose ``query`` field;
+``compare_caption_classification`` compares a caption-driven classifier's output
+against the stored ``strict_reuse_group`` for offline evaluation.
+"""
 
 from __future__ import annotations
 
@@ -163,10 +169,19 @@ def load_caption_assets(library_dir: str | Path, *, limit: int | None = None) ->
     return list(assets_by_id.values())
 
 
+def _asset_query(asset: dict[str, Any]) -> str:
+    return (
+        _clean_text(asset.get("query"))
+        or _clean_text(asset.get("detail_prompt"))
+        or _clean_text(asset.get("content_prompt"))
+    )
+
+
 def _caption_input_item(asset: dict[str, Any]) -> dict[str, str]:
+    # Audit classification mirrors production: classify on the verbose query field.
     return {
         "asset_id": _clean_text(asset.get("asset_id")),
-        "caption": _asset_caption(asset),
+        "query": _asset_query(asset),
     }
 
 
@@ -175,12 +190,12 @@ def _build_caption_classification_messages(batch: list[dict[str, Any]]) -> list[
     system = (
         "Classify material-library assets into strict_reuse_group. "
         "This is classification-only: do not rewrite metadata. "
-        "Use only the caption field to decide. "
+        "Use only the query field to decide. "
         "Return strict JSON with an assets array; each item must contain "
         "asset_id and strict_reuse_group only.\n\n"
         + MATERIAL_CATEGORY_RULES_TEXT
     )
-    user = "Classify these assets by caption only:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
+    user = "Classify these assets by query only:\n" + json.dumps(payload, ensure_ascii=False, indent=2)
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": user},
