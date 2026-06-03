@@ -132,9 +132,12 @@ is_backdrop 判定（与画幅是否满铺无关，只看画面内容）：
 - false：画面本身就是要传达的内容——含大段正文/题干/题目载荷、人物动作叙事、或作主标识的可读标题。
 
 query 契约——写“画面是什么”，不写“用在哪”：
-1. 图像支撑身份才安专名（B1）：专名只在图像本身足以支撑该身份时才写——清晰肖像、可辨识地标、带可读题名/标签的实物。
-   当图像是泛化匿名呈现（背影、泛人群、泛山泛水、无个体特征的群体）时，即使页面文字提到某具名实体，也不要把该专名安到主体上，
-   只写图像可证的内容（如“科考队徒步背影”，不写“某团队成员”）。
+1. 上下文锚定身份才安专名（B1）：当页面/课件上下文明确指向具名人物、地标、作品或实物，
+   且图像形态支持该类身份（肖像/人物照片/可辨地标场景/带可读题名标签的实物）时，
+   即使 VLM 无法从像素独立识别具体身份，也不要把 canonical query 改成匿名类别；
+   C01 canonical query 保留专有身份，C03 projection 再通过 secondary_reuse_query/secondary_reuse_caption 去名泛化。
+   当图像是泛化匿名呈现（背影、泛人群、泛山泛水、无个体特征的群体），且上下文也无法锚定到明确肖像/地标/作品时，
+   只写图像可证的通用内容（如“科考队徒步背影”）。
 2. 真实自然粒度，不阉割也不臆造（B2）：如实写主体的自然类别名（青铜簋就写“青铜簋”、瀑布就写“瀑布”），
    既不许泛化成“一种器物”丢信息，也不许把类型升格成唯一专名（除非图/图内文字确证）。
 3. 保留教学原子值：画面里可读的汉字/拼音/数字/公式/标签及其数量、顺序、对应、因果、空间、比较关系，
@@ -229,6 +232,26 @@ def _positive_int(value: Any, default: int) -> int:
         return max(1, int(default))
 
 
+def _should_flush(
+    *,
+    pptx_count: int,
+    flush_every_n_ppt: int,
+    flush_each_ppt: bool,
+    write_match_index: bool,
+) -> bool:
+    """Whether to rewrite the incremental index after this PPT.
+
+    Gated by the master switches (write_match_index / flush_each_ppt), then
+    only fires every ``flush_every_n_ppt`` processed PPTs. The end-of-run write
+    always persists the full index, so a larger interval only widens the
+    crash-recovery checkpoint, it never loses the tail on normal completion.
+    """
+    if not (write_match_index and flush_each_ppt):
+        return False
+    interval = flush_every_n_ppt if flush_every_n_ppt > 0 else 1
+    return pptx_count % interval == 0
+
+
 def build_ppt_image_materials_library(
     *,
     teach_kb_root: str | Path,
@@ -244,6 +267,7 @@ def build_ppt_image_materials_library(
     keep_rejected: bool = False,
     write_match_index: bool = True,
     flush_each_ppt: bool = True,
+    flush_every_n_ppt: int = 1,
     env_file: str | Path = ".env",
     vlm_max_side: int = 1280,
     keyword_batch_size: int = DEFAULT_PPT_KEYWORD_BATCH_SIZE,
@@ -268,6 +292,7 @@ def build_ppt_image_materials_library(
     keyword_batch_size = _positive_int(keyword_batch_size, DEFAULT_PPT_KEYWORD_BATCH_SIZE)
     vlm_workers = _positive_int(vlm_workers, DEFAULT_PPT_VLM_WORKERS)
     llm_workers = _positive_int(llm_workers, DEFAULT_PPT_LLM_WORKERS)
+    flush_every_n_ppt = _positive_int(flush_every_n_ppt, 1)
 
     config: Config | None = None
     if use_vlm and vlm_client is None:
@@ -463,7 +488,12 @@ def build_ppt_image_materials_library(
                     report["warnings"].append(f"{asset_id or 'unknown_asset'} LLM pipeline failed: {type(exc).__name__}: {exc}")
 
             report["processed_pptx"].append(pptx_summary)
-            if write_match_index and flush_each_ppt:
+            if _should_flush(
+                pptx_count=report["pptx_count"],
+                flush_every_n_ppt=flush_every_n_ppt,
+                flush_each_ppt=flush_each_ppt,
+                write_match_index=write_match_index,
+            ):
                 try:
                     _write_incremental_match_index(
                         assets_by_id=assets_by_id,
@@ -1245,6 +1275,7 @@ def _apply_secondary_scene_caption(item: dict[str, Any], client: Any, *, batch_s
     primary = normalize_strict_reuse_group(item.get("strict_reuse_group"), default="")
     secondary = normalize_secondary_reuse_group(item.get(SECONDARY_REUSE_GROUP_FIELD), primary=primary)
     if not (primary == C01_IRREPLACEABLE_ENTITY_EVENT_ACTION and secondary == C03_SCENE_DECOR_CONTAINER):
+        item.pop("secondary_reuse_query", None)
         item.pop("secondary_reuse_caption", None)
         return []
     if not _clean_text(item.get("query")):
@@ -1256,7 +1287,10 @@ def _apply_secondary_scene_caption(item: dict[str, Any], client: Any, *, batch_s
             query_field="query",
             batch_size=max(1, int(batch_size or 1)),
         )
+        query_text = _clean_text(rows[0].get("secondary_reuse_query")) if rows else ""
         caption = _clean_text(rows[0].get("secondary_reuse_caption")) if rows else ""
+        if query_text:
+            item["secondary_reuse_query"] = query_text
         if caption:
             item["secondary_reuse_caption"] = caption
         return []
@@ -1928,6 +1962,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--keep-rejected", action="store_true", help="Deprecated compatibility flag; VLM no longer emits rejection fields")
     parser.add_argument("--no-match-index", action="store_true", help="Do not write split reuse indexes")
     parser.add_argument("--no-incremental-index", action="store_true", help="Only write split reuse indexes after all PPTX files finish")
+    parser.add_argument("--flush-every", type=int, default=20, help="Rewrite the index every N processed PPTX (default 20). Smaller = safer on crash but more disk I/O; ignored when --no-incremental-index is set. The final full write always happens at the end.")
     parser.add_argument("--vlm-max-side", type=int, default=1280)
     parser.add_argument("--keyword-batch-size", type=int, default=DEFAULT_PPT_KEYWORD_BATCH_SIZE)
     parser.add_argument("--vlm-workers", type=int, default=DEFAULT_PPT_VLM_WORKERS)
@@ -1948,6 +1983,7 @@ def main(argv: list[str] | None = None) -> None:
         keep_rejected=args.keep_rejected,
         write_match_index=not args.no_match_index,
         flush_each_ppt=not args.no_incremental_index,
+        flush_every_n_ppt=args.flush_every,
         env_file=args.env_file,
         vlm_max_side=args.vlm_max_side,
         keyword_batch_size=args.keyword_batch_size,

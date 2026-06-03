@@ -335,6 +335,7 @@ _REVIEW_PASSTHROUGH_FIELDS = (
 _STRICT_REUSE_PASSTHROUGH_FIELDS = (
     "strict_reuse_group",
     "strict_reuse_secondary_group",
+    "secondary_reuse_query",
     "secondary_reuse_caption",
     "strict_reuse_confidence",
     "strict_reuse_reason",
@@ -361,6 +362,7 @@ _PAGE_REUSE_TARGET_METADATA_FIELDS = (
     "general",
     "strict_reuse_group",
     "strict_reuse_secondary_group",
+    "secondary_reuse_query",
     "secondary_reuse_caption",
     "strict_reuse_confidence",
     "strict_reuse_reason",
@@ -1061,11 +1063,23 @@ def _c01_secondary_c03_projections(assets: list[dict[str, Any]]) -> list[dict[st
         projection = deepcopy(asset)
         asset_id = _clean_text(asset.get("asset_id"))
         projection["strict_reuse_group"] = C03_SCENE_DECOR_CONTAINER
-        denamed = _clean_text(asset.get("secondary_reuse_caption")) or _clean_text(asset.get("caption"))
-        projection["caption"] = denamed
+        denamed_query = (
+            _clean_text(asset.get("secondary_reuse_query"))
+            or _clean_text(asset.get("secondary_reuse_caption"))
+            or _clean_text(asset.get("query"))
+        )
+        denamed_caption = (
+            _clean_text(asset.get("secondary_reuse_caption"))
+            or denamed_query
+            or _clean_text(asset.get("caption"))
+        )
+        if denamed_query:
+            projection["query"] = denamed_query
+        projection["caption"] = denamed_caption
         projection["secondary_projection"] = True
         projection["secondary_projection_of"] = asset_id
         projection.pop("strict_reuse_secondary_group", None)
+        projection.pop("secondary_reuse_query", None)
         projection.pop("secondary_reuse_caption", None)
         projections.append(projection)
     return projections
@@ -4505,6 +4519,7 @@ def _build_keyword_messages(
         MATERIAL_CATEGORY_RULES_TEXT as _MATERIAL_CATEGORY_RULES_TEXT,
     )
     from edupptx.materials.caption_rules import CAPTION_RULE as _CAPTION_RULE
+    from edupptx.materials.general_rules import GENERAL_RULE as _GENERAL_RULE
     items: list[dict[str, Any]] = []
     for asset in batch:
         items.append(
@@ -4529,7 +4544,7 @@ def _build_keyword_messages(
     system = (
         "必须只返回严格 JSON，顶层对象必须包含 assets 数组。"
         "page_image 只允许输出这些字段：asset_id、caption、context_summary、teaching_intent、"
-        "subject、grade_norm、grade_band、general、strict_reuse_group、strict_reuse_secondary_group、strict_reuse_confidence、strict_reuse_reason。"
+        "subject、grade_norm、grade_band、general、strict_reuse_group、strict_reuse_secondary_group、secondary_reuse_query、secondary_reuse_caption、strict_reuse_confidence、strict_reuse_reason。"
         "background 只允许输出这些字段：asset_id、normalized_prompt、color_temperature、context_summary、"
         "teaching_intent、subject、grade_norm、grade_band、general、strict_reuse_group、strict_reuse_secondary_group、strict_reuse_confidence、strict_reuse_reason。"
         "subject 必须只从以下枚举中选择：语文、数学、物理、其他。"
@@ -4540,30 +4555,9 @@ def _build_keyword_messages(
         "如果字段缺失、无法判断或不确定，一律输出其他。"
         "general 必须是布尔值 true 或 false，表示当前素材本身是否可跨语文、数学、物理通用复用。"
         "page_image 和 background 输出示例都必须包含 \"general\": true 或 false 布尔字段，示例值不代表默认值。"
-        "你同时是严格保守的 PPT 素材跨学科通用复用分类器：只有素材明确可跨学科复用时 general 才输出 true；"
-        "如果依赖具体学科、固定文字、固定数字、精确图形关系、课文故事、文学或文化身份、科学现象或实验结构，general 输出 false；"
-        "如果判断模糊，general 输出 false。"
-        "general 判断以 caption 描述的可见画面为主；theme、context_summary、subject、topic_refs 中的课文名或语文学科来源不等于画面含有可读课文内容，不要仅因此输出 general=false。"
-        "general 决策顺序必须固定：先判断强 general=false，再判断通用 general=true；强 false 命中时不能被通用白名单覆盖；判断模糊输出 general=false。"
-        "强 general=false 包括：汉字书写、田字格、米字格、拼音、古诗、文言文、命名作者、具体课文故事、课文标题、课文原文、可读段落原文、固定课文句子；"
-        "固定数字、算式、公式、题干、几何图、坐标图、统计图、测量图；具体可读文字、公式、光路图、成像原理图、反射、折射、透镜、电路、力学、实验装置、带标注仪器结构；"
-        "固定文字、标签、门牌、路牌、传统文化语境；具体故事情节、冲突、拒绝、后果、事故、损坏、救助、疾病、痛苦、愤怒、恐惧、孤独等强情绪或故事状态；"
-        "命名角色、课文或故事来源绑定的角色关系、母子叙事关系、青蛙妈妈和小蝌蚪等故事关系；温暖陪伴、秋日离别、压抑氛围等氛围本身是素材含义的场景。"
-        "普通名词不等于 general=true；小朋友、母亲、青蛙、小蝌蚪、轮椅、房间、道路、书本、放大镜、相机等普通对象，如果处在故事情节、强情绪、来源绑定关系或氛围场景中，仍输出 general=false。"
-        "仅在未命中强 general=false 时，孤立常见对象和工具、空白卡片、便签、空白对话气泡、空白文本框、边框、相框、装饰图案、文具、书本、书包、简单装饰物可以输出 general=true。"
-        "普通人物、动物、植物、教师、学生、教室、校园只有在非叙事、无强情绪、无故事后果、无来源绑定关系时可以输出 general=true。"
-        "泛指课文、句子、段落、绘本、书本、资料、页面的朗读、圈画、划线、标序号等普通学习动作，在没有具体可读课程文字、标题、生字拼音或固定语文知识点时可以输出 general=true。"
-        "普通观察、记录、放大、聚焦用途的工具或视觉隐喻，在不展示物理光路、成像原理、公式标签或具体可读文字时可以输出 general=true。"
-        "具体可读文字、公式、光路图、成像原理图、带标注仪器结构仍输出 general=false。"
-        "不要因为可以改图后复用就输出 true；需要去字、去数字、去标签、去关键关系或明显改图才能跨学科复用时输出 false。"
-        "general few-shot：带装饰的空白对话气泡贴纸=>true；绿色对话气泡框内的“精读”文字=>false；"
-        "讲台上的女教师和三名举手的小学生=>true；足球管理员和学生对话场景，标注一共有36个足球=>false；"
-        "右手握铅笔的正确执笔姿势示意图=>true；"
-        "小朋友坐着大声朗读课文=>true；小朋友用横线画课文中的句子=>true；铅笔给课文段落标序号=>true；带圈画图案和铅笔的打开绘本插画=>true；"
-        "老花镜=>true；照相机镜头特写=>true；放大镜放大文字=>true；扎双丸子头的卡通小女孩和红苹果=>true；"
-        "《比尾巴》课文标题插画=>false；课文原文段落朗读卡片=>false；田字格中的生字和拼音=>false；古诗文字卡片=>false；带固定课文句子的圈画示意图=>false；"
-        "男孩在房间摔东西拒绝出门的场景=>false；池塘里一群小蝌蚪围着青蛙妈妈游动的卡通场景=>false；"
-        "年轻男子坐在轮椅上，表情痛苦愤怒，身旁有被摔碎的杯子=>false；秋日黄昏，母亲和孩子并肩走在铺满落叶的路上a的温暖场景=>false。"
+        "general 字段按下述共享规则判定：\n"
+        + _GENERAL_RULE
+        + "\n"
         "不要输出 core_keywords、semantic_aliases、constraints、context_summary_keywords、asset_category、query_aliases。"
         "strict_reuse_group 必须是下方 4 个素材类别主类 ID 之一。"
         "strict_reuse_secondary_group 只在主类为 C01 的具名地标图、其周边场景本身也可作氛围复用时，"
@@ -7934,8 +7928,20 @@ def _apply_strict_reuse_group_from_payload(asset: dict[str, Any], payload: dict[
     secondary = normalize_secondary_reuse_group(secondary_source, primary=group)
     if secondary:
         asset[SECONDARY_REUSE_GROUP_FIELD] = secondary
+        secondary_query = _clean_text(payload.get("secondary_reuse_query")) or _clean_text(
+            asset.get("secondary_reuse_query")
+        )
+        secondary_caption = _clean_text(payload.get("secondary_reuse_caption")) or _clean_text(
+            asset.get("secondary_reuse_caption")
+        )
+        if secondary_query:
+            asset["secondary_reuse_query"] = secondary_query
+        if secondary_caption:
+            asset["secondary_reuse_caption"] = secondary_caption
     else:
         asset.pop(SECONDARY_REUSE_GROUP_FIELD, None)
+        asset.pop("secondary_reuse_query", None)
+        asset.pop("secondary_reuse_caption", None)
 
 
 def _normalize_binary_reuse_group(value: Any, *, default: str = _GENERAL_REUSE_GROUP) -> str:

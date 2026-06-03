@@ -181,6 +181,35 @@ def normalize_secondary_reuse_group(value: Any, *, primary: Any) -> str:
     return ""
 
 
+def _c01_secondary_c03_projection(asset: dict[str, Any]) -> dict[str, Any] | None:
+    primary = normalize_strict_reuse_group(asset.get("strict_reuse_group"), default="")
+    secondary = normalize_secondary_reuse_group(asset.get(SECONDARY_REUSE_GROUP_FIELD), primary=primary)
+    if primary != C01_IRREPLACEABLE_ENTITY_EVENT_ACTION or secondary != C03_SCENE_DECOR_CONTAINER:
+        return None
+    projection = deepcopy(asset)
+    denamed_query = (
+        _clean_text(asset.get("secondary_reuse_query"))
+        or _clean_text(asset.get("secondary_reuse_caption"))
+        or _clean_text(asset.get("query"))
+    )
+    denamed_caption = (
+        _clean_text(asset.get("secondary_reuse_caption"))
+        or denamed_query
+        or _clean_text(asset.get("caption"))
+    )
+    projection["strict_reuse_group"] = C03_SCENE_DECOR_CONTAINER
+    if denamed_query:
+        projection["query"] = denamed_query
+    if denamed_caption:
+        projection["caption"] = denamed_caption
+    projection["secondary_projection"] = True
+    projection["secondary_projection_of"] = _clean_text(asset.get("asset_id"))
+    projection.pop(SECONDARY_REUSE_GROUP_FIELD, None)
+    projection.pop("secondary_reuse_query", None)
+    projection.pop("secondary_reuse_caption", None)
+    return projection
+
+
 SKIP_FROM_INDEX_VLM_QUALITY_THRESHOLD = 0.3
 
 
@@ -420,6 +449,11 @@ def write_strict_reuse_group_indexes(
             and (group == C00_STRICT_TEXT_PROBLEM_SKIP or not should_skip_from_index(asset))
             and _clean_text(asset.get("asset_kind")) != "background"
         ]
+        if group == C03_SCENE_DECOR_CONTAINER:
+            for asset in assets:
+                projection = _c01_secondary_c03_projection(asset)
+                if projection is not None and not should_skip_from_index(projection):
+                    group_assets.append(projection)
         payload = {
             "schema_version": index.get("schema_version"),
             "strict_reuse_group": group,

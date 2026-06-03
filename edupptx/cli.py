@@ -886,7 +886,7 @@ def strict_reuse_classify(
 
 @main.command("strict-reuse-export-check")
 @click.argument("library_dir", type=click.Path(file_okay=False))
-@click.option("--output-dir", default="strict_reuse_visual_check", show_default=True, type=click.Path(file_okay=False), help="Directory that receives 6-class material category image copies")
+@click.option("--output-dir", default="strict_reuse_visual_check", show_default=True, type=click.Path(file_okay=False), help="Directory that receives 4-class material category image copies")
 @click.option("--index-filename", default="ai_image_match_index.json", show_default=True, help="Match index filename")
 @click.option("--clean/--no-clean", default=True, show_default=True, help="Clean command-owned material category folders before exporting")
 @click.option("--force", is_flag=True, help="Allow overwriting an existing unrelated manifest in the output directory")
@@ -899,7 +899,7 @@ def strict_reuse_export_check(
     force: bool,
     as_json: bool,
 ):
-    """Export reuse groups into 6-class material category folders for visual checking."""
+    """Export reuse groups into 4-class material category folders for visual checking."""
     try:
         from edupptx.materials.strict_reuse_classifier import export_strict_reuse_visual_check
 
