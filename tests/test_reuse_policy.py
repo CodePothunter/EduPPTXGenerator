@@ -11,8 +11,8 @@ from edupptx.materials.reuse_policy import (
     MATERIAL_CATEGORY_REUSE_LEVEL,
     PAGE_IMAGE_REUSE_THRESHOLDS,
     T_GAP,
-    T_HIGH,
-    T_LOW,
+    T_DIRECT,
+    T_REJECT,
     decide_reuse,
     evaluate_reuse_filter,
     normalize_asset_metadata,
@@ -114,7 +114,7 @@ def test_c00_target_is_rejected_before_similarity():
     result = evaluate_reuse_filter(
         _page("C00_strict_text_problem_skip"),
         _page("C02_generic_subject_object"),
-        {"keyword_score": 1.0, "embedding_score": 1.0, "accepted_by": "bm25_threshold"},
+        {"policy_score": 1.0, "keyword_score": 1.0, "embedding_score": 1.0},
     )
 
     assert result["decision"] == "reject"
@@ -126,7 +126,7 @@ def test_c00_candidate_is_rejected_before_similarity():
     result = evaluate_reuse_filter(
         _page("C02_generic_subject_object"),
         _page("C00_strict_text_problem_skip"),
-        {"keyword_score": 1.0, "embedding_score": 1.0, "accepted_by": "bm25_threshold"},
+        {"policy_score": 1.0, "keyword_score": 1.0, "embedding_score": 1.0},
     )
 
     assert result["decision"] == "reject"
@@ -164,45 +164,45 @@ def test_background_cross_theme_uses_base_threshold():
 
 
 def test_three_tier_constants():
-    assert T_HIGH == 0.70
-    assert T_LOW == 0.35
-    assert T_GAP == 0.05
+    assert T_DIRECT == 0.78
+    assert T_REJECT == 0.45
+    assert T_GAP == 0.06
     assert CLUSTER_MAX == 3
 
 
 def test_decide_reuse_no_candidates():
     result = decide_reuse([])
-    assert result["decision"] == "no_match"
+    assert result["decision"] == "reject"
 
 
 def test_decide_reuse_high_score_direct():
-    candidates = [{"hybrid_score": 0.75, "asset_id": "a1"}]
+    candidates = [{"policy_score": 0.82, "asset_id": "a1"}]
     result = decide_reuse(candidates)
     assert result["decision"] == "direct_reuse"
     assert result["asset_id"] == "a1"
 
 
 def test_decide_reuse_low_score_reject():
-    candidates = [{"hybrid_score": 0.30, "asset_id": "a1"}]
+    candidates = [{"policy_score": 0.30, "asset_id": "a1"}]
     result = decide_reuse(candidates)
-    assert result["decision"] == "no_match"
+    assert result["decision"] == "reject"
 
 
 def test_decide_reuse_mid_score_single_leader():
     candidates = [
-        {"hybrid_score": 0.55, "asset_id": "a1"},
-        {"hybrid_score": 0.40, "asset_id": "a2"},
+        {"policy_score": 0.70, "asset_id": "a1"},
+        {"policy_score": 0.50, "asset_id": "a2"},
     ]
     result = decide_reuse(candidates)
-    assert result["decision"] == "direct_reuse"
-    assert result["asset_id"] == "a1"
+    assert result["decision"] == "llm_review"
+    assert [item["asset_id"] for item in result["cluster"]] == ["a1"]
 
 
 def test_decide_reuse_mid_score_cluster_triggers_llm():
     candidates = [
-        {"hybrid_score": 0.55, "asset_id": "a1"},
-        {"hybrid_score": 0.52, "asset_id": "a2"},
-        {"hybrid_score": 0.51, "asset_id": "a3"},
+        {"policy_score": 0.77, "asset_id": "a1"},
+        {"policy_score": 0.74, "asset_id": "a2"},
+        {"policy_score": 0.73, "asset_id": "a3"},
     ]
     result = decide_reuse(candidates)
     assert result["decision"] == "llm_review"
@@ -211,9 +211,21 @@ def test_decide_reuse_mid_score_cluster_triggers_llm():
 
 def test_decide_reuse_cluster_capped_at_cluster_max():
     candidates = [
-        {"hybrid_score": 0.55, "asset_id": f"a{i}"}
+        {"policy_score": 0.70, "asset_id": f"a{i}"}
         for i in range(5)
     ]
     result = decide_reuse(candidates)
     assert result["decision"] == "llm_review"
     assert len(result["cluster"]) == CLUSTER_MAX
+
+
+def test_decide_reuse_high_score_without_gap_routes_to_llm_review():
+    candidates = [
+        {"policy_score": 0.84, "asset_id": "a1"},
+        {"policy_score": 0.81, "asset_id": "a2"},
+    ]
+
+    result = decide_reuse(candidates)
+
+    assert result["decision"] == "llm_review"
+    assert [item["asset_id"] for item in result["cluster"]] == ["a1", "a2"]

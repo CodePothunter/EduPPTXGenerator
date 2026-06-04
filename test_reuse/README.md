@@ -60,23 +60,26 @@ python -m test_reuse run-all `
 
 - `manifest.json`
 - `plans/`
-- `plan_needs.jsonl`
-- `targets.jsonl`
-- `target_enrichment.jsonl`
-- `target_enrichment_summary.json`
-- `target_classification_summary.json`
-- `hard_filter_pairs.jsonl`
-- `hard_filter_summary.json`
-- `candidate_collections.jsonl`
-- `scored_candidates.jsonl`
-- `threshold_candidates.jsonl`
-- `threshold_summary.json`
-- `llm_reviews.jsonl`
-- `llm_review_summary.json`
-- `final_matches.jsonl`
-- `failure_cases.jsonl`
-- `prompt_issue_log.jsonl`
-- `metrics.json`
-- `report.md`
+- `01_prepare/plan_needs.jsonl`
+- `01_prepare/targets.jsonl`
+- `01_prepare/target_enrichment.jsonl`
+- `01_prepare/target_enrichment_summary.json`
+- `01_prepare/target_classification_summary.json`
+- `01_prepare/target_class_mismatches_review.csv`
+- `01_prepare/target_class_c00_cases_review.csv`
+- `01_prepare/target_class_mismatch_summary.csv`
+- `02_hard_filter/hard_filter_pairs.jsonl`
+- `02_hard_filter/hard_filter_summary.json`
+- `03_retrieve/candidate_collections.jsonl`
+- `03_retrieve/candidate_score_audit.jsonl`
+- `03_retrieve/candidate_score_audit.csv`
+- `03_retrieve/retrieve_summary.json`
+- `04_review/llm_reviews.jsonl`
+- `04_review/llm_review_summary.json`
+- `04_review/final_matches.jsonl`
+- `05_summarize/failure_cases.jsonl`
+- `05_summarize/prompt_issue_log.jsonl`
+- `05_summarize/metrics.json`
+- `05_summarize/report.md`
 
 `test_set.json` 和 `labeled_plans/` 不会在这里生成。

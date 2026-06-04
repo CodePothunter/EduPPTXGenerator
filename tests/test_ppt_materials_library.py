@@ -501,6 +501,40 @@ def test_build_ppt_materials_library_archives_c00_images_to_skip_images(tmp_path
     assert not (library_dir / "ai_image_embedding_meta.json").exists()
 
 
+def test_ppt_incremental_match_index_writes_c00_before_final_archive(tmp_path):
+    library_dir = tmp_path / "materials_library_ppt"
+    image_dir = library_dir / "pptx_images"
+    image_dir.mkdir(parents=True)
+    Image.new("RGB", (400, 300), (120, 180, 220)).save(image_dir / "c00.png")
+    asset = {
+        "asset_id": "c00",
+        "asset_kind": "page_image",
+        "image_path": "pptx_images/c00.png",
+        "query": "精确文字题目卡片",
+        "caption": "精确文字题目卡片",
+        "strict_reuse_group": "C00_strict_text_problem_skip",
+    }
+    report = {"warnings": []}
+
+    MODULE._write_incremental_match_index(
+        assets_by_id={"c00": asset},
+        library_root=library_dir,
+        existing_db={},
+        teach_root=tmp_path,
+        report=report,
+        ppt_asset_source_by_id={},
+    )
+
+    c00_payload = json.loads(
+        (library_dir / "strict_reuse_indexes" / "C00_strict_text_problem_skip.json").read_text(encoding="utf-8")
+    )
+    assert c00_payload["asset_count"] == 1
+    assert c00_payload["assets"][0]["asset_id"] == "c00"
+    assert c00_payload["assets"][0]["image_path"] == "pptx_images/c00.png"
+    assert (library_dir / "pptx_images" / "c00.png").exists()
+    assert not (library_dir / "skip_images" / "c00.png").exists()
+
+
 def test_build_ppt_materials_library_preserves_original_and_writes_padded_runtime_image(tmp_path, monkeypatch):
     _patch_embedding_encoder(monkeypatch)
     teach_kb_root = tmp_path / "teach-kb"

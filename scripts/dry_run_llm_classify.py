@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -26,7 +27,6 @@ if str(REPO_ROOT) not in sys.path:
 from edupptx.config import Config
 from edupptx.llm_client import create_llm_client
 from edupptx.materials.ai_image_asset_db import (
-    DEFAULT_KEYWORD_BATCH_SIZE,
     write_ai_image_match_index,
 )
 from edupptx.materials.strict_reuse_classifier import (
@@ -38,6 +38,8 @@ from edupptx.materials.strict_reuse_classifier import (
 RECLASSIFIABLE_ASSET_KINDS = {"background", "page_image"}
 STRICT_REUSE_INDEX_DIRNAME = "strict_reuse_indexes"
 LEGACY_BACKGROUND_GROUPS = {"background", "C11_background"}
+DEFAULT_LLM_CLASSIFY_BATCH_SIZE = 3
+DEFAULT_LLM_CLASSIFY_WORKERS = 15
 CLASSIFICATION_UPDATE_FIELDS = frozenset(
     {
         "strict_reuse_group",
@@ -186,7 +188,7 @@ def _classification_input_item(asset: dict) -> dict:
     return {
         "asset_id": asset.get("asset_id"),
         "asset_kind": asset.get("asset_kind"),
-        "content_prompt": _clean_text(asset.get("content_prompt")),
+        "query": _clean_text(asset.get("query")),
     }
 
 
@@ -198,10 +200,10 @@ def _build_classification_messages(batch: list[dict]) -> list[dict[str, str]]:
         "你正在为素材库重新判断 strict_reuse_group。这是 classification-only 任务，只做分类，不做元数据补全。"
         "必须只返回严格 JSON，顶层对象必须包含 assets 数组。"
         "每个 assets 项只允许包含 asset_id、strict_reuse_group、strict_reuse_confidence、strict_reuse_reason。"
-        "不要返回 content_prompt、context_summary、teaching_intent、subject、grade_norm、grade_band、"
+        "不要返回 query、context_summary、teaching_intent、subject、grade_norm、grade_band、"
         "normalized_prompt 或任何其他非分类字段。"
-        "输入只提供 asset_id、asset_kind 和 content_prompt；asset_id 与 asset_kind 只用于回填结果。"
-        "strict_reuse_group 分类只能基于 content_prompt 的字面内容。"
+        "输入只提供 asset_id、asset_kind 和 query；asset_id 与 asset_kind 只用于回填结果。"
+        "strict_reuse_group 分类只能基于 query 的字面内容。"
         "strict_reuse_group 必须是下方素材类别 ID 之一。"
         "\n\n"
         + MATERIAL_CATEGORY_RULES_TEXT
@@ -288,27 +290,57 @@ def _apply_classification_payload(asset: dict, payload: dict) -> None:
         asset["strict_reuse_reason"] = payload["strict_reuse_reason"]
 
 
-def _classify_assets_with_llm(assets: list[dict], client: Any, *, batch_size: int) -> tuple[list[dict], list[str]]:
+def _classify_assets_with_llm(
+    assets: list[dict],
+    client: Any,
+    *,
+    batch_size: int = DEFAULT_LLM_CLASSIFY_BATCH_SIZE,
+    workers: int = DEFAULT_LLM_CLASSIFY_WORKERS,
+) -> tuple[list[dict], list[str]]:
     classified = [deepcopy(asset) for asset in assets if isinstance(asset, dict)]
     warnings: list[str] = []
-    batch_size = max(1, int(batch_size or DEFAULT_KEYWORD_BATCH_SIZE))
+    batch_size = max(1, int(batch_size or DEFAULT_LLM_CLASSIFY_BATCH_SIZE))
+    workers = max(1, int(workers or DEFAULT_LLM_CLASSIFY_WORKERS))
+    batches = [
+        (batch_index, start, classified[start : start + batch_size])
+        for batch_index, start in enumerate(range(0, len(classified), batch_size))
+    ]
 
-    for start in range(0, len(classified), batch_size):
-        batch = classified[start : start + batch_size]
+    def classify_batch(batch_index: int, batch: list[dict]) -> tuple[int, dict[str, dict], list[str]]:
+        batch_warnings: list[str] = []
         try:
             response = _call_classification_llm(client, batch)
-            by_id = _classification_payload_by_asset_id(response, warnings)
+            by_id = _classification_payload_by_asset_id(response, batch_warnings)
         except Exception as exc:
-            warnings.append(f"classification batch {start // batch_size + 1} failed: {exc}; retrying singly")
+            batch_warnings.append(f"classification batch {batch_index + 1} failed: {exc}; retrying singly")
             by_id = {}
             for asset in batch:
                 asset_id = _clean_text(asset.get("asset_id"))
                 try:
                     single_response = _call_classification_llm(client, [asset])
-                    by_id.update(_classification_payload_by_asset_id(single_response, warnings))
+                    by_id.update(_classification_payload_by_asset_id(single_response, batch_warnings))
                 except Exception as single_exc:
-                    warnings.append(f"classification asset {asset_id} failed after single retry: {single_exc}")
+                    batch_warnings.append(f"classification asset {asset_id} failed after single retry: {single_exc}")
+        return batch_index, by_id, batch_warnings
 
+    results_by_batch: dict[int, tuple[dict[str, dict], list[str]]] = {}
+    if workers == 1 or len(batches) <= 1:
+        for batch_index, _start, batch in batches:
+            result_index, by_id, batch_warnings = classify_batch(batch_index, batch)
+            results_by_batch[result_index] = (by_id, batch_warnings)
+    else:
+        with ThreadPoolExecutor(max_workers=min(workers, len(batches))) as executor:
+            futures = {
+                executor.submit(classify_batch, batch_index, batch): batch_index
+                for batch_index, _start, batch in batches
+            }
+            for future in as_completed(futures):
+                result_index, by_id, batch_warnings = future.result()
+                results_by_batch[result_index] = (by_id, batch_warnings)
+
+    for batch_index, _start, batch in batches:
+        by_id, batch_warnings = results_by_batch.get(batch_index, ({}, []))
+        warnings.extend(batch_warnings)
         for asset in batch:
             asset_id = _clean_text(asset.get("asset_id"))
             payload = by_id.get(asset_id)
@@ -328,13 +360,13 @@ def _read_prompt_list_assets(path: Path) -> list[dict]:
     for index, item in enumerate(payload, start=1):
         if not isinstance(item, dict):
             continue
-        content_prompt = _clean_text(item.get("content_prompt"))
-        if not content_prompt:
+        query = _clean_text(item.get("query"))
+        if not query:
             continue
         asset = {
             "asset_id": f"prompt_{index:06d}",
             "asset_kind": "page_image",
-            "content_prompt": content_prompt,
+            "query": query,
             "strict_reuse_group": "",
         }
         expected_group = normalize_strict_reuse_group(item.get("expected_strict_reuse_group"), default="")
@@ -344,8 +376,8 @@ def _read_prompt_list_assets(path: Path) -> list[dict]:
     return assets
 
 
-def _audit_flags_for_prompt_classification(content_prompt: str, group: str) -> list[str]:
-    text = _clean_text(content_prompt)
+def _audit_flags_for_query_classification(query: str, group: str) -> list[str]:
+    text = _clean_text(query)
     normalized = normalize_strict_reuse_group(group, default="")
     flags: list[str] = []
 
@@ -384,14 +416,14 @@ def _write_prompt_list_audit_report(report_dir: Path, assets: list[dict]) -> Non
     for asset in assets:
         group = normalize_strict_reuse_group(asset.get("strict_reuse_group"), default="")
         counts[group] = counts.get(group, 0) + 1
-        flags = _audit_flags_for_prompt_classification(_clean_text(asset.get("content_prompt")), group)
+        flags = _audit_flags_for_query_classification(_clean_text(asset.get("query")), group)
         expected_group = normalize_strict_reuse_group(asset.get("expected_strict_reuse_group"), default="")
         if expected_group and group != expected_group:
             flags.append("expected_group_mismatch")
         items.append(
             {
                 "asset_id": _clean_text(asset.get("asset_id")),
-                "content_prompt": _clean_text(asset.get("content_prompt")),
+                "query": _clean_text(asset.get("query")),
                 "strict_reuse_group": group,
                 "expected_strict_reuse_group": expected_group,
                 "strict_reuse_confidence": _optional_float(asset.get("strict_reuse_confidence")),
@@ -417,14 +449,14 @@ def _write_prompt_list_audit_report(report_dir: Path, assets: list[dict]) -> Non
         f"- Assets tested: {len(items)}",
         f"- Counts: {json.dumps(counts, ensure_ascii=False, sort_keys=True)}",
         "",
-        "| asset_id | group | expected | flags | content_prompt |",
+        "| asset_id | group | expected | flags | query |",
         "| --- | --- | --- | --- | --- |",
     ]
     for item in items:
         summary_lines.append(
             f"| `{item['asset_id']}` | {item['strict_reuse_group']} | "
             f"{item['expected_strict_reuse_group']} | {', '.join(item['review_flags'])} | "
-            f"{item['content_prompt']} |"
+            f"{item['query']} |"
         )
     (report_dir / "prompt_list_audit_summary.md").write_text("\n".join(summary_lines), encoding="utf-8")
 
@@ -436,8 +468,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--keyword-batch-size",
         type=int,
-        default=DEFAULT_KEYWORD_BATCH_SIZE,
+        default=DEFAULT_LLM_CLASSIFY_BATCH_SIZE,
         help="Classification batch size. Kept under the old option name for CLI compatibility.",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=DEFAULT_LLM_CLASSIFY_WORKERS,
+        help="Number of parallel LLM classification workers.",
     )
     parser.add_argument(
         "--report-dir",
@@ -453,7 +491,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--prompt-list-json",
         default=None,
-        help="Optional JSON list of {content_prompt} items to classify for audit, such as merged_prompt.json.",
+        help="Optional JSON list of {query} items to classify for audit, such as merged_prompt.json.",
     )
     parser.add_argument(
         "--apply",
@@ -498,6 +536,7 @@ def main() -> int:
         reclassify_assets,
         client,
         batch_size=max(1, args.keyword_batch_size),
+        workers=max(1, args.workers),
     )
     prompt_list_assets: list[dict] = []
     if args.prompt_list_json:
@@ -508,6 +547,7 @@ def main() -> int:
                 prompt_list_assets,
                 client,
                 batch_size=max(1, args.keyword_batch_size),
+                workers=max(1, args.workers),
             )
             classification_warnings.extend(
                 f"prompt_list: {warning}" for warning in prompt_list_warnings
@@ -536,7 +576,7 @@ def main() -> int:
         asset_metadata_changed = _without_classification_fields(before) != _without_classification_fields(applied_asset)
         row = {
             "asset_id": asset_id,
-            "content_prompt": before.get("content_prompt"),
+            "query": before.get("query"),
             "asset_category": before.get("asset_category"),
             "before_group": before_group,
             "after_group": after_group,
@@ -623,6 +663,7 @@ def main() -> int:
         f"- Model: `{config.llm_model}`",
         f"- Assets tested: {len(reclassify_assets)}",
         f"- Batch size: {args.keyword_batch_size}",
+        f"- Workers: {args.workers}",
         f"- Prompt list assets tested: {len(prompt_list_assets)}",
         f"- Applied to library: {'yes' if args.apply else 'no'}",
         f"- Group changed: {changed}",
@@ -642,14 +683,14 @@ def main() -> int:
             "",
             "## Changed assets",
             "",
-            "| asset_id | before | after | content_prompt |",
+            "| asset_id | before | after | query |",
             "| --- | --- | --- | --- |",
         ]
     )
     for row in diff_rows:
         if row["before_group"] != row["after_group"]:
             summary_lines.append(
-                f"| `{row['asset_id']}` | {row['before_group']} | {row['after_group']} | {row['content_prompt']} |"
+                f"| `{row['asset_id']}` | {row['before_group']} | {row['after_group']} | {row['query']} |"
             )
     if changed == 0:
         summary_lines.append("| _(none)_ | | | |")

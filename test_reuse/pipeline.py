@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
+import os
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Iterable
@@ -13,13 +16,20 @@ from typing import Any, Iterable
 from edupptx.config import Config
 from edupptx.llm_client import create_llm_client
 from edupptx.materials.ai_image_asset_db import (
+    CONTENT_REUSE_GROUP,
+    DEFAULT_REUSE_MAX_WORKERS,
     ReuseSearchContext,
+    _aspect_ratio_penalty,
     _build_reuse_target_asset,
+    _candidate_unknown_fields_for_reuse,
+    _enrich_reuse_target_keywords_once,
     _finalize_reuse_candidate_collection,
     _load_reuse_library_for_search,
+    _normalize_binary_reuse_group,
     _prewarm_reuse_target_keywords,
     _reuse_hard_filter_reject_reason,
     _route_match_index_for_target_cached,
+    _subject_scope_decision,
     _strict_reuse_occupancy_status,
     _target_keyword_cache_key,
     find_reusable_ai_image_asset,
@@ -30,14 +40,19 @@ from edupptx.materials.ai_image_asset_db import (
 from edupptx.materials.image_prompt_router import build_routed_image_needs
 from edupptx.models import PlanningDraft, iter_image_slot_keys
 from test_reuse.metrics import (
+    asset_kind_bucket_stage_metrics,
     candidate_filter_metrics,
+    filter_ablation_metrics,
     final_match_metrics,
     gold_sets_from_targets,
     hard_filter_stage_metrics,
     llm_review_stage_metrics,
     ranking_metrics,
+    relabel_rows_for_gold_sets,
+    safe_div,
+    size_compatible_gold_sets_from_hard_rows,
+    size_compatible_gold_summary,
     target_classification_metrics,
-    threshold_stage_metrics,
 )
 
 
@@ -70,8 +85,48 @@ def write_jsonl(path: str | Path, rows: Iterable[dict[str, Any]]) -> None:
     output.write_text("\n".join(lines) + ("\n" if lines else ""), encoding="utf-8")
 
 
+def _env_positive_int(name: str, default: int) -> int:
+    raw = os.environ.get(name)
+    if raw is None or not str(raw).strip():
+        return max(1, int(default))
+    try:
+        return max(1, int(str(raw).strip()))
+    except ValueError:
+        return max(1, int(default))
+
+
+def _bounded_worker_count(*, item_count: int, default: int, env_name: str) -> int:
+    if item_count <= 0:
+        return 1
+    return max(1, min(_env_positive_int(env_name, default), item_count))
+
+
+def write_csv(
+    path: str | Path,
+    rows: Iterable[dict[str, Any]],
+    *,
+    fieldnames: Iterable[str],
+    encoding: str = "utf-8",
+) -> None:
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    columns = list(fieldnames)
+    with output.open("w", encoding=encoding, newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=columns, extrasaction="ignore")
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({column: row.get(column, "") for column in columns})
+
+
 def _clean(value: Any) -> str:
     return str(value or "").strip()
+
+
+def _short_reuse_group(value: Any) -> str:
+    text = _clean(value)
+    if len(text) >= 3 and text[0] == "C" and text[1:3].isdigit():
+        return text[:3]
+    return text
 
 
 ARTIFACT_SCHEMA_VERSION = 2
@@ -84,11 +139,165 @@ REQUIRED_ENRICHED_TARGET_FIELDS = (
     "grade_band",
     "match_text",
 )
+STRICT_REUSE_GROUPS_BY_PREFIX = {
+    "C00": "C00_strict_text_problem_skip",
+    "C01": "C01_irreplaceable_entity_event_action",
+    "C02": "C02_generic_subject_object",
+    "C03": "C03_scene_decor_container",
+}
+DEFAULT_TARGET_FALLBACK_GROUP = "C03_scene_decor_container"
+DEFAULT_REUSE_POLICY_WORKERS = 5
+REUSE_POLICY_WORKERS_ENV = "EDUPPTX_REUSE_POLICY_WORKERS"
+REUSE_SEARCH_WORKERS_ENV = "EDUPPTX_REUSE_SEARCH_WORKERS"
+CATEGORY_ROUTING_BASELINE = "baseline"
+CATEGORY_ROUTING_MERGE_C01_C03 = "merge-c01-c03"
+CATEGORY_ROUTING_MODES = (CATEGORY_ROUTING_BASELINE, CATEGORY_ROUTING_MERGE_C01_C03)
+MERGE_C01_C03_GROUPS = frozenset(
+    STRICT_REUSE_GROUPS_BY_PREFIX[prefix] for prefix in ("C01", "C02", "C03")
+)
+
+TARGET_CLASS_REVIEW_COLUMNS = (
+    "gold_group",
+    "pred_group",
+    "query",
+    "target_reason",
+)
+
+TARGET_CLASS_MISMATCH_SUMMARY_COLUMNS = ("count", "gold_group", "pred_group")
+SIZE_FILTER_GOLD_REJECTION_BY_ASPECT_COMBO_COLUMNS = (
+    "target_aspect_ratio",
+    "candidate_aspect_ratio",
+    "acceptable_rejected_pair_count",
+    "best_rejected_pair_count",
+    "acceptable_affected_need_count",
+    "best_affected_need_count",
+    "rejected_pair_count",
+    "affected_need_count",
+)
+OBSOLETE_SIZE_FILTER_OUTPUT_NAMES = (
+    "size_filter_rejections.csv",
+    "size_filter_rejection_summary.csv",
+    "size_filter_rejection_by_target.csv",
+    "size_filter_target_stats_sorted.csv",
+)
+OBSOLETE_SIZE_FILTER_OUTPUT_DIRS = (
+    "size_padding_examples",
+)
+SUBJECT_FILTER_FALSE_REJECTION_COLUMNS = (
+    "need_id",
+    "asset_id",
+    "target_query",
+    "target_caption",
+    "candidate_query",
+    "candidate_caption",
+    "target_subject",
+    "candidate_subject",
+    "candidate_general",
+    "target_strict_reuse_group",
+    "candidate_strict_reuse_group",
+    "target_aspect_ratio",
+    "candidate_aspect_ratio",
+    "is_best",
+    "reject_reasons",
+)
+CANDIDATE_SCORE_AUDIT_COLUMNS = (
+    "need_id",
+    "asset_id",
+    "policy_input",
+    "is_acceptable",
+    "is_best",
+    "rank_hybrid",
+    "rank_bm25",
+    "rank_embedding",
+    "rank_substring",
+    "keyword_score",
+    "embedding_score",
+    "substring_score",
+    "policy_score",
+    "hybrid_score",
+    "threshold_used",
+    "policy_decision",
+    "policy_reason",
+)
+
+STAGE_DIR_NAMES = {
+    "prepare": "01_prepare",
+    "hard_filter": "02_hard_filter",
+    "retrieve": "03_retrieve",
+    "review": "04_review",
+    "summarize": "05_summarize",
+}
+
+
+def stage_artifact_dir(run_dir: str | Path, stage: str) -> Path:
+    stage_name = STAGE_DIR_NAMES[stage]
+    return Path(run_dir) / stage_name
+
+
+def stage_artifact_path(run_dir: str | Path, stage: str, filename: str) -> Path:
+    return stage_artifact_dir(run_dir, stage) / filename
+
+
+def stage_artifact_read_path(run_dir: str | Path, stage: str, filename: str) -> Path:
+    root = Path(run_dir)
+    staged = stage_artifact_path(root, stage, filename)
+    return staged if staged.exists() else root / filename
+
+
+def stage_artifact_exists(run_dir: str | Path, stage: str, filename: str) -> bool:
+    return stage_artifact_read_path(run_dir, stage, filename).exists()
+
+
+def read_jsonl_artifact(run_dir: str | Path, stage: str, filename: str) -> list[dict[str, Any]]:
+    return read_jsonl(stage_artifact_read_path(run_dir, stage, filename))
+
+
+def read_json_artifact(run_dir: str | Path, stage: str, filename: str, default: Any | None = None) -> Any:
+    path = stage_artifact_read_path(run_dir, stage, filename)
+    if not path.exists():
+        return default
+    return read_json(path)
 
 
 def _target_payload(row: dict[str, Any]) -> dict[str, Any]:
     target = row.get("target")
     return target if isinstance(target, dict) else {}
+
+
+def _normalize_strict_reuse_group_for_test(value: Any, *, default: str = DEFAULT_TARGET_FALLBACK_GROUP) -> str:
+    text = _clean(value)
+    if not text:
+        return default
+    if text in STRICT_REUSE_GROUPS_BY_PREFIX.values():
+        return text
+    prefix = text.split("_", 1)[0]
+    return STRICT_REUSE_GROUPS_BY_PREFIX.get(prefix, default)
+
+
+def normalize_category_routing(value: Any = CATEGORY_ROUTING_BASELINE) -> str:
+    mode = _clean(value) or CATEGORY_ROUTING_BASELINE
+    if mode not in CATEGORY_ROUTING_MODES:
+        raise ValueError(f"unknown category_routing: {mode}")
+    return mode
+
+
+def _reuse_group_for_category_routing(value: Any) -> str:
+    return _normalize_binary_reuse_group(value, default="")
+
+
+def _merge_c01_c03_group(value: Any) -> bool:
+    return _reuse_group_for_category_routing(value) in MERGE_C01_C03_GROUPS
+
+
+def _missing_enriched_target_fields(target: dict[str, Any]) -> list[str]:
+    missing: list[str] = []
+    for field in REQUIRED_ENRICHED_TARGET_FIELDS:
+        if field == "strict_reuse_group":
+            if not _normalize_strict_reuse_group_for_test(target.get(field), default=""):
+                missing.append(field)
+        elif not _clean(target.get(field)):
+            missing.append(field)
+    return missing
 
 
 def validate_enriched_targets(rows: Iterable[dict[str, Any]], *, stage: str) -> dict[str, Any]:
@@ -97,11 +306,7 @@ def validate_enriched_targets(rows: Iterable[dict[str, Any]], *, stage: str) -> 
     for row in items:
         need_id = _clean(row.get("need_id")) or "<unknown>"
         target = _target_payload(row)
-        absent = [
-            field
-            for field in REQUIRED_ENRICHED_TARGET_FIELDS
-            if not _clean(target.get(field))
-        ]
+        absent = _missing_enriched_target_fields(target)
         if absent:
             missing[need_id] = absent
     if missing:
@@ -116,6 +321,46 @@ def validate_enriched_targets(rows: Iterable[dict[str, Any]], *, stage: str) -> 
         "missing_required_field_count": 0,
         "missing_required_fields": {},
     }
+
+
+def _has_required_enriched_target_fields(target: dict[str, Any]) -> bool:
+    return not _missing_enriched_target_fields(target)
+
+
+def _fallback_enrich_target(target: dict[str, Any]) -> dict[str, Any]:
+    enriched = dict(target)
+    missing_before = _missing_enriched_target_fields(enriched)
+    route = enriched.get("prompt_route") if isinstance(enriched.get("prompt_route"), dict) else {}
+    group = _normalize_strict_reuse_group_for_test(
+        enriched.get("strict_reuse_group") or route.get("strict_reuse_group")
+    )
+    match_text = (
+        _clean(enriched.get("match_text"))
+        or _clean(enriched.get("caption"))
+        or _clean(enriched.get("query"))
+        or _clean(enriched.get("content_prompt"))
+        or _clean(enriched.get("normalized_prompt"))
+        or _clean(enriched.get("theme"))
+        or _clean(enriched.get("asset_id"))
+    )
+    enriched["strict_reuse_group"] = group
+    enriched["caption"] = _clean(enriched.get("caption")) or match_text
+    enriched["match_text"] = match_text
+    enriched["match_key"] = _clean(enriched.get("match_key")) or f"{_clean(enriched.get('asset_kind')) or 'page_image'}|{match_text}"
+    enriched["subject"] = _clean(enriched.get("subject")) or _clean(enriched.get("subject_hint")) or "其他"
+    enriched["grade_norm"] = _clean(enriched.get("grade_norm")) or _clean(enriched.get("grade_hint")) or "未知年级"
+    enriched["grade_band"] = _clean(enriched.get("grade_band")) or infer_grade_band(enriched["grade_norm"])
+    enriched["target_enrichment_fallback"] = True
+    enriched["target_enrichment_fallback_missing_fields"] = missing_before
+    signals = list(enriched.get("strict_reuse_signals") or [])
+    if "target_enrichment_fallback" not in signals:
+        signals.append("target_enrichment_fallback")
+    enriched["strict_reuse_signals"] = signals
+    enriched["strict_reuse_reason"] = (
+        _clean(enriched.get("strict_reuse_reason"))
+        or "LLM target enrichment did not return all required fields; filled from routed target metadata."
+    )
+    return enriched
 
 
 def _path_fingerprint(path: Path) -> dict[str, Any]:
@@ -404,6 +649,10 @@ def _base_target_for_need(need: dict[str, Any]) -> dict[str, Any]:
 
 
 def _target_record_from_need(need: dict[str, Any], target: dict[str, Any]) -> dict[str, Any]:
+    fallback_enriched = bool(target.get("target_enrichment_fallback"))
+    warnings = list(need.get("warnings") or [])
+    if fallback_enriched and "target_enrichment_fallback" not in warnings:
+        warnings.append("target_enrichment_fallback")
     return {
         "run_id": need.get("run_id"),
         "need_id": need.get("need_id"),
@@ -427,9 +676,15 @@ def _target_record_from_need(need: dict[str, Any], target: dict[str, Any]) -> di
         "context_summary": target.get("context_summary") or "",
         "topic_refs": list(target.get("topic_refs") or []),
         "target": target,
-        "field_sources": {"target": "production_reuse_target_enrichment"},
+        "field_sources": {
+            "target": (
+                "production_reuse_target_enrichment_fallback"
+                if fallback_enriched
+                else "production_reuse_target_enrichment"
+            )
+        },
         "field_confidence": {},
-        "warnings": list(need.get("warnings") or []),
+        "warnings": warnings,
         "label_status": need.get("label_status", "unlabeled"),
         "should_reuse": need.get("should_reuse"),
         "acceptable_asset_ids": list(need.get("acceptable_asset_ids") or []),
@@ -466,6 +721,17 @@ def build_target_records(
         cache_key = _target_keyword_cache_key(base_target)
         cached = search_context.target_keyword_cache.get(cache_key)
         target = dict(cached) if isinstance(cached, dict) else dict(base_target)
+        if keyword_client is not None and not _has_required_enriched_target_fields(target):
+            search_context.target_keyword_cache.pop(cache_key, None)
+            repaired = _enrich_reuse_target_keywords_once(
+                dict(base_target),
+                keyword_client,
+                search_context.target_keyword_cache,
+            )
+            if isinstance(repaired, dict):
+                target = dict(repaired)
+        if keyword_client is not None and not _has_required_enriched_target_fields(target):
+            target = _fallback_enrich_target({**base_target, **target})
         row = _target_record_from_need(need, target)
         target_rows.append(row)
         enrichment_rows.append(
@@ -474,7 +740,9 @@ def build_target_records(
                 "need_id": need.get("need_id"),
                 "cache_key": cache_key,
                 "target": target,
-                "enriched": bool(_clean(target.get("strict_reuse_group"))),
+                "enriched": _has_required_enriched_target_fields(target),
+                "fallback_enriched": bool(target.get("target_enrichment_fallback")),
+                "fallback_missing_fields": list(target.get("target_enrichment_fallback_missing_fields") or []),
             }
         )
     if require_enrichment:
@@ -528,7 +796,15 @@ def load_routed_library_assets_for_target(
     target: dict[str, Any],
     *,
     reuse_search_context: ReuseSearchContext | None = None,
+    category_routing: str = CATEGORY_ROUTING_BASELINE,
 ) -> list[dict[str, Any]]:
+    mode = normalize_category_routing(category_routing)
+    target_kind = _clean(target.get("asset_kind"))
+    use_merge_pool = (
+        mode == CATEGORY_ROUTING_MERGE_C01_C03
+        and target_kind != "background"
+        and _merge_c01_c03_group(target.get("strict_reuse_group"))
+    )
     assets: list[dict[str, Any]] = []
     seen: set[str] = set()
     for library_dir in library_dirs:
@@ -541,16 +817,29 @@ def load_routed_library_assets_for_target(
             index = loaded.get("index") if isinstance(loaded.get("index"), dict) else {}
             match_index_path = Path(loaded.get("match_index_path") or library_root)
         candidate_assets = index.get("assets") if isinstance(index.get("assets"), list) else []
-        routed = _route_match_index_for_target_cached(
-            library_root,
-            index,
-            Path(match_index_path),
-            target,
-            reuse_search_context,
-        )
-        if routed is not None:
-            _routed_index, _routed_path, routed_assets, _route_group = routed
-            candidate_assets = routed_assets
+        if use_merge_pool:
+            candidate_assets = [
+                asset
+                for asset in candidate_assets
+                if isinstance(asset, dict)
+                and _merge_c01_c03_group(asset.get("strict_reuse_group"))
+                and (
+                    not target_kind
+                    or not _clean(asset.get("asset_kind"))
+                    or _clean(asset.get("asset_kind")) == target_kind
+                )
+            ]
+        else:
+            routed = _route_match_index_for_target_cached(
+                library_root,
+                index,
+                Path(match_index_path),
+                target,
+                reuse_search_context,
+            )
+            if routed is not None:
+                _routed_index, _routed_path, routed_assets, _route_group = routed
+                candidate_assets = routed_assets
         for asset in candidate_assets:
             if not isinstance(asset, dict):
                 continue
@@ -574,10 +863,86 @@ def _hard_filter_flags(reject_reason: str) -> dict[str, bool]:
     }
 
 
+def _hard_filter_reject_reason_for_category_routing(
+    target: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    category_routing: str = CATEGORY_ROUTING_BASELINE,
+) -> str:
+    reject_reason = _reuse_hard_filter_reject_reason(target, candidate)
+    if category_routing != CATEGORY_ROUTING_MERGE_C01_C03 or reject_reason != "strict_reuse_group_mismatch":
+        return reject_reason
+    if not (
+        _merge_c01_c03_group(target.get("strict_reuse_group"))
+        and _merge_c01_c03_group(candidate.get("strict_reuse_group"))
+    ):
+        return reject_reason
+
+    subject_decision = _subject_scope_decision(target, candidate)
+    if _candidate_unknown_fields_for_reuse(candidate, subject_decision):
+        return "candidate_metadata_unknown"
+    if _aspect_ratio_penalty(target, candidate) < 0:
+        return "aspect_ratio_too_far"
+    if not subject_decision["compatible"]:
+        return "subject_mismatch"
+    return ""
+
+
+def _category_only_pass(
+    target: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    category_routing: str = CATEGORY_ROUTING_BASELINE,
+) -> bool:
+    target_group = _normalize_binary_reuse_group(target.get("strict_reuse_group"), default="")
+    candidate_group = _normalize_binary_reuse_group(candidate.get("strict_reuse_group"), default="")
+    if target_group == CONTENT_REUSE_GROUP:
+        return False
+    if candidate_group == CONTENT_REUSE_GROUP:
+        return False
+    if (
+        category_routing == CATEGORY_ROUTING_MERGE_C01_C03
+        and target_group in MERGE_C01_C03_GROUPS
+        and candidate_group in MERGE_C01_C03_GROUPS
+    ):
+        return True
+    return not bool(target_group and candidate_group and target_group != candidate_group)
+
+
+def _subject_only_pass(target: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    subject_decision = _subject_scope_decision(target, candidate)
+    if _candidate_unknown_fields_for_reuse(candidate, subject_decision):
+        return False
+    return bool(subject_decision.get("compatible"))
+
+
+def _size_only_pass(target: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    return _aspect_ratio_penalty(target, candidate) >= 0
+
+
+def _hard_filter_ablation_flags(
+    target: dict[str, Any],
+    candidate: dict[str, Any],
+    *,
+    category_routing: str = CATEGORY_ROUTING_BASELINE,
+) -> dict[str, bool]:
+    subject_pass = _subject_only_pass(target, candidate)
+    size_pass = _size_only_pass(target, candidate)
+    return {
+        "category_only_pass": _category_only_pass(target, candidate, category_routing=category_routing),
+        "subject_only_pass": subject_pass,
+        "size_only_pass": size_pass,
+        "subject_size_pass": subject_pass and size_pass,
+    }
+
+
 def hard_filter_rows_for_target(
     target_record: dict[str, Any],
     assets: Iterable[dict[str, Any]],
+    *,
+    category_routing: str = CATEGORY_ROUTING_BASELINE,
 ) -> list[dict[str, Any]]:
+    mode = normalize_category_routing(category_routing)
     run_id = _clean(target_record.get("run_id"))
     need_id = _clean(target_record.get("need_id"))
     target = target_record.get("target") if isinstance(target_record.get("target"), dict) else {}
@@ -588,13 +953,23 @@ def hard_filter_rows_for_target(
         asset_id = _asset_id(asset)
         if not asset_id:
             continue
-        reject_reason = _reuse_hard_filter_reject_reason(target, asset)
+        reject_reason = _hard_filter_reject_reason_for_category_routing(
+            target,
+            asset,
+            category_routing=mode,
+        )
         flags = _hard_filter_flags(reject_reason)
         rows.append(
             {
                 "run_id": run_id,
                 "need_id": need_id,
+                "category_routing": mode,
                 "asset_id": asset_id,
+                "target_query": _clean(target_record.get("raw_query")) or _clean(target.get("query")),
+                "target_caption": target.get("caption", ""),
+                "candidate_query": asset.get("query", ""),
+                "candidate_caption": asset.get("caption", ""),
+                "candidate_general": asset.get("general", ""),
                 "target_strict_reuse_group": target.get("strict_reuse_group", ""),
                 "candidate_strict_reuse_group": asset.get("strict_reuse_group", ""),
                 "target_subject": target.get("subject", ""),
@@ -602,6 +977,7 @@ def hard_filter_rows_for_target(
                 "target_aspect_ratio": target.get("aspect_ratio", ""),
                 "candidate_aspect_ratio": asset.get("aspect_ratio", ""),
                 **flags,
+                **_hard_filter_ablation_flags(target, asset, category_routing=mode),
                 "all_hard_pass": not reject_reason,
                 "reject_reasons": [reject_reason] if reject_reason else [],
                 **_label_for_record(target_record, asset_id),
@@ -640,7 +1016,7 @@ def flatten_candidate_collection(
     embedding_rows = [row for row in debug.get("embedding_ranked_candidates") or [] if isinstance(row, dict)]
     substring_rows = [row for row in debug.get("substring_ranked_candidates") or [] if isinstance(row, dict)]
     ranked_rows = [row for row in debug.get("ranked_candidates") or [] if isinstance(row, dict)]
-    threshold_rows = [row for row in debug.get("thresholded_candidates") or [] if isinstance(row, dict)]
+    policy_input_rows = [row for row in debug.get("policy_input_candidates") or [] if isinstance(row, dict)]
 
     bm25_rank = _rank_map(bm25_rows)
     embedding_rank = _rank_map(embedding_rows)
@@ -650,14 +1026,15 @@ def flatten_candidate_collection(
     embedding_by_id = _by_asset(embedding_rows)
     substring_by_id = _by_asset(substring_rows)
     ranked_by_id = _by_asset(ranked_rows)
-    threshold_ids = set(_rank_map(threshold_rows))
+    policy_input_ids = set(_rank_map(policy_input_rows))
 
-    scored_candidates: list[dict[str, Any]] = []
+    candidate_score_audit: list[dict[str, Any]] = []
     for asset_id, row in ranked_by_id.items():
         bm25 = bm25_by_id.get(asset_id, {})
         embedding = embedding_by_id.get(asset_id, {})
         substring = substring_by_id.get(asset_id, {})
-        scored_candidates.append(
+        reuse_policy = row.get("reuse_policy") if isinstance(row.get("reuse_policy"), dict) else {}
+        candidate_score_audit.append(
             {
                 "run_id": run_id,
                 "need_id": need_id,
@@ -669,40 +1046,18 @@ def flatten_candidate_collection(
                 "keyword_score": row.get("keyword_score", bm25.get("keyword_score")),
                 "embedding_score": row.get("embedding_score", embedding.get("embedding_score")),
                 "substring_score": row.get("substring_score", substring.get("substring_score")),
+                "policy_score": row.get("policy_score"),
                 "hybrid_score": row.get("hybrid_score"),
-                "accepted_by": row.get("accepted_by"),
                 "threshold_used": row.get("threshold_used") or bm25.get("threshold_used"),
-                "threshold_pass": asset_id in threshold_ids,
-                **_label_for_record(target_record, asset_id),
-            }
-        )
-
-    threshold_candidates: list[dict[str, Any]] = []
-    for asset_id, row in _by_asset(threshold_rows).items():
-        ranked = ranked_by_id.get(asset_id, {})
-        threshold_candidates.append(
-            {
-                "run_id": run_id,
-                "need_id": need_id,
-                "asset_id": asset_id,
-                "rank_hybrid": hybrid_rank.get(asset_id),
-                "rank_bm25": bm25_rank.get(asset_id),
-                "rank_embedding": embedding_rank.get(asset_id),
-                "rank_substring": substring_rank.get(asset_id),
-                "keyword_score": row.get("keyword_score", ranked.get("keyword_score")),
-                "embedding_score": row.get("embedding_score", ranked.get("embedding_score")),
-                "substring_score": row.get("substring_score", ranked.get("substring_score")),
-                "hybrid_score": row.get("hybrid_score", ranked.get("hybrid_score")),
-                "accepted_by": row.get("accepted_by", ranked.get("accepted_by")),
-                "threshold_used": row.get("threshold_used", ranked.get("threshold_used")),
-                "threshold_pass": True,
+                "policy_input": asset_id in policy_input_ids,
+                "policy_decision": reuse_policy.get("decision", ""),
+                "policy_reason": reuse_policy.get("reason", ""),
                 **_label_for_record(target_record, asset_id),
             }
         )
 
     return {
-        "scored_candidates": scored_candidates,
-        "threshold_candidates": threshold_candidates,
+        "candidate_score_audit": candidate_score_audit,
     }
 
 
@@ -743,12 +1098,91 @@ def extract_llm_review_rows(
     return rows
 
 
+def extract_policy_decision_rows(
+    *,
+    run_id: str,
+    target_record: dict[str, Any],
+    collection: dict[str, Any],
+    selected_asset_id: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    need_id = _clean(target_record.get("need_id"))
+    for candidate in collection.get("candidates") or []:
+        if not isinstance(candidate, dict):
+            continue
+        asset = candidate.get("asset") if isinstance(candidate.get("asset"), dict) else {}
+        asset_id = _asset_id(asset)
+        policy = candidate.get("reuse_policy") if isinstance(candidate.get("reuse_policy"), dict) else {}
+        llm_review = policy.get("llm_review") if isinstance(policy.get("llm_review"), dict) else {}
+        rows.append(
+            {
+                "run_id": run_id,
+                "need_id": need_id,
+                "asset_id": asset_id,
+                "policy_score": candidate.get("policy_score") or policy.get("policy_score"),
+                "keyword_score": candidate.get("keyword_score"),
+                "embedding_score": candidate.get("embedding_score"),
+                "substring_score": candidate.get("substring_score"),
+                "hybrid_score": candidate.get("hybrid_score"),
+                "policy_decision": policy.get("decision", ""),
+                "policy_reason": policy.get("reason", ""),
+                "llm_review_required": bool(policy.get("llm_review_required")),
+                "llm_review_performed": bool(policy.get("llm_review_performed")),
+                "llm_decision": llm_review.get("decision", ""),
+                "llm_score": llm_review.get("score"),
+                "llm_threshold": llm_review.get("threshold"),
+                "selected_by_finalize": asset_id == selected_asset_id,
+                **_label_for_record(target_record, asset_id),
+            }
+        )
+    return rows
+
+
+def _waterfall_stage(
+    *,
+    target_record: dict[str, Any],
+    selected: bool,
+    selected_ok: bool,
+    candidate_score_rows: list[dict[str, Any]],
+    policy_decision_rows: list[dict[str, Any]],
+    collection: dict[str, Any],
+) -> str:
+    should_reuse = target_record.get("should_reuse")
+    if should_reuse is not True:
+        return "final_selected_wrong" if selected else "correct_none"
+    if selected:
+        return "final_selected_correct" if selected_ok else "final_selected_wrong"
+    target = _target_payload(target_record)
+    if _short_reuse_group(target.get("strict_reuse_group") or target_record.get("gold_group")) == "C00":
+        return "target_class_skip"
+    if not candidate_score_rows:
+        empty_reason = _clean(collection.get("empty_reason"))
+        if empty_reason == "retrieval_no_candidate":
+            return "retrieval_no_candidate"
+        return "hard_filter_no_candidate"
+    if not any(row.get("is_acceptable") for row in candidate_score_rows):
+        return "retrieval_no_gold_in_top_k"
+    reasons = {_clean(row.get("policy_reason")) for row in policy_decision_rows}
+    decisions = {_clean(row.get("policy_decision")) for row in policy_decision_rows}
+    if "llm_disabled" in reasons:
+        return "llm_disabled"
+    if "llm_budget_exhausted" in reasons:
+        return "llm_budget_exhausted"
+    if any(row.get("llm_review_performed") for row in policy_decision_rows) and "reject" in decisions:
+        return "llm_reject"
+    if any(reason.startswith("policy_score_below") or reason == "policy_not_selected" for reason in reasons):
+        return "policy_reject"
+    return "policy_reject"
+
+
 def build_final_match_row(
     *,
     run_id: str,
     target_record: dict[str, Any],
     match: dict[str, Any] | None,
-    threshold_candidates: list[dict[str, Any]],
+    candidate_score_rows: list[dict[str, Any]],
+    policy_decision_rows: list[dict[str, Any]],
+    collection: dict[str, Any],
 ) -> dict[str, Any]:
     asset = match.get("asset") if isinstance(match, dict) and isinstance(match.get("asset"), dict) else {}
     selected_asset_id = _asset_id(asset)
@@ -759,19 +1193,26 @@ def build_final_match_row(
 
     if label["label_status"] != "labeled":
         match_status = "unlabeled"
-        failure_stage = ""
+        waterfall_stage = ""
     elif selected and selected_ok:
         match_status = "correct"
-        failure_stage = ""
+        waterfall_stage = "final_selected_correct"
     elif selected:
         match_status = "wrong"
-        failure_stage = "final_selection"
+        waterfall_stage = "final_selected_wrong"
     elif should_reuse is True:
         match_status = "missed"
-        failure_stage = "threshold_filter" if not threshold_candidates else "reuse_policy_or_llm_review"
+        waterfall_stage = _waterfall_stage(
+            target_record=target_record,
+            selected=selected,
+            selected_ok=selected_ok,
+            candidate_score_rows=candidate_score_rows,
+            policy_decision_rows=policy_decision_rows,
+            collection=collection,
+        )
     else:
         match_status = "correct_none"
-        failure_stage = ""
+        waterfall_stage = "correct_none"
 
     return {
         "run_id": run_id,
@@ -780,13 +1221,30 @@ def build_final_match_row(
         "page_number": target_record.get("page_number"),
         "selected_asset_id": selected_asset_id,
         "selected_keyword_score": match.get("keyword_score") if isinstance(match, dict) else None,
+        "selected_policy_score": match.get("policy_score") if isinstance(match, dict) else None,
         "selected_hybrid_score": match.get("hybrid_score") if isinstance(match, dict) else None,
         "selected_reuse_policy": match.get("reuse_policy") if isinstance(match, dict) else None,
         "selected_is_acceptable": selected_ok,
         "selected_is_best": bool(label["is_best"]),
         "match_status": match_status,
-        "failure_stage": failure_stage,
+        "waterfall_stage": waterfall_stage,
+        "failure_stage": waterfall_stage,
         **label,
+    }
+
+
+def _waterfall_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    counts: dict[str, int] = {}
+    total = 0
+    for row in rows:
+        stage = _clean(row.get("waterfall_stage") or row.get("failure_stage"))
+        if not stage:
+            continue
+        total += 1
+        counts[stage] = counts.get(stage, 0) + 1
+    return {
+        "total_count": total,
+        "counts": counts,
     }
 
 
@@ -816,7 +1274,7 @@ def _run_id_for(run_dir: str | Path) -> str:
 
 
 def _read_targets(run_dir: str | Path) -> list[dict[str, Any]]:
-    return read_jsonl(Path(run_dir) / "targets.jsonl")
+    return read_jsonl_artifact(run_dir, "prepare", "targets.jsonl")
 
 
 def _seed_target_keyword_cache_from_targets(
@@ -843,7 +1301,403 @@ def _write_target_classification_summary(run_dir: Path, targets: list[dict[str, 
                 "strict_reuse_group": target.get("strict_reuse_group") or row.get("strict_reuse_group", ""),
             }
         )
-    write_json(run_dir / "target_classification_summary.json", target_classification_metrics(rows))
+    write_json(
+        stage_artifact_path(run_dir, "prepare", "target_classification_summary.json"),
+        target_classification_metrics(rows),
+    )
+
+
+def _target_classification_review_row(row: dict[str, Any]) -> dict[str, Any]:
+    target = _target_payload(row)
+    return {
+        "gold_group": _short_reuse_group(row.get("target_strict_reuse_group_gold")),
+        "pred_group": _short_reuse_group(target.get("strict_reuse_group") or row.get("strict_reuse_group")),
+        "query": row.get("raw_query", ""),
+        "target_reason": target.get("strict_reuse_reason") or row.get("strict_reuse_reason", ""),
+    }
+
+
+def _write_target_classification_review_tables(run_dir: Path, targets: list[dict[str, Any]]) -> None:
+    labeled_rows = [
+        _target_classification_review_row(row)
+        for row in targets
+        if row.get("label_status", "labeled") == "labeled"
+    ]
+    mismatch_rows = [
+        row
+        for row in labeled_rows
+        if row["gold_group"] and row["pred_group"] and row["gold_group"] != row["pred_group"]
+    ]
+    c00_rows = [
+        row
+        for row in labeled_rows
+        if row["gold_group"] == "C00" or row["pred_group"] == "C00"
+    ]
+
+    summary_counts: dict[tuple[str, str], int] = {}
+    for row in mismatch_rows:
+        key = (row["gold_group"], row["pred_group"])
+        summary_counts[key] = summary_counts.get(key, 0) + 1
+    summary_rows = [
+        {"count": count, "gold_group": gold_group, "pred_group": pred_group}
+        for (gold_group, pred_group), count in sorted(
+            summary_counts.items(),
+            key=lambda item: (-item[1], item[0][0], item[0][1]),
+        )
+    ]
+
+    write_csv(
+        stage_artifact_path(run_dir, "prepare", "target_class_mismatches_review.csv"),
+        mismatch_rows,
+        fieldnames=TARGET_CLASS_REVIEW_COLUMNS,
+        encoding="utf-8-sig",
+    )
+    write_csv(
+        stage_artifact_path(run_dir, "prepare", "target_class_c00_cases_review.csv"),
+        c00_rows,
+        fieldnames=TARGET_CLASS_REVIEW_COLUMNS,
+        encoding="utf-8-sig",
+    )
+    write_csv(
+        stage_artifact_path(run_dir, "prepare", "target_class_mismatch_summary.csv"),
+        summary_rows,
+        fieldnames=TARGET_CLASS_MISMATCH_SUMMARY_COLUMNS,
+        encoding="utf-8-sig",
+    )
+
+
+def _size_filter_gold_rejection_by_aspect_combo_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    grouped: dict[tuple[str, str], dict[str, Any]] = {}
+    for row in rows:
+        if row.get("size_only_pass") is not False:
+            continue
+        target_ratio = _clean(row.get("target_aspect_ratio"))
+        candidate_ratio = _clean(row.get("candidate_aspect_ratio"))
+        key = (target_ratio, candidate_ratio)
+        bucket = grouped.setdefault(
+            key,
+            {
+                "target_aspect_ratio": target_ratio,
+                "candidate_aspect_ratio": candidate_ratio,
+                "rejected_pair_count": 0,
+                "acceptable_rejected_pair_count": 0,
+                "best_rejected_pair_count": 0,
+                "_need_ids": set(),
+                "_acceptable_need_ids": set(),
+                "_best_need_ids": set(),
+            },
+        )
+        bucket["rejected_pair_count"] += 1
+        need_id = _clean(row.get("need_id"))
+        if need_id:
+            bucket["_need_ids"].add(need_id)
+        if row.get("is_acceptable") is True:
+            bucket["acceptable_rejected_pair_count"] += 1
+            if need_id:
+                bucket["_acceptable_need_ids"].add(need_id)
+        if row.get("is_best") is True:
+            bucket["best_rejected_pair_count"] += 1
+            if need_id:
+                bucket["_best_need_ids"].add(need_id)
+
+    summary_rows: list[dict[str, Any]] = []
+    for bucket in grouped.values():
+        if not bucket["acceptable_rejected_pair_count"] and not bucket["best_rejected_pair_count"]:
+            continue
+        summary_rows.append(
+            {
+                "target_aspect_ratio": bucket["target_aspect_ratio"],
+                "candidate_aspect_ratio": bucket["candidate_aspect_ratio"],
+                "acceptable_rejected_pair_count": bucket["acceptable_rejected_pair_count"],
+                "best_rejected_pair_count": bucket["best_rejected_pair_count"],
+                "acceptable_affected_need_count": len(bucket["_acceptable_need_ids"]),
+                "best_affected_need_count": len(bucket["_best_need_ids"]),
+                "rejected_pair_count": bucket["rejected_pair_count"],
+                "affected_need_count": len(bucket["_need_ids"]),
+            }
+        )
+    return sorted(
+        summary_rows,
+        key=lambda row: (
+            -int(row["acceptable_rejected_pair_count"]),
+            -int(row["best_rejected_pair_count"]),
+            -int(row["rejected_pair_count"]),
+            str(row["target_aspect_ratio"]),
+            str(row["candidate_aspect_ratio"]),
+        ),
+    )
+
+
+def _remove_obsolete_size_filter_outputs(stage_dir: Path) -> None:
+    for name in OBSOLETE_SIZE_FILTER_OUTPUT_NAMES:
+        path = stage_dir / name
+        if path.exists() and path.is_file():
+            path.unlink()
+    for name in OBSOLETE_SIZE_FILTER_OUTPUT_DIRS:
+        path = stage_dir / name
+        if path.exists() and path.is_dir():
+            shutil.rmtree(path)
+
+
+def _subject_filter_false_rejection_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("subject_only_pass") is not False or row.get("is_acceptable") is not True:
+            continue
+        copied = {column: row.get(column, "") for column in SUBJECT_FILTER_FALSE_REJECTION_COLUMNS}
+        copied["reject_reasons"] = ";".join(str(reason) for reason in row.get("reject_reasons") or [])
+        out.append(copied)
+    return sorted(
+        out,
+        key=lambda row: (
+            str(row.get("target_subject", "")),
+            str(row.get("candidate_subject", "")),
+            str(row.get("need_id", "")),
+            str(row.get("asset_id", "")),
+        ),
+    )
+
+
+def _non_c00_target_match_counts(
+    hard_rows: Iterable[dict[str, Any]],
+    *,
+    targets: Iterable[dict[str, Any]],
+) -> dict[str, dict[str, Any]]:
+    counts: dict[str, dict[str, Any]] = {}
+    group_by_need: dict[str, str] = {}
+
+    def is_non_c00(group: str) -> bool:
+        return bool(group) and _short_reuse_group(group) != "C00"
+
+    def bucket(group: str) -> dict[str, Any]:
+        if group not in counts:
+            counts[group] = {
+                "target_count": 0,
+                "reusable_need_count": 0,
+                "best_need_count": 0,
+                "acceptable_gold_pair_count": 0,
+                "best_gold_pair_count": 0,
+                "candidate_pair_count": 0,
+                "hard_pass_pair_count": 0,
+                "_candidate_hit_need_ids": set(),
+                "_best_hit_need_ids": set(),
+            }
+        return counts[group]
+
+    for target in targets:
+        if target.get("label_status", "labeled") != "labeled":
+            continue
+        need_id = _clean(target.get("need_id"))
+        group = _clean(_target_payload(target).get("strict_reuse_group") or target.get("strict_reuse_group"))
+        if not need_id or not is_non_c00(group):
+            continue
+        group_by_need[need_id] = group
+        current = bucket(group)
+        acceptable = {str(asset_id) for asset_id in target.get("acceptable_asset_ids") or [] if str(asset_id or "")}
+        best = {str(asset_id) for asset_id in target.get("best_asset_ids") or [] if str(asset_id or "")}
+        current["target_count"] += 1
+        if target.get("should_reuse") is True:
+            current["reusable_need_count"] += 1
+        if best:
+            current["best_need_count"] += 1
+        current["acceptable_gold_pair_count"] += len(acceptable)
+        current["best_gold_pair_count"] += len(best)
+
+    for row in hard_rows:
+        if row.get("label_status", "labeled") != "labeled":
+            continue
+        need_id = _clean(row.get("need_id"))
+        group = group_by_need.get(need_id) or _clean(row.get("target_strict_reuse_group"))
+        if not is_non_c00(group):
+            continue
+        current = bucket(group)
+        current["candidate_pair_count"] += 1
+        if row.get("all_hard_pass") is True:
+            current["hard_pass_pair_count"] += 1
+            if row.get("is_acceptable"):
+                current["_candidate_hit_need_ids"].add(need_id)
+            if row.get("is_best"):
+                current["_best_hit_need_ids"].add(need_id)
+
+    output: dict[str, dict[str, Any]] = {}
+    for group in sorted(counts):
+        current = dict(counts[group])
+        candidate_hit_need_ids = current.pop("_candidate_hit_need_ids")
+        best_hit_need_ids = current.pop("_best_hit_need_ids")
+        current["candidate_hit_need_count"] = len(candidate_hit_need_ids)
+        current["candidate_hit_rate"] = safe_div(len(candidate_hit_need_ids), current["reusable_need_count"])
+        current["best_hit_need_count"] = len(best_hit_need_ids)
+        current["best_hit_rate"] = safe_div(len(best_hit_need_ids), current["best_need_count"])
+        output[group] = current
+    return output
+
+
+def _hard_filter_summary_payload(
+    hard_rows: list[dict[str, Any]],
+    *,
+    targets: list[dict[str, Any]] | None = None,
+    category_routing: str = CATEGORY_ROUTING_BASELINE,
+) -> dict[str, Any]:
+    mode = normalize_category_routing(category_routing)
+    gold_sets = gold_sets_from_targets(targets or [])
+    size_gold_sets = size_compatible_gold_sets_from_hard_rows(targets or [], hard_rows)
+    pass_fields = {
+        "size_only": "size_only_pass",
+        "subject_only": "subject_only_pass",
+        "category_only": "category_only_pass",
+        "subject_size": "subject_size_pass",
+    }
+    return {
+        "category_routing": mode,
+        "all_hard_filters": candidate_filter_metrics(
+            hard_rows,
+            pass_field="all_hard_pass",
+            gold_sets=gold_sets,
+        ),
+        "stage": hard_filter_stage_metrics(hard_rows, gold_sets=gold_sets),
+        "non_c00_target_match_counts": _non_c00_target_match_counts(
+            hard_rows,
+            targets=targets or [],
+        ),
+        "filter_ablation": filter_ablation_metrics(
+            hard_rows,
+            pass_fields=pass_fields,
+            gold_sets=gold_sets,
+        ),
+        "category_filter": candidate_filter_metrics(
+            hard_rows,
+            pass_field="category_pass",
+            gold_sets=gold_sets,
+        ),
+        "subject_filter": candidate_filter_metrics(
+            hard_rows,
+            pass_field="subject_pass",
+            gold_sets=gold_sets,
+        ),
+        "aspect_filter": candidate_filter_metrics(
+            hard_rows,
+            pass_field="aspect_pass",
+            gold_sets=gold_sets,
+        ),
+        "size_compatible_gold": {
+            "gold_policy": "size_filter_after_hard_filter",
+            "gold_adjustment": size_compatible_gold_summary(gold_sets, size_gold_sets),
+            "all_hard_filters": candidate_filter_metrics(
+                hard_rows,
+                pass_field="all_hard_pass",
+                gold_sets=size_gold_sets,
+            ),
+            "stage": hard_filter_stage_metrics(hard_rows, gold_sets=size_gold_sets),
+            "filter_ablation": filter_ablation_metrics(
+                hard_rows,
+                pass_fields=pass_fields,
+                gold_sets=size_gold_sets,
+            ),
+            "category_filter": candidate_filter_metrics(
+                hard_rows,
+                pass_field="category_pass",
+                gold_sets=size_gold_sets,
+            ),
+            "subject_filter": candidate_filter_metrics(
+                hard_rows,
+                pass_field="subject_pass",
+                gold_sets=size_gold_sets,
+            ),
+            "aspect_filter": candidate_filter_metrics(
+                hard_rows,
+                pass_field="aspect_pass",
+                gold_sets=size_gold_sets,
+            ),
+        },
+    }
+
+
+def _hard_filter_pass_count(rows: Iterable[dict[str, Any]], field: str) -> int:
+    return sum(1 for row in rows if row.get(field) is True)
+
+
+def _hard_filter_comparison_metrics(
+    hard_rows: list[dict[str, Any]],
+    *,
+    targets: list[dict[str, Any]],
+    category_routing: str,
+) -> dict[str, Any]:
+    summary = _hard_filter_summary_payload(
+        hard_rows,
+        targets=targets,
+        category_routing=category_routing,
+    )
+    stage = summary.get("stage") if isinstance(summary.get("stage"), dict) else {}
+    pair_metrics = stage.get("pair_metrics") if isinstance(stage.get("pair_metrics"), dict) else {}
+    category_filter = summary.get("category_filter") if isinstance(summary.get("category_filter"), dict) else {}
+    return {
+        "category_routing": summary["category_routing"],
+        "candidate_pair_count": len(hard_rows),
+        "category_pass_pair_count": _hard_filter_pass_count(hard_rows, "category_pass"),
+        "all_hard_pass_pair_count": _hard_filter_pass_count(hard_rows, "all_hard_pass"),
+        "candidate_hit_rate": stage.get("candidate_hit_rate", 0.0),
+        "best_hit_rate": stage.get("best_hit_rate", 0.0),
+        "pair_precision": pair_metrics.get("precision", 0.0),
+        "category_filter_candidate_hit_rate": category_filter.get("candidate_hit_rate", 0.0),
+        "category_filter_pair_precision": (category_filter.get("pair_metrics") or {}).get("precision", 0.0),
+    }
+
+
+def _hard_filter_comparison_payload(
+    *,
+    baseline_rows: list[dict[str, Any]],
+    merge_rows: list[dict[str, Any]],
+    targets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    baseline = _hard_filter_comparison_metrics(
+        baseline_rows,
+        targets=targets,
+        category_routing=CATEGORY_ROUTING_BASELINE,
+    )
+    merge = _hard_filter_comparison_metrics(
+        merge_rows,
+        targets=targets,
+        category_routing=CATEGORY_ROUTING_MERGE_C01_C03,
+    )
+    delta_keys = (
+        "candidate_pair_count",
+        "category_pass_pair_count",
+        "all_hard_pass_pair_count",
+        "candidate_hit_rate",
+        "best_hit_rate",
+        "pair_precision",
+        "category_filter_candidate_hit_rate",
+        "category_filter_pair_precision",
+    )
+    return {
+        "baseline": baseline,
+        "merge_no_llm": merge,
+        "delta": {
+            key: (merge.get(key, 0) or 0) - (baseline.get(key, 0) or 0)
+            for key in delta_keys
+        },
+    }
+
+
+def _write_category_routing_comparison_outputs(
+    run_dir: Path,
+    *,
+    baseline_rows: list[dict[str, Any]],
+    merge_rows: list[dict[str, Any]],
+    targets: list[dict[str, Any]],
+) -> None:
+    write_jsonl(
+        stage_artifact_path(run_dir, "hard_filter", "baseline_hard_filter_pairs.jsonl"),
+        baseline_rows,
+    )
+    write_json(
+        stage_artifact_path(run_dir, "hard_filter", "category_routing_comparison.json"),
+        _hard_filter_comparison_payload(
+            baseline_rows=baseline_rows,
+            merge_rows=merge_rows,
+            targets=targets,
+        ),
+    )
 
 
 def _write_hard_filter_outputs(
@@ -851,75 +1705,187 @@ def _write_hard_filter_outputs(
     hard_rows: list[dict[str, Any]],
     *,
     targets: list[dict[str, Any]] | None = None,
+    category_routing: str = CATEGORY_ROUTING_BASELINE,
 ) -> None:
-    gold_sets = gold_sets_from_targets(targets or [])
-    write_jsonl(run_dir / "hard_filter_pairs.jsonl", hard_rows)
+    mode = normalize_category_routing(category_routing)
+    stage_dir = stage_artifact_dir(run_dir, "hard_filter")
+    _remove_obsolete_size_filter_outputs(stage_dir)
+    write_jsonl(stage_artifact_path(run_dir, "hard_filter", "hard_filter_pairs.jsonl"), hard_rows)
+    write_csv(
+        stage_artifact_path(run_dir, "hard_filter", "size_filter_gold_rejection_by_aspect_combo.csv"),
+        _size_filter_gold_rejection_by_aspect_combo_rows(hard_rows),
+        fieldnames=SIZE_FILTER_GOLD_REJECTION_BY_ASPECT_COMBO_COLUMNS,
+        encoding="utf-8-sig",
+    )
+    write_csv(
+        stage_artifact_path(run_dir, "hard_filter", "subject_filter_false_rejections.csv"),
+        _subject_filter_false_rejection_rows(hard_rows),
+        fieldnames=SUBJECT_FILTER_FALSE_REJECTION_COLUMNS,
+        encoding="utf-8-sig",
+    )
+    write_csv(
+        stage_artifact_path(run_dir, "hard_filter", "subject_only_false_rejections.csv"),
+        _subject_filter_false_rejection_rows(hard_rows),
+        fieldnames=SUBJECT_FILTER_FALSE_REJECTION_COLUMNS,
+        encoding="utf-8-sig",
+    )
     write_json(
-        run_dir / "hard_filter_summary.json",
-        {
-            "all_hard_filters": candidate_filter_metrics(
-                hard_rows,
-                pass_field="all_hard_pass",
-                gold_sets=gold_sets,
-            ),
-            "stage": hard_filter_stage_metrics(hard_rows, gold_sets=gold_sets),
-            "category_filter": candidate_filter_metrics(
-                hard_rows,
-                pass_field="category_pass",
-                gold_sets=gold_sets,
-            ),
-            "subject_filter": candidate_filter_metrics(
-                hard_rows,
-                pass_field="subject_pass",
-                gold_sets=gold_sets,
-            ),
-            "aspect_filter": candidate_filter_metrics(
-                hard_rows,
-                pass_field="aspect_pass",
-                gold_sets=gold_sets,
-            ),
-        },
+        stage_artifact_path(run_dir, "hard_filter", "hard_filter_summary.json"),
+        _hard_filter_summary_payload(hard_rows, targets=targets, category_routing=mode),
     )
 
 
-def _write_threshold_outputs(
+def _write_retrieve_outputs(
     run_dir: Path,
-    scored_rows: list[dict[str, Any]],
-    threshold_rows: list[dict[str, Any]],
+    candidate_score_rows: list[dict[str, Any]],
     *,
     targets: list[dict[str, Any]] | None = None,
+    hard_rows: list[dict[str, Any]] | None = None,
 ) -> None:
     gold_sets = gold_sets_from_targets(targets or [])
-    write_jsonl(run_dir / "scored_candidates.jsonl", scored_rows)
-    write_jsonl(run_dir / "threshold_candidates.jsonl", threshold_rows)
+    size_gold_sets = size_compatible_gold_sets_from_hard_rows(targets or [], hard_rows or [])
+    relabeled_size_rows = relabel_rows_for_gold_sets(candidate_score_rows, size_gold_sets)
+    reusable_need_ids = _reusable_need_ids_from_gold_sets(gold_sets)
+    size_reusable_need_ids = _reusable_need_ids_from_gold_sets(size_gold_sets)
+    write_jsonl(stage_artifact_path(run_dir, "retrieve", "candidate_score_audit.jsonl"), candidate_score_rows)
+    write_csv(
+        stage_artifact_path(run_dir, "retrieve", "candidate_score_audit.csv"),
+        candidate_score_rows,
+        fieldnames=CANDIDATE_SCORE_AUDIT_COLUMNS,
+        encoding="utf-8-sig",
+    )
+    write_csv(
+        stage_artifact_path(run_dir, "retrieve", "retrieval_missed_gold_candidates.csv"),
+        _retrieval_missed_gold_rows(candidate_score_rows),
+        fieldnames=CANDIDATE_SCORE_AUDIT_COLUMNS,
+        encoding="utf-8-sig",
+    )
     write_json(
-        run_dir / "threshold_summary.json",
+        stage_artifact_path(run_dir, "retrieve", "retrieve_summary.json"),
         {
-            "threshold_filter": candidate_filter_metrics(
-                threshold_rows,
-                pass_field="threshold_pass",
-                gold_sets=gold_sets,
+            "candidate_score_audit": _candidate_score_audit_metrics(candidate_score_rows),
+            "ranking": ranking_metrics(
+                candidate_score_rows,
+                reusable_need_ids=reusable_need_ids,
+                rank_field="rank_hybrid",
             ),
-            "stage": threshold_stage_metrics(scored_rows, gold_sets=gold_sets),
+            "size_compatible_gold": _size_compatible_retrieval_metrics(
+                candidate_score_rows,
+                original_gold_sets=gold_sets,
+                size_gold_sets=size_gold_sets,
+            ),
+            "ranking_size_compatible_gold": ranking_metrics(
+                relabeled_size_rows,
+                reusable_need_ids=size_reusable_need_ids,
+                rank_field="rank_hybrid",
+            ),
         },
     )
 
 
-def _threshold_rows_by_need(run_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
+def _reusable_need_ids_from_gold_sets(gold_sets: dict[str, dict[str, set[str] | bool]]) -> set[str]:
+    reusable_need_ids: set[str] = set()
+    for need_id, sets in gold_sets.items():
+        acceptable = sets.get("acceptable") if isinstance(sets, dict) else set()
+        if isinstance(acceptable, set) and acceptable:
+            reusable_need_ids.add(need_id)
+    return reusable_need_ids
+
+
+def _size_compatible_retrieval_metrics(
+    candidate_score_rows: list[dict[str, Any]],
+    *,
+    original_gold_sets: dict[str, dict[str, set[str] | bool]],
+    size_gold_sets: dict[str, dict[str, set[str] | bool]],
+) -> dict[str, Any]:
+    relabeled_rows = relabel_rows_for_gold_sets(candidate_score_rows, size_gold_sets)
+    return {
+        "gold_policy": "size_filter_after_hard_filter",
+        "gold_adjustment": size_compatible_gold_summary(original_gold_sets, size_gold_sets),
+        "candidate_score_audit": _candidate_score_audit_metrics(relabeled_rows),
+        "ranking": ranking_metrics(
+            relabeled_rows,
+            reusable_need_ids=_reusable_need_ids_from_gold_sets(size_gold_sets),
+            rank_field="rank_hybrid",
+        ),
+    }
+
+
+def _candidate_score_audit_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    eval_rows = [row for row in rows if row.get("label_status", "labeled") == "labeled"]
+    policy_input_rows = [row for row in eval_rows if row.get("policy_input") is True]
+    gold_rows = [row for row in eval_rows if row.get("is_acceptable")]
+    best_rows = [row for row in eval_rows if row.get("is_best")]
+    gold_need_ids = {_clean(row.get("need_id")) for row in gold_rows}
+    hit_gold_need_ids = {_clean(row.get("need_id")) for row in gold_rows if row.get("rank_hybrid")}
+    return {
+        "candidate_pair_count": len(eval_rows),
+        "policy_input_pair_count": len(policy_input_rows),
+        "acceptable_pair_count": len(gold_rows),
+        "best_pair_count": len(best_rows),
+        "acceptable_need_count": len(gold_need_ids),
+        "acceptable_need_hit_count": len(hit_gold_need_ids),
+        "acceptable_need_hit_rate": safe_div(len(hit_gold_need_ids), len(gold_need_ids)),
+        "max_policy_score": max((float(row.get("policy_score") or 0.0) for row in eval_rows), default=0.0),
+        "min_policy_score": min((float(row.get("policy_score") or 0.0) for row in eval_rows), default=0.0),
+    }
+
+
+def _retrieval_missed_gold_rows(
+    rows: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        if row.get("label_status", "labeled") != "labeled":
+            continue
+        if row.get("is_acceptable") is True and not row.get("rank_hybrid"):
+            out.append({column: row.get(column, "") for column in CANDIDATE_SCORE_AUDIT_COLUMNS})
+    return sorted(
+        out,
+        key=lambda row: (
+            str(row.get("need_id", "")),
+            int(row.get("rank_hybrid") or 0),
+            str(row.get("asset_id", "")),
+        ),
+    )
+
+
+def _candidate_score_rows_by_need(run_dir: str | Path) -> dict[str, list[dict[str, Any]]]:
     by_need: dict[str, list[dict[str, Any]]] = {}
-    for row in read_jsonl(Path(run_dir) / "threshold_candidates.jsonl"):
+    for row in read_jsonl_artifact(run_dir, "retrieve", "candidate_score_audit.jsonl"):
         by_need.setdefault(_clean(row.get("need_id")), []).append(row)
     return by_need
 
 
 def _collections_by_need(run_dir: str | Path) -> dict[str, dict[str, Any]]:
     collections: dict[str, dict[str, Any]] = {}
-    for row in read_jsonl(Path(run_dir) / "candidate_collections.jsonl"):
+    for row in read_jsonl_artifact(run_dir, "retrieve", "candidate_collections.jsonl"):
         need_id = _clean(row.get("need_id"))
         collection = row.get("collection")
         if need_id and isinstance(collection, dict):
             collections[need_id] = collection
     return collections
+
+
+def _merge_reuse_finalize_debug_files(output_path: Path, debug_paths: Iterable[Path]) -> None:
+    queries: list[dict[str, Any]] = []
+    for path in debug_paths:
+        if not path.exists():
+            continue
+        payload = read_json(path)
+        path_queries = payload.get("queries") if isinstance(payload, dict) else None
+        if isinstance(path_queries, list):
+            queries.extend(item for item in path_queries if isinstance(item, dict))
+    if not queries:
+        return
+    write_json(
+        output_path,
+        {
+            "schema_version": 1,
+            "updated_at": datetime.utcnow().isoformat() + "Z",
+            "queries": queries,
+        },
+    )
 
 
 def prepare_run(
@@ -962,7 +1928,7 @@ def prepare_run(
         all_needs.extend(extract_plan_needs(plan_path, run_id=run_name))
     if goldset_path_list:
         all_needs = apply_goldset_labels(all_needs, load_goldset_labels(goldset_path_list))
-    write_jsonl(run_dir / "plan_needs.jsonl", all_needs)
+    write_jsonl(stage_artifact_path(run_dir, "prepare", "plan_needs.jsonl"), all_needs)
     client = _keyword_client(env_file, allow_llm=allow_llm)
     if client is None:
         raise ValueError("prepare requires --allow-llm because enriched target fields are missing")
@@ -971,13 +1937,18 @@ def prepare_run(
         keyword_client=client,
         require_enrichment=True,
     )
-    write_jsonl(run_dir / "target_enrichment.jsonl", enrichment_rows)
-    write_jsonl(run_dir / "targets.jsonl", target_rows)
+    write_jsonl(stage_artifact_path(run_dir, "prepare", "target_enrichment.jsonl"), enrichment_rows)
+    write_jsonl(stage_artifact_path(run_dir, "prepare", "targets.jsonl"), target_rows)
+    target_enrichment_summary = validate_enriched_targets(target_rows, stage="prepare")
+    target_enrichment_summary["fallback_enriched_count"] = sum(
+        1 for row in target_rows if _target_payload(row).get("target_enrichment_fallback")
+    )
     write_json(
-        run_dir / "target_enrichment_summary.json",
-        validate_enriched_targets(target_rows, stage="prepare"),
+        stage_artifact_path(run_dir, "prepare", "target_enrichment_summary.json"),
+        target_enrichment_summary,
     )
     _write_target_classification_summary(run_dir, target_rows)
+    _write_target_classification_review_tables(run_dir, target_rows)
     return run_dir
 
 
@@ -985,22 +1956,49 @@ def run_hard_filter_stage(
     *,
     run_dir: str | Path,
     library_dirs: Iterable[str | Path],
+    category_routing: str = CATEGORY_ROUTING_BASELINE,
 ) -> Path:
+    mode = normalize_category_routing(category_routing)
     root = Path(run_dir)
     search_context = ReuseSearchContext()
     library_dir_list = [Path(path).expanduser().resolve() for path in library_dirs]
     targets = _read_targets(root)
     validate_enriched_targets(targets, stage="hard-filter")
     hard_rows: list[dict[str, Any]] = []
+    baseline_rows: list[dict[str, Any]] = []
     for target_record in targets:
         target = _target_payload(target_record)
+        if mode == CATEGORY_ROUTING_MERGE_C01_C03:
+            baseline_assets = load_routed_library_assets_for_target(
+                library_dir_list,
+                target,
+                reuse_search_context=search_context,
+                category_routing=CATEGORY_ROUTING_BASELINE,
+            )
+            baseline_rows.extend(
+                hard_filter_rows_for_target(
+                    target_record,
+                    baseline_assets,
+                    category_routing=CATEGORY_ROUTING_BASELINE,
+                )
+            )
         library_assets = load_routed_library_assets_for_target(
             library_dir_list,
             target,
             reuse_search_context=search_context,
+            category_routing=mode,
         )
-        hard_rows.extend(hard_filter_rows_for_target(target_record, library_assets))
-    _write_hard_filter_outputs(root, hard_rows, targets=targets)
+        hard_rows.extend(
+            hard_filter_rows_for_target(target_record, library_assets, category_routing=mode)
+        )
+    _write_hard_filter_outputs(root, hard_rows, targets=targets, category_routing=mode)
+    if mode == CATEGORY_ROUTING_MERGE_C01_C03:
+        _write_category_routing_comparison_outputs(
+            root,
+            baseline_rows=baseline_rows,
+            merge_rows=hard_rows,
+            targets=targets,
+        )
     return root
 
 
@@ -1014,15 +2012,17 @@ def run_retrieve_stage(
     root = Path(run_dir)
     run_name = _run_id_for(root)
     library_dir_list = [Path(path).expanduser().resolve() for path in library_dirs]
-    search_context = ReuseSearchContext()
+    search_context = ReuseSearchContext(
+        query_embedding_cache_dir=stage_artifact_dir(root, "retrieve")
+    )
     targets = _read_targets(root)
     validate_enriched_targets(targets, stage="retrieve")
     _seed_target_keyword_cache_from_targets(targets, search_context.target_keyword_cache)
 
-    scored_rows: list[dict[str, Any]] = []
-    threshold_rows: list[dict[str, Any]] = []
+    candidate_score_rows: list[dict[str, Any]] = []
     collection_rows: list[dict[str, Any]] = []
-    for target_record in targets:
+
+    def collect_one(target_record: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         target = _target_payload(target_record)
         collection = find_reusable_ai_image_asset(
             library_dir=library_dir_list,
@@ -1046,23 +2046,32 @@ def run_retrieve_stage(
             _collect_candidates_only=True,
         )
         collection = collection if isinstance(collection, dict) else {}
-        collection_rows.append(
-            {
-                "run_id": run_name,
-                "need_id": target_record.get("need_id"),
-                "collection": collection,
-            }
-        )
+        collection_row = {
+            "run_id": run_name,
+            "need_id": target_record.get("need_id"),
+            "collection": collection,
+        }
         flattened = flatten_candidate_collection(
             run_id=run_name,
             target_record=target_record,
             collection=collection,
         )
-        scored_rows.extend(flattened["scored_candidates"])
-        threshold_rows.extend(flattened["threshold_candidates"])
+        return collection_row, flattened["candidate_score_audit"]
 
-    write_jsonl(root / "candidate_collections.jsonl", collection_rows)
-    _write_threshold_outputs(root, scored_rows, threshold_rows, targets=targets)
+    worker_count = _bounded_worker_count(
+        item_count=len(targets),
+        default=DEFAULT_REUSE_MAX_WORKERS,
+        env_name=REUSE_SEARCH_WORKERS_ENV,
+    )
+    if targets:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            for collection_row, score_rows in executor.map(collect_one, targets):
+                collection_rows.append(collection_row)
+                candidate_score_rows.extend(score_rows)
+
+    write_jsonl(stage_artifact_path(root, "retrieve", "candidate_collections.jsonl"), collection_rows)
+    hard_rows = read_jsonl_artifact(root, "hard_filter", "hard_filter_pairs.jsonl")
+    _write_retrieve_outputs(root, candidate_score_rows, targets=targets, hard_rows=hard_rows)
     return root
 
 
@@ -1083,21 +2092,33 @@ def run_review_stage(
     targets = _read_targets(root)
     validate_enriched_targets(targets, stage="review")
     collections = _collections_by_need(root)
-    threshold_by_need = _threshold_rows_by_need(root)
+    candidate_score_by_need = _candidate_score_rows_by_need(root)
+    policy_input_candidate_count = sum(len(rows) for rows in candidate_score_by_need.values())
     reuse_session_state: dict[str, Any] = {
         "strict_asset_use_counts": {},
         "strict_asset_used_by": {},
     }
     llm_review_rows: list[dict[str, Any]] = []
+    policy_decision_rows: list[dict[str, Any]] = []
     final_rows: list[dict[str, Any]] = []
+    debug_output_path = stage_artifact_path(root, "review", "reuse_finalize_debug.jsonl")
+    debug_work_dir = stage_artifact_dir(root, "review") / "reuse_finalize_debug_parts"
+    debug_work_dir.mkdir(parents=True, exist_ok=True)
+    debug_paths = [
+        debug_work_dir / f"reuse_finalize_debug_{index:05d}.json"
+        for index in range(len(targets))
+    ]
+    for path in debug_paths:
+        path.unlink(missing_ok=True)
+    debug_output_path.unlink(missing_ok=True)
 
-    for target_record in targets:
+    def finalize_one(index_and_target: tuple[int, dict[str, Any]]) -> tuple[dict[str, Any] | None, dict[str, Any]]:
+        index, target_record = index_and_target
         need_id = _clean(target_record.get("need_id"))
         collection = collections.get(need_id, {})
-        debug_path = root / "reuse_finalize_debug.jsonl"
         match = _finalize_reuse_candidate_collection(
             collection,
-            debug_path=debug_path,
+            debug_path=debug_paths[index],
             keyword_client=client,
             reuse_session_state=None,
             llm_review_enabled=bool(review_enabled),
@@ -1106,6 +2127,23 @@ def run_review_stage(
             near_miss_vlm_state=None,
             constraint_embedding_cache=None,
         )
+        return match, collection
+
+    worker_count = _bounded_worker_count(
+        item_count=len(targets),
+        default=DEFAULT_REUSE_POLICY_WORKERS,
+        env_name=REUSE_POLICY_WORKERS_ENV,
+    )
+    if targets:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            policy_results = list(executor.map(finalize_one, enumerate(targets)))
+    else:
+        policy_results = []
+    _merge_reuse_finalize_debug_files(debug_output_path, debug_paths)
+
+    for target_record, policy_result in zip(targets, policy_results):
+        need_id = _clean(target_record.get("need_id"))
+        match, collection = policy_result
         occupancy_reject: dict[str, Any] | None = None
         if match:
             occupancy = _strict_reuse_occupancy_status(match, reuse_session_state)
@@ -1133,63 +2171,117 @@ def run_review_stage(
                 selected_asset_id=selected_asset_id,
             )
         )
+        need_policy_rows = extract_policy_decision_rows(
+            run_id=run_name,
+            target_record=target_record,
+            collection=collection,
+            selected_asset_id=selected_asset_id,
+        )
+        policy_decision_rows.extend(need_policy_rows)
         final_row = build_final_match_row(
             run_id=run_name,
             target_record=target_record,
             match=match,
-            threshold_candidates=threshold_by_need.get(need_id, []),
+            candidate_score_rows=candidate_score_by_need.get(need_id, []),
+            policy_decision_rows=need_policy_rows,
+            collection=collection,
         )
         if occupancy_reject is not None:
-            final_row["failure_stage"] = "strict_reuse_occupancy"
+            final_row["waterfall_stage"] = "policy_reject"
+            final_row["failure_stage"] = "policy_reject"
             final_row["occupancy_rejected_asset_id"] = _asset_id(occupancy_reject.get("asset") or {})
             final_row["strict_reuse_occupancy"] = occupancy_reject.get("strict_reuse_occupancy")
         final_rows.append(final_row)
 
-    write_jsonl(root / "llm_reviews.jsonl", llm_review_rows)
-    write_json(root / "llm_review_summary.json", llm_review_stage_metrics(llm_review_rows))
-    write_jsonl(root / "final_matches.jsonl", final_rows)
+    write_jsonl(stage_artifact_path(root, "review", "llm_reviews.jsonl"), llm_review_rows)
+    write_jsonl(stage_artifact_path(root, "review", "policy_decisions.jsonl"), policy_decision_rows)
+    write_json(
+        stage_artifact_path(root, "review", "llm_review_summary.json"),
+        llm_review_stage_metrics(
+            llm_review_rows,
+            policy_candidate_count=policy_input_candidate_count,
+        ),
+    )
+    write_jsonl(stage_artifact_path(root, "review", "final_matches.jsonl"), final_rows)
     return root
 
 
 def run_summarize_stage(*, run_dir: str | Path) -> Path:
     root = Path(run_dir)
     targets = _read_targets(root)
-    hard_rows = read_jsonl(root / "hard_filter_pairs.jsonl")
-    scored_rows = read_jsonl(root / "scored_candidates.jsonl")
-    threshold_rows = read_jsonl(root / "threshold_candidates.jsonl")
-    final_rows = read_jsonl(root / "final_matches.jsonl")
-    hard_summary = read_json(root / "hard_filter_summary.json") if (root / "hard_filter_summary.json").exists() else {}
-    threshold_summary = read_json(root / "threshold_summary.json") if (root / "threshold_summary.json").exists() else {}
+    hard_rows = read_jsonl_artifact(root, "hard_filter", "hard_filter_pairs.jsonl")
+    candidate_score_rows = read_jsonl_artifact(root, "retrieve", "candidate_score_audit.jsonl")
+    final_rows = read_jsonl_artifact(root, "review", "final_matches.jsonl")
+    hard_summary = read_json_artifact(root, "hard_filter", "hard_filter_summary.json", {})
+    retrieve_summary = read_json_artifact(root, "retrieve", "retrieve_summary.json", {})
+    original_gold_sets = gold_sets_from_targets(targets)
+    size_gold_sets = size_compatible_gold_sets_from_hard_rows(targets, hard_rows)
+    relabeled_size_candidate_rows = relabel_rows_for_gold_sets(candidate_score_rows, size_gold_sets)
+    size_compatible_retrieve_metrics = _size_compatible_retrieval_metrics(
+        candidate_score_rows,
+        original_gold_sets=original_gold_sets,
+        size_gold_sets=size_gold_sets,
+    )
 
     reusable_need_ids = {
         _clean(row.get("need_id"))
         for row in targets
         if row.get("label_status") == "labeled" and row.get("should_reuse") is True
     }
+    asset_kind_buckets = {
+        "hard_filter": asset_kind_bucket_stage_metrics(
+            hard_rows,
+            targets=targets,
+            pass_field="all_hard_pass",
+        ),
+        "retrieval": asset_kind_bucket_stage_metrics(
+            candidate_score_rows,
+            targets=targets,
+            pass_field="policy_input",
+        ),
+    }
     metrics = {
-        "target_classification": read_json(root / "target_classification_summary.json")
-        if (root / "target_classification_summary.json").exists()
-        else {},
+        "target_classification": read_json_artifact(root, "prepare", "target_classification_summary.json", {}),
         "hard_filter": hard_summary,
-        "threshold": threshold_summary,
-        "llm_review": read_json(root / "llm_review_summary.json")
-        if (root / "llm_review_summary.json").exists()
-        else {},
-        "ranking": ranking_metrics(scored_rows, reusable_need_ids=reusable_need_ids, rank_field="rank_hybrid"),
-        "final": final_match_metrics(final_rows),
+        "retrieval": retrieve_summary,
+        "asset_kind_buckets": asset_kind_buckets,
+        "llm_review": read_json_artifact(root, "review", "llm_review_summary.json", {}),
+        "ranking": ranking_metrics(candidate_score_rows, reusable_need_ids=reusable_need_ids, rank_field="rank_hybrid"),
+        "ranking_size_compatible_gold": ranking_metrics(
+            relabeled_size_candidate_rows,
+            reusable_need_ids=_reusable_need_ids_from_gold_sets(size_gold_sets),
+            rank_field="rank_hybrid",
+        ),
+        "final": final_match_metrics(final_rows, gold_sets=size_gold_sets),
+        "final_raw_gold_audit": final_match_metrics(final_rows),
+        "waterfall": _waterfall_metrics(final_rows),
+        "retrieval_size_compatible_gold": size_compatible_retrieve_metrics,
+        "size_compatible_gold_adjustment": size_compatible_gold_summary(original_gold_sets, size_gold_sets),
         "target_count": len(targets),
         "unlabeled_need_count": sum(1 for row in targets if row.get("label_status") != "labeled"),
     }
-    write_json(root / "metrics.json", metrics)
-    write_jsonl(root / "failure_cases.jsonl", [row for row in final_rows if row.get("failure_stage")])
-    write_jsonl(root / "prompt_issue_log.jsonl", [])
+    write_json(stage_artifact_path(root, "summarize", "metrics.json"), metrics)
+    write_jsonl(
+        stage_artifact_path(root, "summarize", "failure_cases.jsonl"),
+        [
+            row for row in final_rows
+            if row.get("waterfall_stage") not in {"", "correct_none", "final_selected_correct"}
+        ],
+    )
+    write_jsonl(stage_artifact_path(root, "summarize", "prompt_issue_log.jsonl"), [])
     final = metrics.get("final", {}) if isinstance(metrics.get("final"), dict) else {}
     target_cls = metrics.get("target_classification", {}) if isinstance(metrics.get("target_classification"), dict) else {}
     hard = metrics.get("hard_filter", {}) if isinstance(metrics.get("hard_filter"), dict) else {}
-    threshold = metrics.get("threshold", {}) if isinstance(metrics.get("threshold"), dict) else {}
+    retrieval = metrics.get("retrieval", {}) if isinstance(metrics.get("retrieval"), dict) else {}
     hard_stage = hard.get("stage") if isinstance(hard.get("stage"), dict) else {}
-    threshold_stage = threshold.get("stage") if isinstance(threshold.get("stage"), dict) else {}
-    (root / "report.md").write_text(
+    retrieval_ranking = retrieval.get("ranking") if isinstance(retrieval.get("ranking"), dict) else {}
+    buckets = metrics.get("asset_kind_buckets", {}) if isinstance(metrics.get("asset_kind_buckets"), dict) else {}
+    retrieval_buckets = buckets.get("retrieval", {}) if isinstance(buckets.get("retrieval"), dict) else {}
+    page_image_retrieval = retrieval_buckets.get("page_image", {}) if isinstance(retrieval_buckets.get("page_image"), dict) else {}
+    background_retrieval = retrieval_buckets.get("background", {}) if isinstance(retrieval_buckets.get("background"), dict) else {}
+    report_path = stage_artifact_path(root, "summarize", "report.md")
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
         "\n".join(
             [
                 "# 复用评估报告",
@@ -1209,7 +2301,12 @@ def run_summarize_stage(*, run_dir: str | Path) -> Path:
                 f"- Target 分类准确率：{float(target_cls.get('target_class_accuracy') or 0.0):.4f}",
                 f"- C00 跳过类 F1：{float(target_cls.get('c00_f1') or 0.0):.4f}",
                 f"- 硬过滤候选命中率：{float(hard_stage.get('candidate_hit_rate') or 0.0):.4f}",
-                f"- 检索阈值候选命中率：{float(threshold_stage.get('candidate_hit_rate') or 0.0):.4f}",
+                f"- retrieval candidate_hit_rate: {float(retrieval_ranking.get('candidate_hit_rate') or 0.0):.4f}",
+                "",
+                "## asset_kind 拆分",
+                "",
+                f"- page_image retrieval candidate_hit_rate: {float(page_image_retrieval.get('candidate_hit_rate') or 0.0):.4f}",
+                f"- background retrieval candidate_hit_rate: {float(background_retrieval.get('candidate_hit_rate') or 0.0):.4f}",
                 "",
             ]
         ),

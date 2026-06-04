@@ -21,8 +21,9 @@ from loguru import logger as PROGRESS_LOGGER
 
 from edupptx.materials.reuse_policy import (
     BACKGROUND_REUSE_THRESHOLD,
-    T_HIGH,
-    T_LOW,
+    T_GAP,
+    T_DIRECT,
+    T_REJECT,
     decide_reuse,
     evaluate_aspect_transform,
     evaluate_reuse_filter,
@@ -39,9 +40,12 @@ DEFAULT_DB_FILENAME = "ai_image_asset_db.json"
 DEFAULT_MATCH_INDEX_FILENAME = "ai_image_match_index.json"
 DEFAULT_EMBEDDING_INDEX_FILENAME = "ai_image_embedding_index.npz"
 DEFAULT_EMBEDDING_META_FILENAME = "ai_image_embedding_meta.json"
+DEFAULT_QUERY_EMBEDDING_CACHE_FILENAME = "ai_image_query_embedding_cache.npz"
+DEFAULT_QUERY_EMBEDDING_CACHE_META_FILENAME = "ai_image_query_embedding_cache_meta.json"
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
 MATCH_INDEX_SCHEMA_VERSION = 14
 EMBEDDING_INDEX_SCHEMA_VERSION = 5
+QUERY_EMBEDDING_CACHE_SCHEMA_VERSION = 1
 DEFAULT_KEYWORD_BATCH_SIZE = 8
 DEFAULT_EMBEDDING_BATCH_SIZE = 16
 DEFAULT_REUSE_MAX_WORKERS = 4
@@ -54,9 +58,9 @@ DEFAULT_REUSE_CANDIDATE_LIMIT = 8
 DEFAULT_MIN_REUSE_KEYWORD_SCORE: float | None = None
 DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE = 20
 DEFAULT_RRF_K = 60
-HYBRID_BM25_WEIGHT = 0.55
+HYBRID_BM25_WEIGHT = 0.50
 HYBRID_EMBEDDING_WEIGHT = 0.35
-HYBRID_SUBSTRING_WEIGHT = 0.10
+HYBRID_SUBSTRING_WEIGHT = 0.15
 BM25_GRAY_REUSE_THRESHOLD = 0.23
 EMBEDDING_GRAY_REUSE_THRESHOLD = 0.72
 STRICT_REUSE_MAX_PER_SESSION = 2
@@ -103,6 +107,18 @@ _ASPECT_BUCKET_MAX_LOSS = 0.08
 ASPECT_RATIO_TOLERANCE_SAME = 0.08
 ASPECT_RATIO_TOLERANCE_ADJACENT = 0.15
 ASPECT_RATIO_ADJACENT_PENALTY = 0.05
+ALLOWED_CROSS_ASPECT_RATIO_REUSE_PAIRS = frozenset(
+    {
+        ("4:3", "16:9"),
+        ("16:9", "4:3"),
+        ("3:4", "9:16"),
+        ("9:16", "3:4"),
+        ("4:3", "1:1"),
+        ("1:1", "4:3"),
+        ("3:4", "1:1"),
+        ("1:1", "3:4"),
+    }
+)
 
 # Q1/P7: embedding-keyword consistency gate.
 #
@@ -223,6 +239,7 @@ class ReuseSearchContext:
     )
     target_keyword_cache: dict[str, Any] = field(default_factory=dict)
     query_embedding_cache: dict[str, Any] = field(default_factory=dict)
+    query_embedding_cache_dir: Path | None = None
     eligible_static_cache: dict[tuple[str, str, str, str], list[dict[str, Any]]] = field(default_factory=dict)
     cache_lock: Any = field(default_factory=threading.RLock, repr=False)
 
@@ -1563,7 +1580,9 @@ def write_ai_image_embedding_index(
         "built_at": datetime.now(timezone.utc).isoformat(),
         "model": model_name,
         "index_filename": index_filename,
+        "match_asset_count": len(assets),
         "asset_count": len(rows),
+        "non_embeddable_asset_count": max(0, len(assets) - len(rows)),
         "background_color_bias_asset_count": len(background_color_bias_rows),
         "vector_dim": int(vectors.shape[1]) if len(vectors.shape) == 2 else 0,
         "assets": [
@@ -1587,7 +1606,9 @@ def write_ai_image_embedding_index(
         "model": model_name,
         "index_path": _relative_output_path(index_path),
         "meta_path": _relative_output_path(meta_path),
+        "match_asset_count": len(assets),
         "asset_count": len(rows),
+        "non_embeddable_asset_count": max(0, len(assets) - len(rows)),
         "background_color_bias_asset_count": len(background_color_bias_rows),
         "vector_dim": meta["vector_dim"],
     }
@@ -1678,13 +1699,14 @@ def _select_best_library_reuse_match(matches: list[dict[str, Any]]) -> dict[str,
     if not matches:
         return None
 
-    def rank(match: dict[str, Any]) -> tuple[float, float, float, float, float]:
+    def rank(match: dict[str, Any]) -> tuple[float, float, float, float, float, float]:
         policy = _dict(match.get("reuse_policy"))
         decision = _clean_text(policy.get("decision"))
-        decision_rank = 2.0 if decision == "full_match" else 1.0 if decision == "generic_support" else 0.0
+        decision_rank = 2.0 if decision in {"direct_reuse", "full_match"} else 1.0 if decision == "generic_support" else 0.0
         score_details = _dict(match.get("score_details"))
         return (
             decision_rank,
+            float(match.get("policy_score") or score_details.get("policy_score") or 0.0),
             float(match.get("keyword_score") or 0.0),
             float(match.get("hybrid_score") or score_details.get("hybrid_score") or 0.0),
             float(match.get("embedding_score") or score_details.get("embedding_score") or 0.0),
@@ -1694,12 +1716,47 @@ def _select_best_library_reuse_match(matches: list[dict[str, Any]]) -> dict[str,
     return max(matches, key=rank)
 
 
+def _candidate_score_component(
+    candidate: dict[str, Any],
+    score_details: dict[str, Any],
+    key: str,
+    *aliases: str,
+) -> float:
+    values: list[float] = []
+    for source in (candidate, score_details):
+        for name in (key, *aliases):
+            if name not in source:
+                continue
+            try:
+                values.append(float(source.get(name) or 0.0))
+            except (TypeError, ValueError):
+                continue
+    return max(values) if values else 0.0
+
+
+def _candidate_policy_score(candidate: dict[str, Any], score_details: dict[str, Any] | None = None) -> float:
+    details = _dict(score_details if score_details is not None else candidate.get("score_details"))
+    keyword_score = _candidate_score_component(candidate, details, "keyword_score", "score")
+    embedding_score = _candidate_score_component(candidate, details, "embedding_score")
+    substring_score = _candidate_score_component(candidate, details, "substring_score")
+    component_score = (
+        HYBRID_BM25_WEIGHT * keyword_score
+        + HYBRID_EMBEDDING_WEIGHT * embedding_score
+        + HYBRID_SUBSTRING_WEIGHT * substring_score
+    )
+    if component_score <= 0.0:
+        fallback = _candidate_score_component(candidate, details, "policy_score")
+        if fallback > 0.0:
+            component_score = fallback
+    return round(max(0.0, min(1.0, float(component_score))), 4)
+
+
 def _global_reuse_candidate_rank(candidate: dict[str, Any]) -> tuple[float, float, float, float, float]:
     score_details = _dict(candidate.get("score_details"))
     return (
-        1.0 if candidate.get("accepted_by") else 0.0,
+        float(candidate.get("policy_score") or score_details.get("policy_score") or 0.0),
         float(candidate.get("hybrid_score") or score_details.get("hybrid_score") or 0.0),
-        float(candidate.get("keyword_score") or score_details.get("score") or 0.0),
+        float(candidate.get("keyword_score") or score_details.get("keyword_score") or score_details.get("score") or 0.0),
         float(candidate.get("embedding_score") or score_details.get("embedding_score") or 0.0),
         -float(candidate.get("library_search_order") or 0),
     )
@@ -2221,15 +2278,8 @@ def _review_keyword_score(score_details: dict[str, Any]) -> float:
 def _llm_review_priority(record: dict[str, Any]) -> tuple[float, float, float, float, float]:
     score_details = _dict(record.get("score_details"))
     policy_result = _dict(record.get("policy_result"))
-    reason = _clean_text(score_details.get("accepted_by") or policy_result.get("reason"))
-    reason_rank = {
-        "bm25_threshold": 4.0,
-        "embedding_high_review": 3.0,
-        "keyword_led_gray_review": 2.0,
-        "embedding_led_gray_review": 1.0,
-    }.get(reason, 0.0)
     return (
-        reason_rank,
+        float(policy_result.get("policy_score") or score_details.get("policy_score") or 0.0),
         _review_keyword_score(score_details),
         _review_score_value(score_details, "embedding_score"),
         _review_score_value(score_details, "substring_score"),
@@ -2281,12 +2331,15 @@ def _apply_reuse_policy_to_ranked_candidates(
             "substring_score",
             "hybrid_score",
             "rrf_score",
-            "accepted_by",
+            "policy_score",
             "background_reuse_score",
             "transform_policy",
         ):
             if key in candidate and key not in score_details:
                 score_details[key] = candidate.get(key)
+        policy_score = _candidate_policy_score(candidate, score_details)
+        candidate["policy_score"] = policy_score
+        score_details["policy_score"] = policy_score
         candidate_asset = _dict(candidate.get("asset"))
         candidate_embedding_status = _dict(candidate.get("_reuse_embedding_status") or embedding_status)
         candidate_df_ratio_lookup = candidate.get("_reuse_df_ratio_lookup")
@@ -2341,18 +2394,20 @@ def _apply_reuse_policy_to_ranked_candidates(
             {
                 "_index": index,
                 "asset_id": _clean_text(_dict(record["candidate_asset"]).get("asset_id")),
-                "keyword_score": float(record["score_details"].get("keyword_score") or 0.0),
+                "policy_score": float(record["score_details"].get("policy_score") or 0.0),
+                "size_distance": _reuse_size_distance(target, _dict(record["candidate_asset"])),
             }
             for index, record in enumerate(pre_records)
             if _clean_text(record["policy_result"].get("decision")) != "reject"
         ]
         if tier_items:
-            tier_items.sort(key=lambda item: item["keyword_score"], reverse=True)
+            tier_items.sort(key=lambda item: item["policy_score"], reverse=True)
             tier = decide_reuse(
                 tier_items,
-                score_key="keyword_score",
-                t_high=T_HIGH,
-                t_low=threshold if threshold and threshold > 0 else T_LOW,
+                score_key="policy_score",
+                t_direct=T_DIRECT,
+                t_reject=T_REJECT,
+                t_gap=T_GAP,
             )
             tier_decision = _clean_text(tier.get("decision"))
             if tier_decision == "direct_reuse":
@@ -2362,14 +2417,16 @@ def _apply_reuse_policy_to_ranked_candidates(
                     if item["_index"] == selected_index:
                         record["policy_result"] = {
                             **record["policy_result"],
-                            "decision": "full_match",
-                            "reason": "decide_reuse_direct_reuse",
+                            "decision": "direct_reuse",
+                            "reason": "policy_score_direct_reuse",
+                            "policy_score": item["policy_score"],
                         }
                     else:
                         record["policy_result"] = {
                             **record["policy_result"],
                             "decision": "reject",
-                            "reason": "decide_reuse_not_selected",
+                            "reason": "policy_not_selected",
+                            "policy_score": item["policy_score"],
                         }
             elif tier_decision == "llm_review":
                 cluster_indices = {item["_index"] for item in (tier.get("cluster") or [])}
@@ -2379,21 +2436,24 @@ def _apply_reuse_policy_to_ranked_candidates(
                         record["policy_result"] = {
                             **record["policy_result"],
                             "decision": "llm_review",
-                            "reason": "decide_reuse_cluster",
+                            "reason": "policy_score_llm_review",
+                            "policy_score": item["policy_score"],
                         }
                     else:
                         record["policy_result"] = {
                             **record["policy_result"],
                             "decision": "reject",
-                            "reason": "decide_reuse_not_selected",
+                            "reason": "policy_not_selected",
+                            "policy_score": item["policy_score"],
                         }
-            else:  # no_match
+            else:
                 for item in tier_items:
                     record = pre_records[item["_index"]]
                     record["policy_result"] = {
                         **record["policy_result"],
                         "decision": "reject",
-                        "reason": "decide_reuse_below_threshold",
+                        "reason": "policy_score_below_reject_threshold",
+                        "policy_score": item["policy_score"],
                     }
 
     # Identify the slice that needs an LLM review, capped by budget.
@@ -2455,12 +2515,8 @@ def _apply_reuse_policy_to_ranked_candidates(
             policy_result["llm_review_performed"] = True
             policy_result["llm_review"] = review_result
             if _reuse_review_accepts(review_result) and not skip_for_existing_accept:
-                policy_result["decision"] = "full_match"
-                policy_result["reason"] = (
-                    "strict_llm_score_review_accepted"
-                    if review_reason.startswith("strict_")
-                    else "llm_score_review_accepted"
-                )
+                policy_result["decision"] = "direct_reuse"
+                policy_result["reason"] = "llm_accept"
                 policy_result["confidence"] = max(
                     float(policy_result.get("confidence") or 0.0),
                     _clamp_score(review_result.get("score")),
@@ -2491,12 +2547,8 @@ def _apply_reuse_policy_to_ranked_candidates(
                 policy_result=policy_result,
             )
             if not llm_review_enabled:
-                skip_brief = "llm_review_disabled"
-                skip_decision_reason = (
-                    "strict_llm_review_disabled"
-                    if review_reason.startswith("strict_")
-                    else "llm_review_disabled"
-                )
+                skip_brief = "llm_disabled"
+                skip_decision_reason = "llm_disabled"
             elif deterministic_reject:
                 skip_brief = "deterministic_reject_skip"
                 skip_decision_reason = (
@@ -2506,11 +2558,7 @@ def _apply_reuse_policy_to_ranked_candidates(
                 )
             else:
                 skip_brief = "per_query_budget_exhausted"
-                skip_decision_reason = (
-                    "strict_llm_review_budget_exhausted"
-                    if review_reason.startswith("strict_")
-                    else "llm_review_budget_exhausted"
-                )
+                skip_decision_reason = "llm_budget_exhausted"
             policy_result = dict(policy_result)
             policy_result["llm_review_required"] = True
             policy_result["llm_review_performed"] = False
@@ -2529,7 +2577,7 @@ def _apply_reuse_policy_to_ranked_candidates(
 
         candidate["reuse_policy"] = policy_result
         decision = _clean_text(policy_result.get("decision"))
-        if decision in {"full_match", "generic_support"}:
+        if decision in {"direct_reuse", "full_match", "generic_support"}:
             occupancy = _strict_reuse_occupancy_status(candidate, reuse_session_state)
             candidate["strict_reuse_occupancy"] = occupancy
             if _clean_text(occupancy.get("decision")) == "skip_strict_asset_reuse_limit":
@@ -2596,7 +2644,7 @@ def _apply_reuse_policy_to_ranked_candidates(
                 policy_result = dict(policy_result)
                 policy_result["vlm_near_miss_review"] = vlm_result
                 if vlm_result.get("decision") == "accept":
-                    policy_result["decision"] = "full_match"
+                    policy_result["decision"] = "direct_reuse"
                     policy_result["reason"] = "vlm_near_miss_accept"
                     candidate["reuse_policy"] = policy_result
                     occupancy = _strict_reuse_occupancy_status(candidate, reuse_session_state)
@@ -2625,19 +2673,21 @@ def _apply_reuse_policy_to_ranked_candidates(
 
 
 def _reuse_accept_reason(best: dict[str, Any]) -> str:
-    accepted_by = _clean_text(best.get("accepted_by"))
     policy_decision = _clean_text(_dict(best.get("reuse_policy")).get("decision"))
-    if accepted_by == "background_threshold":
+    policy_reason = _clean_text(_dict(best.get("reuse_policy")).get("reason"))
+    if _clean_text(_dict(best.get("asset")).get("asset_kind")) == "background":
         return "reused_by_background_reuse_score"
-    if accepted_by == "bm25_threshold":
-        return "reused_by_core_score"
+    if policy_decision == "direct_reuse" and policy_reason == "llm_accept":
+        return "reused_by_llm_review"
+    if policy_decision == "direct_reuse":
+        return "reused_by_policy_score"
     if policy_decision == "generic_support":
         return "reused_by_policy_generic_support"
-    return "reused_by_hybrid_retrieval_score"
+    return "reused_by_policy_score"
 
 
 def _reuse_collection_empty_reason(collection: dict[str, Any]) -> str:
-    return _clean_text(collection.get("empty_reason")) or "no_candidate_above_reuse_threshold"
+    return _clean_text(collection.get("empty_reason")) or "retrieval_no_candidate"
 
 
 def _finalize_reuse_candidate_collection(
@@ -2698,9 +2748,9 @@ def _finalize_reuse_candidate_collection(
             _reuse_accept_reason(best)
             if best
             else (
-                "no_candidate_after_reuse_policy_or_occupancy"
+                "policy_reject"
                 if combined_candidates
-                else "no_candidate_above_reuse_threshold"
+                else "retrieval_no_candidate"
             )
         )
         if best:
@@ -2801,7 +2851,7 @@ def _finalize_reuse_candidate_collection(
         record["occupancy_rejected_candidates"] = [
             _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in rejected_by_occupancy
         ]
-        reason = "no_candidate_after_reuse_policy_or_occupancy"
+        reason = "policy_reject"
         record["decision"] = {
             "reused": False,
             "reason": reason,
@@ -3163,6 +3213,9 @@ def find_reusable_ai_image_asset(
         embedding_index=embedding_index,
         limit=pool_limit,
         query_embedding_cache=reuse_search_context.query_embedding_cache if reuse_search_context else None,
+        query_embedding_cache_dir=(
+            reuse_search_context.query_embedding_cache_dir if reuse_search_context else None
+        ),
     )
     substring_ranked_candidates = _rank_substring_candidates(
         target,
@@ -3204,7 +3257,7 @@ def find_reusable_ai_image_asset(
         for candidate in ranked_candidates
         if _candidate_passes_reuse_threshold(candidate, threshold, target=target)
     ]
-    debug_record["thresholded_candidates"] = [
+    debug_record["policy_input_candidates"] = [
         _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in candidates
     ]
     if not candidates:
@@ -3215,10 +3268,10 @@ def find_reusable_ai_image_asset(
                 "threshold": threshold,
                 "candidates": [],
                 "debug_record": debug_record,
-                "empty_reason": "no_candidate_above_reuse_threshold",
+                "empty_reason": "retrieval_no_candidate",
                 "embedding_status": embedding_status,
             }
-        return finish("no_candidate_above_reuse_threshold")
+        return finish("retrieval_no_candidate")
 
     for candidate in candidates:
         candidate["library_dir"] = str(library_root)
@@ -3231,7 +3284,7 @@ def find_reusable_ai_image_asset(
             "reused": False,
             "reason": "candidate_collection_only",
             "threshold_used": debug_record.get("threshold_used"),
-            "thresholded_candidate_count": len(candidates),
+            "policy_input_candidate_count": len(candidates),
         }
         return {
             "_reuse_candidate_collection": True,
@@ -3274,16 +3327,7 @@ def find_reusable_ai_image_asset(
         return finish("no_candidate_after_reuse_policy_or_occupancy")
 
     best = accepted_candidates[0]
-    accepted_by = _clean_text(best.get("accepted_by"))
-    policy_decision = _clean_text(_dict(best.get("reuse_policy")).get("decision"))
-    if accepted_by == "background_threshold":
-        reason = "reused_by_background_reuse_score"
-    elif accepted_by == "bm25_threshold":
-        reason = "reused_by_core_score"
-    elif policy_decision == "generic_support":
-        reason = "reused_by_policy_generic_support"
-    else:
-        reason = "reused_by_hybrid_retrieval_score"
+    reason = _reuse_accept_reason(best)
     return finish(reason, best)
 
 
@@ -3399,6 +3443,8 @@ def materialize_reused_ai_image_asset(
         else:
             _write_transformed_reuse_image(reuse_image_path, dest, transform_policy)
     except Exception:
+        if mode == "transparent_pad":
+            raise
         shutil.copy2(reuse_image_path, dest)
 
     record_reused_ai_image_asset(
@@ -3823,7 +3869,7 @@ def _plan_reuse_check_record(
         "reuse_library_dir": _relative_output_path(match.get("library_dir") or match.get("asset_root")) if match else "",
         "session_image_path": _relative_output_path(session_image_path) if session_image_path else "",
         "keyword_score": match.get("keyword_score") if match else None,
-        "accepted_by": match.get("accepted_by") if match else "",
+        "policy_score": match.get("policy_score") if match else None,
         "reuse_policy": match.get("reuse_policy") if match else {},
         "reuse_audit": match.get("reuse_audit") if match else {},
         "llm_reuse_review_performed": _match_llm_reuse_review_performed(match) if match else False,
@@ -3857,7 +3903,11 @@ def _match_asset_id(match: dict[str, Any] | None) -> str:
 def _match_score(match: dict[str, Any] | None) -> float | str:
     if not match:
         return ""
-    score = match.get("keyword_score")
+    score = match.get("policy_score")
+    if score is None:
+        score = _dict(match.get("score_details")).get("policy_score")
+    if score is None:
+        score = match.get("keyword_score")
     if score is None:
         score = _dict(match.get("score_details")).get("score")
     try:
@@ -3873,7 +3923,6 @@ def _match_decision_reason(match: dict[str, Any] | None) -> str:
     return (
         _clean_text(policy.get("reason"))
         or _clean_text(match.get("multi_library_reuse_reason"))
-        or _clean_text(match.get("accepted_by"))
         or "matched"
     )
 
@@ -3945,6 +3994,8 @@ def _write_transformed_reuse_image(input_path: Path, dest: Path, transform_polic
 
         if mode == "cover_crop":
             result = _cover_crop_image(image, target_ratio)
+        elif mode == "transparent_pad":
+            result = _transparent_pad_image(image, target_ratio, _target_size_from_transform_policy(transform_policy))
         elif mode == "contain_pad":
             result = _contain_pad_image(image, target_ratio)
         elif mode == "blur_pad":
@@ -3961,6 +4012,14 @@ def _write_transformed_reuse_image(input_path: Path, dest: Path, transform_polic
         result.save(dest)
 
 
+def _target_size_from_transform_policy(transform_policy: dict[str, Any]) -> tuple[int, int] | None:
+    width = _optional_int(transform_policy.get("target_width"))
+    height = _optional_int(transform_policy.get("target_height"))
+    if width and height and width > 0 and height > 0:
+        return width, height
+    return None
+
+
 def _cover_crop_image(image: Any, target_ratio: float) -> Any:
     width, height = image.size
     image_ratio = width / max(1, height)
@@ -3971,6 +4030,29 @@ def _cover_crop_image(image: Any, target_ratio: float) -> Any:
     crop_height = max(1, int(round(width / target_ratio)))
     top = max(0, (height - crop_height) // 2)
     return image.crop((0, top, width, top + crop_height))
+
+
+def _transparent_pad_image(image: Any, target_ratio: float, target_size: tuple[int, int] | None = None) -> Any:
+    from PIL import Image
+
+    source = image.convert("RGBA")
+    width, height = source.size
+    if target_size is None:
+        canvas_width, canvas_height = _contain_canvas_size(width, height, target_ratio)
+    else:
+        canvas_width, canvas_height = target_size
+
+    scale = min(canvas_width / max(1, width), canvas_height / max(1, height))
+    scaled_width = max(1, int(round(width * scale)))
+    scaled_height = max(1, int(round(height * scale)))
+    if (scaled_width, scaled_height) != source.size:
+        source = source.resize((scaled_width, scaled_height), Image.Resampling.LANCZOS)
+
+    canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
+    left = (canvas_width - scaled_width) // 2
+    top = (canvas_height - scaled_height) // 2
+    canvas.paste(source, (left, top), source)
+    return canvas
 
 
 def _contain_pad_image(image: Any, target_ratio: float) -> Any:
@@ -4091,7 +4173,7 @@ def _new_reuse_debug_record(
         "target": {},
         "candidate_scores": [],
         "ranked_candidates": [],
-        "thresholded_candidates": [],
+        "policy_input_candidates": [],
         "decision": {},
     }
 
@@ -4162,7 +4244,7 @@ def _reuse_debug_record_for_mode(
 
 
 def _reuse_no_match_top_candidate_summaries(record: dict[str, Any], *, limit: int = 2) -> list[dict[str, Any]]:
-    for key in ("policy_candidates", "thresholded_candidates", "ranked_candidates", "candidate_scores"):
+    for key in ("policy_candidates", "policy_input_candidates", "ranked_candidates", "candidate_scores"):
         candidates = record.get(key)
         if isinstance(candidates, list) and candidates:
             return [_reuse_debug_candidate_summary(item) for item in candidates[:limit] if isinstance(item, dict)]
@@ -4182,8 +4264,8 @@ def _reuse_debug_candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
         "keyword_score": candidate.get("keyword_score"),
         "embedding_score": candidate.get("embedding_score"),
         "substring_score": candidate.get("substring_score"),
+        "policy_score": candidate.get("policy_score"),
         "hybrid_score": candidate.get("hybrid_score"),
-        "accepted_by": candidate.get("accepted_by"),
         "score_gap_to_threshold": candidate.get("score_gap_to_threshold"),
         "reuse_audit": audit,
         "llm_reuse_review_performed": llm_review_performed,
@@ -4238,9 +4320,9 @@ def _reuse_debug_candidate_payload(candidate: dict[str, Any], *, threshold: floa
     payload["keyword_score"] = candidate.get("keyword_score")
     payload["embedding_score"] = candidate.get("embedding_score")
     payload["substring_score"] = candidate.get("substring_score")
+    payload["policy_score"] = candidate.get("policy_score") or _candidate_policy_score(candidate)
     payload["hybrid_score"] = candidate.get("hybrid_score")
     payload["rrf_score"] = candidate.get("rrf_score")
-    payload["accepted_by"] = candidate.get("accepted_by")
     payload["retrieval_ranks"] = candidate.get("retrieval_ranks") or {}
     payload["substring_hits"] = candidate.get("substring_hits") or []
     payload["candidate_image_path"] = _relative_output_path(candidate.get("candidate_image_path"))
@@ -4750,7 +4832,8 @@ def _target_metadata_unknown_fields(asset: dict[str, Any]) -> list[str]:
 
 
 def _target_unknown_fields_for_reuse(asset: dict[str, Any]) -> list[str]:
-    return [field for field in _target_metadata_unknown_fields(asset) if field != "subject"]
+    ignored = {"subject", "grade_norm", "grade_band"}
+    return [field for field in _target_metadata_unknown_fields(asset) if field not in ignored]
 
 
 def _candidate_unknown_fields_for_reuse(
@@ -4758,11 +4841,8 @@ def _candidate_unknown_fields_for_reuse(
     subject_decision: dict[str, Any],
 ) -> list[str]:
     unknown = _target_metadata_unknown_fields(asset)
-    if subject_decision.get("general_defaulted_from_subject_other"):
-        group = _normalize_binary_reuse_group(asset.get("strict_reuse_group"), default="")
-        if group != _GENERAL_REUSE_GROUP:
-            return unknown
-    return [field for field in unknown if field != "subject"]
+    ignored = {"subject", "grade_norm", "grade_band"}
+    return [field for field in unknown if field not in ignored]
 
 
 def _grade_info_from_payload(payload: dict[str, Any]) -> dict[str, str]:
@@ -5789,6 +5869,110 @@ def _cached_base_reuse_score_details(
     return details
 
 
+def _query_embedding_cache_paths(cache_dir: str | Path) -> tuple[Path, Path]:
+    root = Path(cache_dir).expanduser().resolve()
+    return (
+        root / DEFAULT_QUERY_EMBEDDING_CACHE_FILENAME,
+        root / DEFAULT_QUERY_EMBEDDING_CACHE_META_FILENAME,
+    )
+
+
+def _load_query_embedding_disk_cache(cache_dir: str | Path, *, model_name: str) -> dict[str, Any]:
+    index_path, meta_path = _query_embedding_cache_paths(cache_dir)
+    if not index_path.exists() or not meta_path.exists():
+        return {}
+    meta = _read_json_if_exists(meta_path)
+    if (
+        int(meta.get("schema_version") or 0) != QUERY_EMBEDDING_CACHE_SCHEMA_VERSION
+        or _clean_text(meta.get("model")) != _clean_text(model_name)
+    ):
+        return {}
+    try:
+        import numpy as np
+
+        data = np.load(index_path, allow_pickle=False)
+        try:
+            keys = [str(item) for item in data["keys"].tolist()]
+            vectors = np.asarray(data["vectors"], dtype="float32")
+        finally:
+            data.close()
+    except Exception as exc:
+        PROGRESS_LOGGER.warning(
+            "AI image query embedding cache ignored: path={}, reason={}",
+            index_path,
+            str(exc)[:180],
+        )
+        return {}
+    if len(vectors.shape) == 1:
+        vectors = vectors.reshape(1, -1)
+    count = min(len(keys), int(vectors.shape[0]))
+    return {
+        keys[index]: vectors[index]
+        for index in range(count)
+        if keys[index]
+    }
+
+
+def _write_query_embedding_disk_cache(
+    cache_dir: str | Path,
+    cache: dict[str, Any],
+    *,
+    model_name: str,
+) -> None:
+    model_prefix = f"{model_name}:"
+    rows = [
+        (key, value)
+        for key, value in sorted(cache.items())
+        if isinstance(key, str) and key.startswith(model_prefix)
+    ]
+    if not rows:
+        return
+    try:
+        import numpy as np
+
+        keys: list[str] = []
+        vectors: list[Any] = []
+        expected_dim: int | None = None
+        for key, value in rows:
+            vector = np.asarray(value, dtype="float32")
+            if len(vector.shape) != 1:
+                continue
+            dim = int(vector.shape[0])
+            if expected_dim is None:
+                expected_dim = dim
+            if dim != expected_dim:
+                continue
+            keys.append(key)
+            vectors.append(vector)
+        if not keys:
+            return
+        index_path, meta_path = _query_embedding_cache_paths(cache_dir)
+        index_path.parent.mkdir(parents=True, exist_ok=True)
+        temp_index_path = index_path.with_name(f"{index_path.name}.tmp")
+        temp_meta_path = meta_path.with_name(f"{meta_path.name}.tmp")
+        with temp_index_path.open("wb") as handle:
+            np.savez_compressed(
+                handle,
+                keys=np.asarray(keys, dtype=str),
+                vectors=np.vstack(vectors).astype("float32"),
+            )
+        meta = {
+            "schema_version": QUERY_EMBEDDING_CACHE_SCHEMA_VERSION,
+            "model": model_name,
+            "entry_count": len(keys),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        temp_meta_path.write_text(json.dumps(meta, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(temp_index_path, index_path)
+        os.replace(temp_meta_path, meta_path)
+    except Exception as exc:
+        PROGRESS_LOGGER.warning(
+            "AI image query embedding cache write skipped: dir={}, reason={}",
+            cache_dir,
+            str(exc)[:180],
+        )
+
+
 def _rank_embedding_candidates(
     target: dict[str, Any],
     assets: list[Any],
@@ -5797,6 +5981,7 @@ def _rank_embedding_candidates(
     embedding_index: dict[str, Any],
     limit: int,
     query_embedding_cache: dict[str, Any] | None = None,
+    query_embedding_cache_dir: str | Path | None = None,
 ) -> list[dict[str, Any]]:
     vectors = embedding_index.get("vectors")
     asset_ids = embedding_index.get("asset_ids")
@@ -5806,13 +5991,30 @@ def _rank_embedding_candidates(
     try:
         import numpy as np
 
+        model_name = _embedding_model_name()
+        if query_embedding_cache is None:
+            query_embedding_cache = {}
+        if query_embedding_cache_dir is not None:
+            query_embedding_cache.update(
+                {
+                    key: value
+                    for key, value in _load_query_embedding_disk_cache(
+                        query_embedding_cache_dir,
+                        model_name=model_name,
+                    ).items()
+                    if key not in query_embedding_cache
+                }
+            )
+        disk_cache_dirty = False
+
         def query_vector_for(text: str, purpose: str):
-            cache_key = f"{_embedding_model_name()}:{purpose}:{text}"
-            if query_embedding_cache is not None and cache_key in query_embedding_cache:
+            nonlocal disk_cache_dirty
+            cache_key = f"{model_name}:{purpose}:{text}"
+            if cache_key in query_embedding_cache:
                 return query_embedding_cache[cache_key]
             encoded = _encode_embedding_texts([text], query=True)[0]
-            if query_embedding_cache is not None:
-                query_embedding_cache[cache_key] = encoded
+            query_embedding_cache[cache_key] = encoded
+            disk_cache_dirty = True
             return encoded
 
         query_vector = query_vector_for(_target_embedding_text(target), "target")
@@ -5834,6 +6036,12 @@ def _rank_embedding_candidates(
                 _clean_text(asset_id): float(color_scores[idx])
                 for idx, asset_id in enumerate(color_bias_asset_ids)
             }
+        if disk_cache_dirty and query_embedding_cache_dir is not None:
+            _write_query_embedding_disk_cache(
+                query_embedding_cache_dir,
+                query_embedding_cache,
+                model_name=model_name,
+            )
     except Exception:
         return []
 
@@ -5995,8 +6203,9 @@ def _rank_hybrid_reuse_candidates(
             candidate["keyword_score"] = round(max(float(candidate.get("keyword_score") or 0.0), bm25_score), 4)
         candidate["rrf_score"] = round(rrf_scores.get(asset_id, 0.0), 6)
         candidate["hybrid_score"] = round(rrf_scores.get(asset_id, 0.0) / max(max_rrf, 1e-9), 4)
-        candidate["accepted_by"] = _reuse_acceptance_reason(candidate, threshold, target=target)
         candidate["transform_policy"] = score_details.get("transform_policy") or {}
+        policy_score = _candidate_policy_score(candidate, score_details)
+        candidate["policy_score"] = policy_score
         score_details.update(
             {
                 "embedding_score": candidate.get("embedding_score"),
@@ -6005,8 +6214,8 @@ def _rank_hybrid_reuse_candidates(
                 "background_color_bias_embedding_score": candidate.get("background_color_bias_embedding_score"),
                 "rrf_score": candidate.get("rrf_score"),
                 "hybrid_score": candidate.get("hybrid_score"),
+                "policy_score": policy_score,
                 "retrieval_ranks": candidate.get("retrieval_ranks"),
-                "accepted_by": candidate.get("accepted_by"),
             }
         )
         candidate["score_details"] = _debug_score_details(score_details)
@@ -6014,10 +6223,10 @@ def _rank_hybrid_reuse_candidates(
 
     results.sort(
         key=lambda item: (
-            1 if item.get("accepted_by") else 0,
-            float(item.get("hybrid_score") or 0.0),
+            float(item.get("policy_score") or 0.0),
             float(item.get("keyword_score") or 0.0),
             float(item.get("embedding_score") or 0.0),
+            float(item.get("hybrid_score") or 0.0),
         ),
         reverse=True,
     )
@@ -6034,6 +6243,66 @@ def _copy_transform_policy(target: dict[str, Any], candidate: dict[str, Any], *,
         "target_aspect_ratio": _asset_aspect_ratio_label(target),
         "reason": reason,
     }
+
+
+def _reuse_transform_policy(target: dict[str, Any], candidate: dict[str, Any], *, reason: str) -> dict[str, Any]:
+    target_bucket = normalize_aspect_bucket(_asset_aspect_ratio_label(target))
+    candidate_bucket = normalize_aspect_bucket(_asset_aspect_ratio_label(candidate))
+    if target_bucket == candidate_bucket and target_bucket in _ASPECT_REUSE_BUCKET_VALUES:
+        return _copy_transform_policy(target, candidate, reason=reason)
+    if (target_bucket, candidate_bucket) not in ALLOWED_CROSS_ASPECT_RATIO_REUSE_PAIRS:
+        return _copy_transform_policy(target, candidate, reason=reason)
+
+    policy = {
+        "decision": "accept",
+        "mode": "transparent_pad",
+        "crop_loss": round(_aspect_ratio_loss(target, candidate), 4),
+        "transform_penalty": ASPECT_RATIO_ADJACENT_PENALTY,
+        "candidate_aspect_ratio": candidate_bucket,
+        "target_aspect_ratio": target_bucket,
+        "reason": "transparent_pad_cross_aspect",
+    }
+    target_size = _target_transform_size(target)
+    if target_size is not None:
+        policy["target_width"], policy["target_height"] = target_size
+    return policy
+
+
+def _target_transform_size(target: dict[str, Any]) -> tuple[int, int] | None:
+    for width_key, height_key in (
+        ("target_width", "target_height"),
+        ("padded_width", "padded_height"),
+        ("actual_width", "actual_height"),
+        ("width", "height"),
+    ):
+        width = _optional_int(target.get(width_key))
+        height = _optional_int(target.get(height_key))
+        if width and height and width > 0 and height > 0:
+            return width, height
+    return None
+
+
+def _reuse_size_distance(target: dict[str, Any], candidate: dict[str, Any]) -> float:
+    if _aspect_ratio_penalty(target, candidate) < 0:
+        return float("inf")
+    return _aspect_ratio_loss(target, candidate)
+
+
+def _prefer_size_close_tier_item(tier_items: list[dict[str, Any]]) -> dict[str, Any]:
+    if not tier_items:
+        return {}
+    top_score = float(tier_items[0].get("keyword_score") or 0.0)
+    close_items = [
+        item for item in tier_items
+        if top_score - float(item.get("keyword_score") or 0.0) <= T_GAP
+    ]
+    return min(
+        close_items or tier_items,
+        key=lambda item: (
+            float(item.get("size_distance") or 0.0),
+            -float(item.get("keyword_score") or 0.0),
+        ),
+    )
 
 
 def _reuse_static_filter_reject_reason(target: dict[str, Any], candidate: dict[str, Any]) -> str:
@@ -6155,16 +6424,16 @@ def _subject_scope_decision(target: Any, candidate: Any) -> dict[str, Any]:
     candidate_subject = _asset_subject_value(candidate)
     candidate_general = _asset_general_value(candidate)
     general_missing = candidate_general is None
-    defaulted_from_other = bool(general_missing and candidate_subject == _OTHER_SUBJECT)
+    defaulted_from_other = bool(candidate_subject == _OTHER_SUBJECT)
 
     if candidate_general is True:
         mode = "general"
         compatible = True
-    elif target_subject in _KNOWN_SUBJECTS and candidate_subject == target_subject:
-        mode = "same_subject"
-        compatible = True
     elif defaulted_from_other:
         mode = "subject_other_default"
+        compatible = True
+    elif target_subject in _KNOWN_SUBJECTS and candidate_subject == target_subject:
+        mode = "same_subject"
         compatible = True
     elif target_subject == _OTHER_SUBJECT:
         mode = "target_subject_unknown"
@@ -6203,7 +6472,7 @@ def _score_reuse_candidate_details(
 
     subject_filter = _subject_scope_decision(target, candidate)
     hard_reject = _reuse_hard_filter_reject_reason(target, candidate)
-    transform_policy = _copy_transform_policy(target, candidate, reason="aspect_ratio_aligned")
+    transform_policy = _reuse_transform_policy(target, candidate, reason="aspect_ratio_aligned")
     if hard_reject:
         return {
             "score": 0.0,
@@ -6547,8 +6816,8 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
         "substring_hits": details.get("substring_hits") or [],
         "rrf_score": round(float(details.get("rrf_score") or 0.0), 6),
         "hybrid_score": round(float(details.get("hybrid_score") or 0.0), 4),
+        "policy_score": round(float(details.get("policy_score") or 0.0), 4),
         "retrieval_ranks": details.get("retrieval_ranks") or {},
-        "accepted_by": _clean_text(details.get("accepted_by")),
         "background_reuse_score": round(float(details.get("background_reuse_score") or 0.0), 4),
         "background_prompt_match_score": round(float(details.get("background_prompt_match_score") or 0.0), 4),
         "background_prompt_bm25_score": round(float(details.get("background_prompt_bm25_score") or 0.0), 4),
@@ -6954,7 +7223,7 @@ def _candidate_passes_reuse_threshold(
     *,
     target: dict[str, Any] | None = None,
 ) -> bool:
-    return bool(candidate.get("accepted_by") or _reuse_acceptance_reason(candidate, threshold, target=target))
+    return True
 
 
 def _reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: float | None) -> float:
@@ -7023,11 +7292,20 @@ def _aspect_ratio_diff(target: dict[str, Any], candidate: dict[str, Any]) -> flo
     return abs(t - c) / t
 
 
+def _aspect_ratio_loss(target: dict[str, Any], candidate: dict[str, Any]) -> float:
+    t = _aspect_ratio_value(target)
+    c = _aspect_ratio_value(candidate)
+    if t <= 0 or c <= 0:
+        return 1.0
+    return 1.0 - min(t, c) / max(t, c)
+
+
 def _aspect_ratio_penalty(target: dict[str, Any], candidate: dict[str, Any]) -> float:
-    diff = _aspect_ratio_diff(target, candidate)
-    if diff <= ASPECT_RATIO_TOLERANCE_SAME:
+    target_bucket = normalize_aspect_bucket(_asset_aspect_ratio_label(target))
+    candidate_bucket = normalize_aspect_bucket(_asset_aspect_ratio_label(candidate))
+    if target_bucket == candidate_bucket and target_bucket in _ASPECT_REUSE_BUCKET_VALUES:
         return 0.0
-    if diff <= ASPECT_RATIO_TOLERANCE_ADJACENT:
+    if (target_bucket, candidate_bucket) in ALLOWED_CROSS_ASPECT_RATIO_REUSE_PAIRS:
         return ASPECT_RATIO_ADJACENT_PENALTY
     return -1.0
 
@@ -7217,13 +7495,26 @@ def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: 
     meta_path = library_root / DEFAULT_EMBEDDING_META_FILENAME
     meta = _read_json_if_exists(meta_path)
     assets = match_index.get("assets")
-    expected_count = len(assets) if isinstance(assets, list) else 0
+    match_asset_count = len(assets) if isinstance(assets, list) else 0
+    expected_count = 0
+    expected_background_color_bias_count = 0
+    if isinstance(assets, list):
+        for asset in assets:
+            if not isinstance(asset, dict):
+                continue
+            asset_id = _clean_text(asset.get("asset_id"))
+            if asset_id and _asset_embedding_text(asset):
+                expected_count += 1
+            if asset_id and _is_background_asset(asset) and _background_color_bias(asset):
+                expected_background_color_bias_count += 1
+    non_embeddable_asset_count = max(0, match_asset_count - expected_count)
     if (
         index_path.exists()
         and meta_path.exists()
         and int(meta.get("schema_version") or 0) == EMBEDDING_INDEX_SCHEMA_VERSION
         and _clean_text(meta.get("model")) == model_name
         and int(meta.get("asset_count") or -1) == expected_count
+        and int(meta.get("background_color_bias_asset_count") or 0) == expected_background_color_bias_count
     ):
         return {
             "enabled": True,
@@ -7231,12 +7522,15 @@ def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: 
             "index_path": _relative_output_path(index_path),
             "meta_path": _relative_output_path(meta_path),
             "asset_count": expected_count,
+            "match_asset_count": match_asset_count,
+            "non_embeddable_asset_count": non_embeddable_asset_count,
             "background_color_bias_asset_count": int(meta.get("background_color_bias_asset_count") or 0),
             "vector_dim": int(meta.get("vector_dim") or 0),
         }
     PROGRESS_LOGGER.info(
-        "AI image embedding index build start: library={}, assets={}, model={}, reason=missing_or_stale_sidecar",
+        "AI image embedding index build start: library={}, assets={}, embeddable_assets={}, model={}, reason=missing_or_stale_sidecar",
         library_root,
+        match_asset_count,
         expected_count,
         model_name,
     )

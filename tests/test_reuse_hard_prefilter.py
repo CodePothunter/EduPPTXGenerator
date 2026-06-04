@@ -59,9 +59,8 @@ def test_static_filter_rejects_asset_kind_mismatch():
     assert _reuse_static_filter_reject_reason(_target(), _candidate(asset_kind="background")) == "asset_kind_mismatch"
 
 
-def test_static_filter_rejects_candidate_metadata_unknown():
-    # 非 general 的 C02 候选 subject=其他 → 元数据未知
-    assert _reuse_static_filter_reject_reason(_target(), _candidate(subject="其他")) == "candidate_metadata_unknown"
+def test_static_filter_allows_other_subject_as_generic():
+    assert _reuse_static_filter_reject_reason(_target(), _candidate(subject="其他")) == ""
 
 
 def test_eligible_excludes_subject_mismatch_and_keeps_general():
@@ -87,6 +86,16 @@ def test_eligible_excludes_aspect_too_far():
     assert {c["asset_id"] for c in eligible} == {"near"}
     assert summary["aspect_filtered_count"] == 1
     assert summary["static_subset_count"] == 2  # 两者都过静态层，只 aspect 不同
+
+
+def test_eligible_keeps_enumerated_cross_aspect_pair():
+    target = _target()  # 16:9
+    allowed = _candidate(asset_id="allowed", aspect_ratio="4:3")
+    eligible, summary = db._eligible_reuse_assets(
+        target, [allowed], None, "lib", "C02_generic_subject_object"
+    )
+    assert {c["asset_id"] for c in eligible} == {"allowed"}
+    assert summary["aspect_filtered_count"] == 0
 
 
 def test_eligible_static_subset_cached_per_group_subject(monkeypatch):

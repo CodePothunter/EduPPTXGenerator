@@ -52,53 +52,57 @@ def _normalize_color_temperature(value: Any) -> str:
 
 
 # --- Three-tier decision constants (spec §4) ---
-T_HIGH = 0.70
-T_LOW = 0.35
-T_GAP = 0.05
+T_DIRECT = 0.78
+T_REJECT = 0.45
+T_GAP = 0.06
 CLUSTER_MAX = 3
 
 
 def decide_reuse(
     candidates: list[dict[str, Any]],
     *,
-    score_key: str = "hybrid_score",
-    t_high: float = T_HIGH,
-    t_low: float = T_LOW,
+    score_key: str = "policy_score",
+    t_direct: float = T_DIRECT,
+    t_reject: float = T_REJECT,
     t_gap: float = T_GAP,
     cluster_max: int = CLUSTER_MAX,
 ) -> dict[str, Any]:
     """Spec §4 three-tier decision over a ranked candidate list.
 
     ``candidates`` must be sorted best-first on ``score_key``. The default
-    ``score_key="hybrid_score"`` keeps the standalone (test) contract. The
-    production wiring passes ``score_key="keyword_score"`` (an absolute
-    content-match score in [0, 1]) together with the per-target accept
-    threshold as ``t_low`` — because the production ``hybrid_score`` is RRF
-    *normalized* (top1 is always 1.0) and cannot drive the high/low cut.
+    ``score_key="policy_score"`` is an absolute score in [0, 1]. Production
+    ``hybrid_score`` is RRF-normalized retrieval evidence and must not drive
+    the high/low cut.
     """
     if not candidates:
-        return {"decision": "no_match", "reason": "empty_candidates"}
+        return {"decision": "reject", "reason": "empty_candidates"}
 
     top1 = candidates[0]
     top1_score = float(top1.get(score_key) or 0.0)
     top1_id = top1.get("asset_id", "")
+    top2_score = float(candidates[1].get(score_key) or 0.0) if len(candidates) > 1 else None
+    gap = None if top2_score is None else top1_score - top2_score
 
-    if top1_score >= t_high:
-        return {"decision": "direct_reuse", "asset_id": top1_id, "reason": "score_above_t_high", "score": top1_score}
+    if top1_score < t_reject:
+        return {"decision": "reject", "reason": "score_below_t_reject", "score": top1_score}
 
-    if top1_score < t_low:
-        return {"decision": "no_match", "reason": "score_below_t_low", "score": top1_score}
+    if top1_score >= t_direct and (gap is None or gap >= t_gap):
+        return {
+            "decision": "direct_reuse",
+            "asset_id": top1_id,
+            "reason": "score_above_t_direct_with_gap",
+            "score": top1_score,
+            "gap": gap,
+        }
 
     cluster = [c for c in candidates if top1_score - float(c.get(score_key) or 0.0) <= t_gap]
-
-    if len(cluster) <= 1:
-        return {"decision": "direct_reuse", "asset_id": top1_id, "reason": "single_leader", "score": top1_score}
 
     cluster = cluster[:cluster_max]
     return {
         "decision": "llm_review",
-        "reason": "cluster_detected",
+        "reason": "gray_zone_or_close_leader",
         "score": top1_score,
+        "gap": gap,
         "cluster": cluster,
     }
 
@@ -216,17 +220,11 @@ def evaluate_reuse_filter(
         return _result("reject", "background_score_below_threshold",
                         confidence=0.9, threshold=threshold_used, score_gap=score_gap)
 
-    threshold_used = T_HIGH if threshold is None else float(threshold)
+    threshold_used = T_DIRECT if threshold is None else float(threshold)
     score_gap = score - threshold_used
 
-    if score >= T_HIGH:
-        return _result("full_match", "score_above_t_high",
-                        confidence=0.85, threshold=threshold_used, score_gap=score_gap)
-    if score < T_LOW:
-        return _result("reject", "score_below_threshold",
-                        confidence=0.9, threshold=threshold_used, score_gap=score_gap)
-    return _result("full_match", "score_in_middle_zone",
-                    confidence=0.6, threshold=threshold_used, score_gap=score_gap)
+    return _result("eligible", "hard_filters_passed",
+                    confidence=0.0, threshold=threshold_used, score_gap=score_gap)
 
 
 def evaluate_aspect_transform(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:

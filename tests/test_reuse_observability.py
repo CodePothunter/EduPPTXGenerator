@@ -79,7 +79,7 @@ def _make_debug_payload() -> dict:
                 },
                 "decision": {
                     "reused": False,
-                    "reason": "no_candidate_above_reuse_threshold",
+                    "reason": "retrieval_no_candidate",
                 },
                 "no_reuse_top_candidates": [],
             },
@@ -164,7 +164,7 @@ def _make_debug_payload() -> dict:
                 },
                 "decision": {
                     "reused": False,
-                    "reason": "no_candidate_above_reuse_threshold",
+                    "reason": "retrieval_no_candidate",
                 },
                 "no_reuse_top_candidates": [
                     {
@@ -189,7 +189,7 @@ def _make_debug_payload() -> dict:
                 },
                 "decision": {
                     "reused": False,
-                    "reason": "no_candidate_above_reuse_threshold",
+                    "reason": "retrieval_no_candidate",
                 },
                 "no_reuse_top_candidates": [],
             },
@@ -238,7 +238,7 @@ def test_summary_failure_categories(tmp_path: Path):
     # Need 2: page=4 slot=illustration_1 — had a 0.72 embedding candidate rejected by policy
     assert categories.get("illustration_1") in {"matched", "high_semantic_rejected_by_policy"}
     # Need 3: page=9 slot=illustration_2 — low semantic across both libs (coverage gap)
-    assert categories.get("illustration_2") in {"low_semantic_signal", "no_candidate_above_threshold"}
+    assert categories.get("illustration_2") in {"low_semantic_signal", "retrieval_no_candidate"}
 
 
 def test_summary_returns_none_when_debug_missing(tmp_path: Path):

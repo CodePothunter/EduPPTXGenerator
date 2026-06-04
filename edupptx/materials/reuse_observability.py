@@ -135,8 +135,8 @@ def _failure_category(record: dict[str, Any], best: dict[str, Any] | None) -> st
     if decision.get("reused"):
         return "matched"
     reason = str(decision.get("reason") or "")
-    if reason == "no_candidate_above_reuse_threshold":
-        return "no_candidate_above_threshold"
+    if reason == "retrieval_no_candidate":
+        return "retrieval_no_candidate"
     if best is None:
         return "no_candidate"
     embed = best.get("embedding_score") or 0.0

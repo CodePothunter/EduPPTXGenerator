@@ -11,6 +11,7 @@ from edupptx.materials.ai_image_asset_db import (
     _aspect_ratio_penalty,
     _asset_embedding_text,
     _candidate_hybrid_text,
+    _candidate_policy_score,
     _get_llm_max_workers,
     _save_reusable_png_with_transparent_padding,
     _score_reuse_candidate_details,
@@ -33,9 +34,9 @@ def test_default_reuse_candidate_limit_is_top_eight():
 
 
 def test_hybrid_retrieval_weights_sum_to_one():
-    assert HYBRID_BM25_WEIGHT == 0.55
+    assert HYBRID_BM25_WEIGHT == 0.50
     assert HYBRID_EMBEDDING_WEIGHT == 0.35
-    assert HYBRID_SUBSTRING_WEIGHT == 0.10
+    assert HYBRID_SUBSTRING_WEIGHT == 0.15
     assert abs(HYBRID_BM25_WEIGHT + HYBRID_EMBEDDING_WEIGHT + HYBRID_SUBSTRING_WEIGHT - 1.0) < 1e-9
 
 
@@ -194,6 +195,7 @@ def test_reuse_scoring_hard_filters_category_subject_and_aspect_bucket():
         "strict_reuse_group": "C02_generic_subject_object",
         "aspect_ratio": "16:9",
         "subject": "语文",
+        "caption": "single apple subject",
         "content_prompt": "single apple subject",
         "context_summary": "object recognition",
     }
@@ -213,11 +215,11 @@ def test_reuse_scoring_hard_filters_category_subject_and_aspect_bucket():
     subject_mismatch = {**compatible_candidate, "subject": "数学"}
     assert _score_reuse_candidate_details(target, subject_mismatch)["reject_reason"] == "subject_mismatch"
 
-    candidate_unknown = {**compatible_candidate, "subject": "其他"}
-    assert _score_reuse_candidate_details(target, candidate_unknown)["reject_reason"] == "candidate_metadata_unknown"
+    candidate_other_subject = {**compatible_candidate, "subject": "其他"}
+    assert _score_reuse_candidate_details(target, candidate_other_subject)["reject_reason"] == ""
 
     english_alias = {**compatible_candidate, "subject": "math"}
-    assert _score_reuse_candidate_details(target, english_alias)["reject_reason"] == "candidate_metadata_unknown"
+    assert _score_reuse_candidate_details(target, english_alias)["reject_reason"] == ""
 
     aspect_mismatch = {**compatible_candidate, "aspect_ratio": "9:16"}
     assert _score_reuse_candidate_details(target, aspect_mismatch)["reject_reason"] == "aspect_ratio_too_far"
@@ -262,18 +264,46 @@ def test_aspect_tolerance_too_far_rejects():
     assert _reuse_hard_filter_reject_reason(target, candidate) == "aspect_ratio_too_far"
 
 
-def test_aspect_tolerance_all_standard_buckets_too_far_from_each_other():
-    # 9:16 vs 16:9: ratio diff = |0.5625 - 1.778| / 0.5625 ≈ 2.16 → reject
-    # 1:1 vs 4:3: ratio diff = |1.0 - 1.333| / 1.0 = 0.333 → reject
-    # All adjacent standard-bucket pairs differ by ~33%, well beyond TOLERANCE_ADJACENT.
+def test_aspect_ratio_allowed_cross_bucket_pairs_get_adjacent_penalty():
+    # These cross-bucket pairs are explicitly allowed because white padding preserves acceptable reuse.
     pairs = [
-        ({"aspect_ratio": "9:16"}, {"aspect_ratio": "16:9"}),
+        ({"aspect_ratio": "4:3"}, {"aspect_ratio": "16:9"}),
+        ({"aspect_ratio": "16:9"}, {"aspect_ratio": "4:3"}),
+        ({"aspect_ratio": "3:4"}, {"aspect_ratio": "9:16"}),
+        ({"aspect_ratio": "9:16"}, {"aspect_ratio": "3:4"}),
+        ({"aspect_ratio": "4:3"}, {"aspect_ratio": "1:1"}),
         ({"aspect_ratio": "1:1"}, {"aspect_ratio": "4:3"}),
         ({"aspect_ratio": "3:4"}, {"aspect_ratio": "1:1"}),
-        ({"aspect_ratio": "4:3"}, {"aspect_ratio": "16:9"}),
+        ({"aspect_ratio": "1:1"}, {"aspect_ratio": "3:4"}),
+    ]
+    for t, c in pairs:
+        assert _aspect_ratio_penalty(t, c) == ASPECT_RATIO_ADJACENT_PENALTY
+
+
+def test_aspect_ratio_non_enumerated_cross_bucket_pairs_still_reject():
+    pairs = [
+        ({"aspect_ratio": "9:16"}, {"aspect_ratio": "16:9"}),
+        ({"aspect_ratio": "16:9"}, {"aspect_ratio": "9:16"}),
+        ({"aspect_ratio": "4:3"}, {"aspect_ratio": "9:16"}),
+        ({"aspect_ratio": "1:1"}, {"aspect_ratio": "16:9"}),
     ]
     for t, c in pairs:
         assert _aspect_ratio_penalty(t, c) == -1.0, f"Expected -1.0 for {t} vs {c}"
+
+
+def test_hard_filter_allows_enumerated_cross_aspect_pair():
+    from edupptx.materials.ai_image_asset_db import _reuse_hard_filter_reject_reason
+
+    target = {
+        "asset_kind": "page_image",
+        "strict_reuse_group": "C02_generic_subject_object",
+        "aspect_ratio": "4:3",
+        "subject": "\u8bed\u6587",
+        "grade_norm": "\u4e94\u5e74\u7ea7",
+        "grade_band": "\u9ad8\u5e74\u7ea7",
+    }
+    candidate = {**target, "aspect_ratio": "16:9"}
+    assert _reuse_hard_filter_reject_reason(target, candidate) == ""
 
 
 def test_end_to_end_simplified_reuse_flow():
@@ -306,7 +336,7 @@ def test_end_to_end_simplified_reuse_flow():
 
     wrong_subject = {**good_candidate, "subject": "物理"}
     wrong_category = {**good_candidate, "strict_reuse_group": "C01_irreplaceable_entity_event_action"}
-    wrong_aspect = {**good_candidate, "aspect_ratio": "16:9"}
+    wrong_aspect = {**good_candidate, "aspect_ratio": "9:16"}
 
     assert _score_reuse_candidate_details(target, wrong_subject)["reject_reason"] == "subject_mismatch"
     assert _score_reuse_candidate_details(target, wrong_category)["reject_reason"] == "strict_reuse_group_mismatch"
@@ -317,26 +347,26 @@ def test_end_to_end_simplified_reuse_flow():
     assert details["score"] > 0
 
     candidates_high = [
-        {"hybrid_score": 0.72, "asset_id": "best"},
-        {"hybrid_score": 0.45, "asset_id": "ok"},
-        {"hybrid_score": 0.20, "asset_id": "bad"},
+        {"policy_score": 0.82, "asset_id": "best"},
+        {"policy_score": 0.60, "asset_id": "ok"},
+        {"policy_score": 0.20, "asset_id": "bad"},
     ]
     decision = decide_reuse(candidates_high)
     assert decision["decision"] == "direct_reuse"
     assert decision["asset_id"] == "best"
 
     candidates_clustered = [
-        {"hybrid_score": 0.55, "asset_id": "c1"},
-        {"hybrid_score": 0.53, "asset_id": "c2"},
-        {"hybrid_score": 0.52, "asset_id": "c3"},
+        {"policy_score": 0.76, "asset_id": "c1"},
+        {"policy_score": 0.73, "asset_id": "c2"},
+        {"policy_score": 0.72, "asset_id": "c3"},
     ]
     decision = decide_reuse(candidates_clustered)
     assert decision["decision"] == "llm_review"
     assert len(decision["cluster"]) == 3
 
-    candidates_low = [{"hybrid_score": 0.20, "asset_id": "low"}]
+    candidates_low = [{"policy_score": 0.20, "asset_id": "low"}]
     decision = decide_reuse(candidates_low)
-    assert decision["decision"] == "no_match"
+    assert decision["decision"] == "reject"
 
 
 # --- Plan B: decide_reuse is the wired score-tier authority -------------------
@@ -358,13 +388,13 @@ def _tier_target():
     }
 
 
-def _tier_candidate(asset_id, keyword_score):
+def _tier_candidate(asset_id, keyword_score, *, aspect_ratio="4:3"):
     asset = {
         "asset_id": asset_id,
         "asset_kind": "page_image",
         "strict_reuse_group": "C02_generic_subject_object",
         "subject": "语文",
-        "aspect_ratio": "4:3",
+        "aspect_ratio": aspect_ratio,
         "grade_norm": "五年级",
         "grade_band": "高年级",
         "image_path": f"ai_images/{asset_id}.png",
@@ -373,7 +403,13 @@ def _tier_candidate(asset_id, keyword_score):
         "asset": asset,
         "candidate_image_path": f"ai_images/{asset_id}.png",
         "keyword_score": keyword_score,
-        "score_details": {"keyword_score": keyword_score},
+        "embedding_score": keyword_score,
+        "substring_score": keyword_score,
+        "score_details": {
+            "keyword_score": keyword_score,
+            "embedding_score": keyword_score,
+            "substring_score": keyword_score,
+        },
     }
 
 
@@ -397,17 +433,39 @@ def test_apply_policy_high_score_direct_reuse():
     accepted = out["accepted_candidates"]
     assert len(accepted) == 1
     assert accepted[0]["asset"]["asset_id"] == "hi"
-    assert accepted[0]["reuse_policy"]["reason"] == "decide_reuse_direct_reuse"
+    assert accepted[0]["reuse_policy"]["decision"] == "direct_reuse"
+    assert accepted[0]["reuse_policy"]["reason"] == "policy_score_direct_reuse"
     assert out["llm_reviews_used"] == 0
 
 
+def test_apply_policy_high_score_close_cluster_routes_to_llm():
+    out = _run_policy([
+        _tier_candidate("wide", 0.82, aspect_ratio="16:9"),
+        _tier_candidate("same_size", 0.79, aspect_ratio="4:3"),
+    ])
+
+    assert out["accepted_candidates"] == []
+    assert {item["reuse_policy"]["reason"] for item in out["rejected_by_policy"]} == {"llm_disabled"}
+
+
+def test_apply_policy_keeps_higher_score_when_size_better_candidate_is_not_close():
+    out = _run_policy([
+        _tier_candidate("wide", 0.82, aspect_ratio="16:9"),
+        _tier_candidate("same_size", 0.70, aspect_ratio="4:3"),
+    ])
+
+    accepted = out["accepted_candidates"]
+    assert len(accepted) == 1
+    assert accepted[0]["asset"]["asset_id"] == "wide"
+    assert accepted[0]["reuse_policy"]["reason"] == "policy_score_direct_reuse"
+
+
 def test_apply_policy_below_per_target_threshold_discarded():
-    # 0.40 passes evaluate's T_LOW (0.35) but is below per-target threshold 0.55,
-    # so the tier discards it instead of the old auto-accept.
     out = _run_policy([_tier_candidate("a", 0.40), _tier_candidate("b", 0.30)])
     assert out["accepted_candidates"] == []
     a_policy = out["rejected_by_policy"][0]["reuse_policy"]
-    assert a_policy["reason"] == "decide_reuse_below_threshold"
+    assert a_policy["decision"] == "reject"
+    assert a_policy["reason"] == "policy_score_below_reject_threshold"
 
 
 def test_apply_policy_midband_cluster_routes_to_llm_review_and_accepts():
@@ -424,6 +482,8 @@ def test_apply_policy_midband_cluster_routes_to_llm_review_and_accepts():
     accepted = out["accepted_candidates"]
     assert len(accepted) == 1
     assert accepted[0]["reuse_policy"]["llm_review_performed"] is True
+    assert accepted[0]["reuse_policy"]["decision"] == "direct_reuse"
+    assert accepted[0]["reuse_policy"]["reason"] == "llm_accept"
 
 
 def test_apply_policy_midband_not_auto_accepted_when_llm_disabled():
@@ -431,3 +491,14 @@ def test_apply_policy_midband_not_auto_accepted_when_llm_disabled():
     # it back (routed to llm_review, which is disabled here) instead of reusing.
     out = _run_policy([_tier_candidate("c1", 0.62), _tier_candidate("c2", 0.60)])
     assert out["accepted_candidates"] == []
+
+
+def test_candidate_policy_score_is_single_final_policy_score():
+    candidate = {
+        "keyword_score": 0.6,
+        "embedding_score": 0.8,
+        "substring_score": 0.4,
+        "score_details": {"keyword_score": 0.0},
+    }
+
+    assert _candidate_policy_score(candidate) == 0.64

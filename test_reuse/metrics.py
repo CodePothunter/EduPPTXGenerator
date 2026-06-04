@@ -38,6 +38,161 @@ def gold_sets_from_targets(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str
     return result
 
 
+def gold_sets_from_targets_by_asset_kind(
+    rows: Iterable[dict[str, Any]],
+    *,
+    asset_kind: str,
+) -> dict[str, dict[str, set[str] | bool]]:
+    result: dict[str, dict[str, set[str] | bool]] = {}
+    expected_kind = str(asset_kind or "")
+    for row in _labeled_rows(list(rows)):
+        need_id = str(row.get("need_id") or "")
+        if not need_id:
+            continue
+
+        acceptable = {
+            str(item.get("asset_id") or "")
+            for item in (row.get("acceptable_asset_metadata") or [])
+            if isinstance(item, dict)
+            and str(item.get("asset_kind") or "") == expected_kind
+            and str(item.get("asset_id") or "")
+        }
+        best = {
+            str(item.get("asset_id") or "")
+            for item in (row.get("best_asset_metadata") or [])
+            if isinstance(item, dict)
+            and str(item.get("asset_kind") or "") == expected_kind
+            and str(item.get("asset_id") or "")
+        }
+        result[need_id] = {
+            "acceptable": acceptable,
+            "best": best,
+            "should_reuse": bool(acceptable),
+        }
+    return result
+
+
+def _relabel_rows_for_gold_sets(
+    rows: Iterable[dict[str, Any]],
+    gold_sets: dict[str, dict[str, set[str] | bool]],
+) -> list[dict[str, Any]]:
+    relabeled: list[dict[str, Any]] = []
+    for row in rows:
+        need_id = str(row.get("need_id") or "")
+        asset_id = str(row.get("asset_id") or "")
+        sets = gold_sets.get(need_id, {})
+        acceptable = sets.get("acceptable") if isinstance(sets, dict) else set()
+        best = sets.get("best") if isinstance(sets, dict) else set()
+        item = dict(row)
+        item["is_acceptable"] = asset_id in acceptable if isinstance(acceptable, set) else False
+        item["is_best"] = asset_id in best if isinstance(best, set) else False
+        relabeled.append(item)
+    return relabeled
+
+
+def relabel_rows_for_gold_sets(
+    rows: Iterable[dict[str, Any]],
+    gold_sets: dict[str, dict[str, set[str] | bool]],
+) -> list[dict[str, Any]]:
+    return _relabel_rows_for_gold_sets(rows, gold_sets)
+
+
+def size_compatible_gold_sets_from_hard_rows(
+    targets: Iterable[dict[str, Any]],
+    hard_rows: Iterable[dict[str, Any]],
+) -> dict[str, dict[str, set[str] | bool]]:
+    gold_sets = gold_sets_from_targets(targets)
+    size_pass_candidate_pairs: set[tuple[str, str]] = set()
+    for row in _labeled_rows(list(hard_rows)):
+        if row.get("size_only_pass") is not True:
+            continue
+        need_id = str(row.get("need_id") or "")
+        asset_id = str(row.get("asset_id") or "")
+        if need_id and asset_id:
+            size_pass_candidate_pairs.add((need_id, asset_id))
+
+    adjusted: dict[str, dict[str, set[str] | bool]] = {}
+    for need_id, sets in gold_sets.items():
+        acceptable = sets.get("acceptable") if isinstance(sets, dict) else set()
+        best = sets.get("best") if isinstance(sets, dict) else set()
+        acceptable_source = acceptable if isinstance(acceptable, set) else set()
+        best_source = best if isinstance(best, set) else set()
+        acceptable_set = {
+            asset_id
+            for asset_id in acceptable_source
+            if (need_id, asset_id) in size_pass_candidate_pairs
+        }
+        best_set = {
+            asset_id
+            for asset_id in best_source
+            if (need_id, asset_id) in size_pass_candidate_pairs
+        }
+        adjusted[need_id] = {
+            "acceptable": acceptable_set,
+            "best": best_set,
+            "should_reuse": bool(acceptable_set),
+        }
+    return adjusted
+
+
+def size_compatible_gold_summary(
+    original_gold_sets: dict[str, dict[str, set[str] | bool]],
+    adjusted_gold_sets: dict[str, dict[str, set[str] | bool]],
+) -> dict[str, int]:
+    removed_acceptable_pairs: set[tuple[str, str]] = set()
+    removed_best_pairs: set[tuple[str, str]] = set()
+    original_reusable = 0
+    adjusted_reusable = 0
+
+    for need_id, original in original_gold_sets.items():
+        adjusted = adjusted_gold_sets.get(need_id, {})
+        original_acceptable = original.get("acceptable") if isinstance(original, dict) else set()
+        original_best = original.get("best") if isinstance(original, dict) else set()
+        adjusted_acceptable = adjusted.get("acceptable") if isinstance(adjusted, dict) else set()
+        adjusted_best = adjusted.get("best") if isinstance(adjusted, dict) else set()
+
+        if isinstance(original_acceptable, set) and original_acceptable:
+            original_reusable += 1
+        if isinstance(adjusted_acceptable, set) and adjusted_acceptable:
+            adjusted_reusable += 1
+        if isinstance(original_acceptable, set) and isinstance(adjusted_acceptable, set):
+            for asset_id in original_acceptable - adjusted_acceptable:
+                removed_acceptable_pairs.add((need_id, asset_id))
+        if isinstance(original_best, set) and isinstance(adjusted_best, set):
+            for asset_id in original_best - adjusted_best:
+                removed_best_pairs.add((need_id, asset_id))
+
+    return {
+        "removed_acceptable_pair_count": len(removed_acceptable_pairs),
+        "removed_best_pair_count": len(removed_best_pairs),
+        "affected_acceptable_need_count": len({need_id for need_id, _ in removed_acceptable_pairs}),
+        "affected_best_need_count": len({need_id for need_id, _ in removed_best_pairs}),
+        "original_reusable_need_count": original_reusable,
+        "adjusted_reusable_need_count": adjusted_reusable,
+    }
+
+
+def _relabel_final_rows_for_gold_sets(
+    rows: Iterable[dict[str, Any]],
+    gold_sets: dict[str, dict[str, set[str] | bool]],
+) -> list[dict[str, Any]]:
+    relabeled: list[dict[str, Any]] = []
+    for row in rows:
+        need_id = str(row.get("need_id") or "")
+        selected_asset_id = str(row.get("selected_asset_id") or "")
+        sets = gold_sets.get(need_id, {})
+        acceptable = sets.get("acceptable") if isinstance(sets, dict) else set()
+        best = sets.get("best") if isinstance(sets, dict) else set()
+        acceptable_set = acceptable if isinstance(acceptable, set) else set()
+        best_set = best if isinstance(best, set) else set()
+        item = dict(row)
+        item["should_reuse"] = bool(acceptable_set)
+        item["selected_is_acceptable"] = selected_asset_id in acceptable_set if selected_asset_id else False
+        item["selected_is_best"] = selected_asset_id in best_set if selected_asset_id else False
+        relabeled.append(item)
+    return relabeled
+
+
 def candidate_filter_metrics(
     rows: Iterable[dict[str, Any]],
     *,
@@ -54,20 +209,39 @@ def candidate_filter_metrics(
                 gold_acceptable_pairs.add((need_id, asset_id))
 
     passed_pairs = sum(1 for row in all_rows if bool(row.get(pass_field)))
-    tp_pairs = {
+    passed_eval_pairs = {
         (str(row.get("need_id") or ""), str(row.get("asset_id") or ""))
         for row in eval_rows
-        if bool(row.get(pass_field)) and bool(row.get("is_acceptable"))
+        if bool(row.get(pass_field))
     }
+    if gold_sets is None:
+        tp_pairs = {
+            (str(row.get("need_id") or ""), str(row.get("asset_id") or ""))
+            for row in eval_rows
+            if bool(row.get(pass_field)) and bool(row.get("is_acceptable"))
+        }
+    else:
+        tp_pairs = passed_eval_pairs & gold_acceptable_pairs
     tp = len(tp_pairs)
-    fp = sum(1 for row in eval_rows if bool(row.get(pass_field)) and not bool(row.get("is_acceptable")))
+    if gold_sets is None:
+        fp = sum(1 for row in eval_rows if bool(row.get(pass_field)) and not bool(row.get("is_acceptable")))
+    else:
+        fp = len(passed_eval_pairs - gold_acceptable_pairs)
     if gold_sets is None:
         acceptable_pairs = sum(1 for row in eval_rows if bool(row.get("is_acceptable")))
         fn = sum(1 for row in eval_rows if not bool(row.get(pass_field)) and bool(row.get("is_acceptable")))
     else:
         acceptable_pairs = len(gold_acceptable_pairs)
         fn = len(gold_acceptable_pairs - tp_pairs)
-    tn = sum(1 for row in eval_rows if not bool(row.get(pass_field)) and not bool(row.get("is_acceptable")))
+    if gold_sets is None:
+        tn = sum(1 for row in eval_rows if not bool(row.get(pass_field)) and not bool(row.get("is_acceptable")))
+    else:
+        tn = sum(
+            1
+            for row in eval_rows
+            if not bool(row.get(pass_field))
+            and (str(row.get("need_id") or ""), str(row.get("asset_id") or "")) not in gold_acceptable_pairs
+        )
 
     precision = safe_div(tp, tp + fp)
     recall = safe_div(tp, tp + fn)
@@ -133,8 +307,15 @@ def ranking_metrics(
     return metrics
 
 
-def final_match_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
-    eval_rows = _labeled_rows(list(rows))
+def final_match_metrics(
+    rows: Iterable[dict[str, Any]],
+    *,
+    gold_sets: dict[str, dict[str, set[str] | bool]] | None = None,
+) -> dict[str, Any]:
+    all_rows = list(rows)
+    if gold_sets is not None:
+        all_rows = _relabel_final_rows_for_gold_sets(all_rows, gold_sets)
+    eval_rows = _labeled_rows(all_rows)
     reusable_rows = [row for row in eval_rows if row.get("should_reuse") is True]
     non_reusable_rows = [row for row in eval_rows if row.get("should_reuse") is not True]
 
@@ -296,6 +477,99 @@ def hard_filter_stage_metrics(
     return metrics
 
 
+def filter_ablation_metrics(
+    rows: Iterable[dict[str, Any]],
+    *,
+    pass_fields: dict[str, str],
+    gold_sets: dict[str, dict[str, set[str] | bool]] | None = None,
+) -> dict[str, Any]:
+    all_rows = list(rows)
+    return {
+        name: {
+            "pair_metrics": candidate_filter_metrics(
+                all_rows,
+                pass_field=pass_field,
+                gold_sets=gold_sets,
+            ),
+            **_stage_hit_metrics(all_rows, pass_field=pass_field, gold_sets=gold_sets),
+        }
+        for name, pass_field in pass_fields.items()
+    }
+
+
+def _stage_metric_bundle(
+    rows: Iterable[dict[str, Any]],
+    *,
+    pass_field: str,
+    rank_field: str,
+    gold_sets: dict[str, dict[str, set[str] | bool]],
+    ks: tuple[int, ...],
+) -> dict[str, Any]:
+    all_rows = list(rows)
+    metrics: dict[str, Any] = {
+        "pair_metrics": candidate_filter_metrics(all_rows, pass_field=pass_field, gold_sets=gold_sets),
+        **_stage_hit_metrics(all_rows, pass_field=pass_field, gold_sets=gold_sets),
+    }
+    metrics.update(
+        _topk_recall(
+            all_rows,
+            predicate_key="is_acceptable",
+            rank_field=rank_field,
+            ks=ks,
+            gold_sets=gold_sets,
+        )
+    )
+    metrics.update(
+        _topk_recall(
+            all_rows,
+            predicate_key="is_best",
+            rank_field=rank_field,
+            ks=ks,
+            gold_sets=gold_sets,
+        )
+    )
+    return metrics
+
+
+def asset_kind_bucket_stage_metrics(
+    rows: Iterable[dict[str, Any]],
+    *,
+    targets: Iterable[dict[str, Any]],
+    pass_field: str,
+    rank_field: str = "rank_hybrid",
+    asset_kinds: tuple[str, ...] = ("page_image", "background"),
+    ks: tuple[int, ...] = (1, 3, 5, 8),
+) -> dict[str, Any]:
+    all_rows = list(rows)
+    target_rows = list(targets)
+    overall_gold = gold_sets_from_targets(target_rows)
+    result: dict[str, Any] = {
+        "overall": _stage_metric_bundle(
+            _relabel_rows_for_gold_sets(all_rows, overall_gold),
+            pass_field=pass_field,
+            rank_field=rank_field,
+            gold_sets=overall_gold,
+            ks=ks,
+        )
+    }
+
+    for asset_kind in asset_kinds:
+        bucket_gold = gold_sets_from_targets_by_asset_kind(target_rows, asset_kind=asset_kind)
+        bucket_rows = [
+            row
+            for row in all_rows
+            if str(row.get("asset_kind") or "") == asset_kind
+        ]
+        result[asset_kind] = _stage_metric_bundle(
+            _relabel_rows_for_gold_sets(bucket_rows, bucket_gold),
+            pass_field=pass_field,
+            rank_field=rank_field,
+            gold_sets=bucket_gold,
+            ks=ks,
+        )
+    return result
+
+
 def _topk_recall(
     rows: Iterable[dict[str, Any]],
     *,
@@ -344,42 +618,20 @@ def _topk_recall(
     return result
 
 
-def threshold_stage_metrics(
+def llm_review_stage_metrics(
     rows: Iterable[dict[str, Any]],
     *,
-    gold_sets: dict[str, dict[str, set[str] | bool]] | None = None,
-    ks: tuple[int, ...] = (1, 3, 5, 8),
+    policy_candidate_count: int = 0,
 ) -> dict[str, Any]:
-    all_rows = list(rows)
-    metrics: dict[str, Any] = {
-        "pair_metrics": candidate_filter_metrics(all_rows, pass_field="threshold_pass", gold_sets=gold_sets),
-        **_stage_hit_metrics(all_rows, pass_field="threshold_pass", gold_sets=gold_sets),
-    }
-    metrics.update(
-        _topk_recall(
-            all_rows,
-            predicate_key="is_acceptable",
-            rank_field="rank_hybrid",
-            ks=ks,
-            gold_sets=gold_sets,
-        )
-    )
-    metrics.update(
-        _topk_recall(
-            all_rows,
-            predicate_key="is_best",
-            rank_field="rank_hybrid",
-            ks=ks,
-            gold_sets=gold_sets,
-        )
-    )
-    return metrics
-
-
-def llm_review_stage_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
+    eval_rows = _labeled_rows(list(rows))
+    required_rows = [
+        row
+        for row in eval_rows
+        if row.get("llm_review_required")
+    ]
     reviewed_rows = [
         row
-        for row in _labeled_rows(list(rows))
+        for row in eval_rows
         if row.get("llm_review_performed")
     ]
     accepted_rows = [
@@ -398,12 +650,19 @@ def llm_review_stage_metrics(rows: Iterable[dict[str, Any]]) -> dict[str, Any]:
     false_rejects = sum(1 for row in rejected_rows if row.get("is_acceptable"))
 
     return {
+        "policy_candidate_count": policy_candidate_count,
+        "review_candidate_count": len(eval_rows),
+        "llm_review_required_count": len(required_rows),
+        "llm_review_performed_count": len(reviewed_rows),
         "reviewed_count": len(reviewed_rows),
         "accepted_count": len(accepted_rows),
         "rejected_count": len(rejected_rows),
         "correct_accept_count": correct_accepts,
         "wrong_accept_count": wrong_accepts,
         "false_reject_count": false_rejects,
+        "llm_review_candidate_rate": safe_div(len(eval_rows), policy_candidate_count),
+        "llm_review_required_rate": safe_div(len(required_rows), policy_candidate_count),
+        "llm_review_performed_rate": safe_div(len(reviewed_rows), policy_candidate_count),
         "llm_accept_correctness_rate": safe_div(correct_accepts, len(accepted_rows)),
         "llm_wrong_accept_rate": safe_div(wrong_accepts, len(accepted_rows)),
         "llm_false_reject_rate": safe_div(false_rejects, len(rejected_rows)),

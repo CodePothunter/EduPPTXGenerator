@@ -1964,6 +1964,7 @@ def _write_incremental_match_index(
         existing_db=existing_db,
         teach_root=teach_root,
         warnings=report.get("warnings", []),
+        include_skip=True,
     )
     _attach_ppt_source_metadata(db, ppt_asset_source_by_id)
     _strip_ppt_internal_asset_fields(db)

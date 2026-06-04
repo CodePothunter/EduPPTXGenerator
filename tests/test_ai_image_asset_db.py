@@ -2,6 +2,7 @@ import json
 
 from PIL import Image
 
+import edupptx.materials.ai_image_asset_db as image_db
 from edupptx.materials.ai_image_asset_db import (
     ASPECT_REUSE_BUCKETS,
     BACKGROUND_COLOR_BIAS_REUSE_WEIGHT,
@@ -20,6 +21,7 @@ from edupptx.materials.ai_image_asset_db import (
     _apply_keyword_payload,
     _asset_embedding_text,
     _build_keyword_messages,
+    _candidate_unknown_fields_for_reuse,
     _candidate_hybrid_text,
     _reuse_gate_profile,
     _reuse_gate_thresholds_for_target,
@@ -31,6 +33,7 @@ from edupptx.materials.ai_image_asset_db import (
     _subject_scope_compatible,
     _subject_scope_decision,
     _target_metadata_unknown_fields,
+    _target_unknown_fields_for_reuse,
     _normalize_subject_value,
     _normalize_asset_for_match,
     _save_reusable_png_with_transparent_padding,
@@ -38,6 +41,7 @@ from edupptx.materials.ai_image_asset_db import (
     find_reusable_ai_image_asset,
     infer_grade,
     infer_grade_band,
+    materialize_reused_ai_image_asset,
     normalize_aspect_bucket,
     normalize_grade_info,
     read_ai_image_split_match_index,
@@ -85,7 +89,7 @@ def test_reuse_constants_match_plan_a_configuration():
     assert DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE == 20
     assert MAX_LLM_REVIEWS_PER_QUERY == 3
     assert MAX_LLM_REVIEW_WORKERS == 15
-    assert (HYBRID_BM25_WEIGHT, HYBRID_EMBEDDING_WEIGHT, HYBRID_SUBSTRING_WEIGHT) == (0.55, 0.35, 0.10)
+    assert (HYBRID_BM25_WEIGHT, HYBRID_EMBEDDING_WEIGHT, HYBRID_SUBSTRING_WEIGHT) == (0.50, 0.35, 0.15)
     assert BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT == 0.85
     assert BACKGROUND_COLOR_BIAS_REUSE_WEIGHT == 0.15
 
@@ -159,6 +163,62 @@ def test_keyword_messages_do_not_include_image_role():
     assert "role" not in payload["assets"][0]
 
 
+def test_embedding_sidecar_reuses_when_meta_matches_embeddable_asset_count(tmp_path, monkeypatch):
+    monkeypatch.delenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", raising=False)
+    monkeypatch.setenv("EDUPPTX_AI_IMAGE_EMBEDDING_MODEL", "local-model")
+
+    import numpy as np
+
+    index_path = tmp_path / image_db.DEFAULT_EMBEDDING_INDEX_FILENAME
+    meta_path = tmp_path / image_db.DEFAULT_EMBEDDING_META_FILENAME
+    np.savez_compressed(
+        index_path,
+        asset_ids=np.asarray(["asset_with_text"], dtype=str),
+        vectors=np.asarray([[1.0, 0.0, 0.0]], dtype="float32"),
+    )
+    meta_path.write_text(
+        json.dumps(
+            {
+                "schema_version": image_db.EMBEDDING_INDEX_SCHEMA_VERSION,
+                "model": "local-model",
+                "asset_count": 1,
+                "background_color_bias_asset_count": 0,
+                "vector_dim": 3,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    match_index = {
+        "assets": [
+            {
+                "asset_id": "asset_with_text",
+                "asset_kind": "page_image",
+                "image_path": "pptx_images/asset_with_text.png",
+                "caption": "apple card illustration",
+            },
+            {
+                "asset_id": "asset_without_text",
+                "asset_kind": "page_image",
+                "image_path": "pptx_images/asset_without_text.png",
+            },
+        ],
+    }
+
+    def fail_rebuild(*_args, **_kwargs):
+        raise AssertionError("embedding sidecar should be reused, not rebuilt")
+
+    monkeypatch.setattr(image_db, "write_ai_image_embedding_index", fail_rebuild)
+
+    report = image_db._ensure_ai_image_embedding_index(match_index, tmp_path)
+
+    assert report["enabled"] is True
+    assert report["asset_count"] == 1
+    assert report["match_asset_count"] == 2
+    assert report["non_embeddable_asset_count"] == 1
+
+
 def test_transform_policy_uses_aspect_ratio_without_bucket_fields():
     target = {
         "asset_kind": "page_image",
@@ -184,6 +244,66 @@ def test_transform_policy_uses_aspect_ratio_without_bucket_fields():
     assert policy["target_aspect_ratio"] == "4:3"
     assert "candidate_aspect_bucket" not in policy
     assert "target_aspect_bucket" not in policy
+
+
+def test_transform_policy_uses_transparent_pad_for_allowed_cross_aspect_pair():
+    target = {
+        "asset_kind": "page_image",
+        "strict_reuse_group": "C02_generic_subject_object",
+        "aspect_ratio": "4:3",
+        "subject": "\u8bed\u6587",
+        "grade_norm": "\u4e94\u5e74\u7ea7",
+        "grade_band": "\u9ad8\u5e74\u7ea7",
+        "content_prompt": "apple object card",
+        "context_summary": "object recognition",
+    }
+    candidate = {
+        **target,
+        "asset_id": "candidate",
+        "image_path": "ai_images/candidate.png",
+        "aspect_ratio": "16:9",
+        "actual_width": 160,
+        "actual_height": 90,
+    }
+
+    details = _score_reuse_candidate_details(target, candidate)
+    policy = details["transform_policy"]
+
+    assert policy["decision"] == "accept"
+    assert policy["mode"] == "transparent_pad"
+    assert policy["candidate_aspect_ratio"] == "16:9"
+    assert policy["target_aspect_ratio"] == "4:3"
+    assert policy["crop_loss"] > 0
+
+
+def test_materialize_reuse_writes_target_sized_transparent_pad(tmp_path):
+    source = tmp_path / "library.png"
+    dest = tmp_path / "session" / "materials" / "hit.png"
+    Image.new("RGBA", (160, 90), (220, 20, 10, 255)).save(source)
+
+    materialize_reused_ai_image_asset(
+        session_dir=tmp_path / "session",
+        session_image_path=dest,
+        match={
+            "reuse_asset_id": "asset",
+            "candidate_image_path": str(source),
+            "transform_policy": {
+                "decision": "accept",
+                "mode": "transparent_pad",
+                "candidate_aspect_ratio": "16:9",
+                "target_aspect_ratio": "4:3",
+                "target_width": 120,
+                "target_height": 90,
+            },
+        },
+    )
+
+    with Image.open(dest) as image:
+        assert image.format == "PNG"
+        assert image.mode == "RGBA"
+        assert image.size == (120, 90)
+        assert image.getpixel((0, 0))[3] == 0
+        assert image.getpixel((60, 45)) == (220, 20, 10, 255)
 
 
 def test_split_indexes_collapse_legacy_skip_groups_and_read_back_without_c00(tmp_path):
@@ -354,6 +474,70 @@ def test_write_match_index_persists_general_boolean_to_split_indexes(tmp_path):
     payload = json.loads((split_dir / "C02_generic_subject_object.json").read_text(encoding="utf-8"))
     assert index["assets"][0]["general"] is True
     assert payload["assets"][0]["general"] is True
+
+
+def test_query_embedding_cache_persists_to_configured_retrieve_dir(tmp_path, monkeypatch):
+    import numpy as np
+
+    library_dir = tmp_path / "library"
+    image_dir = library_dir / "ai_images"
+    image_dir.mkdir(parents=True)
+    (image_dir / "candidate.png").write_bytes(b"candidate")
+    target = {
+        "asset_kind": "page_image",
+        "caption": "cartoon apple card",
+    }
+    asset = {
+        **_asset("candidate", "C02_generic_subject_object", prompt="cartoon apple card"),
+        "caption": "cartoon apple card",
+        "image_path": "ai_images/candidate.png",
+    }
+    embedding_index = {
+        "asset_ids": ["candidate"],
+        "vectors": np.asarray([[1.0, 0.0]], dtype="float32"),
+    }
+    cache_dir = tmp_path / "run" / "03_retrieve"
+    encode_calls = []
+
+    def fake_encode(texts, *, model_name=image_db.DEFAULT_EMBEDDING_MODEL, query=False):
+        assert query is True
+        encode_calls.append(list(texts))
+        return np.asarray([[1.0, 0.0] for _text in texts], dtype="float32")
+
+    monkeypatch.setattr(image_db, "_encode_embedding_texts", fake_encode)
+
+    first = image_db._rank_embedding_candidates(
+        target,
+        [asset],
+        library_root=library_dir,
+        embedding_index=embedding_index,
+        limit=8,
+        query_embedding_cache={},
+        query_embedding_cache_dir=cache_dir,
+    )
+
+    assert [row["asset"]["asset_id"] for row in first] == ["candidate"]
+    assert encode_calls == [["cartoon apple card"]]
+    assert (cache_dir / "ai_image_query_embedding_cache.npz").exists()
+    assert (cache_dir / "ai_image_query_embedding_cache_meta.json").exists()
+
+    def fail_encode(*_args, **_kwargs):
+        raise AssertionError("query embedding should have been loaded from disk")
+
+    monkeypatch.setattr(image_db, "_encode_embedding_texts", fail_encode)
+
+    second = image_db._rank_embedding_candidates(
+        target,
+        [asset],
+        library_root=library_dir,
+        embedding_index=embedding_index,
+        limit=8,
+        query_embedding_cache={},
+        query_embedding_cache_dir=cache_dir,
+    )
+
+    assert [row["asset"]["asset_id"] for row in second] == ["candidate"]
+    assert second[0]["embedding_score"] == first[0]["embedding_score"]
 
 
 def test_match_index_preserves_ppt_vlm_llm_comparison_fields():
@@ -636,7 +820,7 @@ def test_subject_scope_allows_explicit_general_cross_subject():
 def test_subject_scope_rejects_explicit_non_general_cross_subject():
     assert not _subject_scope_compatible(
         {"subject": "语文"},
-        {"subject": "其他", "general": False},
+        {"subject": "数学", "general": False},
     )
 
 
@@ -697,7 +881,7 @@ def test_hard_filter_allows_legacy_other_subject_after_subject_unknown_filter():
     assert _reuse_hard_filter_reject_reason(target, candidate) == ""
 
 
-def test_hard_filter_rejects_explicit_non_general_other_as_subject_mismatch():
+def test_hard_filter_treats_other_subject_as_general_even_when_general_false():
     target = {
         "asset_kind": "page_image",
         "strict_reuse_group": "C03_scene_decor_container",
@@ -716,7 +900,45 @@ def test_hard_filter_rejects_explicit_non_general_other_as_subject_mismatch():
         "aspect_ratio": "1:1",
     }
 
+    assert _subject_scope_decision(target, candidate)["subject_filter_mode"] == "subject_other_default"
+    assert _reuse_hard_filter_reject_reason(target, candidate) == ""
+
+
+def test_hard_filter_still_rejects_known_cross_subject_when_non_general():
+    target = {
+        "asset_kind": "page_image",
+        "strict_reuse_group": "C03_scene_decor_container",
+        "subject": "语文",
+        "grade_norm": "五年级",
+        "grade_band": "高年级",
+        "aspect_ratio": "1:1",
+    }
+    candidate = {
+        "asset_kind": "page_image",
+        "strict_reuse_group": "C03_scene_decor_container",
+        "subject": "数学",
+        "general": False,
+        "grade_norm": "五年级",
+        "grade_band": "高年级",
+        "aspect_ratio": "1:1",
+    }
+
     assert _reuse_hard_filter_reject_reason(target, candidate) == "subject_mismatch"
+
+
+def test_reuse_unknown_fields_ignore_grade_metadata_for_now():
+    target = {"subject": "语文", "grade_norm": "其他", "grade_band": "其他"}
+    candidate = {
+        "subject": "语文",
+        "grade_norm": "其他",
+        "grade_band": "其他",
+        "strict_reuse_group": "C02_generic_subject_object",
+    }
+    decision = _subject_scope_decision(target, candidate)
+
+    assert _target_metadata_unknown_fields(target) == ["grade_norm", "grade_band"]
+    assert _target_unknown_fields_for_reuse(target) == []
+    assert _candidate_unknown_fields_for_reuse(candidate, decision) == []
 
 
 def test_apply_keyword_payload_uses_llm_grade_enums():
@@ -971,7 +1193,7 @@ class _KeywordClient:
         return {"assets": [payload]}
 
 
-def test_target_subject_other_uses_general_filter_and_writes_debug(tmp_path):
+def test_target_reuse_preserves_deck_subject_and_writes_debug(tmp_path):
     image_dir = tmp_path / "ai_images"
     image_dir.mkdir()
     (image_dir / "candidate.png").write_bytes(b"candidate")
@@ -1025,9 +1247,9 @@ def test_target_subject_other_uses_general_filter_and_writes_debug(tmp_path):
     payload = json.loads(debug_path.read_text(encoding="utf-8"))
     query = payload["queries"][0]
     decision = query["decision"]
-    assert decision["reason"] == "no_eligible_candidate_after_hard_filter"
+    assert decision["reason"] == "retrieval_no_candidate"
     assert "unknown_fields" not in decision
-    assert query["candidate_scores"][0]["score_details"]["subject_filter"]["subject_filter_mode"] == "target_subject_unknown"
+    assert query["candidate_scores"][0]["score_details"]["subject_filter"]["subject_filter_mode"] == "same_subject"
 
 
 def test_reuse_routing_is_always_split(tmp_path):
