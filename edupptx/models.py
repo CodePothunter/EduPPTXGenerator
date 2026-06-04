@@ -74,11 +74,21 @@ SUPPORTED_IMAGE_ASPECT_RATIOS: tuple[str, ...] = tuple(IMAGE_RATIO_SIZES.keys())
 _RATIO_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$")
 
 
-def normalize_image_source(value: object) -> Literal["search", "ai_generate"]:
+def normalize_image_source(value: object) -> Literal["search", "ai_generate", "exercise_asset"]:
     """Normalize LLM image source aliases into the supported schema values."""
     text = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
     if not text:
         return "ai_generate"
+
+    if text in {
+        "exercise_asset",
+        "exercise",
+        "question_asset",
+        "question_image",
+        "local_exercise",
+        "local_asset",
+    }:
+        return "exercise_asset"
 
     if text in {
         "ai",
@@ -178,8 +188,10 @@ class ImageNeed(BaseModel):
     """A single image request within a page's material_needs."""
 
     query: str = Field(description="Semantic image content query without routed style or quality terms")
-    source: Literal["search", "ai_generate"] = "ai_generate"
+    source: Literal["search", "ai_generate", "exercise_asset"] = "ai_generate"
     role: Literal["hero", "illustration", "icon", "background"] = "illustration"
+    asset_id: str = Field(default="", description="Stable source asset id when bound from a database or library")
+    path: str = Field(default="", description="Session-relative path for local exercise assets")
     aspect_ratio: str = Field(
         default="16:9",
         description="Aspect ratio from predefined set: 1:1, 3:4, 4:3, 16:9, 9:16",
@@ -254,6 +266,14 @@ class PagePlan(BaseModel):
     reveal_mode: RevealMode | None = Field(
         default=None,
         description="Pseudo-animation answer reveal mode for quiz/exercise pages.",
+    )
+    exercise_refs: list[str] = Field(
+        default_factory=list,
+        description="Exercise ids selected from the exercise bank for this page.",
+    )
+    exercise_payloads: list[dict] = Field(
+        default_factory=list,
+        description="Exact database exercise payloads bound after planning; answers feed reveal pages.",
     )
     notes: str = Field(default="", description="Speaker notes")
 

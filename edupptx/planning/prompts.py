@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from edupptx.planning.exercise_policy_prompt import (
+    build_exercise_policy_prompt,
+    build_exercise_refinement_prompt,
+)
+
 
 _REFS_DIR = Path(__file__).resolve().parent.parent / "design" / "references"
 
@@ -15,8 +20,15 @@ def _load_ref(name: str) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def build_outline_planning_system_prompt() -> str:
-    return _OUTLINE_SYSTEM_PROMPT
+def build_outline_planning_system_prompt(
+    *,
+    exercise_policy_enabled: bool = False,
+    exercise_candidates_text: str = "",
+) -> str:
+    parts = [_OUTLINE_SYSTEM_PROMPT]
+    if exercise_policy_enabled:
+        parts.append(build_exercise_policy_prompt(exercise_candidates_text))
+    return "\n\n".join(parts)
 
 
 def build_outline_planning_user_prompt(
@@ -41,7 +53,10 @@ def build_outline_planning_user_prompt(
     return "\n".join(parts)
 
 
-def build_refinement_planning_system_prompt() -> str:
+def build_refinement_planning_system_prompt(
+    *,
+    exercise_policy_enabled: bool = False,
+) -> str:
     from edupptx.materials.icons import list_icons
 
     icon_list = ", ".join(list_icons())
@@ -57,6 +72,8 @@ def build_refinement_planning_system_prompt() -> str:
         parts.append(image_rules)
     if image_prompt_routing:
         parts.append(image_prompt_routing)
+    if exercise_policy_enabled:
+        parts.append(build_exercise_refinement_prompt())
     return "\n\n".join(parts)
 
 

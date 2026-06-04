@@ -159,7 +159,9 @@ class PPTXAgent:
         # ── Phase 1a: Content Planning ──────────────────────
         session.log_step("planning_stage1", "Generating stage-1 content outline without template constraints")
         draft = self._phase1_outline_planning(ctx)
+        draft = self._phase1_bind_exercises(draft, session)
         logger.info("Stage-1 outline: {} pages", len(draft.pages))
+        stage1_bound_draft = draft.model_copy(deep=True)
 
         session.log_step("template_routing", "Selecting template family and palette from outline")
         routing, manifest, palette = self._phase1a_template_routing(draft)
@@ -177,6 +179,7 @@ class PPTXAgent:
 
         session.log_step("planning_stage2", "Refining outline with matched template references")
         draft = self._phase1c_planning_refinement(draft, manifest)
+        draft = self._phase1_bind_exercises(draft, session, source_draft=stage1_bound_draft)
         draft.style_routing = routing
         logger.info("Stage-2 refined draft: {} pages before reveal expansion", len(draft.pages))
 
@@ -498,6 +501,37 @@ class PPTXAgent:
 
         return refine_planning_draft(draft, manifest, self.config)
 
+    def _phase1_bind_exercises(
+        self,
+        draft: PlanningDraft,
+        session: Session,
+        *,
+        source_draft: PlanningDraft | None = None,
+    ) -> PlanningDraft:
+        if not bool(getattr(self.config, "exercise_policy_enabled", False)):
+            return draft
+        from edupptx.planning.exercise_plan_binder import (
+            bind_exercises_to_draft,
+            load_exercise_bank,
+            restore_exercise_refs_from_source,
+        )
+
+        records = load_exercise_bank(getattr(self.config, "exercise_bank_path", None))
+        if not records:
+            logger.warning("Exercise policy enabled but no exercise bank records loaded")
+            return draft
+        if source_draft is not None:
+            restore_exercise_refs_from_source(draft, source_draft)
+        result = bind_exercises_to_draft(draft, records, session_dir=session.dir)
+        if result.bound_count:
+            session.save_plan(draft.model_dump())
+            logger.info(
+                "Exercise bank binding complete: exercises={}, copied_images={}",
+                result.bound_count,
+                result.copied_image_count,
+            )
+        return draft
+
     def _phase1d_finalize_reveals(self, draft: PlanningDraft) -> PlanningDraft:
         from edupptx.planning.content_planner import finalize_reveal_pages
 
@@ -802,6 +836,20 @@ class PPTXAgent:
             if page.material_needs.images:
                 routed_image_needs = routed_image_needs_by_page.get(page.page_number, [])
                 for slot_key, need in iter_image_slot_keys(routed_image_needs):
+                    if need.source == "exercise_asset":
+                        asset_path = Path(str(getattr(need, "path", "") or ""))
+                        if not asset_path.is_absolute():
+                            asset_path = session.dir / asset_path
+                        if asset_path.exists():
+                            assets_by_page[page.page_number].image_paths[slot_key] = asset_path
+                        else:
+                            logger.warning(
+                                "Exercise asset image missing for page {} {}: {}",
+                                page.page_number,
+                                slot_key,
+                                asset_path,
+                            )
+                        continue
                     if need.source != "ai_generate":
                         pending_fetch_by_page[page.page_number].append((slot_key, need))
                         continue

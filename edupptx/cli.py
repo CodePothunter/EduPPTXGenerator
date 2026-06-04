@@ -262,6 +262,8 @@ def main(ctx: click.Context, verbose: bool, quiet: bool):
 @click.option("--web-search", is_flag=True, help="启用 LLM 联网搜索 (仅 Responses API provider)")
 @click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
 @click.option("--env-file", default=".env", help=".env 文件路径")
+@click.option("--exercise-policy/--no-exercise-policy", default=None, help="启用/关闭题库 A/B/C 习题规划策略")
+@click.option("--exercise-bank", default=None, type=click.Path(exists=True), help="题库 JSON 文件路径")
 @_llm_profile_option
 @_asset_library_vlm_review_option
 @_debug_artifacts_option
@@ -270,7 +272,8 @@ def main(ctx: click.Context, verbose: bool, quiet: bool):
 @click.option("--qa", is_flag=True, help="生成完成后运行视觉 QA，把摘要附加到结果")
 def gen(topic: str, requirements: str, file_path: str | None, research: bool,
         style: str, review: bool, debug: bool, web_search: bool, output: str,
-        env_file: str, llm: str | None, vlm_review: bool, debug_artifacts: bool | None, no_asset_ingest: bool, as_json: bool, qa: bool):
+        env_file: str, exercise_policy: bool | None, exercise_bank: str | None,
+        llm: str | None, vlm_review: bool, debug_artifacts: bool | None, no_asset_ingest: bool, as_json: bool, qa: bool):
     """从主题生成教育演示文稿。
 
     \b
@@ -301,6 +304,10 @@ def gen(topic: str, requirements: str, file_path: str | None, research: bool,
         config.output_dir = Path(output)
         config.web_search = web_search
         config.asset_library_vlm_review = vlm_review
+        if exercise_policy is not None:
+            config.exercise_policy_enabled = exercise_policy
+        if exercise_bank:
+            config.exercise_bank_path = Path(exercise_bank)
         if debug_artifacts is not None:
             config.debug_artifacts = debug_artifacts
         config.asset_library_ingest_enabled = not no_asset_ingest
@@ -533,10 +540,13 @@ def images_from_plan(plan_path: str, env_file: str, llm: str | None, vlm_review:
 @click.option("--research", is_flag=True, help="启用联网搜索")
 @click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
 @click.option("--env-file", default=".env", help=".env 文件路径")
+@click.option("--exercise-policy/--no-exercise-policy", default=None, help="启用/关闭题库 A/B/C 习题规划策略")
+@click.option("--exercise-bank", default=None, type=click.Path(exists=True), help="题库 JSON 文件路径")
 @_llm_profile_option
 @click.option("--json", "as_json", is_flag=True, help="以 JSON 格式输出结果")
 def plan(topic: str, requirements: str, file_path: str | None, research: bool,
-         output: str, env_file: str, llm: str | None, as_json: bool):
+         output: str, env_file: str, exercise_policy: bool | None, exercise_bank: str | None,
+         llm: str | None, as_json: bool):
     """只生成策划稿，不渲染。
 
     \b
@@ -547,6 +557,10 @@ def plan(topic: str, requirements: str, file_path: str | None, research: bool,
     try:
         config = _load_config(env_file, llm)
         config.output_dir = Path(output)
+        if exercise_policy is not None:
+            config.exercise_policy_enabled = exercise_policy
+        if exercise_bank:
+            config.exercise_bank_path = Path(exercise_bank)
 
         agent = PPTXAgent(config)
         session_dir = agent.run(

@@ -54,7 +54,11 @@ def generate_planning_outline(
     """Generate the stage-1 page outline without template constraints."""
 
     client = create_llm_client(config)
-    system = build_outline_planning_system_prompt()
+    exercise_candidates_text = _build_exercise_candidates_text(ctx, config)
+    system = build_outline_planning_system_prompt(
+        exercise_policy_enabled=bool(getattr(config, "exercise_policy_enabled", False)),
+        exercise_candidates_text=exercise_candidates_text,
+    )
     user = build_outline_planning_user_prompt(
         topic=ctx.topic,
         requirements=ctx.requirements,
@@ -82,7 +86,9 @@ def refine_planning_draft(
     """Generate the stage-2 refined draft using matched template references."""
 
     client = create_llm_client(config)
-    system = build_refinement_planning_system_prompt()
+    system = build_refinement_planning_system_prompt(
+        exercise_policy_enabled=bool(getattr(config, "exercise_policy_enabled", False)),
+    )
     outline_json = json.dumps(outline.model_dump(), ensure_ascii=False, indent=2)
     template_brief = build_page_variant_briefs(outline, manifest)
     user = build_refinement_planning_user_prompt(
@@ -142,6 +148,38 @@ def _parse_draft(response: str, ensure_reveals: bool = False) -> PlanningDraft:
         _ensure_reveal_pairs(data)
 
     return PlanningDraft.model_validate(data)
+
+
+def _build_exercise_candidates_text(ctx: InputContext, config: Config) -> str:
+    if not bool(getattr(config, "exercise_policy_enabled", False)):
+        return ""
+    try:
+        from edupptx.materials.ai_image_asset_db import resolve_meta_grade_subject
+        from edupptx.planning.exercise_plan_binder import load_exercise_bank, select_exercise_candidates
+        from edupptx.planning.exercise_policy_prompt import format_exercise_candidates_for_prompt
+
+        records = load_exercise_bank(getattr(config, "exercise_bank_path", None))
+        if not records:
+            return ""
+        meta = resolve_meta_grade_subject(
+            topic=ctx.topic,
+            audience="",
+            requirements=ctx.requirements,
+            normalizer_client=None,
+        )
+        candidates = select_exercise_candidates(
+            records,
+            subject=meta.get("subject", ""),
+            grade=meta.get("grade", ""),
+            grade_band=meta.get("grade_band", ""),
+            topic=ctx.topic,
+            requirements=ctx.requirements,
+            limit_per_category=int(getattr(config, "exercise_candidate_limit_per_category", 4) or 4),
+        )
+        return format_exercise_candidates_for_prompt(candidates)
+    except Exception as exc:
+        logger.warning("Exercise candidate prompt skipped: {}", str(exc)[:160])
+        return ""
 
 
 def _load_json_with_repair(raw: str) -> dict:
@@ -301,10 +339,19 @@ def _explicit_reveal_mode(page: dict) -> str | None:
 
 
 def _build_reveal_page(source_page: dict, reveal_mode: str) -> dict:
+    from edupptx.planning.exercise_plan_binder import build_reveal_content_points_from_payloads
+
     reveal_page = copy.deepcopy(source_page)
     source_notes = str(source_page.get("notes", "") or "")
     reveal_page["reveal_from_page"] = source_page.get("page_number")
     reveal_page["reveal_mode"] = reveal_mode
+    reveal_points = build_reveal_content_points_from_payloads(source_page)
+    if reveal_points:
+        content_points = list(source_page.get("content_points") or [])
+        for point in reveal_points:
+            if point not in content_points:
+                content_points.append(point)
+        reveal_page["content_points"] = content_points
     if reveal_mode == "show_answer":
         reveal_page["design_notes"] = (
             "保留原布局，只在原空位或答案区补充答案，不新增图片、不新增新卡片、不改变原元素位置"

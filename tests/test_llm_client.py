@@ -428,3 +428,18 @@ class TestConfigProvider:
         config = Config.from_env(env_path)
 
         assert config.llm_thinking == "disabled"
+
+    def test_from_env_loads_exercise_policy_switch(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("EDUPPTX_EXERCISE_POLICY", raising=False)
+        monkeypatch.delenv("EDUPPTX_EXERCISE_BANK_PATH", raising=False)
+        env_path = tmp_path / ".env"
+        bank_path = tmp_path / "exercise_bank.json"
+        env_path.write_text(
+            f"EDUPPTX_EXERCISE_POLICY=1\nEDUPPTX_EXERCISE_BANK_PATH={bank_path}\n",
+            encoding="utf-8",
+        )
+
+        config = Config.from_env(env_path)
+
+        assert config.exercise_policy_enabled is True
+        assert config.exercise_bank_path == bank_path

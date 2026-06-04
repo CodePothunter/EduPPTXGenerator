@@ -57,6 +57,11 @@ class Config:
     asset_ingest_job_db: Path | None = None
     debug_artifacts: bool = False
 
+    # Optional exercise-bank planning policy
+    exercise_policy_enabled: bool = False
+    exercise_bank_path: Path | None = None
+    exercise_candidate_limit_per_category: int = 4
+
     @classmethod
     def from_env(cls, env_path: str | Path | None = None) -> Config:
         env_file = Path(env_path or ".env")
@@ -117,6 +122,13 @@ class Config:
                 if os.getenv("EDUPPTX_ASSET_INGEST_JOB_DB", "").strip()
                 else None
             ),
+            exercise_policy_enabled=_env_bool("EDUPPTX_EXERCISE_POLICY", False),
+            exercise_bank_path=(
+                Path(os.getenv("EDUPPTX_EXERCISE_BANK_PATH", ""))
+                if os.getenv("EDUPPTX_EXERCISE_BANK_PATH", "").strip()
+                else None
+            ),
+            exercise_candidate_limit_per_category=int(os.getenv("EDUPPTX_EXERCISE_CANDIDATE_LIMIT", "4")),
         )
 
 
