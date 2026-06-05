@@ -59,6 +59,8 @@ class Config:
     # Optional exercise-bank planning policy
     exercise_policy_enabled: bool = False
     exercise_bank_path: Path | None = None
+    exercise_db_path: Path | None = None
+    exercise_image_root: Path | None = None
     exercise_candidate_limit_per_category: int = 4
 
     @classmethod
@@ -124,6 +126,16 @@ class Config:
             exercise_bank_path=(
                 Path(os.getenv("EDUPPTX_EXERCISE_BANK_PATH", ""))
                 if os.getenv("EDUPPTX_EXERCISE_BANK_PATH", "").strip()
+                else None
+            ),
+            exercise_db_path=(
+                Path(os.getenv("EDUPPTX_EXERCISE_DB_PATH", ""))
+                if os.getenv("EDUPPTX_EXERCISE_DB_PATH", "").strip()
+                else None
+            ),
+            exercise_image_root=(
+                Path(os.getenv("EDUPPTX_EXERCISE_IMAGE_ROOT", ""))
+                if os.getenv("EDUPPTX_EXERCISE_IMAGE_ROOT", "").strip()
                 else None
             ),
             exercise_candidate_limit_per_category=int(os.getenv("EDUPPTX_EXERCISE_CANDIDATE_LIMIT", "4")),

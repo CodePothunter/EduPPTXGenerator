@@ -153,6 +153,8 @@ def _parse_draft(response: str, ensure_reveals: bool = False) -> PlanningDraft:
 def _build_exercise_candidates_text(ctx: InputContext, config: Config) -> str:
     if not bool(getattr(config, "exercise_policy_enabled", False)):
         return ""
+    if getattr(config, "exercise_db_path", None):
+        return ""
     try:
         from edupptx.materials.ai_image_asset_db import resolve_meta_grade_subject
         from edupptx.planning.exercise_plan_binder import load_exercise_bank, select_exercise_candidates

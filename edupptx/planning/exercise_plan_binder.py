@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from edupptx.models import ImageNeed, PlanningDraft
+from edupptx.models import ImageNeed, PlanningDraft, match_aspect_ratio, normalize_image_aspect_ratio
 
 
 _CATEGORY_ALIASES = {
@@ -55,6 +55,8 @@ class ExerciseRecord:
     subject: str = ""
     grade: str = ""
     grade_band: str = ""
+    lesson_id: str = ""
+    lesson_name: str = ""
     options: tuple[str, ...] = ()
     answer: str = ""
     explanation: str = ""
@@ -68,6 +70,10 @@ class ExerciseBindingResult:
     bound_count: int
     copied_image_count: int
     warnings: tuple[str, ...] = ()
+    matched_subject: str = ""
+    matched_grade: str = ""
+    matched_lesson_id: str = ""
+    matched_lesson_name: str = ""
 
 
 def load_exercise_bank(path: str | Path | None) -> list[ExerciseRecord]:
@@ -98,6 +104,23 @@ def load_exercise_bank(path: str | Path | None) -> list[ExerciseRecord]:
         record = _normalize_exercise_record(item, root)
         if record is not None:
             records.append(record)
+    return records
+
+
+def load_exercise_records(
+    *,
+    bank_path: str | Path | None = None,
+    db_path: str | Path | None = None,
+    image_root: str | Path | None = None,
+) -> list[ExerciseRecord]:
+    """Load exercise records from all configured exercise-bank sources."""
+
+    records: list[ExerciseRecord] = []
+    if db_path is not None:
+        from edupptx.planning.exercise_db_provider import load_exercise_bank_from_db
+
+        records.extend(load_exercise_bank_from_db(db_path, image_root=image_root))
+    records.extend(load_exercise_bank(bank_path))
     return records
 
 
@@ -141,6 +164,81 @@ def select_exercise_candidates(
         )
         selected.extend(ranked[:limit])
     return selected
+
+
+def bind_strict_lesson_exercises_to_draft(
+    draft: PlanningDraft,
+    records: list[ExerciseRecord],
+    *,
+    session_dir: str | Path,
+    limit_per_category: int = 4,
+) -> ExerciseBindingResult:
+    """Bind DB exercises only when grade, subject and lesson name strictly match the plan."""
+
+    subject = _effective_subject_from_draft(draft)
+    grade = _clean_text(getattr(draft.meta, "grade", ""))
+    if not subject or not grade or subject == "其他" or grade == "其他":
+        return ExerciseBindingResult(
+            bound_count=0,
+            copied_image_count=0,
+            warnings=("strict lesson match skipped: missing subject or grade",),
+        )
+
+    candidates = _lesson_name_candidates_from_draft(draft)
+    matched_records, lesson_id, lesson_name = _strict_lesson_records(
+        records,
+        subject=subject,
+        grade=grade,
+        lesson_candidates=candidates,
+    )
+    if not matched_records:
+        return ExerciseBindingResult(
+            bound_count=0,
+            copied_image_count=0,
+            warnings=("strict lesson match skipped: no lesson-level exercise records",),
+            matched_subject=subject,
+            matched_grade=grade,
+        )
+
+    exercise_pages = _exercise_pages(draft)
+    if not exercise_pages:
+        return ExerciseBindingResult(
+            bound_count=0,
+            copied_image_count=0,
+            warnings=("strict lesson match found records but plan has no exercise pages",),
+            matched_subject=subject,
+            matched_grade=grade,
+            matched_lesson_id=lesson_id,
+            matched_lesson_name=lesson_name,
+        )
+
+    used: set[str] = set()
+    category_usage: dict[str, int] = {"A": 0, "B": 0, "C": 0}
+    for page_index, page in enumerate(exercise_pages):
+        category = _preferred_category_for_page(page, page_index)
+        count = _planned_exercise_count(page)
+        page_records = _pick_records_for_page(
+            matched_records,
+            category=category,
+            count=count,
+            used=used,
+            category_usage=category_usage,
+            query_text=_page_query_text(draft, page),
+            limit_per_category=limit_per_category,
+        )
+        if page_records:
+            page.exercise_refs = [record.exercise_id for record in page_records]
+
+    result = bind_exercises_to_draft(draft, matched_records, session_dir=session_dir)
+    return ExerciseBindingResult(
+        bound_count=result.bound_count,
+        copied_image_count=result.copied_image_count,
+        warnings=result.warnings,
+        matched_subject=subject,
+        matched_grade=grade,
+        matched_lesson_id=lesson_id,
+        matched_lesson_name=lesson_name,
+    )
 
 
 def bind_exercises_to_draft(
@@ -260,6 +358,8 @@ def _normalize_exercise_record(item: dict[str, Any], root: Path) -> ExerciseReco
         subject=_first_text(item, "subject"),
         grade=_first_text(item, "grade", "grade_norm"),
         grade_band=_first_text(item, "grade_band"),
+        lesson_id=_first_text(item, "lesson_id"),
+        lesson_name=_first_text(item, "lesson_name", "lesson", "course_name"),
         stem=stem,
         options=options,
         answer=answer,
@@ -321,12 +421,15 @@ def _bind_images(
     for asset in record.image_assets:
         if not asset.path.exists():
             raise FileNotFoundError(f"exercise image missing: {asset.path}")
-        suffix = asset.path.suffix.lower() or ".png"
-        relative_path = Path("materials") / "exercises" / f"{record.exercise_id}_{asset.image_id}{suffix}"
+        target_aspect_ratio = normalize_image_aspect_ratio(asset.aspect_ratio)
+        relative_path = Path("materials") / "exercises" / f"{record.exercise_id}_{asset.image_id}.png"
         destination = session_root / relative_path
         destination.parent.mkdir(parents=True, exist_ok=True)
-        if asset.path.resolve() != destination.resolve():
-            shutil.copy2(asset.path, destination)
+        materialized_aspect_ratio = _materialize_exercise_image(
+            asset.path,
+            destination,
+            target_aspect_ratio=target_aspect_ratio,
+        )
         copied += 1
         relative_text = relative_path.as_posix()
         payloads.append({
@@ -334,7 +437,7 @@ def _bind_images(
             "path": relative_text,
             "role": asset.role,
             "query": asset.query,
-            "aspect_ratio": asset.aspect_ratio,
+            "aspect_ratio": materialized_aspect_ratio,
         })
         image_needs.append(ImageNeed(
             query=asset.query or f"{record.exercise_id} 题目配图",
@@ -342,10 +445,61 @@ def _bind_images(
             role="illustration",
             asset_id=asset.image_id,
             path=relative_text,
-            aspect_ratio=asset.aspect_ratio,
+            aspect_ratio=materialized_aspect_ratio,
             caption=asset.query,
         ))
     return payloads, image_needs, copied
+
+
+def _materialize_exercise_image(source: Path, destination: Path, *, target_aspect_ratio: str) -> str:
+    try:
+        from PIL import Image
+
+        with Image.open(source) as raw:
+            image = raw.convert("RGBA")
+            actual_ratio = match_aspect_ratio(*image.size)
+            aspect_ratio = normalize_image_aspect_ratio(target_aspect_ratio or actual_ratio)
+            canvas = _transparent_canvas_for_ratio(image, aspect_ratio)
+            canvas.save(destination, format="PNG")
+            return aspect_ratio
+    except Exception:
+        if source.resolve() != destination.resolve():
+            shutil.copy2(source, destination)
+        return normalize_image_aspect_ratio(target_aspect_ratio)
+
+
+def _transparent_canvas_for_ratio(image: Any, aspect_ratio: str) -> Any:
+    from PIL import Image
+
+    ratio_width, ratio_height = _ratio_parts(aspect_ratio)
+    multiplier = max(
+        _ceil_div(image.width, ratio_width),
+        _ceil_div(image.height, ratio_height),
+        1,
+    )
+    canvas_width = ratio_width * multiplier
+    canvas_height = ratio_height * multiplier
+    canvas = Image.new("RGBA", (canvas_width, canvas_height), (0, 0, 0, 0))
+    left = (canvas_width - image.width) // 2
+    top = (canvas_height - image.height) // 2
+    canvas.alpha_composite(image, (left, top))
+    return canvas
+
+
+def _ratio_parts(aspect_ratio: str) -> tuple[int, int]:
+    parts = str(aspect_ratio or "16:9").split(":", 1)
+    if len(parts) != 2:
+        return 16, 9
+    try:
+        width = max(1, int(parts[0]))
+        height = max(1, int(parts[1]))
+        return width, height
+    except ValueError:
+        return 16, 9
+
+
+def _ceil_div(value: int, divisor: int) -> int:
+    return (value + divisor - 1) // divisor
 
 
 def _record_payload(record: ExerciseRecord, image_payloads: list[dict[str, str]]) -> dict[str, Any]:
@@ -358,6 +512,8 @@ def _record_payload(record: ExerciseRecord, image_payloads: list[dict[str, str]]
         "explanation": record.explanation,
         "knowledge_points": list(record.knowledge_points),
         "difficulty": record.difficulty,
+        "lesson_id": record.lesson_id,
+        "lesson_name": record.lesson_name,
         "image_assets": image_payloads,
     }
 
@@ -394,13 +550,23 @@ def _dedupe_refs(refs: list[str]) -> list[str]:
 
 def _record_score(record: ExerciseRecord, query_text: str) -> int:
     score = 0
+    haystack = _clean_text(" ".join((
+        record.stem,
+        *record.options,
+        *record.knowledge_points,
+    )))
     for point in record.knowledge_points:
         point_text = _clean_text(point)
         if point_text and point_text in query_text:
+            score += 8 + min(len(point_text), 8)
+        elif point_text and query_text and query_text in point_text:
             score += 4
     for token in _tokens(query_text):
-        if token and token in record.stem:
-            score += 1
+        if token and token in haystack:
+            score += max(1, min(len(token), 6))
+    for token in _semantic_query_tokens(query_text):
+        if token in haystack:
+            score += max(2, min(len(token), 6))
     if record.image_assets:
         score += 1
     return score
@@ -414,8 +580,270 @@ def _compatible(record_value: str, target_value: str) -> bool:
     return record_text == target_text
 
 
+_SUBJECT_TERMS = ("语文", "数学", "物理")
+_LESSON_GENERIC_TERMS = (
+    "课文教学", "教学设计", "课程教学", "课堂教学", "教学课件", "课件",
+    "同步课程", "同步教学", "上册", "下册", "第1课时", "第2课时",
+    "第一课时", "第二课时", "第三课时",
+    "一年级", "二年级", "三年级", "四年级", "五年级", "六年级", "七年级", "八年级",
+    "小学", "初中", "高中", "语文", "数学", "物理",
+)
+_LESSON_PUNCTUATION = "《》〈〉「」『』“”\"'[]（）()：:，,。.!！?？ ·-—_、．\t\r\n"
+
+
+def _effective_subject_from_draft(draft: PlanningDraft) -> str:
+    subject = _clean_text(getattr(draft.meta, "subject", ""))
+    if subject and subject != "其他":
+        return subject
+    text = _draft_text(draft)
+    for candidate in _SUBJECT_TERMS:
+        if candidate in text:
+            return candidate
+    return subject
+
+
+def _lesson_name_candidates_from_draft(draft: PlanningDraft) -> list[str]:
+    raw_candidates: list[str] = []
+    text = _draft_text(draft)
+    raw_candidates.extend(re.findall(r"《([^》]{1,40})》", text))
+    raw_candidates.extend(re.findall(r"[“\"]([^”\"]{1,40})[”\"]", text))
+    raw_candidates.append(_clean_text(getattr(draft.meta, "topic", "")))
+    for page in draft.pages[:8]:
+        raw_candidates.append(_clean_text(page.title))
+        raw_candidates.append(_clean_text(page.subtitle))
+        title = _clean_text(page.title)
+        if "：" in title:
+            raw_candidates.append(title.split("：", 1)[1])
+        if ":" in title:
+            raw_candidates.append(title.split(":", 1)[1])
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for candidate in raw_candidates:
+        normalized = _normalize_lesson_name(candidate)
+        if len(normalized) < 2 or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
+def _strict_lesson_records(
+    records: list[ExerciseRecord],
+    *,
+    subject: str,
+    grade: str,
+    lesson_candidates: list[str],
+) -> tuple[list[ExerciseRecord], str, str]:
+    if not lesson_candidates:
+        return [], "", ""
+
+    grouped: dict[tuple[str, str], list[ExerciseRecord]] = {}
+    best_scores: dict[tuple[str, str], int] = {}
+    for record in records:
+        if _clean_text(record.subject) != subject or _clean_text(record.grade) != grade:
+            continue
+        lesson_name = _clean_text(record.lesson_name)
+        lesson_id = _clean_text(record.lesson_id)
+        lesson_norm = _normalize_lesson_name(lesson_name)
+        if not lesson_norm:
+            continue
+        score = _lesson_match_score(lesson_norm, lesson_candidates)
+        if score < 90:
+            continue
+        key = (lesson_id, lesson_name)
+        grouped.setdefault(key, []).append(record)
+        best_scores[key] = max(best_scores.get(key, 0), score)
+
+    if not grouped:
+        return [], "", ""
+
+    best_key = max(
+        grouped,
+        key=lambda key: (
+            best_scores.get(key, 0),
+            len(grouped[key]),
+            key[1],
+        ),
+    )
+    return grouped[best_key], best_key[0], best_key[1]
+
+
+def _lesson_match_score(lesson_norm: str, candidates: list[str]) -> int:
+    best = 0
+    for candidate in candidates:
+        if candidate == lesson_norm:
+            best = max(best, 120 + len(candidate))
+        elif candidate in lesson_norm:
+            best = max(best, 90 + len(candidate))
+        elif lesson_norm in candidate:
+            best = max(best, 90 + len(lesson_norm))
+    return best
+
+
+def _normalize_lesson_name(value: Any) -> str:
+    text = _clean_text(value)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"^第[一二三四五六七八九十\d]+[节课单元]*", "", text)
+    text = re.sub(r"^[一二三四五六七八九十\d]+[.、．\s]+", "", text)
+    for term in _LESSON_GENERIC_TERMS:
+        text = text.replace(term, "")
+    return "".join(char for char in text if char not in _LESSON_PUNCTUATION).strip()
+
+
+def _draft_text(draft: PlanningDraft) -> str:
+    parts = [
+        _clean_text(getattr(draft.meta, "topic", "")),
+        _clean_text(getattr(draft.meta, "audience", "")),
+        _clean_text(getattr(draft.meta, "purpose", "")),
+    ]
+    for page in draft.pages:
+        parts.append(_clean_text(page.title))
+        parts.append(_clean_text(page.subtitle))
+        for point in page.content_points or []:
+            parts.append(_clean_text(point))
+    return "\n".join(part for part in parts if part)
+
+
+def _exercise_pages(draft: PlanningDraft) -> list[Any]:
+    pages: list[Any] = []
+    for page in draft.pages:
+        if getattr(page, "reveal_from_page", None) is not None:
+            continue
+        text = _page_text(page)
+        if page.page_type in {"exercise", "quiz"} or _looks_like_exercise_page(text):
+            pages.append(page)
+    return pages
+
+
+def _looks_like_exercise_page(text: str) -> bool:
+    return any(term in text for term in (
+        "练习", "习题", "巩固", "综合运用", "扩展探索", "拓展探索",
+        "课堂检测", "随堂练", "达标检测", "小试牛刀", "挑战",
+    ))
+
+
+def _preferred_category_for_page(page: Any, page_index: int) -> str:
+    text = _page_text(page)
+    if any(term in text for term in ("扩展探索", "拓展探索", "拓展", "扩展", "探索", "挑战")):
+        return "C"
+    if any(term in text for term in ("综合运用", "综合", "应用", "实践", "任务")):
+        return "B"
+    if any(term in text for term in ("复习巩固", "巩固", "回顾", "基础", "练一练")):
+        return "A"
+    return ("B", "A", "C")[min(page_index, 2)]
+
+
+def _planned_exercise_count(page: Any) -> int:
+    points = [str(point) for point in (page.content_points or [])]
+    question_like = 0
+    for point in points:
+        if any(marker in point for marker in ("？", "?", "<s>", "（", "(", "判断", "选择", "计算", "练习", "题")):
+            question_like += 1
+    if question_like:
+        return max(1, min(question_like, 3))
+    return 1
+
+
+def _pick_records_for_page(
+    records: list[ExerciseRecord],
+    *,
+    category: str,
+    count: int,
+    used: set[str],
+    category_usage: dict[str, int],
+    query_text: str,
+    limit_per_category: int,
+) -> list[ExerciseRecord]:
+    category_limit = max(1, int(limit_per_category or 4))
+    limit = max(1, min(count, category_limit))
+    preferred = [
+        record for record in records
+        if record.category == category
+        and record.exercise_id not in used
+        and category_usage.get(record.category, 0) < category_limit
+    ]
+    fallback = [
+        record for record in records
+        if record.category != category
+        and record.exercise_id not in used
+        and category_usage.get(record.category, 0) < category_limit
+    ]
+    ranked = sorted(
+        preferred,
+        key=lambda record: (-_record_score(record, query_text), record.exercise_id),
+    )
+    if len(ranked) < limit:
+        ranked.extend(sorted(
+            fallback,
+            key=lambda record: (-_record_score(record, query_text), record.category, record.exercise_id),
+        ))
+    selected: list[ExerciseRecord] = []
+    for record in ranked:
+        if len(selected) >= limit:
+            break
+        if category_usage.get(record.category, 0) >= category_limit:
+            continue
+        selected.append(record)
+        category_usage[record.category] = category_usage.get(record.category, 0) + 1
+        used.add(record.exercise_id)
+    return selected
+
+
+def _page_query_text(draft: PlanningDraft, page: Any) -> str:
+    return " ".join((
+        _clean_text(getattr(draft.meta, "topic", "")),
+        _page_text(page),
+    ))
+
+
+def _page_text(page: Any) -> str:
+    parts = [_clean_text(page.title), _clean_text(page.subtitle), _clean_text(page.design_notes), _clean_text(page.notes)]
+    parts.extend(_clean_text(point) for point in (page.content_points or []))
+    return "\n".join(part for part in parts if part)
+
+
 def _tokens(text: str) -> list[str]:
     return [token for token in re.split(r"[\s,，。；;、]+", text) if token]
+
+
+_GRADE_CONTEXT_PATTERN = re.compile(
+    r"(?:小学|初中|高中)?(?:[一二三四五六七八九十\d]+年级|初[一二三\d]|高[一二三\d]|低年级|高年级)"
+)
+_QUERY_STOP_TERMS = {
+    "数学", "语文", "物理", "学生", "适合", "课程", "教学", "课件", "题目",
+    "练习", "习题", "复习", "巩固", "综合", "运用", "扩展", "探索",
+}
+
+
+def _semantic_query_tokens(text: str) -> list[str]:
+    cleaned = _GRADE_CONTEXT_PATTERN.sub(" ", _clean_text(text))
+    for term in _QUERY_STOP_TERMS:
+        cleaned = cleaned.replace(term, " ")
+
+    result: list[str] = []
+    seen: set[str] = set()
+    for token in _tokens(cleaned):
+        _append_token(result, seen, token)
+        if _is_chinese_run(token) and len(token) >= 3:
+            for size in (4, 3, 2):
+                if len(token) < size:
+                    continue
+                for index in range(0, len(token) - size + 1):
+                    _append_token(result, seen, token[index:index + size])
+    return result
+
+
+def _append_token(result: list[str], seen: set[str], token: str) -> None:
+    cleaned = _clean_text(token)
+    if len(cleaned) < 2 or cleaned in _QUERY_STOP_TERMS or cleaned in seen:
+        return
+    seen.add(cleaned)
+    result.append(cleaned)
+
+
+def _is_chinese_run(text: str) -> bool:
+    return bool(text) and all("\u4e00" <= char <= "\u9fff" for char in text)
 
 
 def _normalize_category(value: str) -> str:

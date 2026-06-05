@@ -510,13 +510,19 @@ class PPTXAgent:
     ) -> PlanningDraft:
         if not bool(getattr(self.config, "exercise_policy_enabled", False)):
             return draft
+        if getattr(self.config, "exercise_db_path", None):
+            return self._phase1_bind_strict_db_exercises(draft, session, source_draft=source_draft)
         from edupptx.planning.exercise_plan_binder import (
             bind_exercises_to_draft,
-            load_exercise_bank,
+            load_exercise_records,
             restore_exercise_refs_from_source,
         )
 
-        records = load_exercise_bank(getattr(self.config, "exercise_bank_path", None))
+        records = load_exercise_records(
+            bank_path=getattr(self.config, "exercise_bank_path", None),
+            db_path=getattr(self.config, "exercise_db_path", None),
+            image_root=getattr(self.config, "exercise_image_root", None),
+        )
         if not records:
             logger.warning("Exercise policy enabled but no exercise bank records loaded")
             return draft
@@ -529,6 +535,66 @@ class PPTXAgent:
                 "Exercise bank binding complete: exercises={}, copied_images={}",
                 result.bound_count,
                 result.copied_image_count,
+            )
+        return draft
+
+    def _phase1_bind_strict_db_exercises(
+        self,
+        draft: PlanningDraft,
+        session: Session,
+        *,
+        source_draft: PlanningDraft | None = None,
+    ) -> PlanningDraft:
+        from edupptx.planning.exercise_plan_binder import (
+            bind_exercises_to_draft,
+            bind_strict_lesson_exercises_to_draft,
+            load_exercise_records,
+            restore_exercise_refs_from_source,
+        )
+
+        records = load_exercise_records(
+            db_path=getattr(self.config, "exercise_db_path", None),
+            image_root=getattr(self.config, "exercise_image_root", None),
+        )
+        if not records:
+            logger.warning("Exercise DB policy enabled but no DB exercise records loaded")
+            return draft
+
+        if source_draft is not None:
+            restore_exercise_refs_from_source(draft, source_draft)
+            if not any(page.exercise_refs for page in draft.pages):
+                logger.info("Exercise DB not used in stage-2: no strict lesson match from stage-1")
+                return draft
+            result = bind_exercises_to_draft(draft, records, session_dir=session.dir)
+        else:
+            result = bind_strict_lesson_exercises_to_draft(
+                draft,
+                records,
+                session_dir=session.dir,
+                limit_per_category=int(getattr(self.config, "exercise_candidate_limit_per_category", 4) or 4),
+            )
+
+        if result.bound_count:
+            session.save_plan(draft.model_dump())
+            logger.info(
+                "Exercise DB used: grade={}, subject={}, lesson={} ({}), exercises={}, db_images={}",
+                result.matched_grade or getattr(draft.meta, "grade", ""),
+                result.matched_subject or getattr(draft.meta, "subject", ""),
+                result.matched_lesson_name or "restored",
+                result.matched_lesson_id or "-",
+                result.bound_count,
+                result.copied_image_count,
+            )
+        elif source_draft is None:
+            for page in draft.pages:
+                page.exercise_refs = []
+                page.exercise_payloads = []
+                page.material_needs.images = [
+                    image for image in page.material_needs.images
+                    if image.source != "exercise_asset"
+                ]
+            logger.info(
+                "Exercise DB not used: strict grade+subject+lesson match failed; keeping AI-generated exercises"
             )
         return draft
 
@@ -1023,7 +1089,6 @@ class PPTXAgent:
                     reuse_debug_mode="full",
                     vlm_client=vlm_client,
                     near_miss_vlm_state=near_miss_vlm_state,
-                    constraint_embedding_cache=getattr(reuse_search_context, "query_embedding_cache", None),
                 )
             except Exception as exc:
                 logger.warning(

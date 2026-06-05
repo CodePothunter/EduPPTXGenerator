@@ -175,6 +175,62 @@ def test_gen_no_asset_ingest_flag_disables_ingest(tmp_path, monkeypatch):
     assert seen == [False]
 
 
+def test_gen_exercise_db_flags_set_config(tmp_path, monkeypatch):
+    env_file = tmp_path / "empty.env"
+    env_file.write_text("", encoding="utf-8")
+    db_path = tmp_path / "teach_kb.db"
+    db_path.write_bytes(b"sqlite-placeholder")
+    image_root = tmp_path / "uploads"
+    image_root.mkdir()
+    seen: list[dict[str, object]] = []
+
+    class FakeAgent:
+        def __init__(self, config):
+            seen.append(
+                {
+                    "enabled": config.exercise_policy_enabled,
+                    "db_path": config.exercise_db_path,
+                    "image_root": config.exercise_image_root,
+                }
+            )
+
+        def run(self, *_args, **_kwargs):
+            session_dir = tmp_path / "output" / "session_test"
+            (session_dir / "slides").mkdir(parents=True)
+            (session_dir / "plan.json").write_text("{}", encoding="utf-8")
+            (session_dir / "output.pptx").write_bytes(b"pptx")
+            return session_dir
+
+    monkeypatch.setattr("edupptx.cli.PPTXAgent", FakeAgent)
+
+    result = CliRunner().invoke(
+        main,
+        [
+            "gen",
+            "test topic",
+            "--exercise-policy",
+            "--exercise-db",
+            str(db_path),
+            "--exercise-image-root",
+            str(image_root),
+            "--output",
+            str(tmp_path / "output"),
+            "--env-file",
+            str(env_file),
+            "--json",
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert seen == [
+        {
+            "enabled": True,
+            "db_path": db_path,
+            "image_root": image_root,
+        }
+    ]
+
+
 def test_strict_reuse_classify_command_tags_library(tmp_path):
     library_dir = tmp_path / "materials_library_ppt"
     library_dir.mkdir()

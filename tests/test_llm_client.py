@@ -432,10 +432,22 @@ class TestConfigProvider:
     def test_from_env_loads_exercise_policy_switch(self, tmp_path, monkeypatch):
         monkeypatch.delenv("EDUPPTX_EXERCISE_POLICY", raising=False)
         monkeypatch.delenv("EDUPPTX_EXERCISE_BANK_PATH", raising=False)
+        monkeypatch.delenv("EDUPPTX_EXERCISE_DB_PATH", raising=False)
+        monkeypatch.delenv("EDUPPTX_EXERCISE_IMAGE_ROOT", raising=False)
         env_path = tmp_path / ".env"
         bank_path = tmp_path / "exercise_bank.json"
+        db_path = tmp_path / "teach_kb.db"
+        image_root = tmp_path / "uploads"
         env_path.write_text(
-            f"EDUPPTX_EXERCISE_POLICY=1\nEDUPPTX_EXERCISE_BANK_PATH={bank_path}\n",
+            "\n".join(
+                [
+                    "EDUPPTX_EXERCISE_POLICY=1",
+                    f"EDUPPTX_EXERCISE_BANK_PATH={bank_path}",
+                    f"EDUPPTX_EXERCISE_DB_PATH={db_path}",
+                    f"EDUPPTX_EXERCISE_IMAGE_ROOT={image_root}",
+                    "",
+                ]
+            ),
             encoding="utf-8",
         )
 
@@ -443,3 +455,5 @@ class TestConfigProvider:
 
         assert config.exercise_policy_enabled is True
         assert config.exercise_bank_path == bank_path
+        assert config.exercise_db_path == db_path
+        assert config.exercise_image_root == image_root
