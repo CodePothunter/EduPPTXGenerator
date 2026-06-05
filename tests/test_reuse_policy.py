@@ -164,9 +164,9 @@ def test_background_cross_theme_uses_base_threshold():
 
 
 def test_three_tier_constants():
-    assert T_DIRECT == 0.78
-    assert T_REJECT == 0.45
-    assert T_GAP == 0.06
+    assert T_DIRECT == 0.75
+    assert T_REJECT == 0.35
+    assert T_GAP == 0.02
     assert CLUSTER_MAX == 3
 
 
@@ -200,9 +200,9 @@ def test_decide_reuse_mid_score_single_leader():
 
 def test_decide_reuse_mid_score_cluster_triggers_llm():
     candidates = [
-        {"policy_score": 0.77, "asset_id": "a1"},
-        {"policy_score": 0.74, "asset_id": "a2"},
-        {"policy_score": 0.73, "asset_id": "a3"},
+        {"policy_score": 0.74, "asset_id": "a1"},
+        {"policy_score": 0.73, "asset_id": "a2"},
+        {"policy_score": 0.725, "asset_id": "a3"},
     ]
     result = decide_reuse(candidates)
     assert result["decision"] == "llm_review"
@@ -222,7 +222,7 @@ def test_decide_reuse_cluster_capped_at_cluster_max():
 def test_decide_reuse_high_score_without_gap_routes_to_llm_review():
     candidates = [
         {"policy_score": 0.84, "asset_id": "a1"},
-        {"policy_score": 0.81, "asset_id": "a2"},
+        {"policy_score": 0.83, "asset_id": "a2"},
     ]
 
     result = decide_reuse(candidates)

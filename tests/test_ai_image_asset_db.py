@@ -16,7 +16,6 @@ from edupptx.materials.ai_image_asset_db import (
     MAX_LLM_REVIEWS_PER_QUERY,
     BACKGROUND_REUSE_GATE_THRESHOLDS,
     PAGE_IMAGE_REUSE_GATE_THRESHOLDS,
-    _LLM_PROFILE_ACCEPT_THRESHOLDS,
     _apply_strict_reuse_group_from_payload,
     _apply_keyword_payload,
     _asset_embedding_text,
@@ -84,12 +83,12 @@ def _asset(asset_id: str, group: str, *, prompt: str = "single apple card") -> d
     }
 
 
-def test_reuse_constants_match_plan_a_configuration():
+def test_reuse_constants_match_phase4_configuration():
     assert DEFAULT_REUSE_CANDIDATE_LIMIT == 8
     assert DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE == 20
-    assert MAX_LLM_REVIEWS_PER_QUERY == 3
+    assert MAX_LLM_REVIEWS_PER_QUERY == 5
     assert MAX_LLM_REVIEW_WORKERS == 15
-    assert (HYBRID_BM25_WEIGHT, HYBRID_EMBEDDING_WEIGHT, HYBRID_SUBSTRING_WEIGHT) == (0.50, 0.35, 0.15)
+    assert (HYBRID_BM25_WEIGHT, HYBRID_EMBEDDING_WEIGHT, HYBRID_SUBSTRING_WEIGHT) == (0.25, 0.55, 0.20)
     assert BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT == 0.85
     assert BACKGROUND_COLOR_BIAS_REUSE_WEIGHT == 0.15
 
@@ -217,6 +216,57 @@ def test_embedding_sidecar_reuses_when_meta_matches_embeddable_asset_count(tmp_p
     assert report["asset_count"] == 1
     assert report["match_asset_count"] == 2
     assert report["non_embeddable_asset_count"] == 1
+
+
+def test_embedding_sidecar_reuses_cross_platform_local_model_path(tmp_path, monkeypatch):
+    local_model = tmp_path / "models" / "Qwen3-Embedding-0.6B"
+    local_model.mkdir(parents=True)
+    monkeypatch.delenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", raising=False)
+    monkeypatch.setenv("EDUPPTX_AI_IMAGE_EMBEDDING_MODEL", str(local_model))
+
+    import numpy as np
+
+    index_path = tmp_path / image_db.DEFAULT_EMBEDDING_INDEX_FILENAME
+    meta_path = tmp_path / image_db.DEFAULT_EMBEDDING_META_FILENAME
+    np.savez_compressed(
+        index_path,
+        asset_ids=np.asarray(["asset_with_text"], dtype=str),
+        vectors=np.asarray([[1.0, 0.0, 0.0]], dtype="float32"),
+    )
+    meta_path.write_text(
+        json.dumps(
+            {
+                "schema_version": image_db.EMBEDDING_INDEX_SCHEMA_VERSION,
+                "model": "/home/zsq/EduPPTXGenerator/models/Qwen3-Embedding-0.6B",
+                "asset_count": 1,
+                "background_color_bias_asset_count": 0,
+                "vector_dim": 3,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    match_index = {
+        "assets": [
+            {
+                "asset_id": "asset_with_text",
+                "asset_kind": "page_image",
+                "image_path": "pptx_images/asset_with_text.png",
+                "caption": "apple card illustration",
+            }
+        ],
+    }
+
+    def fail_rebuild(*_args, **_kwargs):
+        raise AssertionError("cross-platform local model path should reuse sidecar")
+
+    monkeypatch.setattr(image_db, "write_ai_image_embedding_index", fail_rebuild)
+
+    report = image_db._ensure_ai_image_embedding_index(match_index, tmp_path)
+
+    assert report["enabled"] is True
+    assert report["model"] == str(local_model)
+    assert report["asset_count"] == 1
 
 
 def test_transform_policy_uses_aspect_ratio_without_bucket_fields():
@@ -703,11 +753,11 @@ def test_current_split_backgrounds_are_read_and_rewritten_to_background_json(tmp
     assert {asset["asset_id"] for asset in general_payload["assets"]} == {"scene"}
 
 
-def test_review_accept_threshold_profiles_use_material_group_not_old_reuse_level():
-    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container"}) == 0.55
-    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"}) == 0.68
-    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C01_irreplaceable_entity_event_action"}) == 0.72
-    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}) == 0.68
+def test_review_accept_threshold_is_single_cross_category_value():
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container"}) == 0.60
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"}) == 0.60
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C01_irreplaceable_entity_event_action"}) == 0.60
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}) == 0.60
     assert _reuse_review_accept_score_threshold(
         {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"},
         policy_result={"llm_accept_threshold_override": 0.66},
@@ -720,7 +770,6 @@ def test_reuse_gate_profiles_follow_current_four_material_categories():
     assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C01_irreplaceable_entity_event_action"}) == "strict_knowledge"
     assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}) == "medium"
     assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}) == "medium"
-    assert "strict_literary" not in _LLM_PROFILE_ACCEPT_THRESHOLDS
 
 
 def test_reuse_gate_thresholds_are_single_cross_ppt_values():
@@ -1531,7 +1580,7 @@ def test_reuse_debug_payload_includes_verbose_query():
     assert payload["caption"] == "小学生学习"
 
 
-def test_medium_profile_accept_threshold_is_0_68():
+def test_medium_profile_uses_single_review_accept_threshold():
     from edupptx.materials.ai_image_asset_db import _reuse_review_accept_score_threshold
 
     target = {
@@ -1545,7 +1594,7 @@ def test_medium_profile_accept_threshold_is_0_68():
             "strict_reuse_group": "C02_generic_subject_object",
         }
     }
-    assert _reuse_review_accept_score_threshold(target, candidate) == 0.68
+    assert _reuse_review_accept_score_threshold(target, candidate) == 0.60
 
 
 def test_review_rules_reference_has_query_and_action_cap():

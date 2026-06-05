@@ -8,7 +8,7 @@ from typing import Any
 
 REUSE_LEVELS = {"loose", "medium", "strict", "skip"}
 
-# --- v7 material category → reuse_level mapping ---
+# --- Current C00-C03 material category → reuse_level mapping ---
 # String literals to avoid circular import (strict_reuse_classifier → ai_image_asset_db → reuse_policy).
 MATERIAL_CATEGORY_REUSE_LEVEL: dict[str, str] = {
     "C00_strict_text_problem_skip": "skip",
@@ -52,9 +52,9 @@ def _normalize_color_temperature(value: Any) -> str:
 
 
 # --- Three-tier decision constants (spec §4) ---
-T_DIRECT = 0.78
-T_REJECT = 0.45
-T_GAP = 0.06
+T_DIRECT = 0.75
+T_REJECT = 0.35
+T_GAP = 0.02
 CLUSTER_MAX = 3
 
 
@@ -141,7 +141,7 @@ def normalize_asset_metadata(raw: dict[str, Any]) -> AssetMetadata:
 
 
 def reuse_level_from_material_category(material_category: str | None) -> str | None:
-    """Return reuse_level if material_category is a known v3 category, else None."""
+    """Return reuse_level if material_category is a current C00-C03 category, else None."""
     cat = _clean_text(material_category)
     return MATERIAL_CATEGORY_REUSE_LEVEL.get(cat)
 

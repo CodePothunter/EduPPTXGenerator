@@ -1,7 +1,7 @@
 """Per-session persistent cache for reuse target keywords + embedding vectors.
 
 `ReuseSearchContext` caches target keyword payloads (LLM output) and target
-query and target-constraint embeddings (embedding model output) in memory for
+query embeddings (embedding model output) in memory for
 the duration of a single generation. This module persists those caches to disk so an offline
 replay of BM25/embedding scoring against the library can skip every LLM /
 embedding-model call.
@@ -16,8 +16,8 @@ Layout: one JSON file per session, e.g.::
     }
 
 The keyword payload is the enriched target dict produced by
-``_enrich_reuse_target_keywords_once``. The embedding vector may be a retrieval
-query embedding or a constraint-comparison embedding. It is whatever
+``_enrich_reuse_target_keywords_once``. The embedding vector is a retrieval
+query embedding. It is whatever
 ``_encode_embedding_texts`` returns (a 1-D numpy array), stored as a plain float
 list so the file is human-inspectable; numpy arrays are re-hydrated on load.
 """

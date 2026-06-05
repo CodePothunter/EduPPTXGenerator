@@ -45,7 +45,6 @@ class Config:
 
     # Paths
     env_file: Path = field(default_factory=lambda: Path(".env"))
-    cache_dir: Path = field(default_factory=lambda: Path("./backgrounds_cache"))
     library_dir: Path = field(default_factory=lambda: Path("./materials_library"))
     reuse_library_dirs: tuple[Path, ...] = field(default_factory=tuple)
     output_dir: Path = field(default_factory=lambda: Path("./output"))
@@ -111,7 +110,6 @@ class Config:
             unsplash_access_key=os.getenv("UNSPLASH_ACCESS_KEY", ""),
             tavily_api_key=os.getenv("TAVILY_API_KEY", ""),
             env_file=env_file,
-            cache_dir=Path(os.getenv("CACHE_DIR", "./backgrounds_cache")),
             library_dir=library_dir,
             reuse_library_dirs=reuse_library_dirs,
             output_dir=Path(os.getenv("OUTPUT_DIR", "./output")),

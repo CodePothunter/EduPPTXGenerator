@@ -58,13 +58,13 @@ DEFAULT_REUSE_CANDIDATE_LIMIT = 8
 DEFAULT_MIN_REUSE_KEYWORD_SCORE: float | None = None
 DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE = 20
 DEFAULT_RRF_K = 60
-HYBRID_BM25_WEIGHT = 0.50
-HYBRID_EMBEDDING_WEIGHT = 0.35
-HYBRID_SUBSTRING_WEIGHT = 0.15
+HYBRID_BM25_WEIGHT = 0.25
+HYBRID_EMBEDDING_WEIGHT = 0.55
+HYBRID_SUBSTRING_WEIGHT = 0.20
 BM25_GRAY_REUSE_THRESHOLD = 0.23
 EMBEDDING_GRAY_REUSE_THRESHOLD = 0.72
 STRICT_REUSE_MAX_PER_SESSION = 2
-REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD = 0.70
+REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD = 0.60
 # Per-query LLM review budget. Caps the number of llm_review calls made
 # for a single target so a noisy candidate pool can't burn the LLM on a
 # long tail of equivalent-quality candidates after the top contender has
@@ -127,14 +127,10 @@ ALLOWED_CROSS_ASPECT_RATIO_REUSE_PAIRS = frozenset(
 # allegedly-relevant 凸透镜 candidate fit this pattern: e≥0.7, k≤0.3.
 #
 # The threshold is intentionally one number per gate, not per subject. The
-# gate is bypassed when ANY of the following structural evidence is present:
-#   * any core_keyword overlap between target and candidate;
-#   * any topic_ref overlap;
-#   * any importance≥1 constraint kind with a matching value (light match).
-# These bypass conditions catch the cases where the lexical mismatch is
-# accidental (the LLM just paraphrased differently). When none of them
-# fire, the gap is a real "wrong content" signal — reject without burning
-# an LLM call.
+# gate is bypassed when target/candidate retrieval text shares at least one
+# normalized token. That catches cases where the lexical mismatch is accidental
+# while still treating a large embedding-vs-keyword gap as a "wrong content"
+# signal without burning an LLM call.
 EMBEDDING_KEYWORD_GAP_REJECT_THRESHOLD = 0.40
 
 # R5: near-miss VLM image verification.
@@ -1981,17 +1977,9 @@ def _has_structural_evidence(
 ) -> tuple[bool, list[str]]:
     """Return (has_evidence, evidence_kinds) for the Q1/P7 consistency gate.
 
-    Three kinds of structural evidence are recognised. Any single one is
-    enough to bypass the embedding-keyword gap rejection:
-
-    * ``core_keyword_overlap`` — target and candidate share at least one
-      term across ``core_keywords`` / ``match_keywords``;
-    * ``topic_ref_overlap`` — at least one ``topic_refs`` entry in common;
-    * ``constraint_kind_value_match`` — at least one constraint kind
-      (importance ≥ 1) where target and candidate carry the same value.
-
-    The function is intentionally structural: it never inspects subject-
-    specific token contents, only set intersections of metadata fields.
+    The active structural evidence is normalized overlap between target and
+    candidate retrieval text. Older constraint/core-keyword hooks were removed
+    with the simplified reuse metadata schema.
     """
 
     def _norm_terms(values: Any) -> set[str]:
@@ -2305,7 +2293,6 @@ def _apply_reuse_policy_to_ranked_candidates(
     llm_review_budget: int = MAX_LLM_REVIEWS_PER_QUERY,
     vlm_client: Any | None = None,
     near_miss_vlm_state: dict[str, Any] | None = None,
-    constraint_embedding_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Evaluate policy and dispatch LLM reviews for a ranked candidate list.
 
@@ -2718,7 +2705,6 @@ def _finalize_reuse_candidate_collection(
     reuse_debug_mode: str,
     vlm_client: Any | None = None,
     near_miss_vlm_state: dict[str, Any] | None = None,
-    constraint_embedding_cache: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     if not isinstance(collection, dict) or not collection.get("_reuse_candidate_collection"):
         return None
@@ -2744,7 +2730,6 @@ def _finalize_reuse_candidate_collection(
                 llm_review_enabled=llm_review_enabled,
                 vlm_client=vlm_client,
                 near_miss_vlm_state=near_miss_vlm_state,
-                constraint_embedding_cache=constraint_embedding_cache,
             )
             accepted_candidates = policy_outcome["accepted_candidates"]
             rejected_by_policy = policy_outcome["rejected_by_policy"]
@@ -2852,7 +2837,6 @@ def _finalize_reuse_candidate_collection(
         llm_review_enabled=llm_review_enabled,
         vlm_client=vlm_client,
         near_miss_vlm_state=near_miss_vlm_state,
-        constraint_embedding_cache=constraint_embedding_cache,
     )
     accepted_candidates = policy_outcome["accepted_candidates"]
     rejected_by_policy = policy_outcome["rejected_by_policy"]
@@ -3031,9 +3015,6 @@ def find_reusable_ai_image_asset(
             reuse_session_state=reuse_session_state,
             llm_review_enabled=llm_review_enabled,
             reuse_debug_mode=reuse_debug_mode,
-            constraint_embedding_cache=(
-                reuse_search_context.query_embedding_cache if reuse_search_context is not None else None
-            ),
         )
 
     library_root = library_roots[0]
@@ -3322,10 +3303,7 @@ def find_reusable_ai_image_asset(
         keyword_client=keyword_client,
         reuse_session_state=reuse_session_state,
         llm_review_enabled=llm_review_enabled,
-            constraint_embedding_cache=(
-                reuse_search_context.query_embedding_cache if reuse_search_context is not None else None
-            ),
-        )
+    )
     accepted_candidates = policy_outcome["accepted_candidates"]
     rejected_by_policy = policy_outcome["rejected_by_policy"]
     rejected_by_occupancy = policy_outcome["rejected_by_occupancy"]
@@ -3704,7 +3682,6 @@ def evaluate_ai_image_reuse_matches_from_plan(
             reuse_session_state=reuse_session_state,
             llm_review_enabled=llm_review_enabled,
             reuse_debug_mode=reuse_debug_mode,
-            constraint_embedding_cache=reuse_search_context.query_embedding_cache,
         )
         session_image_path: Path | None = None
         if match:
@@ -5216,6 +5193,21 @@ def _embedding_disabled() -> bool:
 def _embedding_model_name(model_name: str | None = None) -> str:
     configured = _clean_text(os.environ.get("EDUPPTX_AI_IMAGE_EMBEDDING_MODEL"))
     return configured or _clean_text(model_name) or DEFAULT_EMBEDDING_MODEL
+
+
+def _embedding_model_sidecar_matches(stored_model: Any, current_model: str) -> bool:
+    stored = _clean_text(stored_model)
+    current = _clean_text(current_model)
+    if stored == current:
+        return True
+    if not stored or not current:
+        return False
+    current_path = Path(current)
+    if not current_path.exists():
+        return False
+    stored_name = Path(stored.replace("\\", "/")).name
+    current_name = current_path.name
+    return bool(stored_name and current_name and stored_name == current_name)
 
 
 def _load_embedding_model(model_name: str = DEFAULT_EMBEDDING_MODEL) -> Any:
@@ -7092,20 +7084,6 @@ def _reuse_gate_reason(
     return ""
 
 
-# Profile-default LLM accept thresholds. Per-reason carve-outs are carried
-# on policy_result.llm_accept_threshold_override (see reuse_policy._result);
-# the dispatcher prefers that override over the profile default. Re-tune
-# values here when calibration data justifies a profile-wide shift.
-_LLM_PROFILE_ACCEPT_THRESHOLDS = {
-    # Loose covers decorative tools, learning behaviors, and background-like
-    # page_image slots. None of these carry exact-content gating, so the LLM
-    # review only needs to confirm visual plausibility — keep the bar above
-    # noise without rejecting near-correct ambience images.
-    "loose": 0.60,
-    "medium": 0.60,
-    "strict_knowledge": 0.60,
-}
-
 def _reuse_review_accept_score_threshold(
     target: dict[str, Any],
     candidate: dict[str, Any] | None = None,
@@ -7121,8 +7099,7 @@ def _reuse_review_accept_score_threshold(
             return float(override)
         except (TypeError, ValueError):
             pass
-    profile = _reuse_gate_profile(target)
-    return _LLM_PROFILE_ACCEPT_THRESHOLDS.get(profile, REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD)
+    return 0.60
 
 
 def _reuse_acceptance_reason(
@@ -7546,7 +7523,7 @@ def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: 
         index_path.exists()
         and meta_path.exists()
         and int(meta.get("schema_version") or 0) == EMBEDDING_INDEX_SCHEMA_VERSION
-        and _clean_text(meta.get("model")) == model_name
+        and _embedding_model_sidecar_matches(meta.get("model"), model_name)
         and int(meta.get("asset_count") or -1) == expected_count
         and int(meta.get("background_color_bias_asset_count") or 0) == expected_background_color_bias_count
     ):
@@ -7692,16 +7669,7 @@ def _are_match_assets_duplicates(left: dict[str, Any], right: dict[str, Any]) ->
     right_hash = _clean_text(right.get("_image_sha256"))
     if left_hash and right_hash and left_hash == right_hash:
         return True
-    if _duplicate_identity_constraints_conflict(left, right):
-        return False
     return _match_asset_similarity(left, right) >= 0.86
-
-
-def _duplicate_identity_constraints_conflict(left: dict[str, Any], right: dict[str, Any]) -> bool:
-    # Constraints were removed in the v4 simplification. Without identity
-    # constraints there is no way to detect a contradiction, so always
-    # return False and let the caller fall through to similarity scoring.
-    return False
 
 
 def _match_asset_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
