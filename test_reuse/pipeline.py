@@ -28,6 +28,7 @@ from edupptx.materials.ai_image_asset_db import (
     _normalize_binary_reuse_group,
     _prewarm_reuse_target_keywords,
     _reuse_hard_filter_reject_reason,
+    _review_reuse_candidate_with_llm,
     _route_match_index_for_target_cached,
     _subject_scope_decision,
     _strict_reuse_occupancy_status,
@@ -42,13 +43,17 @@ from edupptx.models import PlanningDraft, iter_image_slot_keys
 from test_reuse.metrics import (
     asset_kind_bucket_stage_metrics,
     candidate_filter_metrics,
+    drop_opposite_orientation_gold_pairs,
     filter_ablation_metrics,
+    floor_sweep_recall_precision,
     final_match_metrics,
     gold_sets_from_targets,
     hard_filter_stage_metrics,
     llm_review_stage_metrics,
+    missed_gold_diagnostics,
     ranking_metrics,
     relabel_rows_for_gold_sets,
+    reject_reason_by_gold_crosstab,
     safe_div,
     size_compatible_gold_sets_from_hard_rows,
     size_compatible_gold_summary,
@@ -218,6 +223,27 @@ CANDIDATE_SCORE_AUDIT_COLUMNS = (
     "threshold_used",
     "policy_decision",
     "policy_reason",
+)
+MISSED_GOLD_DIAGNOSTIC_COLUMNS = (
+    "need_id",
+    "waterfall_stage",
+    "best_gold_asset_id",
+    "keyword_score",
+    "embedding_score",
+    "substring_score",
+    "policy_score",
+    "policy_decision",
+    "policy_reason",
+    "gold_in_scored_set",
+)
+LLM_COUNTERFACTUAL_COLUMNS = (
+    "need_id",
+    "asset_id",
+    "embedding_score",
+    "llm_score",
+    "llm_decision",
+    "llm_threshold",
+    "llm_reason",
 )
 
 STAGE_DIR_NAMES = {
@@ -1273,6 +1299,31 @@ def _run_id_for(run_dir: str | Path) -> str:
     return root.name
 
 
+def _manifest_library_dirs(run_dir: str | Path) -> list[Path]:
+    manifest_path = Path(run_dir) / "manifest.json"
+    if not manifest_path.exists():
+        return []
+    manifest = read_json(manifest_path)
+    if not isinstance(manifest, dict):
+        return []
+    return [
+        Path(path).expanduser().resolve()
+        for path in (manifest.get("library_dirs") or [])
+        if _clean(path) and Path(path).expanduser().exists()
+    ]
+
+
+def _asset_aspect_by_id_from_manifest(run_dir: str | Path) -> dict[str, str]:
+    library_dirs = _manifest_library_dirs(run_dir)
+    if not library_dirs:
+        return {}
+    return {
+        _asset_id(asset): _clean(asset.get("aspect_ratio"))
+        for asset in load_library_assets(library_dirs)
+        if _asset_id(asset)
+    }
+
+
 def _read_targets(run_dir: str | Path) -> list[dict[str, Any]]:
     return read_jsonl_artifact(run_dir, "prepare", "targets.jsonl")
 
@@ -1867,6 +1918,19 @@ def _collections_by_need(run_dir: str | Path) -> dict[str, dict[str, Any]]:
     return collections
 
 
+def _candidate_lookup_by_need_asset(run_dir: str | Path) -> dict[tuple[str, str], dict[str, Any]]:
+    lookup: dict[tuple[str, str], dict[str, Any]] = {}
+    for need_id, collection in _collections_by_need(run_dir).items():
+        for candidate in collection.get("candidates") or []:
+            if not isinstance(candidate, dict):
+                continue
+            asset = candidate.get("asset") if isinstance(candidate.get("asset"), dict) else {}
+            asset_id = _asset_id(asset)
+            if need_id and asset_id:
+                lookup[(need_id, asset_id)] = candidate
+    return lookup
+
+
 def _merge_reuse_finalize_debug_files(output_path: Path, debug_paths: Iterable[Path]) -> None:
     queries: list[dict[str, Any]] = []
     for path in debug_paths:
@@ -2209,12 +2273,18 @@ def run_review_stage(
 def run_summarize_stage(*, run_dir: str | Path) -> Path:
     root = Path(run_dir)
     targets = _read_targets(root)
+    asset_aspect_by_id = _asset_aspect_by_id_from_manifest(root)
+    if asset_aspect_by_id:
+        targets = drop_opposite_orientation_gold_pairs(targets, asset_aspect_by_id)
     hard_rows = read_jsonl_artifact(root, "hard_filter", "hard_filter_pairs.jsonl")
     candidate_score_rows = read_jsonl_artifact(root, "retrieve", "candidate_score_audit.jsonl")
     final_rows = read_jsonl_artifact(root, "review", "final_matches.jsonl")
+    policy_rows = read_jsonl_artifact(root, "review", "policy_decisions.jsonl")
     hard_summary = read_json_artifact(root, "hard_filter", "hard_filter_summary.json", {})
     retrieve_summary = read_json_artifact(root, "retrieve", "retrieve_summary.json", {})
     original_gold_sets = gold_sets_from_targets(targets)
+    relabeled_original_candidate_rows = relabel_rows_for_gold_sets(candidate_score_rows, original_gold_sets)
+    relabeled_policy_rows = relabel_rows_for_gold_sets(policy_rows, original_gold_sets)
     size_gold_sets = size_compatible_gold_sets_from_hard_rows(targets, hard_rows)
     relabeled_size_candidate_rows = relabel_rows_for_gold_sets(candidate_score_rows, size_gold_sets)
     size_compatible_retrieve_metrics = _size_compatible_retrieval_metrics(
@@ -2222,6 +2292,11 @@ def run_summarize_stage(*, run_dir: str | Path) -> Path:
         original_gold_sets=original_gold_sets,
         size_gold_sets=size_gold_sets,
     )
+    policy_rows_by_need: dict[str, list[dict[str, Any]]] = {}
+    for row in relabeled_policy_rows:
+        policy_rows_by_need.setdefault(_clean(row.get("need_id")), []).append(row)
+    missed_rows = missed_gold_diagnostics(final_rows, policy_rows_by_need)
+    reject_gold_table = reject_reason_by_gold_crosstab(relabeled_policy_rows)
 
     reusable_need_ids = {
         _clean(row.get("need_id"))
@@ -2246,14 +2321,18 @@ def run_summarize_stage(*, run_dir: str | Path) -> Path:
         "retrieval": retrieve_summary,
         "asset_kind_buckets": asset_kind_buckets,
         "llm_review": read_json_artifact(root, "review", "llm_review_summary.json", {}),
-        "ranking": ranking_metrics(candidate_score_rows, reusable_need_ids=reusable_need_ids, rank_field="rank_hybrid"),
+        "ranking": ranking_metrics(
+            relabeled_original_candidate_rows,
+            reusable_need_ids=reusable_need_ids,
+            rank_field="rank_hybrid",
+        ),
         "ranking_size_compatible_gold": ranking_metrics(
             relabeled_size_candidate_rows,
             reusable_need_ids=_reusable_need_ids_from_gold_sets(size_gold_sets),
             rank_field="rank_hybrid",
         ),
         "final": final_match_metrics(final_rows, gold_sets=size_gold_sets),
-        "final_raw_gold_audit": final_match_metrics(final_rows),
+        "final_raw_gold_audit": final_match_metrics(final_rows, gold_sets=original_gold_sets),
         "waterfall": _waterfall_metrics(final_rows),
         "retrieval_size_compatible_gold": size_compatible_retrieve_metrics,
         "size_compatible_gold_adjustment": size_compatible_gold_summary(original_gold_sets, size_gold_sets),
@@ -2269,7 +2348,14 @@ def run_summarize_stage(*, run_dir: str | Path) -> Path:
         ],
     )
     write_jsonl(stage_artifact_path(root, "summarize", "prompt_issue_log.jsonl"), [])
+    write_csv(
+        stage_artifact_path(root, "summarize", "missed_gold_diagnostics.csv"),
+        missed_rows,
+        fieldnames=MISSED_GOLD_DIAGNOSTIC_COLUMNS,
+    )
+    write_json(stage_artifact_path(root, "summarize", "reject_reason_by_gold.json"), reject_gold_table)
     final = metrics.get("final", {}) if isinstance(metrics.get("final"), dict) else {}
+    raw_final = metrics.get("final_raw_gold_audit", {}) if isinstance(metrics.get("final_raw_gold_audit"), dict) else {}
     target_cls = metrics.get("target_classification", {}) if isinstance(metrics.get("target_classification"), dict) else {}
     hard = metrics.get("hard_filter", {}) if isinstance(metrics.get("hard_filter"), dict) else {}
     retrieval = metrics.get("retrieval", {}) if isinstance(metrics.get("retrieval"), dict) else {}
@@ -2292,6 +2378,7 @@ def run_summarize_stage(*, run_dir: str | Path) -> Path:
                 f"- 最终已标注需求数：{int(final.get('labeled_needs') or 0)}",
                 f"- 最终准确率：{float(final.get('precision') or 0.0):.4f}",
                 f"- 最终召回率：{float(final.get('recall') or 0.0):.4f}",
+                f"- raw(已去正交翻转)召回率：{float(raw_final.get('recall') or 0.0):.4f}",
                 f"- 最终 F1：{float(final.get('f1') or 0.0):.4f}",
                 f"- 选中最佳素材率：{float(final.get('selected_best_rate') or 0.0):.4f}",
                 f"- 正确不复用率：{float(final.get('correct_none_rate') or 0.0):.4f}",
@@ -2311,6 +2398,104 @@ def run_summarize_stage(*, run_dir: str | Path) -> Path:
             ]
         ),
         encoding="utf-8",
+    )
+    return root
+
+
+def run_analyze_stage(
+    *,
+    run_dir: str | Path,
+    allow_llm: bool = False,
+    env_file: str | Path = ".env",
+) -> Path:
+    root = Path(run_dir)
+    targets = _read_targets(root)
+    asset_aspect_by_id = _asset_aspect_by_id_from_manifest(root)
+    if asset_aspect_by_id:
+        targets = drop_opposite_orientation_gold_pairs(targets, asset_aspect_by_id)
+    hard_rows = read_jsonl_artifact(root, "hard_filter", "hard_filter_pairs.jsonl")
+    candidate_score_rows = read_jsonl_artifact(root, "retrieve", "candidate_score_audit.jsonl")
+    policy_rows = read_jsonl_artifact(root, "review", "policy_decisions.jsonl")
+
+    original_gold_sets = gold_sets_from_targets(targets)
+    size_gold_sets = size_compatible_gold_sets_from_hard_rows(targets, hard_rows)
+    relabeled_candidate_rows = relabel_rows_for_gold_sets(candidate_score_rows, size_gold_sets)
+    relabeled_policy_rows = relabel_rows_for_gold_sets(policy_rows, size_gold_sets)
+    total_reusable_needs = len(_reusable_need_ids_from_gold_sets(size_gold_sets))
+    sweep = floor_sweep_recall_precision(
+        [row for row in relabeled_candidate_rows if row.get("is_acceptable")],
+        total_reusable_needs=total_reusable_needs,
+        floors=[0.55, 0.57, 0.60, 0.62],
+    )
+    write_json(stage_artifact_path(root, "summarize", "floor_sweep.json"), sweep)
+
+    counterfactual_rows: list[dict[str, Any]] = []
+    counterfactual_candidates = [
+        row
+        for row in relabeled_policy_rows
+        if row.get("is_acceptable")
+        and _clean(row.get("policy_reason")) == "policy_score_below_reject_threshold"
+    ]
+    if allow_llm and counterfactual_candidates:
+        client = _keyword_client(env_file, allow_llm=True)
+        if client is None:
+            raise ValueError("analyze --allow-llm requires configured LLM credentials")
+        targets_by_need = {_clean(row.get("need_id")): _target_payload(row) for row in targets}
+        candidates_by_key = _candidate_lookup_by_need_asset(root)
+        seen: set[tuple[str, str]] = set()
+        for row in counterfactual_candidates:
+            need_id = _clean(row.get("need_id"))
+            asset_id = _clean(row.get("asset_id"))
+            key = (need_id, asset_id)
+            if key in seen:
+                continue
+            seen.add(key)
+            candidate = candidates_by_key.get(key, {})
+            candidate_asset = candidate.get("asset") if isinstance(candidate.get("asset"), dict) else {}
+            if not targets_by_need.get(need_id) or not candidate_asset:
+                continue
+            policy_result = candidate.get("reuse_policy") if isinstance(candidate.get("reuse_policy"), dict) else {
+                "decision": row.get("policy_decision", ""),
+                "reason": row.get("policy_reason", ""),
+                "policy_score": row.get("policy_score"),
+            }
+            score_details = candidate.get("score_details") if isinstance(candidate.get("score_details"), dict) else {
+                "keyword_score": row.get("keyword_score"),
+                "embedding_score": row.get("embedding_score"),
+                "substring_score": row.get("substring_score"),
+                "policy_score": row.get("policy_score"),
+            }
+            review = _review_reuse_candidate_with_llm(
+                client,
+                target=targets_by_need[need_id],
+                candidate=candidate_asset,
+                policy_result=policy_result,
+                score_details=score_details,
+            )
+            counterfactual_rows.append(
+                {
+                    "need_id": need_id,
+                    "asset_id": asset_id,
+                    "embedding_score": row.get("embedding_score"),
+                    "llm_score": review.get("score"),
+                    "llm_decision": review.get("decision"),
+                    "llm_threshold": review.get("threshold"),
+                    "llm_reason": review.get("brief_reason"),
+                }
+            )
+
+    write_jsonl(stage_artifact_path(root, "summarize", "llm_counterfactual.jsonl"), counterfactual_rows)
+    accepted_count = sum(1 for row in counterfactual_rows if row.get("llm_decision") == "accept")
+    write_json(
+        stage_artifact_path(root, "summarize", "llm_counterfactual_summary.json"),
+        {
+            "candidate_count": len(counterfactual_candidates),
+            "reviewed_count": len(counterfactual_rows),
+            "accepted_count": accepted_count,
+            "accept_rate": safe_div(accepted_count, len(counterfactual_rows)),
+            "skipped_reason": "" if allow_llm else "allow_llm_false",
+            "raw_gold_adjustment": size_compatible_gold_summary(original_gold_sets, size_gold_sets),
+        },
     )
     return root
 

@@ -65,6 +65,16 @@
 
 当核心语义匹配时，风格、渲染方式、颜色、轻微背景差异和小幅姿态差异仍可获得高分。主体、动作、对象、可读文字、公式、物理量、单位或教学事实不匹配时，必须给低分。
 
+## caption 与 query 的分工
+
+`target` 与 `candidate` 同时带 `caption` 与 `query`。`caption` 是**有损匹配视图**（按建库设计刻意丢弃数值、汉字、具体动作等判别细节），仅用于判断"画面大类是否对得上"。`query` 是**完整内容描述**，包含 caption 丢弃的具体动作/对象/数值。
+
+判断"能否安全替换"时，**以 query 的具体动作、对象、数值、主体-动作-对象绑定为准**；caption 只用于粗匹配。当 caption 看似相同但 query 的动作/对象不同（例："小学生学习"下 query 分别为"抄写课文"与"举手发言"）→ 视为主体-动作-对象绑定不匹配，按下节封顶。
+
+## 动作 / 主体-动作-对象绑定不匹配
+
+当 target 与 candidate 的**主体动作或主体-动作-对象绑定不一致**（候选主体执行不同动作、或对不同对象执行动作），将该项写入 `mismatched_constraints`（`kind="action"`），且 **`score ≤ 0.60`**。该封顶独立于 teaching_intent 软调（±0.10），软调不得突破本封顶。
+
 ## 教学语境（teaching_intent / context_summary）软参考
 
 `target` 和 `candidate` 都会带 `teaching_intent`、`context_summary`、`context_summary_keywords`、`topic_refs`。这些字段描述的是图像在某一页里"为什么用、怎么用"，**不是画面事实**。VLM 已显式拒绝把它们当作画面 constraint。

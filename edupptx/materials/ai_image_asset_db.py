@@ -297,6 +297,10 @@ EMBEDDING_LED_LLM_REVIEW_MIN_SUBSTRING = 0.10
 # candidate carried embedding >= 0.572, while ~61% of LLM-bound rejects
 # scored below 0.55 (often 0.0 from BM25-only acceptance paths).
 EMBEDDING_PRE_LLM_FLOOR = 0.55
+# Embedding rescue floor. Keyword-sparse candidates can fall below T_REJECT
+# even with strong semantic similarity; route those to LLM review instead of
+# silently hard-rejecting them.
+EMBED_RESCUE_FLOOR = float(os.environ.get("EDUPPTX_REUSE_EMBED_RESCUE_FLOOR", "0.70"))
 TEXT_OVERLAP_REVIEW_THRESHOLD = 0.15
 TEXT_OVERLAP_EMBEDDING_THRESHOLD = 0.78
 
@@ -2034,6 +2038,8 @@ def _embedding_keyword_gap_reject(
     has_evidence, evidence_kinds = _has_structural_evidence(target, candidate_asset)
     if has_evidence:
         return None
+    if embedding >= EMBED_RESCUE_FLOOR:
+        return None
     return {
         "decision": "reject",
         "reason": "embedding_keyword_gap_no_structural_evidence",
@@ -2449,12 +2455,25 @@ def _apply_reuse_policy_to_ranked_candidates(
             else:
                 for item in tier_items:
                     record = pre_records[item["_index"]]
-                    record["policy_result"] = {
-                        **record["policy_result"],
-                        "decision": "reject",
-                        "reason": "policy_score_below_reject_threshold",
-                        "policy_score": item["policy_score"],
-                    }
+                    if _embedding_rescue_decision(
+                        embedding_score=_maybe_float_score(
+                            _dict(record["score_details"]).get("embedding_score")
+                        ),
+                        transform_rejected=_transform_rejects_candidate(record["candidate"]),
+                    ):
+                        record["policy_result"] = {
+                            **record["policy_result"],
+                            "decision": "llm_review",
+                            "reason": "embedding_rescue_review",
+                            "policy_score": item["policy_score"],
+                        }
+                    else:
+                        record["policy_result"] = {
+                            **record["policy_result"],
+                            "decision": "reject",
+                            "reason": "policy_score_below_reject_threshold",
+                            "policy_score": item["policy_score"],
+                        }
 
     # Identify the slice that needs an LLM review, capped by budget.
     review_targets: list[int] = []
@@ -4293,6 +4312,7 @@ def _reuse_debug_asset_payload(asset: dict[str, Any]) -> dict[str, Any]:
         "asset_kind": asset.get("asset_kind"),
         "image_path": _relative_output_path(asset.get("image_path")),
         "caption": _asset_caption(asset),
+        "query": _asset_query(asset),
         "generation_prompt": _asset_generation_prompt(asset),
         "style_prompt": _asset_style_prompt(asset),
         "prompt_route": _clean_prompt_route(asset.get("prompt_route")),
@@ -6957,6 +6977,21 @@ def _transform_rejects_candidate(candidate: dict[str, Any]) -> bool:
     return _clean_text(transform_policy.get("decision")) == "reject"
 
 
+def _embedding_rescue_decision(
+    *,
+    embedding_score: float | None,
+    transform_rejected: bool,
+    floor: float = EMBED_RESCUE_FLOOR,
+) -> bool:
+    """True iff a policy-score rejected candidate should go to LLM review."""
+
+    if transform_rejected:
+        return False
+    if embedding_score is None:
+        return False
+    return float(embedding_score) >= float(floor)
+
+
 # Page type values that mark a page_image slot as serving an ambience
 # purpose rather than precise content. Used by ``_target_is_background_like``
 # instead of substring matching against arbitrary slot strings.
@@ -7068,7 +7103,7 @@ _LLM_PROFILE_ACCEPT_THRESHOLDS = {
     # review only needs to confirm visual plausibility — keep the bar above
     # noise without rejecting near-correct ambience images.
     "loose": 0.55,
-    "medium": 0.64,
+    "medium": 0.68,
     "strict_knowledge": 0.72,
 }
 

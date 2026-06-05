@@ -11,6 +11,7 @@ from test_reuse.pipeline import (
     prepare_run,
     read_json,
     run_eval,
+    run_analyze_stage,
     run_hard_filter_stage,
     run_retrieve_stage,
     run_review_stage,
@@ -89,6 +90,10 @@ def parse_args() -> argparse.Namespace:
 
     summarize = subparsers.add_parser("summarize", help="Compute 05_summarize metrics, failure cases, and report.md.")
     _add_run_dir(summarize)
+
+    analyze = subparsers.add_parser("analyze", help="Write floor sweep and optional LLM counterfactual artifacts.")
+    _add_run_dir(analyze)
+    _add_llm_flags(analyze)
 
     run_all = subparsers.add_parser("run-all", help="Run prepare, hard-filter, retrieve, review, and summarize.")
     run_all.add_argument("--plan", type=Path, action="append", required=True, help="Frozen plan JSON path. Repeat for multiple lessons.")
@@ -209,6 +214,16 @@ def _print_stage_summary(run_dir: Path, *, stage: str) -> None:
             ),
         )
         _print_final_aliases(stage_artifact_read_path(run_dir, "summarize", "metrics.json"))
+    elif stage == "analyze":
+        _print_summary_file(
+            stage_artifact_read_path(run_dir, "summarize", "llm_counterfactual_summary.json"),
+            keys=(
+                "candidate_count",
+                "reviewed_count",
+                "accepted_count",
+                "accept_rate",
+            ),
+        )
 
 
 def _print_final_aliases(metrics_path: Path) -> None:
@@ -275,6 +290,16 @@ def main() -> int:
         output_dir = run_summarize_stage(run_dir=args.run_dir)
         print(f"Summary complete: {output_dir}")
         _print_stage_summary(output_dir, stage="summarize")
+        return 0
+
+    if args.command == "analyze":
+        output_dir = run_analyze_stage(
+            run_dir=args.run_dir,
+            allow_llm=args.allow_llm,
+            env_file=args.env_file,
+        )
+        print(f"Analysis complete: {output_dir}")
+        _print_stage_summary(output_dir, stage="analyze")
         return 0
 
     if args.command == "run-all":

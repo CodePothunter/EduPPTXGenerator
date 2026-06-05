@@ -360,3 +360,120 @@ def test_asset_kind_bucket_stage_metrics_splits_background_and_page_image_gold()
     assert metrics["background"]["pair_metrics"]["tp"] == 0
     assert metrics["background"]["pair_metrics"]["fp"] == 1
     assert metrics["background"]["pair_metrics"]["fn"] == 1
+
+
+def test_aspect_orientation_classifies():
+    from test_reuse.metrics import _aspect_orientation
+
+    assert _aspect_orientation("16:9") == "landscape"
+    assert _aspect_orientation("4:3") == "landscape"
+    assert _aspect_orientation("9:16") == "portrait"
+    assert _aspect_orientation("3:4") == "portrait"
+    assert _aspect_orientation("1:1") == "neutral"
+    assert _aspect_orientation("") == "unknown"
+
+
+def test_is_opposite_orientation():
+    from test_reuse.metrics import _is_opposite_orientation
+
+    assert _is_opposite_orientation("16:9", "9:16") is True
+    assert _is_opposite_orientation("3:4", "4:3") is True
+    assert _is_opposite_orientation("4:3", "9:16") is True
+    assert _is_opposite_orientation("1:1", "16:9") is False
+    assert _is_opposite_orientation("16:9", "4:3") is False
+    assert _is_opposite_orientation("16:9", "") is False
+
+
+def test_drop_opposite_orientation_gold_pairs():
+    from test_reuse.metrics import drop_opposite_orientation_gold_pairs
+
+    asset_aspect = {"kbpptx_keep": "16:9", "kbpptx_flip": "9:16"}
+    rows = [
+        {
+            "need_id": "n1",
+            "target": {"aspect_ratio": "16:9"},
+            "acceptable_asset_ids": ["kbpptx_keep", "kbpptx_flip"],
+            "best_asset_ids": ["kbpptx_flip"],
+        }
+    ]
+    cleaned = drop_opposite_orientation_gold_pairs(rows, asset_aspect)
+    assert cleaned[0]["acceptable_asset_ids"] == ["kbpptx_keep"]
+    assert cleaned[0]["best_asset_ids"] == []
+
+
+def test_reject_reason_by_gold_crosstab():
+    from test_reuse.metrics import reject_reason_by_gold_crosstab
+
+    rows = [
+        {"is_acceptable": True, "policy_reason": "policy_score_below_reject_threshold"},
+        {"is_acceptable": False, "policy_reason": "policy_score_below_reject_threshold"},
+        {"is_acceptable": False, "policy_reason": "subject_mismatch"},
+    ]
+    table = reject_reason_by_gold_crosstab(rows)
+    assert table["policy_score_below_reject_threshold"]["gold"] == 1
+    assert table["policy_score_below_reject_threshold"]["non_gold"] == 1
+    assert table["subject_mismatch"]["non_gold"] == 1
+
+
+def test_missed_gold_diagnostics_prefers_best_gold():
+    from test_reuse.metrics import missed_gold_diagnostics
+
+    final_rows = [
+        {
+            "need_id": "n1",
+            "match_status": "missed",
+            "waterfall_stage": "policy_reject",
+            "best_asset_ids": ["gold_best"],
+        },
+        {"need_id": "n2", "match_status": "correct"},
+    ]
+    policy_rows_by_need = {
+        "n1": [
+            {
+                "asset_id": "gold_ok",
+                "is_acceptable": True,
+                "embedding_score": 0.9,
+                "policy_reason": "subject_mismatch",
+            },
+            {
+                "asset_id": "gold_best",
+                "is_acceptable": True,
+                "embedding_score": 0.6,
+                "policy_reason": "policy_score_below_reject_threshold",
+            },
+        ]
+    }
+    rows = missed_gold_diagnostics(final_rows, policy_rows_by_need)
+    assert rows == [
+        {
+            "need_id": "n1",
+            "waterfall_stage": "policy_reject",
+            "best_gold_asset_id": "gold_best",
+            "keyword_score": None,
+            "embedding_score": 0.6,
+            "substring_score": None,
+            "policy_score": None,
+            "policy_decision": "",
+            "policy_reason": "policy_score_below_reject_threshold",
+            "gold_in_scored_set": True,
+        }
+    ]
+
+
+def test_floor_sweep_recall_precision():
+    from test_reuse.metrics import floor_sweep_recall_precision
+
+    gold_candidates = [
+        {"need_id": "n1", "embedding_score": 0.58, "is_acceptable": True},
+        {"need_id": "n2", "embedding_score": 0.61, "is_acceptable": True},
+        {"need_id": "n3", "embedding_score": 0.50, "is_acceptable": True},
+    ]
+    sweep = floor_sweep_recall_precision(
+        gold_candidates,
+        total_reusable_needs=3,
+        floors=[0.55, 0.60, 0.62],
+    )
+    by_floor = {round(row["floor"], 2): row for row in sweep}
+    assert by_floor[0.55]["rescued_gold_need_count"] == 2
+    assert by_floor[0.60]["rescued_gold_need_count"] == 1
+    assert by_floor[0.62]["rescued_gold_need_count"] == 0

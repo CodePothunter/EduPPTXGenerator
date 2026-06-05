@@ -14,6 +14,135 @@ def _labeled_rows(rows: Iterable[dict[str, Any]]) -> list[dict[str, Any]]:
     return [row for row in rows if row.get("label_status", "labeled") == "labeled"]
 
 
+def _aspect_orientation(value: str) -> str:
+    """Classify a 'W:H' aspect string as landscape, portrait, neutral, or unknown."""
+
+    text = str(value or "").strip()
+    if ":" not in text:
+        return "unknown"
+    w_text, _, h_text = text.partition(":")
+    try:
+        w, h = float(w_text), float(h_text)
+    except ValueError:
+        return "unknown"
+    if w <= 0 or h <= 0:
+        return "unknown"
+    ratio = w / h
+    if ratio > 1.0:
+        return "landscape"
+    if ratio < 1.0:
+        return "portrait"
+    return "neutral"
+
+
+def _is_opposite_orientation(target_aspect: str, candidate_aspect: str) -> bool:
+    """True iff target and candidate sit on opposite landscape/portrait sides."""
+
+    return {_aspect_orientation(target_aspect), _aspect_orientation(candidate_aspect)} == {
+        "landscape",
+        "portrait",
+    }
+
+
+def drop_opposite_orientation_gold_pairs(
+    rows: list[dict],
+    asset_aspect_by_id: dict[str, str],
+) -> list[dict]:
+    """Remove gold asset ids whose aspect is opposite-orientation vs the target."""
+
+    cleaned: list[dict] = []
+    for row in rows:
+        target = row.get("target") if isinstance(row.get("target"), dict) else {}
+        target_aspect = str(target.get("aspect_ratio") or row.get("aspect_ratio") or "")
+
+        def keep(asset_id: str) -> bool:
+            return not _is_opposite_orientation(target_aspect, asset_aspect_by_id.get(asset_id, ""))
+
+        new_row = dict(row)
+        new_row["acceptable_asset_ids"] = [
+            asset_id for asset_id in (row.get("acceptable_asset_ids") or []) if keep(asset_id)
+        ]
+        new_row["best_asset_ids"] = [
+            asset_id for asset_id in (row.get("best_asset_ids") or []) if keep(asset_id)
+        ]
+        cleaned.append(new_row)
+    return cleaned
+
+
+def reject_reason_by_gold_crosstab(rows: list[dict]) -> dict[str, dict[str, int]]:
+    """Per policy_reason: how many gold vs non-gold candidates it rejected."""
+
+    table: dict[str, dict[str, int]] = {}
+    for row in rows:
+        reason = str(row.get("policy_reason") or "").strip() or "<none>"
+        bucket = table.setdefault(reason, {"gold": 0, "non_gold": 0})
+        bucket["gold" if row.get("is_acceptable") else "non_gold"] += 1
+    return table
+
+
+def missed_gold_diagnostics(
+    final_rows: list[dict],
+    policy_rows_by_need: dict[str, list[dict]],
+) -> list[dict]:
+    """One row per missed reusable need with the best gold's scores and gate."""
+
+    out: list[dict] = []
+    for final_row in final_rows:
+        if final_row.get("match_status") != "missed":
+            continue
+        need_id = final_row.get("need_id")
+        best_ids = set(final_row.get("best_asset_ids") or [])
+        gold_rows = [
+            row
+            for row in policy_rows_by_need.get(str(need_id), [])
+            if row.get("is_acceptable")
+        ]
+        gold_rows.sort(key=lambda row: float(row.get("embedding_score") or 0.0), reverse=True)
+        top = next((row for row in gold_rows if row.get("asset_id") in best_ids), None) or (
+            gold_rows[0] if gold_rows else {}
+        )
+        out.append(
+            {
+                "need_id": need_id,
+                "waterfall_stage": final_row.get("waterfall_stage"),
+                "best_gold_asset_id": top.get("asset_id", ""),
+                "keyword_score": top.get("keyword_score"),
+                "embedding_score": top.get("embedding_score"),
+                "substring_score": top.get("substring_score"),
+                "policy_score": top.get("policy_score"),
+                "policy_decision": top.get("policy_decision", ""),
+                "policy_reason": top.get("policy_reason", ""),
+                "gold_in_scored_set": bool(gold_rows),
+            }
+        )
+    return out
+
+
+def floor_sweep_recall_precision(
+    gold_candidates: list[dict],
+    *,
+    total_reusable_needs: int,
+    floors: list[float],
+) -> list[dict]:
+    """Upper-bound rescued recall for each candidate embedding floor."""
+
+    out: list[dict] = []
+    for floor in floors:
+        needs = {
+            row.get("need_id")
+            for row in gold_candidates
+            if row.get("is_acceptable") and float(row.get("embedding_score") or 0.0) >= floor
+        }
+        out.append(
+            {
+                "floor": floor,
+                "rescued_gold_need_count": len(needs),
+                "rescued_gold_recall_upper_bound": safe_div(len(needs), total_reusable_needs),
+            }
+        )
+    return out
+
+
 def gold_sets_from_targets(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, set[str] | bool]]:
     result: dict[str, dict[str, set[str] | bool]] = {}
     for row in _labeled_rows(list(rows)):

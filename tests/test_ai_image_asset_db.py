@@ -705,9 +705,9 @@ def test_current_split_backgrounds_are_read_and_rewritten_to_background_json(tmp
 
 def test_review_accept_threshold_profiles_use_material_group_not_old_reuse_level():
     assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container"}) == 0.55
-    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"}) == 0.64
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"}) == 0.68
     assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C01_irreplaceable_entity_event_action"}) == 0.72
-    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}) == 0.64
+    assert _reuse_review_accept_score_threshold({"asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}) == 0.68
     assert _reuse_review_accept_score_threshold(
         {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"},
         policy_result={"llm_accept_threshold_override": 0.66},
@@ -1370,3 +1370,188 @@ def test_transparent_padding_saves_only_png_canvas(tmp_path):
         assert image.size == (200, 112)
         assert image.getpixel((0, 0))[3] == 0
         assert image.getpixel((100, 56))[3] == 255
+
+
+def test_embed_rescue_floor_default_is_0_70():
+    import importlib
+    import edupptx.materials.ai_image_asset_db as db
+
+    importlib.reload(db)
+    assert db.EMBED_RESCUE_FLOOR == 0.70
+
+
+def test_embed_rescue_floor_respects_env(monkeypatch):
+    import importlib
+
+    monkeypatch.setenv("EDUPPTX_REUSE_EMBED_RESCUE_FLOOR", "0.60")
+    import edupptx.materials.ai_image_asset_db as db
+
+    importlib.reload(db)
+    assert db.EMBED_RESCUE_FLOOR == 0.60
+    monkeypatch.delenv("EDUPPTX_REUSE_EMBED_RESCUE_FLOOR", raising=False)
+    importlib.reload(db)
+
+
+def test_embedding_rescue_decision_rescues_high_embedding():
+    from edupptx.materials.ai_image_asset_db import _embedding_rescue_decision
+
+    assert _embedding_rescue_decision(embedding_score=0.70, transform_rejected=False) is True
+    assert _embedding_rescue_decision(embedding_score=0.69, transform_rejected=False) is False
+
+
+def test_embedding_rescue_decision_rejects_low_or_transform_or_missing():
+    from edupptx.materials.ai_image_asset_db import _embedding_rescue_decision
+
+    assert _embedding_rescue_decision(embedding_score=0.50, transform_rejected=False) is False
+    assert _embedding_rescue_decision(embedding_score=0.90, transform_rejected=True) is False
+    assert _embedding_rescue_decision(embedding_score=None, transform_rejected=False) is False
+
+
+def _make_rescue_candidate(asset_id, embedding, keyword):
+    return {
+        "asset": {
+            "asset_id": asset_id,
+            "asset_kind": "page_image",
+            "aspect_ratio": "16:9",
+            "subject": "语文",
+            "strict_reuse_group": "C02_generic_subject_object",
+            "caption": "小学生学习",
+            "query": "小学生坐在书桌前抄写课文",
+        },
+        "score_details": {
+            "keyword_score": keyword,
+            "embedding_score": embedding,
+            "substring_score": 0.05,
+        },
+    }
+
+
+_RESCUE_TARGET = {
+    "asset_kind": "page_image",
+    "aspect_ratio": "16:9",
+    "subject": "语文",
+    "strict_reuse_group": "C02_generic_subject_object",
+    "caption": "小学生学习",
+    "query": "小学生坐在书桌前抄写课文",
+}
+
+
+def test_high_embedding_candidate_is_rescued_to_llm_review():
+    from edupptx.materials.ai_image_asset_db import _apply_reuse_policy_to_ranked_candidates
+
+    candidates = [_make_rescue_candidate("kbpptx_hi", embedding=0.70, keyword=0.32)]
+    _apply_reuse_policy_to_ranked_candidates(
+        _RESCUE_TARGET,
+        candidates,
+        threshold=0.55,
+        embedding_status={},
+        df_ratio_lookup={},
+        keyword_client=None,
+        reuse_session_state=None,
+        llm_review_enabled=True,
+    )
+    assert candidates[0]["reuse_policy"]["llm_review_required"] is True
+
+
+def test_low_embedding_candidate_is_not_rescued():
+    from edupptx.materials.ai_image_asset_db import _apply_reuse_policy_to_ranked_candidates
+
+    candidates = [_make_rescue_candidate("kbpptx_lo", embedding=0.40, keyword=0.10)]
+    _apply_reuse_policy_to_ranked_candidates(
+        _RESCUE_TARGET,
+        candidates,
+        threshold=0.55,
+        embedding_status={},
+        df_ratio_lookup={},
+        keyword_client=None,
+        reuse_session_state=None,
+        llm_review_enabled=True,
+    )
+    assert candidates[0]["reuse_policy"]["llm_review_required"] is False
+
+
+def test_consistency_gate_exempts_high_embedding_page_image():
+    from edupptx.materials.ai_image_asset_db import _embedding_keyword_gap_reject
+
+    target = {
+        "asset_kind": "page_image",
+        "subject": "语文",
+        "strict_reuse_group": "C02_generic_subject_object",
+        "caption": "小学生学习",
+        "query": "小学生抄写课文",
+    }
+    candidate_asset = {
+        "asset_id": "kbpptx_x",
+        "asset_kind": "page_image",
+        "subject": "语文",
+        "strict_reuse_group": "C02_generic_subject_object",
+        "caption": "物理实验",
+        "query": "显微镜观察细胞",
+    }
+    score_details = {"embedding_score": 0.80, "keyword_score": 0.05}
+    assert _embedding_keyword_gap_reject(target, candidate_asset, score_details) is None
+
+
+def test_consistency_gate_still_rejects_low_embedding_gap():
+    from edupptx.materials.ai_image_asset_db import _embedding_keyword_gap_reject
+
+    target = {
+        "asset_kind": "page_image",
+        "subject": "语文",
+        "strict_reuse_group": "C02_generic_subject_object",
+        "caption": "小学生学习",
+        "query": "小学生抄写课文",
+    }
+    candidate_asset = {
+        "asset_id": "kbpptx_y",
+        "asset_kind": "page_image",
+        "subject": "语文",
+        "strict_reuse_group": "C02_generic_subject_object",
+        "caption": "一只猫",
+        "query": "一只橘猫睡觉",
+    }
+    score_details = {"embedding_score": 0.52, "keyword_score": 0.02}
+    result = _embedding_keyword_gap_reject(target, candidate_asset, score_details)
+    assert result is not None and result.get("decision") == "reject"
+
+
+def test_reuse_debug_payload_includes_verbose_query():
+    from edupptx.materials.ai_image_asset_db import _reuse_debug_asset_payload
+
+    asset = {
+        "asset_id": "kbpptx_q",
+        "asset_kind": "page_image",
+        "caption": "小学生学习",
+        "query": "小学生坐在书桌前抄写课文",
+        "subject": "语文",
+        "aspect_ratio": "16:9",
+    }
+    payload = _reuse_debug_asset_payload(asset)
+    assert payload["query"] == "小学生坐在书桌前抄写课文"
+    assert payload["caption"] == "小学生学习"
+
+
+def test_medium_profile_accept_threshold_is_0_68():
+    from edupptx.materials.ai_image_asset_db import _reuse_review_accept_score_threshold
+
+    target = {
+        "asset_kind": "page_image",
+        "strict_reuse_group": "C02_generic_subject_object",
+    }
+    candidate = {
+        "asset": {
+            "asset_id": "kbpptx_m",
+            "asset_kind": "page_image",
+            "strict_reuse_group": "C02_generic_subject_object",
+        }
+    }
+    assert _reuse_review_accept_score_threshold(target, candidate) == 0.68
+
+
+def test_review_rules_reference_has_query_and_action_cap():
+    from edupptx.materials.ai_image_asset_db import _load_reuse_review_score_rules_reference
+
+    text = _load_reuse_review_score_rules_reference()
+    assert "query" in text and "caption" in text
+    assert "0.60" in text
+    assert "主体-动作-对象" in text
