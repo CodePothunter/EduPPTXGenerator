@@ -4729,9 +4729,10 @@ def _load_keyword_reuse_rules_reference() -> str:
 
 def _load_reuse_review_score_rules_reference() -> str:
     try:
-        text = REUSE_REVIEW_SCORE_RULES_REFERENCE.read_text(encoding="utf-8").strip()
+        raw_text = REUSE_REVIEW_SCORE_RULES_REFERENCE.read_text(encoding="utf-8")
     except OSError as exc:
         raise RuntimeError(f"missing AI image reuse review score rules reference: {REUSE_REVIEW_SCORE_RULES_REFERENCE}") from exc
+    text = re.sub(r"<!--.*?-->", "", raw_text, flags=re.S).strip()
     if not text:
         raise RuntimeError(f"empty AI image reuse review score rules reference: {REUSE_REVIEW_SCORE_RULES_REFERENCE}")
     return text

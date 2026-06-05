@@ -705,13 +705,21 @@ def _draft_text(draft: PlanningDraft) -> str:
     return "\n".join(part for part in parts if part)
 
 
+_STRUCTURAL_NON_EXERCISE_PAGE_TYPES = {"cover", "toc", "section", "summary", "closing"}
+
+
 def _exercise_pages(draft: PlanningDraft) -> list[Any]:
     pages: list[Any] = []
     for page in draft.pages:
         if getattr(page, "reveal_from_page", None) is not None:
             continue
-        text = _page_text(page)
-        if page.page_type in {"exercise", "quiz"} or _looks_like_exercise_page(text):
+        page_type = str(getattr(page, "page_type", "") or "").strip()
+        if page_type in _STRUCTURAL_NON_EXERCISE_PAGE_TYPES:
+            continue
+        if page_type in {"exercise", "quiz"}:
+            pages.append(page)
+            continue
+        if page_type == "content" and _looks_like_exercise_page(_page_text(page)):
             pages.append(page)
     return pages
 

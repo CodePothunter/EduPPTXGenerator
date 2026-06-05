@@ -119,17 +119,6 @@ def finalize_reveal_pages(draft: PlanningDraft) -> PlanningDraft:
     return finalized
 
 
-def generate_planning_draft(
-    ctx: InputContext,
-    config: Config,
-    template_brief: str = "",
-) -> PlanningDraft:
-    """Legacy wrapper kept for compatibility."""
-
-    _ = template_brief
-    return generate_planning_outline(ctx, config)
-
-
 def _parse_draft(response: str, ensure_reveals: bool = False) -> PlanningDraft:
     """Extract JSON from LLM response and parse into PlanningDraft."""
 

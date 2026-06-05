@@ -308,6 +308,67 @@ def test_strict_lesson_binding_uses_only_matching_course_records(tmp_path):
     assert "triangle" not in "\n".join(str(item) for item in draft.pages[0].content_points)
 
 
+def test_strict_lesson_binding_does_not_modify_toc_page_with_exercise_terms(tmp_path):
+    db_path, _image_root = _create_teach_kb_db(tmp_path)
+    records = load_exercise_bank_from_db(db_path)
+    original_points = ["复习旧知", "基础练习安排", "拓展探索任务", "课后任务"]
+    draft = PlanningDraft(
+        meta=PlanningMeta(topic="异分母分数加法", subject="数学", grade="五年级"),
+        pages=[
+            PagePlan(page_number=1, page_type="cover", title="异分母分数加法"),
+            PagePlan(
+                page_number=2,
+                page_type="toc",
+                title="本节课学习内容",
+                content_points=list(original_points),
+            ),
+        ],
+    )
+
+    result = bind_strict_lesson_exercises_to_draft(
+        draft,
+        records,
+        session_dir=tmp_path / "session",
+    )
+
+    toc_page = draft.pages[1]
+    assert result.bound_count == 0
+    assert toc_page.page_type == "toc"
+    assert toc_page.exercise_refs == []
+    assert toc_page.exercise_payloads == []
+    assert toc_page.content_points == original_points
+    assert "观察图中分数条" not in "\n".join(str(item) for item in toc_page.content_points)
+
+
+def test_strict_lesson_binding_still_uses_content_page_exercise_fallback(tmp_path):
+    db_path, _image_root = _create_teach_kb_db(tmp_path)
+    records = load_exercise_bank_from_db(db_path)
+    draft = PlanningDraft(
+        meta=PlanningMeta(topic="异分母分数加法", subject="数学", grade="五年级"),
+        pages=[
+            PagePlan(
+                page_number=1,
+                page_type="content",
+                title="课堂检测：练一练",
+                content_points=["完成一道练习题，稍后讲解。"],
+            ),
+        ],
+    )
+
+    result = bind_strict_lesson_exercises_to_draft(
+        draft,
+        records,
+        session_dir=tmp_path / "session",
+    )
+
+    page = draft.pages[0]
+    assert result.bound_count == 1
+    assert page.page_type == "exercise"
+    assert page.exercise_refs
+    assert page.exercise_payloads
+    assert "答案揭晓区：稍后揭晓" in "\n".join(str(item) for item in page.content_points)
+
+
 def test_strict_lesson_binding_does_not_fallback_to_same_subject_grade(tmp_path):
     db_path, _image_root = _create_ascii_teach_kb_db(tmp_path)
     records = load_exercise_bank_from_db(db_path)

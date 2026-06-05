@@ -32,3 +32,11 @@ def test_duplicate_matching_no_longer_keeps_removed_constraint_hook():
 
 def test_config_no_longer_exposes_legacy_background_cache_dir():
     assert "cache_dir" not in Config.__dataclass_fields__
+
+
+def test_planning_legacy_compat_wrappers_are_removed():
+    from edupptx.planning import content_planner, prompts
+
+    assert not hasattr(content_planner, "generate_planning_draft")
+    assert not hasattr(prompts, "build_planning_system_prompt")
+    assert not hasattr(prompts, "build_planning_user_prompt")

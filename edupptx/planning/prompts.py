@@ -281,26 +281,3 @@ _REFINEMENT_SYSTEM_PROMPT = """你是一位资深的教育演示文稿策划师�
   ]
 }
 ```"""
-
-
-def build_planning_system_prompt() -> str:
-    """Legacy wrapper kept for compatibility."""
-
-    return build_refinement_planning_system_prompt()
-
-
-def build_planning_user_prompt(
-    topic: str,
-    requirements: str = "",
-    source_text: str | None = None,
-    research_summary: str | None = None,
-    template_brief: str = "",
-) -> str:
-    """Legacy wrapper kept for compatibility."""
-
-    return build_outline_planning_user_prompt(
-        topic=topic,
-        requirements=requirements,
-        source_text=source_text,
-        research_summary=research_summary,
-    )

@@ -113,16 +113,6 @@ def test_keyword_messages_feed_query_and_classify_on_query():
 import importlib
 
 
-def test_dry_run_audit_classifies_on_query():
-    mod = importlib.import_module("scripts.dry_run_query_classify")
-    item = mod._caption_input_item({"asset_id": "a1", "query": "Q-VERBOSE", "caption": "c-lossy"})
-    assert item["query"] == "Q-VERBOSE"
-    assert "caption" not in item
-    msgs = mod._build_caption_classification_messages([{"asset_id": "a1", "query": "Q-VERBOSE"}])
-    assert "Q-VERBOSE" in msgs[1]["content"]
-    assert "query" in msgs[0]["content"]
-
-
 from edupptx.materials.vlm_asset_enricher import (
     VLM_REDESCRIBE_SYSTEM_PROMPT,
     _apply_redescription,

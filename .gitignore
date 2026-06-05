@@ -25,3 +25,7 @@ assets/fonts/
 # Local logs / sandbox
 tools/
 *.log
+
+# Test / build temp dirs and caches
+.tmp_*/
+.pytest_cache/

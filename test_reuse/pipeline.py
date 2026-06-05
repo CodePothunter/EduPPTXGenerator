@@ -2189,7 +2189,6 @@ def run_review_stage(
             reuse_debug_mode="full",
             vlm_client=None,
             near_miss_vlm_state=None,
-            constraint_embedding_cache=None,
         )
         return match, collection
 
