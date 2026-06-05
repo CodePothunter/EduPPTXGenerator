@@ -68,10 +68,9 @@ REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD = 0.70
 # Per-query LLM review budget. Caps the number of llm_review calls made
 # for a single target so a noisy candidate pool can't burn the LLM on a
 # long tail of equivalent-quality candidates after the top contender has
-# already been judged. Empirically 7/26 reviewed queries triggered ≥3
-# LLM calls and only the first or second usually contains the accepted
-# match; raising K beyond 3 yields diminishing returns.
-MAX_LLM_REVIEWS_PER_QUERY = 3
+# already been judged. K=5 gives embedding-first ordering enough room to
+# recover strong semantic matches without opening the full candidate tail.
+MAX_LLM_REVIEWS_PER_QUERY = 5
 MAX_LLM_REVIEW_WORKERS = 15
 
 
@@ -2285,9 +2284,9 @@ def _llm_review_priority(record: dict[str, Any]) -> tuple[float, float, float, f
     score_details = _dict(record.get("score_details"))
     policy_result = _dict(record.get("policy_result"))
     return (
+        _review_score_value(score_details, "embedding_score"),
         float(policy_result.get("policy_score") or score_details.get("policy_score") or 0.0),
         _review_keyword_score(score_details),
-        _review_score_value(score_details, "embedding_score"),
         _review_score_value(score_details, "substring_score"),
         _review_score_value(score_details, "hybrid_score"),
     )
@@ -7102,9 +7101,9 @@ _LLM_PROFILE_ACCEPT_THRESHOLDS = {
     # page_image slots. None of these carry exact-content gating, so the LLM
     # review only needs to confirm visual plausibility — keep the bar above
     # noise without rejecting near-correct ambience images.
-    "loose": 0.55,
-    "medium": 0.68,
-    "strict_knowledge": 0.72,
+    "loose": 0.60,
+    "medium": 0.60,
+    "strict_knowledge": 0.60,
 }
 
 def _reuse_review_accept_score_threshold(
