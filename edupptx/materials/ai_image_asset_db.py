@@ -40,6 +40,7 @@ DEFAULT_DB_FILENAME = "ai_image_asset_db.json"
 DEFAULT_MATCH_INDEX_FILENAME = "ai_image_match_index.json"
 DEFAULT_EMBEDDING_INDEX_FILENAME = "ai_image_embedding_index.npz"
 DEFAULT_EMBEDDING_META_FILENAME = "ai_image_embedding_meta.json"
+DEFAULT_EMBEDDING_MISSING_CAPTION_REVIEW_FILENAME = "ai_image_embedding_missing_caption_review.json"
 DEFAULT_QUERY_EMBEDDING_CACHE_FILENAME = "ai_image_query_embedding_cache.npz"
 DEFAULT_QUERY_EMBEDDING_CACHE_META_FILENAME = "ai_image_query_embedding_cache_meta.json"
 DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
@@ -1056,11 +1057,56 @@ def write_ai_image_match_index(
         embedding_report = write_ai_image_embedding_index(index, root)
         if embedding_report:
             index["embedding_index"] = embedding_report
+            embedding_warnings = _as_string_list(embedding_report.get("warnings"))
+            if embedding_warnings:
+                index["warnings"] = _dedupe_warnings([*_as_string_list(index.get("warnings")), *embedding_warnings])
     split_dir = write_ai_image_split_match_indexes(index, root)
     legacy_target = root / index_filename
     if legacy_target.exists():
         legacy_target.unlink()
     return index, split_dir
+
+
+def _embedding_missing_caption_review_item(asset: dict[str, Any]) -> dict[str, Any]:
+    item = {
+        "asset_id": _clean_text(asset.get("asset_id")),
+        "asset_kind": _clean_text(asset.get("asset_kind")),
+        "strict_reuse_group": _clean_text(asset.get("strict_reuse_group")),
+        "image_path": _clean_text(asset.get("image_path")),
+        "query": _clean_text(asset.get("query")),
+        "file_name": _clean_text(asset.get("file_name")),
+        "theme": _clean_text(asset.get("theme")),
+    }
+    source_refs = asset.get("source_pptx_refs")
+    if isinstance(source_refs, list):
+        item["source_pptx_refs"] = deepcopy(source_refs)
+    return {key: value for key, value in item.items() if value not in ("", [], None)}
+
+
+def _write_embedding_missing_caption_review(
+    path: Path,
+    *,
+    model_name: str,
+    assets: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    if not assets:
+        try:
+            path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return None
+    payload = {
+        "schema_version": 1,
+        "built_at": datetime.now(timezone.utc).isoformat(),
+        "model": model_name,
+        "missing_caption_count": len(assets),
+        "assets": [_embedding_missing_caption_review_item(asset) for asset in assets],
+    }
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f"{path.name}.tmp")
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    os.replace(temp_path, path)
+    return payload
 
 
 def _c01_secondary_c03_projections(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1304,6 +1350,7 @@ def write_ai_image_embedding_index(
 
     root = Path(library_dir).expanduser().resolve()
     model_name = _embedding_model_name(model_name)
+    model_identity = _embedding_model_identity(model_name)
     if _embedding_disabled():
         return {
             "enabled": False,
@@ -1321,6 +1368,7 @@ def write_ai_image_embedding_index(
 
     rows: list[tuple[str, str]] = []
     background_color_bias_rows: list[tuple[str, str]] = []
+    missing_caption_assets: list[dict[str, Any]] = []
     for asset in assets:
         if not isinstance(asset, dict):
             continue
@@ -1328,14 +1376,33 @@ def write_ai_image_embedding_index(
         text = _asset_embedding_text(asset)
         if asset_id and text:
             rows.append((asset_id, text))
+        elif asset_id and not _is_background_asset(asset) and not _asset_caption(asset):
+            missing_caption_assets.append(asset)
         color_bias = _background_color_bias(asset) if _is_background_asset(asset) else ""
         if asset_id and color_bias:
             background_color_bias_rows.append((asset_id, color_bias))
+
+    missing_caption_review_path = root / DEFAULT_EMBEDDING_MISSING_CAPTION_REVIEW_FILENAME
+    missing_caption_review = _write_embedding_missing_caption_review(
+        missing_caption_review_path,
+        model_name=model_name,
+        assets=missing_caption_assets,
+    )
+    missing_caption_warnings = []
+    if missing_caption_review is not None:
+        missing_caption_warnings.append(
+            f"embedding_missing_caption:{len(missing_caption_assets)}:{_relative_output_path(missing_caption_review_path)}"
+        )
     if not rows:
         return {
             "enabled": False,
             "reason": "empty_embedding_text",
             "model": model_name,
+            "missing_caption_count": len(missing_caption_assets),
+            "missing_caption_review_path": _relative_output_path(missing_caption_review_path)
+            if missing_caption_review is not None
+            else "",
+            "warnings": missing_caption_warnings,
         }
 
     import numpy as np
@@ -1370,6 +1437,7 @@ def write_ai_image_embedding_index(
             "ids_key": "asset_ids",
             "texts_key": None,
             "vectors_key": "vectors",
+            "meta_assets_key": "assets",
         },
         {
             "name": "background_color_bias",
@@ -1377,6 +1445,7 @@ def write_ai_image_embedding_index(
             "ids_key": "background_color_bias_asset_ids",
             "texts_key": None,
             "vectors_key": "background_color_bias_vectors",
+            "meta_assets_key": "background_color_bias_assets",
         },
     ]
     total_counts = {spec["name"]: len(spec["rows"]) for spec in category_specs}
@@ -1384,6 +1453,7 @@ def write_ai_image_embedding_index(
     fingerprint_payload = {
         "schema_version": EMBEDDING_INDEX_SCHEMA_VERSION,
         "model": model_name,
+        "model_identity": model_identity,
         "index_filename": index_filename,
         "meta_filename": meta_filename,
         "row_hashes": {
@@ -1398,6 +1468,8 @@ def write_ai_image_embedding_index(
         spec["name"]: {"ids": [], "texts": [], "vectors": None}
         for spec in category_specs
     }
+    reused_counts = {spec["name"]: 0 for spec in category_specs}
+    encoded_counts = {spec["name"]: 0 for spec in category_specs}
 
     def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
         temp_path = path.with_name(f"{path.name}.tmp")
@@ -1438,6 +1510,7 @@ def write_ai_image_embedding_index(
             "build_fingerprint": build_fingerprint,
             "updated_at": datetime.now(timezone.utc).isoformat(),
             "model": model_name,
+            "model_identity": model_identity,
             "index_filename": index_filename,
             "meta_filename": meta_filename,
             "batch_size": build_batch_size,
@@ -1532,9 +1605,92 @@ def write_ai_image_embedding_index(
 
     def append_vectors(existing: Any, new_vectors: Any) -> Any:
         new_vectors = np.asarray(new_vectors, dtype="float32")
+        if len(new_vectors.shape) == 1:
+            new_vectors = new_vectors.reshape(1, -1)
         if existing is None:
             return new_vectors
         return np.vstack([np.asarray(existing, dtype="float32"), new_vectors])
+
+    def load_reusable_sidecar() -> dict[str, dict[tuple[str, str], Any]]:
+        reusable: dict[str, dict[tuple[str, str], Any]] = {
+            spec["name"]: {}
+            for spec in category_specs
+        }
+        if not index_path.exists() or not meta_path.exists():
+            return reusable
+        meta = _read_json_if_exists(meta_path)
+        if (
+            int(meta.get("schema_version") or 0) != EMBEDDING_INDEX_SCHEMA_VERSION
+            or not _embedding_model_sidecar_matches(meta.get("model"), model_name, meta.get("model_identity"))
+        ):
+            return reusable
+        try:
+            data = np.load(index_path, allow_pickle=False)
+            try:
+                for spec in category_specs:
+                    ids_key = spec["ids_key"]
+                    vectors_key = spec["vectors_key"]
+                    meta_assets_key = spec["meta_assets_key"]
+                    refs = meta.get(meta_assets_key)
+                    if (
+                        ids_key not in data.files
+                        or vectors_key not in data.files
+                        or not isinstance(refs, list)
+                    ):
+                        continue
+                    ids = [str(item) for item in data[ids_key].tolist()]
+                    vectors = np.asarray(data[vectors_key], dtype="float32")
+                    if len(vectors.shape) == 1:
+                        vectors = vectors.reshape(1, -1)
+                    count = min(len(ids), int(vectors.shape[0]), len(refs))
+                    for index in range(count):
+                        ref = refs[index]
+                        if not isinstance(ref, dict):
+                            continue
+                        asset_id = _clean_text(ref.get("asset_id"))
+                        text_hash = _clean_text(ref.get("embedding_text_hash"))
+                        if not asset_id or not text_hash or asset_id != ids[index]:
+                            continue
+                        reusable[spec["name"]][(asset_id, text_hash)] = vectors[index:index + 1]
+            finally:
+                data.close()
+        except Exception as exc:
+            PROGRESS_LOGGER.warning(
+                "AI image embedding sidecar reuse ignored: library={}, reason={}",
+                root,
+                str(exc)[:180],
+            )
+        return reusable
+
+    reusable_vectors = load_reusable_sidecar()
+
+    def append_rows(
+        spec: dict[str, Any],
+        batch_rows: list[tuple[str, str]],
+        vectors: Any,
+        *,
+        reused: bool,
+    ) -> None:
+        name = spec["name"]
+        state = encoded[name]
+        vectors = np.asarray(vectors, dtype="float32")
+        if len(vectors.shape) == 1:
+            vectors = vectors.reshape(1, -1)
+        if int(vectors.shape[0]) != len(batch_rows):
+            raise ValueError(f"embedding vector count mismatch: {name}")
+        state["ids"].extend(asset_id for asset_id, _text in batch_rows)
+        if spec.get("texts_key"):
+            state["texts"].extend(text for _asset_id, text in batch_rows)
+        state["vectors"] = append_vectors(state.get("vectors"), vectors)
+        if reused:
+            reused_counts[name] += len(batch_rows)
+        else:
+            encoded_counts[name] += len(batch_rows)
+
+    def reusable_vector_for(spec: dict[str, Any], row: tuple[str, str]) -> Any:
+        asset_id, text = row
+        key = (asset_id, _embedding_text_hash(text))
+        return reusable_vectors.get(spec["name"], {}).get(key)
 
     def encode_missing(spec: dict[str, Any]) -> None:
         name = spec["name"]
@@ -1542,13 +1698,24 @@ def write_ai_image_embedding_index(
         state = encoded[name]
         done = len(state.get("ids") or [])
         while done < len(spec_rows):
-            batch_rows = spec_rows[done:done + build_batch_size]
+            row = spec_rows[done]
+            reusable = reusable_vector_for(spec, row)
+            if reusable is not None:
+                append_rows(spec, [row], reusable, reused=True)
+                done = len(state.get("ids") or [])
+                continue
+
+            batch_rows: list[tuple[str, str]] = []
+            cursor = done
+            while cursor < len(spec_rows) and len(batch_rows) < build_batch_size:
+                candidate = spec_rows[cursor]
+                if reusable_vector_for(spec, candidate) is not None:
+                    break
+                batch_rows.append(candidate)
+                cursor += 1
             batch_texts = [text for _asset_id, text in batch_rows]
             vectors = _encode_embedding_texts(batch_texts, model_name=model_name, query=False)
-            state["ids"].extend(asset_id for asset_id, _text in batch_rows)
-            if spec.get("texts_key"):
-                state["texts"].extend(batch_texts)
-            state["vectors"] = append_vectors(state.get("vectors"), vectors)
+            append_rows(spec, batch_rows, vectors, reused=False)
             done = len(state.get("ids") or [])
             save_checkpoint(f"{name}:{done}/{len(spec_rows)}")
 
@@ -1578,20 +1745,30 @@ def write_ai_image_embedding_index(
         "schema_version": EMBEDDING_INDEX_SCHEMA_VERSION,
         "built_at": datetime.now(timezone.utc).isoformat(),
         "model": model_name,
+        "model_identity": model_identity,
         "index_filename": index_filename,
         "match_asset_count": len(assets),
         "asset_count": len(rows),
         "non_embeddable_asset_count": max(0, len(assets) - len(rows)),
         "background_color_bias_asset_count": len(background_color_bias_rows),
+        "missing_caption_count": len(missing_caption_assets),
+        "missing_caption_review_path": _relative_output_path(missing_caption_review_path)
+        if missing_caption_review is not None
+        else "",
         "vector_dim": int(vectors.shape[1]) if len(vectors.shape) == 2 else 0,
         "assets": [
-            {"asset_id": asset_id, "embedding_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]}
+            {"asset_id": asset_id, "embedding_text_hash": _embedding_text_hash(text)}
             for asset_id, text in rows
         ],
         "background_color_bias_assets": [
-            {"asset_id": asset_id, "embedding_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]}
+            {"asset_id": asset_id, "embedding_text_hash": _embedding_text_hash(text)}
             for asset_id, text in background_color_bias_rows
         ],
+        "reused_asset_count": reused_counts["asset"],
+        "encoded_asset_count": encoded_counts["asset"],
+        "reused_background_color_bias_asset_count": reused_counts["background_color_bias"],
+        "encoded_background_color_bias_asset_count": encoded_counts["background_color_bias"],
+        "warnings": missing_caption_warnings,
     }
     write_npz_atomic(index_path, final_payload)
     write_json_atomic(meta_path, meta)
@@ -1609,7 +1786,16 @@ def write_ai_image_embedding_index(
         "asset_count": len(rows),
         "non_embeddable_asset_count": max(0, len(assets) - len(rows)),
         "background_color_bias_asset_count": len(background_color_bias_rows),
+        "missing_caption_count": len(missing_caption_assets),
+        "missing_caption_review_path": _relative_output_path(missing_caption_review_path)
+        if missing_caption_review is not None
+        else "",
         "vector_dim": meta["vector_dim"],
+        "reused_asset_count": reused_counts["asset"],
+        "encoded_asset_count": encoded_counts["asset"],
+        "reused_background_color_bias_asset_count": reused_counts["background_color_bias"],
+        "encoded_background_color_bias_asset_count": encoded_counts["background_color_bias"],
+        "warnings": missing_caption_warnings,
     }
 
 
@@ -5196,7 +5382,85 @@ def _embedding_model_name(model_name: str | None = None) -> str:
     return configured or _clean_text(model_name) or DEFAULT_EMBEDDING_MODEL
 
 
-def _embedding_model_sidecar_matches(stored_model: Any, current_model: str) -> bool:
+def _embedding_text_hash(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
+
+
+def _embedding_model_identity(model_name: str | None = None) -> dict[str, Any]:
+    model = _embedding_model_name(model_name)
+    path = Path(model)
+    if path.exists() and path.is_dir():
+        return {
+            "kind": "local_path",
+            "name": path.name,
+            "fingerprint": _local_embedding_model_fingerprint(path),
+        }
+    return {
+        "kind": "model_name",
+        "name": model,
+    }
+
+
+def _local_embedding_model_fingerprint(model_dir: Path) -> str:
+    digest = hashlib.sha256()
+    found = 0
+    config_names = {
+        "config.json",
+        "modules.json",
+        "sentence_bert_config.json",
+        "tokenizer_config.json",
+    }
+    try:
+        candidates = sorted(
+            path
+            for path in model_dir.rglob("*")
+            if path.is_file() and path.name in config_names
+        )
+    except OSError:
+        candidates = []
+    for path in candidates:
+        try:
+            rel = path.relative_to(model_dir).as_posix()
+            data = path.read_bytes()
+        except OSError:
+            continue
+        digest.update(rel.encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(hashlib.sha256(data).hexdigest().encode("ascii"))
+        digest.update(b"\n")
+        found += 1
+    return digest.hexdigest() if found else ""
+
+
+def _embedding_model_identity_matches(stored_identity: Any, current_identity: dict[str, Any]) -> bool | None:
+    if not isinstance(stored_identity, dict):
+        return None
+    stored_kind = _clean_text(stored_identity.get("kind"))
+    current_kind = _clean_text(current_identity.get("kind"))
+    if not stored_kind or stored_kind != current_kind:
+        return False
+    stored_name = _clean_text(stored_identity.get("name"))
+    current_name = _clean_text(current_identity.get("name"))
+    if stored_name != current_name:
+        return False
+    if current_kind == "local_path":
+        stored_fingerprint = _clean_text(stored_identity.get("fingerprint"))
+        current_fingerprint = _clean_text(current_identity.get("fingerprint"))
+        if not stored_fingerprint or not current_fingerprint:
+            return False
+        return stored_fingerprint == current_fingerprint
+    return True
+
+
+def _embedding_model_sidecar_matches(
+    stored_model: Any,
+    current_model: str,
+    stored_identity: Any = None,
+) -> bool:
+    current_identity = _embedding_model_identity(current_model)
+    identity_match = _embedding_model_identity_matches(stored_identity, current_identity)
+    if identity_match is not None:
+        return identity_match
     stored = _clean_text(stored_model)
     current = _clean_text(current_model)
     if stored == current:
@@ -7499,6 +7763,25 @@ def _route_match_index_for_target(
     return split_index, split_path, split_assets, route_group
 
 
+def _embedding_refs_match(stored_refs: Any, expected_refs: list[dict[str, str]]) -> bool | None:
+    if not isinstance(stored_refs, list):
+        return None
+    stored_pairs: list[tuple[str, str]] = []
+    for item in stored_refs:
+        if not isinstance(item, dict):
+            return False
+        asset_id = _clean_text(item.get("asset_id"))
+        text_hash = _clean_text(item.get("embedding_text_hash"))
+        if not asset_id or not text_hash:
+            return False
+        stored_pairs.append((asset_id, text_hash))
+    expected_pairs = [
+        (_clean_text(item.get("asset_id")), _clean_text(item.get("embedding_text_hash")))
+        for item in expected_refs
+    ]
+    return sorted(stored_pairs) == sorted(expected_pairs)
+
+
 def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: Path) -> dict[str, Any]:
     model_name = _embedding_model_name()
     if _embedding_disabled():
@@ -7510,23 +7793,46 @@ def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: 
     match_asset_count = len(assets) if isinstance(assets, list) else 0
     expected_count = 0
     expected_background_color_bias_count = 0
+    expected_asset_refs: list[dict[str, str]] = []
+    expected_background_color_bias_refs: list[dict[str, str]] = []
     if isinstance(assets, list):
         for asset in assets:
             if not isinstance(asset, dict):
                 continue
             asset_id = _clean_text(asset.get("asset_id"))
-            if asset_id and _asset_embedding_text(asset):
+            text = _asset_embedding_text(asset)
+            if asset_id and text:
                 expected_count += 1
-            if asset_id and _is_background_asset(asset) and _background_color_bias(asset):
+                expected_asset_refs.append(
+                    {
+                        "asset_id": asset_id,
+                        "embedding_text_hash": _embedding_text_hash(text),
+                    }
+                )
+            color_bias = _background_color_bias(asset) if _is_background_asset(asset) else ""
+            if asset_id and color_bias:
                 expected_background_color_bias_count += 1
+                expected_background_color_bias_refs.append(
+                    {
+                        "asset_id": asset_id,
+                        "embedding_text_hash": _embedding_text_hash(color_bias),
+                    }
+                )
     non_embeddable_asset_count = max(0, match_asset_count - expected_count)
+    asset_refs_match = _embedding_refs_match(meta.get("assets"), expected_asset_refs)
+    background_color_bias_refs_match = _embedding_refs_match(
+        meta.get("background_color_bias_assets"),
+        expected_background_color_bias_refs,
+    )
     if (
         index_path.exists()
         and meta_path.exists()
         and int(meta.get("schema_version") or 0) == EMBEDDING_INDEX_SCHEMA_VERSION
-        and _embedding_model_sidecar_matches(meta.get("model"), model_name)
+        and _embedding_model_sidecar_matches(meta.get("model"), model_name, meta.get("model_identity"))
         and int(meta.get("asset_count") or -1) == expected_count
         and int(meta.get("background_color_bias_asset_count") or 0) == expected_background_color_bias_count
+        and (asset_refs_match is not False)
+        and (background_color_bias_refs_match is not False)
     ):
         return {
             "enabled": True,

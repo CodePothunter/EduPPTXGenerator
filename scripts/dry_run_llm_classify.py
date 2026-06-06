@@ -38,6 +38,10 @@ from edupptx.materials.strict_reuse_classifier import (
 RECLASSIFIABLE_ASSET_KINDS = {"background", "page_image"}
 STRICT_REUSE_INDEX_DIRNAME = "strict_reuse_indexes"
 LEGACY_BACKGROUND_GROUPS = {"background", "C11_background"}
+DEFAULT_PPTX_IMAGE_DIR = "pptx_images"
+DEFAULT_PPTX_ORIGINAL_IMAGE_DIR = "pptx_images_original"
+DEFAULT_SKIP_IMAGE_DIR = "skip_images"
+SKIP_REUSE_GROUP = "C00_strict_text_problem_skip"
 DEFAULT_LLM_CLASSIFY_BATCH_SIZE = 3
 DEFAULT_LLM_CLASSIFY_WORKERS = 15
 CLASSIFICATION_UPDATE_FIELDS = frozenset(
@@ -155,6 +159,129 @@ def _format_direction_counts(counts: dict[str, int]) -> str:
 
 def _clean_text(value: Any) -> str:
     return " ".join(str(value or "").split())
+
+
+def _is_skip_reuse_group(value: Any) -> bool:
+    return normalize_strict_reuse_group(value, default="") == SKIP_REUSE_GROUP
+
+
+def _library_file_path(library_dir: Path, value: Any) -> Path | None:
+    text = _clean_text(value)
+    if not text:
+        return None
+    path = Path(text)
+    if path.is_absolute():
+        return path
+    return library_dir / path
+
+
+def _move_library_file(library_dir: Path, source_rel: str, dest_rel: str) -> bool:
+    source = _library_file_path(library_dir, source_rel)
+    if source is None or not source.exists():
+        return False
+    dest = library_dir / dest_rel
+    root = library_dir.resolve()
+    try:
+        source_resolved = source.resolve()
+        dest_resolved = dest.resolve()
+        source_resolved.relative_to(root)
+        dest_resolved.parent.relative_to(root)
+    except ValueError:
+        return False
+    if source_resolved == dest_resolved:
+        return True
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    source.replace(dest)
+    return True
+
+
+def _move_asset_image_pair(
+    asset: dict,
+    *,
+    library_dir: Path,
+    runtime_target_rel: str,
+    original_target_rel: str,
+    warning_prefix: str,
+    warnings: list[Any],
+) -> tuple[bool, int]:
+    asset_id = _clean_text(asset.get("asset_id"))
+    runtime_rel = _clean_text(asset.get("image_path"))
+    original_rel = _clean_text(asset.get("original_image_path"))
+    missing_count = 0
+
+    runtime_moved = _move_library_file(library_dir, runtime_rel, runtime_target_rel)
+    if not runtime_moved:
+        warnings.append(f"{warning_prefix}_missing:{asset_id}:{runtime_rel}")
+        return False, 1
+    asset["image_path"] = runtime_target_rel
+
+    if original_rel and original_rel != runtime_rel:
+        original_moved = _move_library_file(library_dir, original_rel, original_target_rel)
+        if original_moved:
+            asset["original_image_path"] = original_target_rel
+        else:
+            missing_count += 1
+            warnings.append(f"{warning_prefix}_missing_original:{asset_id}:{original_rel}")
+            asset["original_image_path"] = runtime_target_rel
+    else:
+        asset["original_image_path"] = runtime_target_rel
+    return True, missing_count
+
+
+def _sync_reclassified_asset_files(
+    assets: list[dict],
+    original_assets_by_id: dict[str, dict],
+    *,
+    library_dir: Path,
+    warnings: list[Any],
+) -> dict[str, int]:
+    report = {
+        "moved_to_c00_count": 0,
+        "restored_from_c00_count": 0,
+        "missing_image_count": 0,
+    }
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        asset_id = _clean_text(asset.get("asset_id"))
+        before = original_assets_by_id.get(asset_id) if asset_id else None
+        if not isinstance(before, dict):
+            continue
+        before_skip = _is_skip_reuse_group(before.get("strict_reuse_group"))
+        after_skip = _is_skip_reuse_group(asset.get("strict_reuse_group"))
+        if before_skip == after_skip:
+            continue
+        if not asset_id:
+            warnings.append("llm_reclassify_image_sync_missing_asset_id")
+            report["missing_image_count"] += 1
+            continue
+
+        if after_skip:
+            moved, missing_count = _move_asset_image_pair(
+                asset,
+                library_dir=library_dir,
+                runtime_target_rel=f"{DEFAULT_SKIP_IMAGE_DIR}/{asset_id}.png",
+                original_target_rel=f"{DEFAULT_SKIP_IMAGE_DIR}/{asset_id}_original.png",
+                warning_prefix="llm_reclassify_archive_to_c00",
+                warnings=warnings,
+            )
+            if moved:
+                report["moved_to_c00_count"] += 1
+            report["missing_image_count"] += missing_count
+            continue
+
+        moved, missing_count = _move_asset_image_pair(
+            asset,
+            library_dir=library_dir,
+            runtime_target_rel=f"{DEFAULT_PPTX_IMAGE_DIR}/{asset_id}.png",
+            original_target_rel=f"{DEFAULT_PPTX_ORIGINAL_IMAGE_DIR}/{asset_id}.png",
+            warning_prefix="llm_reclassify_restore_from_c00",
+            warnings=warnings,
+        )
+        if moved:
+            report["restored_from_c00_count"] += 1
+        report["missing_image_count"] += missing_count
+    return report
 
 
 def _optional_float(value: Any) -> float | None:
@@ -499,9 +626,9 @@ def parse_args() -> argparse.Namespace:
         help="Write the reclassified assets back into the material library split indexes.",
     )
     parser.add_argument(
-        "--rebuild-embedding",
+        "--skip-embedding-update",
         action="store_true",
-        help="When --apply is used, rebuild ai_image_embedding_index.npz sidecars. Default is to skip.",
+        help="When --apply is used, skip updating ai_image_embedding_index.npz sidecars.",
     )
     return parser.parse_args()
 
@@ -620,7 +747,8 @@ def main() -> int:
 
     applied_index_path = None
     embedding_report = None
-    rebuild_embedding = bool(args.rebuild_embedding)
+    file_sync_report = None
+    update_embedding = bool(args.apply and not args.skip_embedding_update)
     if args.apply:
         updated_by_id = {asset.get("asset_id"): asset for asset in reclassify_assets if asset.get("asset_id")}
         merged_assets: list[dict] = []
@@ -644,11 +772,17 @@ def main() -> int:
             updated_db["warnings"].append(
                 f"partial LLM classify update applied to {len(reclassify_assets)} page_image/background assets"
             )
+        file_sync_report = _sync_reclassified_asset_files(
+            merged_assets,
+            original_assets_by_id,
+            library_dir=library_dir,
+            warnings=updated_db["warnings"],
+        )
 
         applied_index, applied_index_path = write_ai_image_match_index(
             updated_db,
             library_dir,
-            write_embedding_index=rebuild_embedding,
+            write_embedding_index=update_embedding,
         )
         embedding_report = applied_index.get("embedding_index")
         (report_dir / "applied_index_snapshot.json").write_text(
@@ -674,10 +808,17 @@ def main() -> int:
         summary_lines.append(f"- Changed directions: {_format_direction_counts(direction_counts)}")
     if applied_index_path is not None:
         summary_lines.append(f"- Updated split indexes: `{applied_index_path}`")
+    if file_sync_report is not None:
+        summary_lines.append(
+            "- Image file sync: "
+            f"moved_to_c00={file_sync_report['moved_to_c00_count']}, "
+            f"restored_from_c00={file_sync_report['restored_from_c00_count']}, "
+            f"missing={file_sync_report['missing_image_count']}"
+        )
     if embedding_report:
-        summary_lines.append(f"- Embedding rebuild: `{json.dumps(embedding_report, ensure_ascii=False)}`")
-    elif args.apply and not rebuild_embedding:
-        summary_lines.append("- Embedding rebuild: skipped (default)")
+        summary_lines.append(f"- Embedding update: `{json.dumps(embedding_report, ensure_ascii=False)}`")
+    elif args.apply and args.skip_embedding_update:
+        summary_lines.append("- Embedding update: skipped by --skip-embedding-update")
     summary_lines.extend(
         [
             "",
@@ -706,10 +847,10 @@ def main() -> int:
     if args.apply:
         print(f"Apply complete. Library updated.")
         print(f"  Updated split indexes: {applied_index_path}")
-        if not rebuild_embedding:
-            print(f"  Embedding rebuild: skipped (default)")
+        if args.skip_embedding_update:
+            print(f"  Embedding update: skipped by --skip-embedding-update")
         elif embedding_report:
-            print(f"  Embedding rebuild: {embedding_report}")
+            print(f"  Embedding update: {embedding_report}")
     else:
         print(f"Dry-run complete. Library untouched.")
     print(f"  Tested: {len(reclassify_assets)} page_image/background assets")

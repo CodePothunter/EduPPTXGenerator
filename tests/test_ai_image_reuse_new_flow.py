@@ -34,9 +34,9 @@ def test_default_reuse_candidate_limit_is_top_eight():
 
 
 def test_hybrid_retrieval_weights_sum_to_one():
-    assert HYBRID_BM25_WEIGHT == 0.50
-    assert HYBRID_EMBEDDING_WEIGHT == 0.35
-    assert HYBRID_SUBSTRING_WEIGHT == 0.15
+    assert HYBRID_BM25_WEIGHT == 0.25
+    assert HYBRID_EMBEDDING_WEIGHT == 0.55
+    assert HYBRID_SUBSTRING_WEIGHT == 0.20
     assert abs(HYBRID_BM25_WEIGHT + HYBRID_EMBEDDING_WEIGHT + HYBRID_SUBSTRING_WEIGHT - 1.0) < 1e-9
 
 
@@ -357,8 +357,8 @@ def test_end_to_end_simplified_reuse_flow():
 
     candidates_clustered = [
         {"policy_score": 0.76, "asset_id": "c1"},
-        {"policy_score": 0.73, "asset_id": "c2"},
-        {"policy_score": 0.72, "asset_id": "c3"},
+        {"policy_score": 0.755, "asset_id": "c2"},
+        {"policy_score": 0.75, "asset_id": "c3"},
     ]
     decision = decide_reuse(candidates_clustered)
     assert decision["decision"] == "llm_review"
@@ -441,7 +441,7 @@ def test_apply_policy_high_score_direct_reuse():
 def test_apply_policy_high_score_close_cluster_routes_to_llm():
     out = _run_policy([
         _tier_candidate("wide", 0.82, aspect_ratio="16:9"),
-        _tier_candidate("same_size", 0.79, aspect_ratio="4:3"),
+        _tier_candidate("same_size", 0.81, aspect_ratio="4:3"),
     ])
 
     assert out["accepted_candidates"] == []
@@ -461,7 +461,7 @@ def test_apply_policy_keeps_higher_score_when_size_better_candidate_is_not_close
 
 
 def test_apply_policy_below_per_target_threshold_discarded():
-    out = _run_policy([_tier_candidate("a", 0.40), _tier_candidate("b", 0.30)])
+    out = _run_policy([_tier_candidate("a", 0.30), _tier_candidate("b", 0.20)])
     assert out["accepted_candidates"] == []
     a_policy = out["rejected_by_policy"][0]["reuse_policy"]
     assert a_policy["decision"] == "reject"
@@ -501,4 +501,4 @@ def test_candidate_policy_score_is_single_final_policy_score():
         "score_details": {"keyword_score": 0.0},
     }
 
-    assert _candidate_policy_score(candidate) == 0.64
+    assert _candidate_policy_score(candidate) == 0.67

@@ -302,9 +302,10 @@ def test_llm_reclassify_apply_merges_only_classification_fields(tmp_path, monkey
         llm_api_key = "key"
         llm_model = "model"
 
-    def fake_classify(assets, client, *, batch_size):
+    def fake_classify(assets, client, *, batch_size, workers):
         assert client is fake_client
-        assert batch_size == module.DEFAULT_KEYWORD_BATCH_SIZE
+        assert batch_size == module.DEFAULT_LLM_CLASSIFY_BATCH_SIZE
+        assert workers == module.DEFAULT_LLM_CLASSIFY_WORKERS
         return [
             {
                 **assets[0],
@@ -352,7 +353,7 @@ def test_llm_reclassify_apply_merges_only_classification_fields(tmp_path, monkey
     assert updated_asset["strict_reuse_reason"] == "classification only"
     assert "keyword_builder" not in captured["db"]
     assert "keyword_built_at" not in captured["db"]
-    assert captured["write_embedding_index"] is False
+    assert captured["write_embedding_index"] is True
     summary = (report_dir / "summary.md").read_text(encoding="utf-8")
     assert "- Group changed: 1" in summary
     assert "C03_scene_decor_container" in summary
@@ -366,7 +367,82 @@ def test_llm_reclassify_apply_merges_only_classification_fields(tmp_path, monkey
     assert diff_rows[0]["query"] == "original query"
 
 
-def test_llm_reclassify_apply_can_explicitly_rebuild_embedding(tmp_path, monkeypatch):
+def test_llm_reclassify_archives_images_that_move_into_c00(tmp_path):
+    module = importlib.import_module("scripts.dry_run_llm_classify")
+    library_dir = tmp_path / "library"
+    (library_dir / "pptx_images").mkdir(parents=True)
+    (library_dir / "pptx_images_original").mkdir(parents=True)
+    (library_dir / "pptx_images" / "page.png").write_bytes(b"runtime")
+    (library_dir / "pptx_images_original" / "page.png").write_bytes(b"original")
+    before = {
+        "asset_id": "page",
+        "asset_kind": "page_image",
+        "image_path": "pptx_images/page.png",
+        "original_image_path": "pptx_images_original/page.png",
+        "strict_reuse_group": "C02_generic_subject_object",
+    }
+    after = {
+        **before,
+        "strict_reuse_group": "C00_strict_text_problem_skip",
+    }
+    warnings = []
+
+    report = module._sync_reclassified_asset_files(
+        [after],
+        {"page": before},
+        library_dir=library_dir,
+        warnings=warnings,
+    )
+
+    assert report["moved_to_c00_count"] == 1
+    assert report["restored_from_c00_count"] == 0
+    assert warnings == []
+    assert after["image_path"] == "skip_images/page.png"
+    assert after["original_image_path"] == "skip_images/page_original.png"
+    assert (library_dir / "skip_images" / "page.png").read_bytes() == b"runtime"
+    assert (library_dir / "skip_images" / "page_original.png").read_bytes() == b"original"
+    assert not (library_dir / "pptx_images" / "page.png").exists()
+    assert not (library_dir / "pptx_images_original" / "page.png").exists()
+
+
+def test_llm_reclassify_restores_images_that_leave_c00(tmp_path):
+    module = importlib.import_module("scripts.dry_run_llm_classify")
+    library_dir = tmp_path / "library"
+    (library_dir / "skip_images").mkdir(parents=True)
+    (library_dir / "skip_images" / "page.png").write_bytes(b"runtime")
+    (library_dir / "skip_images" / "page_original.png").write_bytes(b"original")
+    before = {
+        "asset_id": "page",
+        "asset_kind": "page_image",
+        "image_path": "skip_images/page.png",
+        "original_image_path": "skip_images/page_original.png",
+        "strict_reuse_group": "C00_strict_text_problem_skip",
+    }
+    after = {
+        **before,
+        "strict_reuse_group": "C02_generic_subject_object",
+    }
+    warnings = []
+
+    report = module._sync_reclassified_asset_files(
+        [after],
+        {"page": before},
+        library_dir=library_dir,
+        warnings=warnings,
+    )
+
+    assert report["moved_to_c00_count"] == 0
+    assert report["restored_from_c00_count"] == 1
+    assert warnings == []
+    assert after["image_path"] == "pptx_images/page.png"
+    assert after["original_image_path"] == "pptx_images_original/page.png"
+    assert (library_dir / "pptx_images" / "page.png").read_bytes() == b"runtime"
+    assert (library_dir / "pptx_images_original" / "page.png").read_bytes() == b"original"
+    assert not (library_dir / "skip_images" / "page.png").exists()
+    assert not (library_dir / "skip_images" / "page_original.png").exists()
+
+
+def test_llm_reclassify_apply_can_skip_embedding_update(tmp_path, monkeypatch):
     module = importlib.import_module("scripts.dry_run_llm_classify")
     library_dir = tmp_path / "library"
     report_dir = tmp_path / "report"
@@ -390,7 +466,8 @@ def test_llm_reclassify_apply_can_explicitly_rebuild_embedding(tmp_path, monkeyp
         llm_api_key = "key"
         llm_model = "model"
 
-    def fake_classify(assets, client, *, batch_size):
+    def fake_classify(assets, client, *, batch_size, workers):
+        assert workers == module.DEFAULT_LLM_CLASSIFY_WORKERS
         return [
             {
                 **assets[0],
@@ -402,8 +479,6 @@ def test_llm_reclassify_apply_can_explicitly_rebuild_embedding(tmp_path, monkeyp
 
     def fake_write_ai_image_match_index(updated_db, root, *, write_embedding_index):
         captured["write_embedding_index"] = write_embedding_index
-        if write_embedding_index:
-            updated_db["embedding_index"] = {"enabled": True, "asset_count": 1}
         return updated_db, source_dir
 
     monkeypatch.setattr(module.Config, "from_env", staticmethod(lambda _env_file: _FakeConfig()))
@@ -421,15 +496,15 @@ def test_llm_reclassify_apply_can_explicitly_rebuild_embedding(tmp_path, monkeyp
             "--report-dir",
             str(report_dir),
             "--apply",
-            "--rebuild-embedding",
+            "--skip-embedding-update",
         ],
     )
 
     assert module.main() == 0
 
-    assert captured["write_embedding_index"] is True
+    assert captured["write_embedding_index"] is False
     summary = (report_dir / "summary.md").read_text(encoding="utf-8")
-    assert '"enabled": true' in summary
+    assert "- Embedding update: skipped by --skip-embedding-update" in summary
 
 
 def test_llm_reclassify_skip_embedding_rebuild_option_is_removed(monkeypatch):
@@ -440,6 +515,23 @@ def test_llm_reclassify_skip_embedding_rebuild_option_is_removed(monkeypatch):
         [
             "dry_run_llm_classify.py",
             "--skip-embedding-rebuild",
+        ],
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        module.parse_args()
+
+    assert excinfo.value.code == 2
+
+
+def test_llm_reclassify_rebuild_embedding_option_is_removed(monkeypatch):
+    module = importlib.import_module("scripts.dry_run_llm_classify")
+    monkeypatch.setattr(
+        module.sys,
+        "argv",
+        [
+            "dry_run_llm_classify.py",
+            "--rebuild-embedding",
         ],
     )
 

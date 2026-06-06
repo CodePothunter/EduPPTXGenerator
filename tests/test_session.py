@@ -30,7 +30,7 @@ def test_log_step(tmp_path):
     session = Session(tmp_path)
     session.log_step("planning", "Planning 12 slides about 勾股定理")
 
-    lines = session.thinking_file.read_text().strip().split("\n")
+    lines = session.thinking_file.read_text(encoding="utf-8").strip().split("\n")
     assert len(lines) == 1
     entry = json.loads(lines[0])
     assert entry["type"] == "planning"
@@ -43,7 +43,7 @@ def test_log_step_appends(tmp_path):
     session.log_step("planning", "Step 1")
     session.log_step("material", "Generating background")
 
-    lines = session.thinking_file.read_text().strip().split("\n")
+    lines = session.thinking_file.read_text(encoding="utf-8").strip().split("\n")
     assert len(lines) == 2
 
 
@@ -52,7 +52,7 @@ def test_save_plan(tmp_path):
     plan = {"topic": "勾股定理", "slides": []}
     session.save_plan(plan)
 
-    saved = json.loads((session.dir / "plan.json").read_text())
+    saved = json.loads((session.dir / "plan.json").read_text(encoding="utf-8"))
     assert saved["topic"] == "勾股定理"
 
 

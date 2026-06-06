@@ -29,8 +29,8 @@ from edupptx.materials.ai_image_asset_db import _review_worker_count, MAX_LLM_RE
 
 
 def test_review_worker_count_capped_at_budget():
-    assert MAX_LLM_REVIEWS_PER_QUERY == 3
-    assert _review_worker_count(10) == 3
+    assert MAX_LLM_REVIEWS_PER_QUERY == 5
+    assert _review_worker_count(10) == 5
     assert _review_worker_count(3) == 3
     assert _review_worker_count(2) == 2
     assert _review_worker_count(1) == 1

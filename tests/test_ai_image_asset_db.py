@@ -1,3 +1,4 @@
+import hashlib
 import json
 
 from PIL import Image
@@ -267,6 +268,161 @@ def test_embedding_sidecar_reuses_cross_platform_local_model_path(tmp_path, monk
     assert report["enabled"] is True
     assert report["model"] == str(local_model)
     assert report["asset_count"] == 1
+
+
+def test_embedding_build_reuses_unchanged_vectors_and_encodes_only_changed_assets(tmp_path, monkeypatch):
+    monkeypatch.delenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", raising=False)
+    monkeypatch.setenv("EDUPPTX_AI_IMAGE_EMBEDDING_MODEL", "local-model")
+
+    import numpy as np
+
+    keep = {**_asset("keep", "C02_generic_subject_object"), "caption": "single apple card"}
+    changed_old = {**_asset("changed", "C02_generic_subject_object"), "caption": "old triangle card"}
+    changed_new = {**_asset("changed", "C02_generic_subject_object"), "caption": "new triangle card"}
+    added = {**_asset("added", "C02_generic_subject_object"), "caption": "new square card"}
+
+    old_rows = [
+        (keep["asset_id"], image_db._asset_embedding_text(keep)),
+        (changed_old["asset_id"], image_db._asset_embedding_text(changed_old)),
+    ]
+    (tmp_path / image_db.DEFAULT_EMBEDDING_META_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": image_db.EMBEDDING_INDEX_SCHEMA_VERSION,
+                "model": "local-model",
+                "asset_count": 2,
+                "background_color_bias_asset_count": 0,
+                "vector_dim": 3,
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "embedding_text_hash": hashlib.sha256(text.encode("utf-8")).hexdigest()[:16],
+                    }
+                    for asset_id, text in old_rows
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    np.savez_compressed(
+        tmp_path / image_db.DEFAULT_EMBEDDING_INDEX_FILENAME,
+        asset_ids=np.asarray(["keep", "changed"], dtype=str),
+        vectors=np.asarray([[1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype="float32"),
+    )
+
+    encoded_texts: list[str] = []
+
+    def fake_encode_embedding_texts(texts, **_kwargs):
+        encoded_texts.extend(texts)
+        return np.asarray(
+            [[0.0, 0.0, float(index + 1)] for index, _text in enumerate(texts)],
+            dtype="float32",
+        )
+
+    monkeypatch.setattr(image_db, "_encode_embedding_texts", fake_encode_embedding_texts)
+
+    report = image_db.write_ai_image_embedding_index(
+        {"assets": [keep, changed_new, added]},
+        tmp_path,
+    )
+
+    assert encoded_texts == [
+        image_db._asset_embedding_text(changed_new),
+        image_db._asset_embedding_text(added),
+    ]
+    assert report["reused_asset_count"] == 1
+    assert report["encoded_asset_count"] == 2
+    with np.load(tmp_path / image_db.DEFAULT_EMBEDDING_INDEX_FILENAME) as data:
+        assert data["asset_ids"].tolist() == ["keep", "changed", "added"]
+        assert data["vectors"].tolist()[0] == [1.0, 0.0, 0.0]
+
+
+def test_embedding_build_writes_missing_caption_review_and_does_not_embed_query(tmp_path, monkeypatch):
+    monkeypatch.delenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", raising=False)
+    monkeypatch.setenv("EDUPPTX_AI_IMAGE_EMBEDDING_MODEL", "local-model")
+
+    def fail_encode(*_args, **_kwargs):
+        raise AssertionError("query must not be embedded when caption is missing")
+
+    monkeypatch.setattr(image_db, "_encode_embedding_texts", fail_encode)
+    asset = {
+        "asset_id": "missing_caption",
+        "asset_kind": "page_image",
+        "image_path": "pptx_images/missing_caption.png",
+        "query": "verbose fallback query must only go to review",
+        "strict_reuse_group": "C03_scene_decor_container",
+        "file_name": "lesson.pptx",
+    }
+
+    report = image_db.write_ai_image_embedding_index({"assets": [asset]}, tmp_path)
+
+    assert report["enabled"] is False
+    assert report["reason"] == "empty_embedding_text"
+    assert report["missing_caption_count"] == 1
+    review_path = tmp_path / "ai_image_embedding_missing_caption_review.json"
+    assert review_path.exists()
+    payload = json.loads(review_path.read_text(encoding="utf-8"))
+    assert payload["missing_caption_count"] == 1
+    assert payload["assets"][0]["asset_id"] == "missing_caption"
+    assert payload["assets"][0]["query"] == "verbose fallback query must only go to review"
+    assert any("embedding_missing_caption" in warning for warning in report["warnings"])
+
+
+def test_embedding_sidecar_with_same_model_basename_but_different_identity_rebuilds(tmp_path, monkeypatch):
+    local_model = tmp_path / "models" / "Qwen3-Embedding-0.6B"
+    local_model.mkdir(parents=True)
+    (local_model / "config.json").write_text('{"hidden_size": 1024}', encoding="utf-8")
+    monkeypatch.delenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", raising=False)
+    monkeypatch.setenv("EDUPPTX_AI_IMAGE_EMBEDDING_MODEL", str(local_model))
+
+    import numpy as np
+
+    np.savez_compressed(
+        tmp_path / image_db.DEFAULT_EMBEDDING_INDEX_FILENAME,
+        asset_ids=np.asarray(["asset_with_text"], dtype=str),
+        vectors=np.asarray([[1.0, 0.0, 0.0]], dtype="float32"),
+    )
+    (tmp_path / image_db.DEFAULT_EMBEDDING_META_FILENAME).write_text(
+        json.dumps(
+            {
+                "schema_version": image_db.EMBEDDING_INDEX_SCHEMA_VERSION,
+                "model": "/home/zsq/models/Qwen3-Embedding-0.6B",
+                "model_identity": {
+                    "kind": "local_path",
+                    "name": "Qwen3-Embedding-0.6B",
+                    "fingerprint": "different-model-content",
+                },
+                "asset_count": 1,
+                "background_color_bias_asset_count": 0,
+                "vector_dim": 3,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    match_index = {
+        "assets": [
+            {
+                "asset_id": "asset_with_text",
+                "asset_kind": "page_image",
+                "image_path": "pptx_images/asset_with_text.png",
+                "caption": "apple card illustration",
+            }
+        ],
+    }
+    rebuilt = {}
+
+    def fake_rebuild(*_args, **_kwargs):
+        rebuilt["called"] = True
+        return {"enabled": True, "asset_count": 1, "model": str(local_model)}
+
+    monkeypatch.setattr(image_db, "write_ai_image_embedding_index", fake_rebuild)
+
+    report = image_db._ensure_ai_image_embedding_index(match_index, tmp_path)
+
+    assert rebuilt["called"] is True
+    assert report["enabled"] is True
 
 
 def test_transform_policy_uses_aspect_ratio_without_bucket_fields():

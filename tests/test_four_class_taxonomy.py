@@ -45,7 +45,7 @@ def test_rules_text_lists_only_contiguous_ids():
         "C05_scene_decor_container",
     ):
         assert old_id not in text
-    assert "语言符号" in text and "知识结构" in text
+    assert "字面符号" in text and "结构标注" in text
 
 
 def test_contiguous_reuse_levels():

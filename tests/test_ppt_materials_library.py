@@ -240,7 +240,7 @@ def test_build_ppt_materials_library_pipelines_llm_after_each_vlm_completion(tmp
     assert events.index("llm_start_first") < events.index("vlm_done_second")
 
 
-def test_build_ppt_image_materials_library_writes_match_index_and_embedding_sidecars(tmp_path, monkeypatch):
+def test_build_ppt_image_materials_library_reports_missing_caption_without_embedding_query_fallback(tmp_path, monkeypatch):
     _patch_embedding_encoder(monkeypatch)
     teach_kb_root = tmp_path / "teach-kb"
     pptx_dir = teach_kb_root / "data" / "uploads" / "pptx"
@@ -266,14 +266,19 @@ def test_build_ppt_image_materials_library_writes_match_index_and_embedding_side
     assert not (library_dir / "strict_reuse_indexes" / "strict_reuse_split_manifest.json").exists()
     assert not (library_dir / "ai_image_asset_db.json").exists()
     assert not (library_dir / "ppt_extraction_report.json").exists()
-    assert (library_dir / "ai_image_embedding_index.npz").exists()
-    assert (library_dir / "ai_image_embedding_meta.json").exists()
+    assert not (library_dir / "ai_image_embedding_index.npz").exists()
+    assert not (library_dir / "ai_image_embedding_meta.json").exists()
+    assert (library_dir / "ai_image_embedding_missing_caption_review.json").exists()
     assert db["asset_count"] == 1
     assert report["raw_picture_count"] == 1
     index = json.loads((library_dir / "strict_reuse_indexes" / "C03_scene_decor_container.json").read_text(encoding="utf-8"))
     assert index["asset_count"] == 1
-    embedding_meta = json.loads((library_dir / "ai_image_embedding_meta.json").read_text(encoding="utf-8"))
-    assert embedding_meta["asset_count"] == 1
+    missing_caption_review = json.loads(
+        (library_dir / "ai_image_embedding_missing_caption_review.json").read_text(encoding="utf-8")
+    )
+    assert missing_caption_review["missing_caption_count"] == 1
+    assert missing_caption_review["assets"][0]["asset_id"] == index["assets"][0]["asset_id"]
+    assert any("embedding_missing_caption" in warning for warning in report["warnings"])
     assert index["ppt_extractor"]["schema_version"] == MODULE.PPT_LIBRARY_SCHEMA_VERSION
     assert index["assets"][0]["query"].startswith("教学配图")
     asset = db["assets"][0]
@@ -296,6 +301,42 @@ def test_build_ppt_image_materials_library_writes_match_index_and_embedding_side
     assert "ppt_context" not in asset
     assert "vlm_visual_style" not in asset
     assert not asset["context_summary"].startswith(("来自", "图片来自", "该图来自"))
+
+
+def test_incremental_match_index_flush_does_not_write_embedding_sidecar(tmp_path, monkeypatch):
+    library_dir = tmp_path / "materials_library_ppt"
+    captured = {}
+
+    def fake_write_ai_image_match_index(db, root, *, write_embedding_index):
+        captured["db"] = db
+        captured["root"] = root
+        captured["write_embedding_index"] = write_embedding_index
+        return {"assets": db["assets"]}, root / "strict_reuse_indexes"
+
+    monkeypatch.setattr(MODULE, "write_ai_image_match_index", fake_write_ai_image_match_index)
+
+    report = {"warnings": []}
+    index_path = MODULE._write_incremental_match_index(
+        assets_by_id={
+            "page": {
+                "asset_id": "page",
+                "asset_kind": "page_image",
+                "image_path": "pptx_images/page.png",
+                "original_image_path": "pptx_images_original/page.png",
+                "query": "generic classroom illustration",
+                "strict_reuse_group": "C02_generic_subject_object",
+            }
+        },
+        library_root=library_dir,
+        existing_db={"warnings": []},
+        teach_root=tmp_path / "teach-kb",
+        report=report,
+        ppt_asset_source_by_id={},
+    )
+
+    assert index_path == library_dir / "strict_reuse_indexes"
+    assert captured["write_embedding_index"] is False
+    assert report["incremental_match_index_written"] is True
 
 
 def test_build_ppt_materials_library_writes_source_pptx_refs_to_split_index(tmp_path, monkeypatch):

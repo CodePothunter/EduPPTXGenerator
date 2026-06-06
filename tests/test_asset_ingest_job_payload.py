@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from PIL import Image
@@ -96,3 +97,91 @@ def test_ingest_ai_image_asset_job_skips_c00_assets_without_copying(tmp_path: Pa
     assert db["assets"] == []
     assert not (library_dir / "ai_images" / "aiimg_c00_job.png").exists()
     assert any("skipped C00 asset" in warning for warning in db.get("warnings", []))
+
+
+def test_ingest_ai_image_asset_job_updates_embedding_incrementally(tmp_path: Path, monkeypatch):
+    monkeypatch.delenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", raising=False)
+    monkeypatch.setenv("EDUPPTX_AI_IMAGE_EMBEDDING_MODEL", "local-model")
+
+    import numpy as np
+    import edupptx.materials.ai_image_asset_db as image_db
+
+    encoded_texts: list[str] = []
+
+    def fake_encode_embedding_texts(texts, **_kwargs):
+        encoded_texts.extend(texts)
+        return np.asarray(
+            [[float(index + 1), 0.0, 1.0] for index, _text in enumerate(texts)],
+            dtype="float32",
+        )
+
+    monkeypatch.setattr(image_db, "_encode_embedding_texts", fake_encode_embedding_texts)
+
+    library_dir = tmp_path / "materials_library"
+    first_session = tmp_path / "output" / "session_first"
+    first_materials = first_session / "materials"
+    first_materials.mkdir(parents=True)
+    Image.new("RGB", (16, 12), "white").save(first_materials / "first.png")
+    first_asset = {
+        "asset_id": "aiimg_first",
+        "asset_kind": "page_image",
+        "image_path": "materials/first.png",
+        "aspect_ratio": "4:3",
+        "caption": "first generated image",
+        "context_summary": "first context",
+        "teaching_intent": "first intent",
+        "subject": "math",
+        "grade_norm": "grade2",
+        "grade_band": "lower",
+        "general": True,
+        "strict_reuse_group": "C03_scene_decor_container",
+        "_reuse_target_metadata_seeded": True,
+    }
+
+    ingest_ai_image_asset_job(
+        {
+            "job_id": "job_first",
+            "session_dir": str(first_session),
+            "library_dir": str(library_dir),
+            "assets": [first_asset],
+        },
+        keyword_client=None,
+    )
+    assert encoded_texts == ["first generated image"]
+
+    encoded_texts.clear()
+    second_session = tmp_path / "output" / "session_second"
+    second_materials = second_session / "materials"
+    second_materials.mkdir(parents=True)
+    Image.new("RGB", (16, 12), "black").save(second_materials / "second.png")
+    second_asset = {
+        "asset_id": "aiimg_second",
+        "asset_kind": "page_image",
+        "image_path": "materials/second.png",
+        "aspect_ratio": "4:3",
+        "caption": "second generated image",
+        "context_summary": "second context",
+        "teaching_intent": "second intent",
+        "subject": "math",
+        "grade_norm": "grade2",
+        "grade_band": "lower",
+        "general": True,
+        "strict_reuse_group": "C03_scene_decor_container",
+        "_reuse_target_metadata_seeded": True,
+    }
+
+    ingest_ai_image_asset_job(
+        {
+            "job_id": "job_second",
+            "session_dir": str(second_session),
+            "library_dir": str(library_dir),
+            "assets": [second_asset],
+        },
+        keyword_client=None,
+    )
+
+    assert encoded_texts == ["second generated image"]
+    meta = json.loads((library_dir / "ai_image_embedding_meta.json").read_text(encoding="utf-8"))
+    assert meta["asset_count"] == 2
+    assert meta["reused_asset_count"] == 1
+    assert meta["encoded_asset_count"] == 1

@@ -592,6 +592,13 @@ def build_ppt_image_materials_library(
                 db,
                 library_root,
             )
+            embedding_report = match_index.get("embedding_index") if isinstance(match_index, dict) else None
+            if isinstance(embedding_report, dict):
+                report["warnings"].extend(
+                    warning
+                    for warning in embedding_report.get("warnings", [])
+                    if isinstance(warning, str) and warning
+                )
             if not (match_index.get("assets") if isinstance(match_index.get("assets"), list) else []):
                 _remove_ppt_embedding_sidecars(library_root, warnings=report["warnings"])
             report["match_index_path"] = str(index_path)
@@ -1971,6 +1978,7 @@ def _write_incremental_match_index(
     _index, index_path = write_ai_image_match_index(
         db,
         library_root,
+        write_embedding_index=False,
     )
     report["match_index_path"] = str(index_path)
     report["incremental_match_index_written"] = True

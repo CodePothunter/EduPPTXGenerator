@@ -5,7 +5,7 @@ from edupptx.materials.strict_reuse_classifier import (
 
 
 def test_rules_text_says_judge_by_query():
-    assert "只根据 query" in MATERIAL_CATEGORY_RULES_TEXT
+    assert "只看 query 字面描述" in MATERIAL_CATEGORY_RULES_TEXT
     assert "只根据 content_prompt" not in MATERIAL_CATEGORY_RULES_TEXT
 
 
