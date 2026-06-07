@@ -266,7 +266,7 @@ def test_embedding_sidecar_reuses_cross_platform_local_model_path(tmp_path, monk
     report = image_db._ensure_ai_image_embedding_index(match_index, tmp_path)
 
     assert report["enabled"] is True
-    assert report["model"] == str(local_model)
+    assert report["model"] == "Qwen3-Embedding-0.6B"
     assert report["asset_count"] == 1
 
 
@@ -333,6 +333,9 @@ def test_embedding_build_reuses_unchanged_vectors_and_encodes_only_changed_asset
     ]
     assert report["reused_asset_count"] == 1
     assert report["encoded_asset_count"] == 2
+    meta = json.loads((tmp_path / image_db.DEFAULT_EMBEDDING_META_FILENAME).read_text(encoding="utf-8"))
+    assert meta["model"] == "local-model"
+    assert "model_identity" not in meta
     with np.load(tmp_path / image_db.DEFAULT_EMBEDDING_INDEX_FILENAME) as data:
         assert data["asset_ids"].tolist() == ["keep", "changed", "added"]
         assert data["vectors"].tolist()[0] == [1.0, 0.0, 0.0]
@@ -369,7 +372,7 @@ def test_embedding_build_writes_missing_caption_review_and_does_not_embed_query(
     assert any("embedding_missing_caption" in warning for warning in report["warnings"])
 
 
-def test_embedding_sidecar_with_same_model_basename_but_different_identity_rebuilds(tmp_path, monkeypatch):
+def test_embedding_sidecar_with_same_model_name_ignores_stale_path_identity(tmp_path, monkeypatch):
     local_model = tmp_path / "models" / "Qwen3-Embedding-0.6B"
     local_model.mkdir(parents=True)
     (local_model / "config.json").write_text('{"hidden_size": 1024}', encoding="utf-8")
@@ -411,18 +414,15 @@ def test_embedding_sidecar_with_same_model_basename_but_different_identity_rebui
             }
         ],
     }
-    rebuilt = {}
+    def fail_rebuild(*_args, **_kwargs):
+        raise AssertionError("same canonical model name should reuse sidecar despite stale path identity")
 
-    def fake_rebuild(*_args, **_kwargs):
-        rebuilt["called"] = True
-        return {"enabled": True, "asset_count": 1, "model": str(local_model)}
-
-    monkeypatch.setattr(image_db, "write_ai_image_embedding_index", fake_rebuild)
+    monkeypatch.setattr(image_db, "write_ai_image_embedding_index", fail_rebuild)
 
     report = image_db._ensure_ai_image_embedding_index(match_index, tmp_path)
 
-    assert rebuilt["called"] is True
     assert report["enabled"] is True
+    assert report["model"] == "Qwen3-Embedding-0.6B"
 
 
 def test_transform_policy_uses_aspect_ratio_without_bucket_fields():

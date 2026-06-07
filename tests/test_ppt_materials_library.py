@@ -523,9 +523,8 @@ def test_build_ppt_materials_library_archives_c00_images_to_skip_images(tmp_path
     assert db["asset_count"] == 1
     asset = db["assets"][0]
     assert asset["strict_reuse_group"] == "C00_strict_text_problem_skip"
-    assert asset["image_path"].startswith("skip_images/")
+    assert "image_path" not in asset
     assert asset["original_image_path"].startswith("skip_images/")
-    assert (library_dir / asset["image_path"]).exists()
     assert (library_dir / asset["original_image_path"]).exists()
     assert not (library_dir / "pptx_images" / f"{asset['asset_id']}.png").exists()
     assert not (library_dir / "pptx_images_original" / f"{asset['asset_id']}.png").exists()
@@ -534,7 +533,7 @@ def test_build_ppt_materials_library_archives_c00_images_to_skip_images(tmp_path
         (library_dir / "strict_reuse_indexes" / "C00_strict_text_problem_skip.json").read_text(encoding="utf-8")
     )
     assert [item["asset_id"] for item in c00_payload["assets"]] == [asset["asset_id"]]
-    assert c00_payload["assets"][0]["image_path"].startswith("skip_images/")
+    assert "image_path" not in c00_payload["assets"][0]
     assert c00_payload["assets"][0]["original_image_path"].startswith("skip_images/")
 
     merged, _split_dir = MODULE.read_ai_image_split_match_index(library_dir)
@@ -545,12 +544,16 @@ def test_build_ppt_materials_library_archives_c00_images_to_skip_images(tmp_path
 def test_ppt_incremental_match_index_writes_c00_before_final_archive(tmp_path):
     library_dir = tmp_path / "materials_library_ppt"
     image_dir = library_dir / "pptx_images"
+    original_dir = library_dir / "pptx_images_original"
     image_dir.mkdir(parents=True)
+    original_dir.mkdir(parents=True)
     Image.new("RGB", (400, 300), (120, 180, 220)).save(image_dir / "c00.png")
+    Image.new("RGB", (400, 300), (120, 180, 220)).save(original_dir / "c00.png")
     asset = {
         "asset_id": "c00",
         "asset_kind": "page_image",
         "image_path": "pptx_images/c00.png",
+        "original_image_path": "pptx_images_original/c00.png",
         "query": "精确文字题目卡片",
         "caption": "精确文字题目卡片",
         "strict_reuse_group": "C00_strict_text_problem_skip",
@@ -571,8 +574,10 @@ def test_ppt_incremental_match_index_writes_c00_before_final_archive(tmp_path):
     )
     assert c00_payload["asset_count"] == 1
     assert c00_payload["assets"][0]["asset_id"] == "c00"
-    assert c00_payload["assets"][0]["image_path"] == "pptx_images/c00.png"
+    assert "image_path" not in c00_payload["assets"][0]
+    assert c00_payload["assets"][0]["original_image_path"] == "pptx_images_original/c00.png"
     assert (library_dir / "pptx_images" / "c00.png").exists()
+    assert (library_dir / "pptx_images_original" / "c00.png").exists()
     assert not (library_dir / "skip_images" / "c00.png").exists()
 
 

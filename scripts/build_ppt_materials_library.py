@@ -1177,27 +1177,20 @@ def _archive_ppt_skip_images(
 
         runtime_rel = _clean_text(asset.get("image_path"))
         original_rel = _clean_text(asset.get("original_image_path"))
-        runtime_target_rel = f"{DEFAULT_SKIP_IMAGE_DIR}/{asset_id}.png"
         original_target_rel = f"{DEFAULT_SKIP_IMAGE_DIR}/{asset_id}_original.png"
 
-        runtime_moved = _move_library_file(library_root, runtime_rel, runtime_target_rel)
-        if not runtime_moved:
+        original_source_rel = original_rel or runtime_rel
+        original_moved = _move_library_file(library_root, original_source_rel, original_target_rel)
+        if not original_moved:
             missing_count += 1
-            warnings.append(f"ppt_skip_image_archive_missing:{asset_id}:{runtime_rel}")
+            warnings.append(f"ppt_skip_image_archive_missing_original:{asset_id}:{original_source_rel}")
+            asset.pop("image_path", None)
             continue
-        asset["image_path"] = runtime_target_rel
 
-        if original_rel and original_rel != runtime_rel:
-            original_moved = _move_library_file(library_root, original_rel, original_target_rel)
-            if original_moved:
-                asset["original_image_path"] = original_target_rel
-            else:
-                missing_count += 1
-                warnings.append(f"ppt_skip_image_archive_missing_original:{asset_id}:{original_rel}")
-                asset["original_image_path"] = runtime_target_rel
-        else:
-            asset["original_image_path"] = runtime_target_rel
-
+        if runtime_rel and runtime_rel != original_source_rel:
+            _delete_library_file(library_root, runtime_rel)
+        asset.pop("image_path", None)
+        asset["original_image_path"] = original_target_rel
         archived_count += 1
 
     return {"archived_count": archived_count, "missing_count": missing_count}
@@ -1221,6 +1214,22 @@ def _move_library_file(library_root: Path, source_rel: str, dest_rel: str) -> bo
     dest.parent.mkdir(parents=True, exist_ok=True)
     source.replace(dest)
     return True
+
+
+def _delete_library_file(library_root: Path, rel_path: str) -> bool:
+    path = _library_file_path(library_root, rel_path)
+    if path is None:
+        return False
+    root = library_root.resolve()
+    try:
+        resolved = path.resolve()
+        resolved.relative_to(root)
+    except ValueError:
+        return False
+    if resolved.exists() and resolved.is_file():
+        resolved.unlink()
+        return True
+    return False
 
 
 def _library_file_path(library_root: Path, value: Any) -> Path | None:

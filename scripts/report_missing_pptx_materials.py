@@ -1,7 +1,8 @@
 """Report teach-kb PPTX files that have no reusable material-library assets.
 
-The report compares ``pptx_files.file_name`` in the teach-kb SQLite database
-against ``file_name`` fields found in background/C01/C02/C03 split indexes.
+The report compares teach-kb PPTX rows against ``source_pptx_refs`` found in
+background/C01/C02/C03 split indexes. Legacy top-level ``file_name`` and theme
+matching are retained only as fallbacks for older libraries.
 It can also write a shell script that reruns the material-library builder once
 per missing PPTX, so one corrupt PPTX does not hide the rest of the queue.
 """
@@ -42,15 +43,30 @@ def report_missing_pptx_materials(
 
     warnings: list[str] = []
     db_rows = _read_db_pptx_rows(resolved_db_path, warnings)
-    index_summary = _read_indexed_file_names(index_dir, warnings)
+    index_summary = _read_indexed_coverage(index_dir, warnings)
+    indexed_pptx_ids = index_summary["indexed_pptx_ids"]
+    indexed_file_paths = index_summary["indexed_file_paths"]
+    indexed_absolute_paths = index_summary["indexed_absolute_paths"]
     indexed_file_names = index_summary["indexed_file_names"]
     indexed_themes = index_summary["indexed_themes"]
-    match_mode = "file_name" if indexed_file_names else "theme"
+    has_source_refs = bool(indexed_pptx_ids or indexed_file_paths or indexed_absolute_paths)
+    match_mode = "source_pptx_refs" if has_source_refs else "file_name" if indexed_file_names else "theme"
     if match_mode == "theme" and indexed_themes:
         warnings.append("file_name_absent_in_indexes: falling back to theme matching")
     missing_pptx = []
     for row in db_rows:
-        if match_mode == "file_name":
+        if match_mode == "source_pptx_refs":
+            if _row_matches_source_refs(
+                row,
+                pptx_root=pptx_root,
+                indexed_pptx_ids=indexed_pptx_ids,
+                indexed_file_paths=indexed_file_paths,
+                indexed_absolute_paths=indexed_absolute_paths,
+                indexed_file_names=indexed_file_names,
+            ):
+                continue
+            missing_pptx.append(_missing_entry(row, pptx_root, reason="source_pptx_ref_not_found_in_background_c01_c02_c03"))
+        elif match_mode == "file_name":
             if _clean_text(row.get("file_name")) in indexed_file_names:
                 continue
             missing_pptx.append(_missing_entry(row, pptx_root, reason="file_name_not_found_in_background_c01_c02_c03"))
@@ -67,6 +83,10 @@ def report_missing_pptx_materials(
         "keep_index_files": list(KEEP_INDEX_FILENAMES),
         "db_pptx_count": len(db_rows),
         "indexed_asset_count": index_summary["indexed_asset_count"],
+        "indexed_source_ref_count": index_summary["indexed_source_ref_count"],
+        "indexed_pptx_id_count": len(indexed_pptx_ids),
+        "indexed_file_path_count": len(indexed_file_paths),
+        "indexed_absolute_path_count": len(indexed_absolute_paths),
         "indexed_file_name_count": len(indexed_file_names),
         "indexed_file_names": sorted(indexed_file_names),
         "indexed_theme_count": len(indexed_themes),
@@ -147,10 +167,14 @@ def _read_db_pptx_rows(db_path: Path, warnings: list[str]) -> list[dict[str, Any
     return result
 
 
-def _read_indexed_file_names(index_dir: Path, warnings: list[str]) -> dict[str, Any]:
+def _read_indexed_coverage(index_dir: Path, warnings: list[str]) -> dict[str, Any]:
+    indexed_pptx_ids: set[str] = set()
+    indexed_file_paths: set[str] = set()
+    indexed_absolute_paths: set[str] = set()
     indexed_file_names: set[str] = set()
     indexed_themes: set[str] = set()
     indexed_asset_count = 0
+    indexed_source_ref_count = 0
     for filename in KEEP_INDEX_FILENAMES:
         path = index_dir / filename
         if not path.exists():
@@ -169,6 +193,20 @@ def _read_indexed_file_names(index_dir: Path, warnings: list[str]) -> dict[str, 
             if not isinstance(asset, dict):
                 continue
             indexed_asset_count += 1
+            for ref in _source_pptx_refs(asset):
+                indexed_source_ref_count += 1
+                pptx_id = _clean_text(ref.get("pptx_id") or ref.get("id"))
+                if pptx_id:
+                    indexed_pptx_ids.add(pptx_id)
+                file_path = _coverage_path_key(ref.get("file_path"))
+                if file_path:
+                    indexed_file_paths.add(file_path)
+                absolute_path = _coverage_path_key(ref.get("absolute_path"))
+                if absolute_path:
+                    indexed_absolute_paths.add(absolute_path)
+                ref_file_name = _clean_text(ref.get("file_name"))
+                if ref_file_name:
+                    indexed_file_names.add(ref_file_name)
             file_name = _clean_text(asset.get("file_name"))
             if file_name:
                 indexed_file_names.add(file_name)
@@ -177,9 +215,53 @@ def _read_indexed_file_names(index_dir: Path, warnings: list[str]) -> dict[str, 
                 indexed_themes.add(theme)
     return {
         "indexed_asset_count": indexed_asset_count,
+        "indexed_source_ref_count": indexed_source_ref_count,
+        "indexed_pptx_ids": indexed_pptx_ids,
+        "indexed_file_paths": indexed_file_paths,
+        "indexed_absolute_paths": indexed_absolute_paths,
         "indexed_file_names": indexed_file_names,
         "indexed_themes": indexed_themes,
     }
+
+
+def _source_pptx_refs(asset: dict[str, Any]) -> list[dict[str, Any]]:
+    refs = asset.get("source_pptx_refs")
+    if not isinstance(refs, list):
+        return []
+    return [ref for ref in refs if isinstance(ref, dict)]
+
+
+def _coverage_path_key(value: Any) -> str:
+    text = _clean_text(value)
+    if not text:
+        return ""
+    return text.replace("\\", "/")
+
+
+def _row_matches_source_refs(
+    row: dict[str, Any],
+    *,
+    pptx_root: Path,
+    indexed_pptx_ids: set[str],
+    indexed_file_paths: set[str],
+    indexed_absolute_paths: set[str],
+    indexed_file_names: set[str],
+) -> bool:
+    row_id = _clean_text(row.get("id"))
+    if row_id and row_id in indexed_pptx_ids:
+        return True
+    file_path = _coverage_path_key(row.get("file_path"))
+    if file_path and file_path in indexed_file_paths:
+        return True
+    absolute_path = _coverage_path_key(_absolute_pptx_path(
+        pptx_root,
+        _clean_text(row.get("file_path")),
+        _clean_text(row.get("file_name")),
+    ))
+    if absolute_path and absolute_path in indexed_absolute_paths:
+        return True
+    file_name = _clean_text(row.get("file_name"))
+    return bool(file_name and file_name in indexed_file_names)
 
 
 def _missing_entry(row: dict[str, Any], pptx_root: Path, *, reason: str) -> dict[str, str]:

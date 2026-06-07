@@ -45,6 +45,8 @@ def test_rebuilds_embedding_sidecars_from_existing_split_index(tmp_path, monkeyp
     assert (library / "ai_image_embedding_meta.json").exists()
     meta = json.loads((library / "ai_image_embedding_meta.json").read_text(encoding="utf-8"))
     assert meta["asset_count"] == 1
+    assert meta["model"] == "Qwen3-Embedding-0.6B"
+    assert "model_identity" not in meta
     assert "context_asset_count" not in meta
     assert "constraint_asset_count" not in meta
     import numpy as np

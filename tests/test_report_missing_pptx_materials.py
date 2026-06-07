@@ -152,6 +152,56 @@ def test_writes_rerun_script_for_missing_pptx(tmp_path):
     assert f'--pptx "{(pptx_root / "nested/three.pptx").resolve()}"' in text
 
 
+def test_matches_pptx_coverage_from_source_pptx_refs_before_theme_fallback(tmp_path):
+    pptx_root = tmp_path / "teach-kb" / "data" / "uploads" / "pptx"
+    pptx_root.mkdir(parents=True)
+    _create_teach_kb_db(pptx_root)
+
+    library = tmp_path / "materials_library_ppt"
+    _write_json(
+        library / "strict_reuse_indexes" / "C02_generic_subject_object.json",
+        {
+            "strict_reuse_group": "C02_generic_subject_object",
+            "assets": [
+                {
+                    "asset_id": "a",
+                    "image_path": "pptx_images/a.png",
+                    "original_image_path": "pptx_images_original/a.png",
+                    "theme": "",
+                    "source_pptx_refs": [
+                        {
+                            "pptx_id": "ppt1",
+                            "file_path": "pptx/one.pptx",
+                            "file_name": "one.pptx",
+                            "absolute_path": str((pptx_root / "one.pptx").resolve()),
+                        }
+                    ],
+                },
+                {
+                    "asset_id": "b",
+                    "image_path": "pptx_images/b.png",
+                    "original_image_path": "pptx_images_original/b.png",
+                    "theme": "",
+                    "source_pptx_refs": [
+                        {
+                            "file_path": "pptx/two.pptx",
+                            "file_name": "two.pptx",
+                        }
+                    ],
+                },
+            ],
+        },
+    )
+
+    report = report_missing_pptx_materials(library_dir=library, teach_kb_root=pptx_root)
+
+    assert report["match_mode"] == "source_pptx_refs"
+    assert report["indexed_source_ref_count"] == 2
+    assert report["missing_pptx_count"] == 1
+    assert report["missing_pptx"][0]["file_name"] == "three.pptx"
+    assert report["missing_pptx"][0]["reason"] == "source_pptx_ref_not_found_in_background_c01_c02_c03"
+
+
 def test_falls_back_to_theme_when_index_assets_have_no_file_name(tmp_path):
     pptx_root = tmp_path / "teach-kb" / "data" / "uploads" / "pptx"
     pptx_root.mkdir(parents=True)

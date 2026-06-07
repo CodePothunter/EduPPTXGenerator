@@ -148,6 +148,48 @@ def test_c00_is_not_loaded_into_pairs_or_report(tmp_path):
     assert (image_dir / "b.png").exists()
 
 
+def test_secondary_projection_is_passthrough_and_never_deletes_shared_image(tmp_path):
+    library = tmp_path / "materials_library_ppt"
+    image_dir = library / "pptx_images"
+    image_dir.mkdir(parents=True)
+    _draw_box(image_dir / "primary.png")
+    _draw_box(image_dir / "duplicate.png")
+    projection = _asset(
+        "primary",
+        "pptx_images/primary.png",
+        caption="科研场所晴天外景",
+        query="科研场所晴天外景",
+    )
+    projection["secondary_projection"] = True
+    projection["secondary_projection_of"] = "primary"
+    _write_json(
+        library / "strict_reuse_indexes" / "C03_scene_decor_container.json",
+        {
+            "strict_reuse_group": "C03_scene_decor_container",
+            "asset_count": 2,
+            "assets": [
+                projection,
+                _asset(
+                    "duplicate",
+                    "pptx_images/duplicate.png",
+                    caption="科研场所晴天外景",
+                    query="科研场所晴天外景",
+                ),
+            ],
+        },
+    )
+
+    report = dedupe_ppt_split_index_library(library, apply=True)
+
+    payload = _read_json(library / "strict_reuse_indexes" / "C03_scene_decor_container.json")
+    assert report["asset_count"] == 1
+    assert report["mergeable_group_count"] == 0
+    assert payload["asset_count"] == 2
+    assert {item["asset_id"] for item in payload["assets"]} == {"primary", "duplicate"}
+    assert (image_dir / "primary.png").exists()
+    assert (image_dir / "duplicate.png").exists()
+
+
 def test_background_and_c03_do_not_cross_merge(tmp_path):
     library = tmp_path / "materials_library_ppt"
     image_dir = library / "pptx_images"

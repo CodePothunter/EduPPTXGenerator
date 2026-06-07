@@ -1185,6 +1185,8 @@ def write_ai_image_split_match_indexes(
                 continue
             copied = deepcopy(asset)
             copied["strict_reuse_group"] = group
+            if _is_skip_reuse_group(group):
+                copied.pop("image_path", None)
             group_assets.append(copied)
         if group == _GENERAL_REUSE_GROUP:
             group_assets.extend(_c01_secondary_c03_projections(split_source_assets))
@@ -1349,12 +1351,12 @@ def write_ai_image_embedding_index(
 
     root = Path(library_dir).expanduser().resolve()
     model_name = _embedding_model_name(model_name)
-    model_identity = _embedding_model_identity(model_name)
+    sidecar_model_name = _embedding_sidecar_model_name(model_name)
     if _embedding_disabled():
         return {
             "enabled": False,
             "reason": "disabled_by_environment",
-            "model": model_name,
+            "model": sidecar_model_name,
         }
 
     assets = match_index.get("assets")
@@ -1362,7 +1364,7 @@ def write_ai_image_embedding_index(
         return {
             "enabled": False,
             "reason": "empty_match_index",
-            "model": model_name,
+            "model": sidecar_model_name,
         }
 
     rows: list[tuple[str, str]] = []
@@ -1384,7 +1386,7 @@ def write_ai_image_embedding_index(
     missing_caption_review_path = root / DEFAULT_EMBEDDING_MISSING_CAPTION_REVIEW_FILENAME
     missing_caption_review = _write_embedding_missing_caption_review(
         missing_caption_review_path,
-        model_name=model_name,
+        model_name=sidecar_model_name,
         assets=missing_caption_assets,
     )
     missing_caption_warnings = []
@@ -1396,7 +1398,7 @@ def write_ai_image_embedding_index(
         return {
             "enabled": False,
             "reason": "empty_embedding_text",
-            "model": model_name,
+            "model": sidecar_model_name,
             "missing_caption_count": len(missing_caption_assets),
             "missing_caption_review_path": _relative_output_path(missing_caption_review_path)
             if missing_caption_review is not None
@@ -1451,8 +1453,7 @@ def write_ai_image_embedding_index(
     total_texts = sum(total_counts.values())
     fingerprint_payload = {
         "schema_version": EMBEDDING_INDEX_SCHEMA_VERSION,
-        "model": model_name,
-        "model_identity": model_identity,
+        "model": sidecar_model_name,
         "index_filename": index_filename,
         "meta_filename": meta_filename,
         "row_hashes": {
@@ -1508,8 +1509,7 @@ def write_ai_image_embedding_index(
             "schema_version": EMBEDDING_INDEX_SCHEMA_VERSION,
             "build_fingerprint": build_fingerprint,
             "updated_at": datetime.now(timezone.utc).isoformat(),
-            "model": model_name,
-            "model_identity": model_identity,
+            "model": sidecar_model_name,
             "index_filename": index_filename,
             "meta_filename": meta_filename,
             "batch_size": build_batch_size,
@@ -1727,7 +1727,7 @@ def write_ai_image_embedding_index(
         return {
             "enabled": False,
             "reason": "embedding_build_failed",
-            "model": model_name,
+            "model": sidecar_model_name,
             "warnings": [f"AI image embedding index skipped: {str(exc)[:180]}"],
         }
 
@@ -1737,14 +1737,13 @@ def write_ai_image_embedding_index(
         return {
             "enabled": False,
             "reason": "empty_embedding_vectors",
-            "model": model_name,
+            "model": sidecar_model_name,
         }
 
     meta = {
         "schema_version": EMBEDDING_INDEX_SCHEMA_VERSION,
         "built_at": datetime.now(timezone.utc).isoformat(),
-        "model": model_name,
-        "model_identity": model_identity,
+        "model": sidecar_model_name,
         "index_filename": index_filename,
         "match_asset_count": len(assets),
         "asset_count": len(rows),
@@ -1778,7 +1777,7 @@ def write_ai_image_embedding_index(
         pass
     return {
         "enabled": True,
-        "model": model_name,
+        "model": sidecar_model_name,
         "index_path": _relative_output_path(index_path),
         "meta_path": _relative_output_path(meta_path),
         "match_asset_count": len(assets),
@@ -5381,74 +5380,24 @@ def _embedding_model_name(model_name: str | None = None) -> str:
     return configured or _clean_text(model_name) or DEFAULT_EMBEDDING_MODEL
 
 
+def _embedding_sidecar_model_name(model_name: str | None = None) -> str:
+    if model_name is None:
+        model = _embedding_model_name()
+    else:
+        model = _clean_text(model_name)
+        if not model:
+            return ""
+    for part in Path(model.replace("\\", "/")).parts:
+        if part.startswith("models--"):
+            pieces = [piece for piece in part.split("--") if piece]
+            if pieces:
+                return pieces[-1]
+    name = Path(model.replace("\\", "/")).name
+    return name or model
+
+
 def _embedding_text_hash(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-
-def _embedding_model_identity(model_name: str | None = None) -> dict[str, Any]:
-    model = _embedding_model_name(model_name)
-    path = Path(model)
-    if path.exists() and path.is_dir():
-        return {
-            "kind": "local_path",
-            "name": path.name,
-            "fingerprint": _local_embedding_model_fingerprint(path),
-        }
-    return {
-        "kind": "model_name",
-        "name": model,
-    }
-
-
-def _local_embedding_model_fingerprint(model_dir: Path) -> str:
-    digest = hashlib.sha256()
-    found = 0
-    config_names = {
-        "config.json",
-        "modules.json",
-        "sentence_bert_config.json",
-        "tokenizer_config.json",
-    }
-    try:
-        candidates = sorted(
-            path
-            for path in model_dir.rglob("*")
-            if path.is_file() and path.name in config_names
-        )
-    except OSError:
-        candidates = []
-    for path in candidates:
-        try:
-            rel = path.relative_to(model_dir).as_posix()
-            data = path.read_bytes()
-        except OSError:
-            continue
-        digest.update(rel.encode("utf-8"))
-        digest.update(b"\0")
-        digest.update(hashlib.sha256(data).hexdigest().encode("ascii"))
-        digest.update(b"\n")
-        found += 1
-    return digest.hexdigest() if found else ""
-
-
-def _embedding_model_identity_matches(stored_identity: Any, current_identity: dict[str, Any]) -> bool | None:
-    if not isinstance(stored_identity, dict):
-        return None
-    stored_kind = _clean_text(stored_identity.get("kind"))
-    current_kind = _clean_text(current_identity.get("kind"))
-    if not stored_kind or stored_kind != current_kind:
-        return False
-    stored_name = _clean_text(stored_identity.get("name"))
-    current_name = _clean_text(current_identity.get("name"))
-    if stored_name != current_name:
-        return False
-    if current_kind == "local_path":
-        stored_fingerprint = _clean_text(stored_identity.get("fingerprint"))
-        current_fingerprint = _clean_text(current_identity.get("fingerprint"))
-        if not stored_fingerprint or not current_fingerprint:
-            return False
-        return stored_fingerprint == current_fingerprint
-    return True
 
 
 def _embedding_model_sidecar_matches(
@@ -5456,22 +5405,10 @@ def _embedding_model_sidecar_matches(
     current_model: str,
     stored_identity: Any = None,
 ) -> bool:
-    current_identity = _embedding_model_identity(current_model)
-    identity_match = _embedding_model_identity_matches(stored_identity, current_identity)
-    if identity_match is not None:
-        return identity_match
-    stored = _clean_text(stored_model)
-    current = _clean_text(current_model)
-    if stored == current:
-        return True
-    if not stored or not current:
-        return False
-    current_path = Path(current)
-    if not current_path.exists():
-        return False
-    stored_name = Path(stored.replace("\\", "/")).name
-    current_name = current_path.name
-    return bool(stored_name and current_name and stored_name == current_name)
+    del stored_identity
+    return _embedding_sidecar_model_name(_clean_text(stored_model)) == _embedding_sidecar_model_name(
+        current_model
+    )
 
 
 def _load_embedding_model(model_name: str = DEFAULT_EMBEDDING_MODEL) -> Any:
@@ -5567,9 +5504,10 @@ def _normalize_asset_for_match(
     asset_id = _clean_text(item.get("asset_id"))
     asset_kind = _clean_text(item.get("asset_kind"))
     image_path = _clean_text(item.get("image_path"))
+    normalized_group = _normalize_binary_reuse_group(item.get("strict_reuse_group"), default="")
     if not asset_id or not asset_kind:
         return None
-    if not for_target and not image_path:
+    if not for_target and not image_path and not _is_skip_reuse_group(normalized_group):
         return None
 
     if _is_background_asset(item):
@@ -7783,8 +7721,9 @@ def _embedding_refs_match(stored_refs: Any, expected_refs: list[dict[str, str]])
 
 def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: Path) -> dict[str, Any]:
     model_name = _embedding_model_name()
+    sidecar_model_name = _embedding_sidecar_model_name(model_name)
     if _embedding_disabled():
-        return {"enabled": False, "reason": "disabled_by_environment", "model": model_name}
+        return {"enabled": False, "reason": "disabled_by_environment", "model": sidecar_model_name}
     index_path = library_root / DEFAULT_EMBEDDING_INDEX_FILENAME
     meta_path = library_root / DEFAULT_EMBEDDING_META_FILENAME
     meta = _read_json_if_exists(meta_path)
@@ -7835,7 +7774,7 @@ def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: 
     ):
         return {
             "enabled": True,
-            "model": model_name,
+            "model": sidecar_model_name,
             "index_path": _relative_output_path(index_path),
             "meta_path": _relative_output_path(meta_path),
             "asset_count": expected_count,
@@ -7872,12 +7811,13 @@ def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: 
 
 def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
     model_name = _embedding_model_name()
+    sidecar_model_name = _embedding_sidecar_model_name(model_name)
     if _embedding_disabled():
-        return {}, {"enabled": False, "reason": "disabled_by_environment", "model": model_name}
+        return {}, {"enabled": False, "reason": "disabled_by_environment", "model": sidecar_model_name}
     index_path = library_root / DEFAULT_EMBEDDING_INDEX_FILENAME
     meta_path = library_root / DEFAULT_EMBEDDING_META_FILENAME
     if not index_path.exists() or not meta_path.exists():
-        return {}, {"enabled": False, "reason": "missing_embedding_index", "model": model_name}
+        return {}, {"enabled": False, "reason": "missing_embedding_index", "model": sidecar_model_name}
     try:
         import numpy as np
 
@@ -7896,7 +7836,7 @@ def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], 
         return {}, {
             "enabled": False,
             "reason": "embedding_index_read_failed",
-            "model": model_name,
+            "model": sidecar_model_name,
             "warnings": [f"AI image embedding index could not be read: {str(exc)[:180]}"],
         }
     return {
@@ -7907,7 +7847,7 @@ def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], 
         "meta": meta,
     }, {
         "enabled": True,
-        "model": _clean_text(meta.get("model")) or model_name,
+        "model": _embedding_sidecar_model_name(meta.get("model")) or sidecar_model_name,
         "index_path": _relative_output_path(index_path),
         "meta_path": _relative_output_path(meta_path),
         "asset_count": len(asset_ids),

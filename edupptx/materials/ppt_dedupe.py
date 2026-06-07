@@ -93,9 +93,13 @@ def dedupe_ppt_asset_buckets(
         bucket: [asset for asset in buckets.get(bucket, []) if isinstance(asset, dict)]
         for bucket in BUCKET_INDEX_FILES
     }
+    dedupe_assets_by_bucket = {
+        bucket: [asset for asset in assets if not _is_secondary_projection(asset)]
+        for bucket, assets in assets_by_bucket.items()
+    }
     infos_by_bucket = {
         bucket: [_asset_info(root, bucket, BUCKET_INDEX_FILES[bucket], asset) for asset in assets]
-        for bucket, assets in assets_by_bucket.items()
+        for bucket, assets in dedupe_assets_by_bucket.items()
     }
 
     groups: list[dict[str, Any]] = []
@@ -414,6 +418,10 @@ def _bucket_for_db_asset(asset: dict[str, Any]) -> str:
     if group == "C03_scene_decor_container":
         return "C03"
     return ""
+
+
+def _is_secondary_projection(asset: dict[str, Any]) -> bool:
+    return asset.get("secondary_projection") is True
 
 
 def _text_similarity(left: dict[str, Any], right: dict[str, Any]) -> float:
