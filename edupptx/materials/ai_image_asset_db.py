@@ -25,7 +25,6 @@ from edupptx.materials.reuse_policy import (
     T_DIRECT,
     T_REJECT,
     decide_reuse,
-    evaluate_aspect_transform,
     evaluate_reuse_filter,
     normalize_reuse_policy_fields,
     reuse_threshold_for_target as policy_reuse_threshold_for_target,
