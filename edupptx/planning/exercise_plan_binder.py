@@ -457,13 +457,16 @@ def _materialize_exercise_image(source: Path, destination: Path, *, target_aspec
 
         with Image.open(source) as raw:
             image = raw.convert("RGBA")
-            actual_ratio = match_aspect_ratio(*image.size)
-            aspect_ratio = normalize_image_aspect_ratio(target_aspect_ratio or actual_ratio)
+            aspect_ratio = normalize_image_aspect_ratio(
+                target_aspect_ratio or match_aspect_ratio(*image.size)
+            )
             canvas = _transparent_canvas_for_ratio(image, aspect_ratio)
+            destination.parent.mkdir(parents=True, exist_ok=True)
             canvas.save(destination, format="PNG")
-            return aspect_ratio
+            return match_aspect_ratio(canvas.width, canvas.height)
     except Exception:
         if source.resolve() != destination.resolve():
+            destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(source, destination)
         return normalize_image_aspect_ratio(target_aspect_ratio)
 

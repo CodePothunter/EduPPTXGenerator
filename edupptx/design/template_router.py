@@ -1528,10 +1528,15 @@ def align_draft_to_template(
                 ))
         for index, slot in enumerate(spec.image_slots):
             if index < len(current_images):
-                current_images[index].aspect_ratio = slot.aspect_ratio
-                current_images[index].role = slot.role  # type: ignore[assignment]
-                if not current_images[index].query.strip():
-                    current_images[index].query = _build_image_query(draft, page, slot)
+                current = current_images[index]
+                if current.source == "exercise_asset":
+                    if not current.query.strip():
+                        current.query = _build_image_query(draft, page, slot)
+                    continue
+                current.aspect_ratio = slot.aspect_ratio
+                current.role = slot.role  # type: ignore[assignment]
+                if not current.query.strip():
+                    current.query = _build_image_query(draft, page, slot)
                 continue
             if not slot.required:
                 continue

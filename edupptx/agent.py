@@ -1619,9 +1619,17 @@ class PPTXAgent:
                         ratio = 800 / img.width
                         img = img.resize((800, int(img.height * ratio)), Image.Resampling.LANCZOS)
                     buf = io.BytesIO()
-                    img.convert("RGB").save(buf, "JPEG", quality=70, optimize=True)
+                    has_alpha = img.mode in {"RGBA", "LA"} or (
+                        img.mode == "P" and "transparency" in img.info
+                    )
+                    if has_alpha:
+                        img.convert("RGBA").save(buf, "PNG", optimize=True)
+                        mime = "png"
+                    else:
+                        img.convert("RGB").save(buf, "JPEG", quality=70, optimize=True)
+                        mime = "jpeg"
                     b64 = base64.b64encode(buf.getvalue()).decode("ascii")
-                    data_uri = f"data:image/jpeg;base64,{b64}"
+                    data_uri = f"data:image/{mime};base64,{b64}"
                     svg_content = svg_content.replace(placeholder, data_uri)
                     logger.debug("Injected image for {} ({}KB)", slot_key, len(b64) // 1024)
             except Exception as e:
