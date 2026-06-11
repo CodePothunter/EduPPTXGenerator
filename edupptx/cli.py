@@ -1196,5 +1196,74 @@ def styles_convert(name: str, styles_dir_opt: str | None, force: bool, as_json: 
         _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
 
 
+@main.group()
+def assets():
+    """AI 图片复用库 SQLite 后端维护 (Phase B2)。"""
+
+
+@assets.command("migrate")
+@click.argument("library_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--json", "as_json", is_flag=True, help="JSON 输出")
+def assets_migrate(library_dir: str, as_json: bool):
+    """从 strict_reuse_indexes/*.json + *.npz 迁移到 library.db。"""
+    from edupptx.materials.asset_store import AssetStore
+    from edupptx.materials.ai_image_asset_db import _read_ai_image_embedding_index
+
+    root = Path(library_dir).expanduser().resolve()
+    try:
+        embedding_index, _status = _read_ai_image_embedding_index(root)
+        store = AssetStore(root)
+        report = store.migrate_from_split_index(embedding_index=embedding_index or None)
+        store.close()
+        lines = [
+            f"迁移完成 → {root / 'library.db'}",
+            f"  asset 行: {report['asset_rows']}  source_refs: {report['source_refs']}  topic_refs: {report['topic_refs']}",
+            f"  桶: {report.get('groups')}",
+            f"  vec_text: {report.get('vec_text', 0)}  vec_color_bias: {report.get('vec_color_bias', 0)}",
+        ]
+        _emit_result({"ok": True, **report, "db_path": str(root / "library.db")}, as_json=as_json, human_lines=lines)
+    except Exception as e:
+        logger.error("Migrate failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
+@assets.command("export")
+@click.argument("library_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--json", "as_json", is_flag=True, help="JSON 输出")
+def assets_export(library_dir: str, as_json: bool):
+    """从 library.db 导出回 strict_reuse_indexes/*.json (供 review/diff)。"""
+    from edupptx.materials.asset_store import AssetStore
+
+    root = Path(library_dir).expanduser().resolve()
+    try:
+        store = AssetStore(root)
+        split_dir = store.export_to_split_index()
+        store.close()
+        _emit_result({"ok": True, "split_index_dir": str(split_dir)}, as_json=as_json,
+                     human_lines=[f"导出完成 → {split_dir}"])
+    except Exception as e:
+        logger.error("Export failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
+@assets.command("doctor")
+@click.argument("library_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--json", "as_json", is_flag=True, help="JSON 输出")
+def assets_doctor(library_dir: str, as_json: bool):
+    """检查 library.db 计数 + 孤儿向量。"""
+    from edupptx.materials.asset_store import AssetStore
+
+    root = Path(library_dir).expanduser().resolve()
+    try:
+        store = AssetStore(root)
+        report = store.doctor()
+        store.close()
+        _emit_result({"ok": True, **report}, as_json=as_json,
+                     human_lines=[f"{k}: {v}" for k, v in report.items()])
+    except Exception as e:
+        logger.error("Doctor failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
 if __name__ == "__main__":
     main()
