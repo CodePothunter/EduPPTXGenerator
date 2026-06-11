@@ -16,7 +16,7 @@ python-version
 # Generated files
 backgrounds_cache/
 materials_library/
-output/
+/output/
 *.pptx
 
 assets/fonts/
@@ -25,3 +25,7 @@ assets/fonts/
 # Local logs / sandbox
 tools/
 *.log
+
+# Test / build temp dirs and caches
+.tmp_*/
+.pytest_cache/

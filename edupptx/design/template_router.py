@@ -92,7 +92,7 @@ class ImageSlotSpec(BaseModel):
     aspect_ratio: str = "16:9"
     query_from: str = "topic"
     query_suffix: str = ""
-    source: str = "search"
+    source: str = "ai_generate"
     x: float | None = None
     y: float | None = None
     width: float | None = None
@@ -381,7 +381,7 @@ def _parse_page_spec_node(node: ET.Element) -> PlannerPageSpec | None:
                 aspect_ratio=slot_node.get("aspect_ratio") or _child_text(slot_node, "aspect_ratio") or "16:9",
                 query_from=slot_node.get("query_from") or _child_text(slot_node, "query_from") or "topic",
                 query_suffix=slot_node.get("query_suffix") or _child_text(slot_node, "query_suffix"),
-                source=slot_node.get("source") or _child_text(slot_node, "source") or "search",
+                source=slot_node.get("source") or _child_text(slot_node, "source") or "ai_generate",
                 x=_as_float(slot_node.get("x") or _child_text(slot_node, "x")),
                 y=_as_float(slot_node.get("y") or _child_text(slot_node, "y")),
                 width=_as_float(slot_node.get("width") or _child_text(slot_node, "width")),
@@ -1528,10 +1528,15 @@ def align_draft_to_template(
                 ))
         for index, slot in enumerate(spec.image_slots):
             if index < len(current_images):
-                current_images[index].aspect_ratio = slot.aspect_ratio
-                current_images[index].role = slot.role  # type: ignore[assignment]
-                if not current_images[index].query.strip():
-                    current_images[index].query = _build_image_query(draft, page, slot)
+                current = current_images[index]
+                if current.source == "exercise_asset":
+                    if not current.query.strip():
+                        current.query = _build_image_query(draft, page, slot)
+                    continue
+                current.aspect_ratio = slot.aspect_ratio
+                current.role = slot.role  # type: ignore[assignment]
+                if not current.query.strip():
+                    current.query = _build_image_query(draft, page, slot)
                 continue
             if not slot.required:
                 continue

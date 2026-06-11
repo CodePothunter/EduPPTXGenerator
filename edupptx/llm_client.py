@@ -39,17 +39,23 @@ class LLMClient:
             temperature=temperature,
             max_tokens=max_tokens,
         )
-        # Doubao-specific: disable thinking for structured output
         if self._is_doubao:
-            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            # 豆包: 默认关闭深度思考（结构化输出场景），GEN_THINKING 可显式覆盖
+            kwargs["extra_body"] = {"thinking": {"type": self._thinking or "disabled"}}
         elif self._is_deepseek:
             extra_body: dict[str, Any] = {}
-            thinking = self._thinking or ("enabled" if self._model == "deepseek-v4-pro" else "")
-            reasoning_effort = self._reasoning_effort or ("high" if self._model == "deepseek-v4-pro" else "")
-            if thinking:
-                extra_body["thinking"] = {"type": thinking}
-            if reasoning_effort:
-                extra_body["reasoning_effort"] = reasoning_effort
+            if self._reasoning_effort:
+                extra_body["reasoning_effort"] = self._reasoning_effort
+            if self._thinking:
+                if (
+                    self._thinking.strip().lower() == "disabled"
+                    and self._reasoning_effort
+                ):
+                    logger.debug(
+                        "Omitting DeepSeek thinking=disabled because reasoning_effort is set"
+                    )
+                else:
+                    extra_body["thinking"] = {"type": self._thinking}
             if extra_body:
                 kwargs["extra_body"] = extra_body
         resp = self._client.chat.completions.create(**kwargs)
@@ -123,9 +129,9 @@ class DoubaoResponsesClient(LLMClient):
         if getattr(self, "_web_search", False):
             kwargs["tools"] = [{"type": "web_search", "max_keyword": 3}]
 
-        # 豆包: 关闭深度思考 (结构化输出场景)
         if self._is_doubao:
-            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+            # 豆包: 默认关闭深度思考，GEN_THINKING 可显式覆盖
+            kwargs["extra_body"] = {"thinking": {"type": self._thinking or "disabled"}}
 
         resp = self._client.responses.create(**kwargs)
         return resp.output_text or ""
@@ -151,6 +157,89 @@ class DoubaoResponsesClient(LLMClient):
         return instructions, input_items
 
 
+class BatchLLMClient:
+    """火山方舟 / OpenAI Batch API 适配，用于离线批量任务。"""
+
+    def __init__(self, config: "Config"):
+        self._client = OpenAI(
+            api_key=config.llm_api_key,
+            base_url=config.llm_base_url or None,
+            timeout=300,
+            max_retries=1,
+        )
+        self._model = config.llm_model
+
+    def submit_batch(
+        self,
+        prompts: list[dict[str, str]],
+        *,
+        system_prompt: str = "",
+    ) -> str:
+        import tempfile as _tempfile
+
+        requests = []
+        for i, prompt in enumerate(prompts):
+            messages: list[dict[str, str]] = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            if isinstance(prompt, dict) and "content" in prompt:
+                messages.append({"role": "user", "content": prompt["content"]})
+            else:
+                messages.append({"role": "user", "content": str(prompt)})
+            requests.append({
+                "custom_id": f"req_{i}",
+                "method": "POST",
+                "url": "/v1/chat/completions",
+                "body": {
+                    "model": self._model,
+                    "messages": messages,
+                    "max_tokens": 4096,
+                },
+            })
+
+        jsonl_content = "\n".join(json.dumps(r, ensure_ascii=False) for r in requests)
+        with _tempfile.NamedTemporaryFile(mode="w", suffix=".jsonl", delete=False, encoding="utf-8") as f:
+            f.write(jsonl_content)
+            f.flush()
+            input_file = self._client.files.create(file=open(f.name, "rb"), purpose="batch")
+
+        batch = self._client.batches.create(
+            input_file_id=input_file.id,
+            endpoint="/v1/chat/completions",
+            completion_window="24h",
+        )
+        return batch.id
+
+    def poll_batch(self, batch_id: str, *, interval: int = 5, timeout: int = 3600) -> list[str]:
+        import time as _time
+
+        elapsed = 0
+        while elapsed < timeout:
+            batch = self._client.batches.retrieve(batch_id)
+            if batch.status == "completed":
+                break
+            if batch.status in ("failed", "cancelled", "expired"):
+                raise RuntimeError(f"Batch {batch_id} ended with status: {batch.status}")
+            _time.sleep(interval)
+            elapsed += interval
+        else:
+            raise TimeoutError(f"Batch {batch_id} did not complete within {timeout}s")
+
+        content = self._client.files.content(batch.output_file_id)
+        results_by_id: dict[str, str] = {}
+        for line in content.text.strip().split("\n"):
+            if not line.strip():
+                continue
+            entry = json.loads(line)
+            custom_id = entry.get("custom_id", "")
+            body = entry.get("response", {}).get("body", {})
+            choices = body.get("choices", [])
+            text = choices[0]["message"]["content"] if choices else ""
+            results_by_id[custom_id] = text
+
+        return [results_by_id.get(f"req_{i}", "") for i in range(len(results_by_id))]
+
+
 def create_llm_client(config: "Config", web_search: bool | None = None) -> LLMClient:
     """根据配置创建对应的 LLM client。
 
@@ -163,6 +252,79 @@ def create_llm_client(config: "Config", web_search: bool | None = None) -> LLMCl
         client._web_search = config.web_search if web_search is None else web_search
         return client
     return LLMClient(config)
+
+
+class VLMClient:
+    """OpenAI-compatible vision-language client for image verification."""
+
+    def __init__(self, config: Config):
+        self._client = OpenAI(
+            api_key=config.vlm_api_key,
+            base_url=config.vlm_base_url or None,
+            timeout=120,
+            max_retries=1,
+        )
+        self._model = config.vlm_model
+        self._is_doubao = "volces.com" in (config.vlm_base_url or "")
+
+    def chat_vlm(
+        self,
+        messages: list[dict[str, Any]],
+        temperature: float = 0.1,
+        max_tokens: int = 4096,
+    ) -> str:
+        kwargs: dict[str, Any] = dict(
+            model=self._model,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+        if self._is_doubao:
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+        resp = self._client.chat.completions.create(**kwargs)
+        return resp.choices[0].message.content or ""
+
+    def chat_vlm_json(
+        self,
+        messages: list[dict[str, Any]],
+        temperature: float = 0.1,
+        max_tokens: int = 4096,
+        max_retries: int = 1,
+    ) -> dict[str, Any]:
+        """Chat with image-capable messages and parse a JSON object response."""
+        for attempt in range(1 + max_retries):
+            raw = self.chat_vlm(messages, temperature=temperature, max_tokens=max_tokens)
+            text = LLMClient._strip_fences(raw)
+            try:
+                payload = json.loads(text)
+            except json.JSONDecodeError as exc:
+                try:
+                    import json_repair
+
+                    payload = json_repair.loads(text)
+                except Exception:
+                    if attempt < max_retries:
+                        logger.warning(
+                            "VLM JSON parse failed (attempt {}), retrying: {}",
+                            attempt + 1,
+                            str(exc)[:80],
+                        )
+                        continue
+                    logger.error(
+                        "VLM JSON parse failed after {} attempts, raw length: {} chars",
+                        attempt + 1,
+                        len(raw),
+                    )
+                    raise
+            if not isinstance(payload, dict):
+                raise ValueError("VLM response is not a JSON object")
+            return payload
+        raise RuntimeError("VLM JSON parsing exhausted retries")
+
+
+def create_vlm_client(config: "Config") -> VLMClient:
+    """Create the configured OpenAI-compatible VLM client."""
+    return VLMClient(config)
 
 
 class ImageClient:
@@ -189,8 +351,7 @@ class ImageClient:
         size: preset ('2K','3K') or exact pixels ('2848x1600').
               Recommended 2K sizes by aspect ratio:
               1:1=2048x2048, 4:3=2304x1728, 3:4=1728x2304,
-              16:9=2848x1600, 9:16=1600x2848, 3:2=2496x1664,
-              2:3=1664x2496, 21:9=3136x1344
+              16:9=2848x1600, 9:16=1600x2848
         """
         resp = self._client.images.generate(
             model=self._model,

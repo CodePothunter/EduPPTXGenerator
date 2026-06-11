@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-import cairosvg
 from loguru import logger
 
 _ASSETS_DIR = (Path(__file__).resolve().parent.parent.parent / "assets" / "icons").resolve()
@@ -55,6 +54,14 @@ def get_icon_svg(name: str, color: str = "currentColor") -> str:
 
 def get_icon_png(name: str, color: str = "#000000", size: int = 48) -> bytes:
     """Render an SVG icon to PNG bytes at the specified size."""
+    try:
+        import cairosvg
+    except OSError as exc:
+        raise RuntimeError(
+            "PNG icon export requires the Cairo runtime library. "
+            "SVG icon loading does not require Cairo."
+        ) from exc
+
     svg_str = get_icon_svg(name, color)
     return cairosvg.svg2png(
         bytestring=svg_str.encode("utf-8"),

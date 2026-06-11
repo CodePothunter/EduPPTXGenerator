@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+import re
 from typing import Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -58,22 +59,119 @@ IMAGE_RATIO_SIZES: dict[str, str] = {
     "4:3": "2304x1728",
     "16:9": "2848x1600",
     "9:16": "1600x2848",
-    "3:2": "2496x1664",
-    "2:3": "1664x2496",
-    "21:9": "3136x1344",
 }
 
-# Numeric values for ratio matching
-_RATIO_VALUES: dict[str, float] = {
+# Numeric values for ratio matching. Keep keys identical to IMAGE_RATIO_SIZES.
+IMAGE_RATIO_VALUES: dict[str, float] = {
     "1:1": 1.0,
     "3:4": 0.75,
-    "4:3": 1.333,
-    "16:9": 1.778,
-    "9:16": 0.5625,
-    "3:2": 1.5,
-    "2:3": 0.667,
-    "21:9": 2.333,
+    "4:3": 4 / 3,
+    "16:9": 16 / 9,
+    "9:16": 9 / 16,
 }
+
+SUPPORTED_IMAGE_ASPECT_RATIOS: tuple[str, ...] = tuple(IMAGE_RATIO_SIZES.keys())
+_RATIO_PATTERN = re.compile(r"^\s*(\d+(?:\.\d+)?)\s*:\s*(\d+(?:\.\d+)?)\s*$")
+
+
+def normalize_image_source(value: object) -> Literal["search", "ai_generate", "exercise_asset"]:
+    """Normalize LLM image source aliases into the supported schema values."""
+    text = str(value or "").strip().casefold().replace("-", "_").replace(" ", "_")
+    if not text:
+        return "ai_generate"
+
+    if text in {
+        "exercise_asset",
+        "exercise",
+        "question_asset",
+        "question_image",
+        "local_exercise",
+        "local_asset",
+    }:
+        return "exercise_asset"
+
+    if text in {
+        "ai",
+        "ai_generate",
+        "ai_generated",
+        "generate",
+        "generated",
+        "image_generate",
+        "seedream",
+        "text_to_image",
+        "text2image",
+        "t2i",
+    }:
+        return "ai_generate"
+
+    if text in {
+        "search",
+        "public",
+        "public_domain",
+        "publicdomain",
+        "web",
+        "web_search",
+        "image_search",
+        "search_image",
+        "online",
+        "internet",
+        "unsplash",
+        "pixabay",
+        "free",
+        "free_image",
+        "stock",
+        "stock_image",
+        "photo",
+        "url",
+    }:
+        return "search"
+
+    if "generate" in text or text.startswith("ai_"):
+        return "ai_generate"
+    if (
+        "search" in text
+        or "public" in text
+        or "web" in text
+        or "stock" in text
+        or "photo" in text
+    ):
+        return "search"
+    return "ai_generate"
+
+
+def parse_aspect_ratio(value: object) -> float | None:
+    """Parse a ratio string like ``4:3`` into a numeric width/height value."""
+    text = str(value or "").strip()
+    match = _RATIO_PATTERN.match(text)
+    if not match:
+        return None
+    width = float(match.group(1))
+    height = float(match.group(2))
+    if width <= 0 or height <= 0:
+        return None
+    return width / height
+
+
+def _closest_supported_image_aspect_ratio(target: float) -> str:
+    best_ratio = "16:9"
+    best_diff = float("inf")
+    for name, value in IMAGE_RATIO_VALUES.items():
+        diff = abs(target - value)
+        if diff < best_diff:
+            best_diff = diff
+            best_ratio = name
+    return best_ratio
+
+
+def normalize_image_aspect_ratio(value: object, default: str = "16:9") -> str:
+    """Return a supported image aspect ratio, mapping unsupported ratios to the nearest option."""
+    text = str(value or "").strip()
+    if text in IMAGE_RATIO_SIZES:
+        return text
+    parsed = parse_aspect_ratio(text)
+    if parsed is None:
+        return default
+    return _closest_supported_image_aspect_ratio(parsed)
 
 
 def match_aspect_ratio(width: float, height: float) -> str:
@@ -83,27 +181,42 @@ def match_aspect_ratio(width: float, height: float) -> str:
     """
     if height <= 0:
         return "16:9"
-    target = width / height
-    best_ratio = "16:9"
-    best_diff = float("inf")
-    for name, value in _RATIO_VALUES.items():
-        diff = abs(target - value)
-        if diff < best_diff:
-            best_diff = diff
-            best_ratio = name
-    return best_ratio
+    return _closest_supported_image_aspect_ratio(width / height)
 
 
 class ImageNeed(BaseModel):
     """A single image request within a page's material_needs."""
 
-    query: str = Field(description="Search keyword or generation prompt")
-    source: Literal["search", "ai_generate"] = "search"
+    query: str = Field(description="Semantic image content query without routed style or quality terms")
+    source: Literal["search", "ai_generate", "exercise_asset"] = "ai_generate"
     role: Literal["hero", "illustration", "icon", "background"] = "illustration"
+    asset_id: str = Field(default="", description="Stable source asset id when bound from a database or library")
+    path: str = Field(default="", description="Session-relative path for local exercise assets")
     aspect_ratio: str = Field(
         default="16:9",
-        description="Aspect ratio from predefined set: 1:1, 3:4, 4:3, 16:9, 9:16, 3:2, 2:3, 21:9",
+        description="Aspect ratio from predefined set: 1:1, 3:4, 4:3, 16:9, 9:16",
     )
+    generation_prompt: str = Field(
+        default="",
+        description="Final routed AI-generation prompt. Empty means use query for backward compatibility.",
+    )
+    caption: str = Field(
+        default="",
+        description="Reusable coarse semantic caption for matching and library metadata.",
+    )
+    prompt_route: dict = Field(
+        default_factory=dict,
+        description="Structured prompt-routing metadata used to build generation_prompt.",
+    )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_source_aliases(cls, data):
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        normalized["source"] = normalize_image_source(normalized.get("source"))
+        return normalized
 
 
 def build_image_slot_key(role: str, occurrence: int) -> str:
@@ -154,6 +267,14 @@ class PagePlan(BaseModel):
         default=None,
         description="Pseudo-animation answer reveal mode for quiz/exercise pages.",
     )
+    exercise_refs: list[str] = Field(
+        default_factory=list,
+        description="Exercise ids selected from the exercise bank for this page.",
+    )
+    exercise_payloads: list[dict] = Field(
+        default_factory=list,
+        description="Exact database exercise payloads bound after planning; answers feed reveal pages.",
+    )
     notes: str = Field(default="", description="Speaker notes")
 
     @model_validator(mode="before")
@@ -181,6 +302,9 @@ class PlanningMeta(BaseModel):
     purpose: str = ""
     style_direction: str = ""
     total_pages: int = 0
+    subject: str = Field(default="", description="学科枚举：语文/数学/物理/其他")
+    grade: str = Field(default="", description="年级枚举(grade_norm)：一年级…高三/其他")
+    grade_band: str = Field(default="", description="学段枚举：低年级/高年级/其他")
 
 
 class VisualPlan(BaseModel):

@@ -64,6 +64,20 @@ def _as_text_list(value: Any) -> list[str]:
     return [text] if text else []
 
 
+def _route_prompt_text(route: dict[str, Any]) -> str:
+    terms: list[str] = []
+    for key in (
+        "profile_prompt_terms",
+        "role_prompt_terms",
+        "page_type_prompt_terms",
+        "aspect_ratio_prompt_terms",
+        "quality_terms",
+        "negative_terms",
+    ):
+        terms.extend(_as_text_list(route.get(key)))
+    return ", ".join(_dedupe_keep_order(terms))
+
+
 @lru_cache(maxsize=1)
 def _load_profile_data() -> dict[str, Any]:
     if not _PROFILE_PATH.exists():
@@ -154,45 +168,92 @@ def resolve_ai_image_prompt(
 ) -> str:
     """Build the final AI-image prompt from semantic query plus routed style layers."""
 
+    route = resolve_ai_image_prompt_route(draft, page, need)
+    return str(route.get("generation_prompt") or need.query).strip()
+
+
+def resolve_ai_image_prompt_route(
+    draft: PlanningDraft,
+    page: PagePlan,
+    need: ImageNeed,
+) -> dict[str, Any]:
+    """Return structured prompt-routing metadata plus the final generation prompt."""
+
     profile_data = _load_profile_data()
     defaults = profile_data.get("defaults", {})
     template_family = _resolve_image_style_family(draft.style_routing.template_family)
     routing_text = _build_routing_text(draft, page, need)
     selected_profiles = _select_profiles(template_family, page, need, routing_text)
 
-    parts: list[str] = [need.query.strip()]
+    profile_prompt_terms: list[str] = []
+    profile_negative_terms: list[str] = []
+    selected_profile_payloads: list[dict[str, Any]] = []
     for profile in selected_profiles:
-        parts.extend(_as_text_list(profile.get("prompt_terms")))
+        prompt_terms = _as_text_list(profile.get("prompt_terms"))
+        negative_terms = _as_text_list(profile.get("negative_terms"))
+        profile_prompt_terms.extend(prompt_terms)
+        profile_negative_terms.extend(negative_terms)
+        selected_profile_payloads.append(
+            {
+                "id": str(profile.get("id") or "").strip(),
+                "priority": int(profile.get("priority", 0)),
+                "prompt_terms": prompt_terms,
+                "negative_terms": negative_terms,
+            }
+        )
 
     role_prompts = defaults.get("role_prompts", {})
-    parts.extend(_as_text_list(role_prompts.get(need.role)))
+    role_prompt_terms = _as_text_list(role_prompts.get(need.role))
 
     page_type_prompts = defaults.get("page_type_prompts", {})
-    parts.extend(_as_text_list(page_type_prompts.get(page.page_type)))
+    page_type_prompt_terms = _as_text_list(page_type_prompts.get(page.page_type))
 
     aspect_ratio_prompts = defaults.get("aspect_ratio_prompts", {})
-    parts.extend(_as_text_list(aspect_ratio_prompts.get(need.aspect_ratio)))
+    aspect_ratio_prompt_terms = _as_text_list(aspect_ratio_prompts.get(need.aspect_ratio))
 
-    parts.extend(_as_text_list(defaults.get("quality_terms")))
+    quality_terms = _as_text_list(defaults.get("quality_terms"))
+    negative_terms = _dedupe_keep_order([*profile_negative_terms, *_as_text_list(defaults.get("negative_terms"))])
 
-    negative_terms: list[str] = []
-    for profile in selected_profiles:
-        negative_terms.extend(_as_text_list(profile.get("negative_terms")))
-    negative_terms.extend(_as_text_list(defaults.get("negative_terms")))
+    route = {
+        "template_family": template_family,
+        "profile_ids": [item["id"] for item in selected_profile_payloads if item["id"]],
+        "profiles": selected_profile_payloads,
+        "profile_prompt_terms": _dedupe_keep_order(profile_prompt_terms),
+        "role_prompt_terms": role_prompt_terms,
+        "page_type_prompt_terms": page_type_prompt_terms,
+        "aspect_ratio_prompt_terms": aspect_ratio_prompt_terms,
+        "quality_terms": quality_terms,
+        "negative_terms": negative_terms,
+    }
+    route["style_prompt"] = _route_prompt_text(route)
 
-    return ", ".join(_dedupe_keep_order(parts + negative_terms))
+    prompt_terms = _dedupe_keep_order(
+        [
+            need.query.strip(),
+            *route["profile_prompt_terms"],
+            *role_prompt_terms,
+            *page_type_prompt_terms,
+            *aspect_ratio_prompt_terms,
+            *quality_terms,
+            *negative_terms,
+        ]
+    )
+    route["generation_prompt"] = ", ".join(prompt_terms)
+    return route
 
 
 def build_routed_image_needs(
     draft: PlanningDraft,
     page: PagePlan,
 ) -> list[ImageNeed]:
-    """Copy image needs and route only AI-generation prompts."""
+    """Copy image needs and attach routed AI-generation prompt metadata."""
 
     routed: list[ImageNeed] = []
     for need in page.material_needs.images or []:
         copied = need.model_copy(deep=True)
         if copied.source == "ai_generate":
-            copied.query = resolve_ai_image_prompt(draft, page, copied)
+            route = resolve_ai_image_prompt_route(draft, page, copied)
+            copied.generation_prompt = str(route.pop("generation_prompt", "")).strip()
+            copied.prompt_route = route
         routed.append(copied)
     return routed

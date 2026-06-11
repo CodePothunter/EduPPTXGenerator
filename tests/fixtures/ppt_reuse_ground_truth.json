@@ -1,0 +1,1880 @@
+{
+  "version": 1,
+  "kind": "ppt_ai_image_reuse_ground_truth",
+  "scope": {
+    "sessions": [
+      "output/session_20260522_211932",
+      "output/session_20260522_212237",
+      "output/session_20260522_212250",
+      "output/session_20260522_212304",
+      "output/session_20260523_010029",
+      "output/session_20260523_012722"
+    ],
+    "library_root": "materials_library_ppt",
+    "library_indexes": [
+      "materials_library_ppt/strict_reuse_indexes/C00_strict_text_problem_skip.json",
+      "materials_library_ppt/strict_reuse_indexes/C00_strict_text_problem_skip.json",
+      "materials_library_ppt/strict_reuse_indexes/C00_strict_text_problem_skip.json",
+      "materials_library_ppt/strict_reuse_indexes/C01_irreplaceable_entity_event_action.json",
+      "materials_library_ppt/strict_reuse_indexes/C02_generic_subject_object.json",
+      "materials_library_ppt/strict_reuse_indexes/C03_scene_decor_container.json"
+    ],
+    "source_rule": "manual labels from plan.json and strict_reuse_indexes fields only",
+    "excludes": [
+      "reuse_replay_report.json",
+      "materials/ai_image_reuse_debug*.json",
+      "reuse_query_cache.json",
+      "thinking.jsonl"
+    ]
+  },
+  "items": [
+    {
+      "query_id": "session_20260522_211932:p02:illustration_1",
+      "session": "output/session_20260522_211932",
+      "page_number": 2,
+      "page_title": "本节课学习目标",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "3:4",
+      "query": "秋日北海公园菊花盛放的场景插画",
+      "acceptable_asset_ids": [
+        "kbpptx_895af9e748a80cf26bfa",
+        "kbpptx_e5013bc188147563aca3",
+        "kbpptx_25f9b5d9a8e11c3270df",
+        "kbpptx_30a80ae15ee15d6eb3ea",
+        "kbpptx_6db29b6d7923a9fdfaa5"
+      ],
+      "best_asset_ids": [
+        "kbpptx_895af9e748a80cf26bfa"
+      ],
+      "should_reuse": true,
+      "notes": "菊花盛放是核心语义；库中没有北海公园场景，大片菊花花丛最贴近。"
+    },
+    {
+      "query_id": "session_20260522_211932:p04:illustration_1",
+      "session": "output/session_20260522_211932",
+      "page_number": 4,
+      "page_title": "作者简介：史铁生",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "史铁生青年时期黑白肖像照",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_211932:p04:illustration_2",
+      "session": "output/session_20260522_211932",
+      "page_number": 4,
+      "page_title": "作者简介：史铁生",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "史铁生的代表作品书封集合插画",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_211932:p05:illustration_1",
+      "session": "output/session_20260522_211932",
+      "page_number": 5,
+      "page_title": "文体初识：叙事散文",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "抽象表达“形散神聚”概念的示意图，用零散的花朵围绕核心花蕊的形式呈现",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_211932:p07:illustration_1",
+      "session": "output/session_20260522_211932",
+      "page_number": 7,
+      "page_title": "重点字词正音",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "空白汉字拼音卡底图，不含具体文字",
+      "acceptable_asset_ids": [
+        "kbpptx_e35802cf95818b43a646",
+        "kbpptx_17665f490f818adca5d1",
+        "kbpptx_a85ea884cf1dfefdbd0f",
+        "kbpptx_a0e0f507758a07b04671",
+        "kbpptx_fea9461a51d4e7ccf30a",
+        "kbpptx_5a30f66cd08f2761addc",
+        "kbpptx_a76487ae426ea9a284d4"
+      ],
+      "best_asset_ids": [
+        "kbpptx_e35802cf95818b43a646"
+      ],
+      "should_reuse": true,
+      "notes": "空白拼音卡底图可由空白记事/便签/文本框类素材承载。"
+    },
+    {
+      "query_id": "session_20260522_211932:p07:illustration_2",
+      "session": "output/session_20260522_211932",
+      "page_number": 7,
+      "page_title": "重点字词正音",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "空白汉字拼音卡底图，不含具体文字",
+      "acceptable_asset_ids": [
+        "kbpptx_e35802cf95818b43a646",
+        "kbpptx_17665f490f818adca5d1",
+        "kbpptx_a85ea884cf1dfefdbd0f",
+        "kbpptx_a0e0f507758a07b04671",
+        "kbpptx_fea9461a51d4e7ccf30a",
+        "kbpptx_5a30f66cd08f2761addc",
+        "kbpptx_a76487ae426ea9a284d4"
+      ],
+      "best_asset_ids": [
+        "kbpptx_e35802cf95818b43a646"
+      ],
+      "should_reuse": true,
+      "notes": "同页重复空白拼音卡底图需求。"
+    },
+    {
+      "query_id": "session_20260522_211932:p08:illustration_1",
+      "session": "output/session_20260522_211932",
+      "page_number": 8,
+      "page_title": "重点词语释义",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "空白词语解释卡底图，不含具体文字",
+      "acceptable_asset_ids": [
+        "kbpptx_e35802cf95818b43a646",
+        "kbpptx_17665f490f818adca5d1",
+        "kbpptx_a85ea884cf1dfefdbd0f",
+        "kbpptx_a0e0f507758a07b04671",
+        "kbpptx_fea9461a51d4e7ccf30a",
+        "kbpptx_5a30f66cd08f2761addc",
+        "kbpptx_a76487ae426ea9a284d4",
+        "kbpptx_b38b63cc73fef7836a93"
+      ],
+      "best_asset_ids": [
+        "kbpptx_e35802cf95818b43a646"
+      ],
+      "should_reuse": true,
+      "notes": "空白词语解释卡可复用空白卡片/文本框素材；kbpptx_b38b63c 纯空白方形底图同样满足'底图'用途。"
+    },
+    {
+      "query_id": "session_20260522_211932:p08:illustration_2",
+      "session": "output/session_20260522_211932",
+      "page_number": 8,
+      "page_title": "重点词语释义",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "空白词语解释卡底图，不含具体文字",
+      "acceptable_asset_ids": [
+        "kbpptx_e35802cf95818b43a646",
+        "kbpptx_17665f490f818adca5d1",
+        "kbpptx_a85ea884cf1dfefdbd0f",
+        "kbpptx_a0e0f507758a07b04671",
+        "kbpptx_fea9461a51d4e7ccf30a",
+        "kbpptx_5a30f66cd08f2761addc",
+        "kbpptx_a76487ae426ea9a284d4",
+        "kbpptx_b38b63cc73fef7836a93"
+      ],
+      "best_asset_ids": [
+        "kbpptx_e35802cf95818b43a646"
+      ],
+      "should_reuse": true,
+      "notes": "同页重复空白词语解释卡需求；kbpptx_b38b63c 纯空白方形底图同样满足。"
+    },
+    {
+      "query_id": "session_20260522_211932:p08:illustration_3",
+      "session": "output/session_20260522_211932",
+      "page_number": 8,
+      "page_title": "重点词语释义",
+      "slot_key": "illustration_3",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "空白词语解释卡底图，不含具体文字",
+      "acceptable_asset_ids": [
+        "kbpptx_e35802cf95818b43a646",
+        "kbpptx_17665f490f818adca5d1",
+        "kbpptx_a85ea884cf1dfefdbd0f",
+        "kbpptx_a0e0f507758a07b04671",
+        "kbpptx_fea9461a51d4e7ccf30a",
+        "kbpptx_5a30f66cd08f2761addc",
+        "kbpptx_a76487ae426ea9a284d4",
+        "kbpptx_b38b63cc73fef7836a93"
+      ],
+      "best_asset_ids": [
+        "kbpptx_e35802cf95818b43a646"
+      ],
+      "should_reuse": true,
+      "notes": "同页重复空白词语解释卡需求；kbpptx_b38b63c 纯空白方形底图同样满足。"
+    },
+    {
+      "query_id": "session_20260522_211932:p10:illustration_1",
+      "session": "output/session_20260522_211932",
+      "page_number": 10,
+      "page_title": "核心线索：三次看花",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "横向时间线底图，带有三个空白节点位置，不含具体文字",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_211932:p12:illustration_1",
+      "session": "output/session_20260522_211932",
+      "page_number": 12,
+      "page_title": "初步感知人物：绝望的“我”",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "3:4",
+      "query": "年轻男子双腿瘫痪后独自坐在房间里情绪低落的场景插画",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_211932:p19:illustration_1",
+      "session": "output/session_20260522_211932",
+      "page_number": 19,
+      "page_title": "课后作业",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "秋日书桌摆放着语文课本和笔记本的场景插画",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p01:hero_1",
+      "session": "output/session_20260522_212237",
+      "page_number": 1,
+      "page_title": "小蝌蚪找妈妈",
+      "slot_key": "hero_1",
+      "role": "hero",
+      "aspect_ratio": "16:9",
+      "query": "一群小蝌蚪在池塘里游的卡通场景",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p01:illustration_1",
+      "session": "output/session_20260522_212237",
+      "page_number": 1,
+      "page_title": "小蝌蚪找妈妈",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "荷叶上蹲着一只大青蛙的卡通插画",
+      "acceptable_asset_ids": [
+        "kbpptx_34756847d9db23945136",
+        "kbpptx_de8103b22645e843434b"
+      ],
+      "best_asset_ids": [
+        "kbpptx_34756847d9db23945136"
+      ],
+      "should_reuse": true,
+      "notes": "青蛙与荷叶是核心对象；三只青蛙荷叶图最接近大青蛙卡通插画。"
+    },
+    {
+      "query_id": "session_20260522_212237:p02:illustration_1",
+      "session": "output/session_20260522_212237",
+      "page_number": 2,
+      "page_title": "本节课我们要学什么？",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "3:4",
+      "query": "戴着小帽子的小蝌蚪举着小旗子的卡通形象",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p04:hero_1",
+      "session": "output/session_20260522_212237",
+      "page_number": 4,
+      "page_title": "猜谜语",
+      "slot_key": "hero_1",
+      "role": "hero",
+      "aspect_ratio": "16:9",
+      "query": "小蝌蚪和青蛙同时出现的卡通对比图",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p06:illustration_1",
+      "session": "output/session_20260522_212237",
+      "page_number": 6,
+      "page_title": "16个会认字我会读",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "卡通汉字宝宝列队的趣味插画",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p06:illustration_2",
+      "session": "output/session_20260522_212237",
+      "page_number": 6,
+      "page_title": "16个会认字我会读",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "两个小朋友互相考生字的卡通场景",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p07:illustration_1",
+      "session": "output/session_20260522_212237",
+      "page_number": 7,
+      "page_title": "识字小妙招",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "两个汉字部件拼合成一个新汉字的卡通示意图",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p07:illustration_2",
+      "session": "output/session_20260522_212237",
+      "page_number": 7,
+      "page_title": "识字小妙招",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "两个形近字“披”和“波”站在一起比不同的卡通画",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p07:illustration_3",
+      "session": "output/session_20260522_212237",
+      "page_number": 7,
+      "page_title": "识字小妙招",
+      "slot_key": "illustration_3",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "汉字“脑”旁边放着小脑袋的卡通关联图",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p10:illustration_1",
+      "session": "output/session_20260522_212237",
+      "page_number": 10,
+      "page_title": "朗读小提示",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "3:4",
+      "query": "戴着耳机朗读课文的小朋友卡通形象",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p11:hero_1",
+      "session": "output/session_20260522_212237",
+      "page_number": 11,
+      "page_title": "小蝌蚪长什么样子？",
+      "slot_key": "hero_1",
+      "role": "hero",
+      "aspect_ratio": "16:9",
+      "query": "小蝌蚪的外形特写卡通插画，标注出脑袋、身子、尾巴",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p12:hero_1",
+      "session": "output/session_20260522_212237",
+      "page_number": 12,
+      "page_title": "边读边思考",
+      "slot_key": "hero_1",
+      "role": "hero",
+      "aspect_ratio": "3:4",
+      "query": "小蝌蚪在水里游，旁边有鲤鱼、乌龟、青蛙的卡通场景",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p14:hero_1",
+      "session": "output/session_20260522_212237",
+      "page_number": 14,
+      "page_title": "8个会写字我会写",
+      "slot_key": "hero_1",
+      "role": "hero",
+      "aspect_ratio": "16:9",
+      "query": "空白田字格，上方放着坐姿端正握笔写字的小朋友卡通图",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212237:p20:illustration_1",
+      "session": "output/session_20260522_212237",
+      "page_number": 20,
+      "page_title": "本节课结束啦",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "小蝌蚪变成青蛙，和青蛙妈妈站在荷叶上开心的卡通场景",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212250:p01:illustration_1",
+      "session": "output/session_20260522_212250",
+      "page_number": 1,
+      "page_title": "秋天的雨",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "秋天的雨中飘落的梧桐叶",
+      "acceptable_asset_ids": [
+        "kbpptx_3186e53672dcccc17c4a",
+        "kbpptx_e449f63ab22560e5da73",
+        "kbpptx_61dc389bf2ea3e02a009",
+        "kbpptx_2e9d6022458811b73fbf"
+      ],
+      "best_asset_ids": [
+        "kbpptx_3186e53672dcccc17c4a"
+      ],
+      "should_reuse": true,
+      "notes": "库中没有梧桐雨景，秋日黄叶飘落场景可接受。"
+    },
+    {
+      "query_id": "session_20260522_212250:p01:illustration_2",
+      "session": "output/session_20260522_212250",
+      "page_number": 1,
+      "page_title": "秋天的雨",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "打着小伞的卡通小朋友踩秋天的水洼",
+      "acceptable_asset_ids": [
+        "kbpptx_2983b849df61b5658a27"
+      ],
+      "best_asset_ids": [
+        "kbpptx_2983b849df61b5658a27"
+      ],
+      "should_reuse": true,
+      "notes": "雨中撑伞学生场景与踩水洼小朋友同属雨天学生场景。"
+    },
+    {
+      "query_id": "session_20260522_212250:p02:illustration_1",
+      "session": "output/session_20260522_212250",
+      "page_number": 2,
+      "page_title": "本节课学习目标",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "3:4",
+      "query": "放着语文课本、铅笔、枫叶的书桌",
+      "acceptable_asset_ids": [
+        "kbpptx_e4c5fa875579e05d9eab",
+        "kbpptx_5589b0e8bab8e127846e"
+      ],
+      "best_asset_ids": [
+        "kbpptx_e4c5fa875579e05d9eab"
+      ],
+      "should_reuse": true,
+      "notes": "语文课本和铅笔匹配，缺少枫叶但教学物件角色一致。"
+    },
+    {
+      "query_id": "session_20260522_212250:p06:illustration_1",
+      "session": "output/session_20260522_212250",
+      "page_number": 6,
+      "page_title": "自读要求：读准字音，理清脉络",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "小朋友捧着课本大声朗读",
+      "acceptable_asset_ids": [
+        "kbpptx_102d16cf898718f57907",
+        "kbpptx_4c6bdbee3f540b527010",
+        "kbpptx_1945be8ece8a044fd1d5"
+      ],
+      "best_asset_ids": [
+        "kbpptx_102d16cf898718f57907"
+      ],
+      "should_reuse": true,
+      "notes": "儿童共读/读书场景可承担读课文插图。"
+    },
+    {
+      "query_id": "session_20260522_212250:p06:illustration_2",
+      "session": "output/session_20260522_212250",
+      "page_number": 6,
+      "page_title": "自读要求：读准字音，理清脉络",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "笔在课文中标自然段序号",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212250:p06:illustration_3",
+      "session": "output/session_20260522_212250",
+      "page_number": 6,
+      "page_title": "自读要求：读准字音，理清脉络",
+      "slot_key": "illustration_3",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "笔圈出课文中的生字词",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212250:p07:illustration_1",
+      "session": "output/session_20260522_212250",
+      "page_number": 7,
+      "page_title": "会认生字：读准字音，辨析字形",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "带拼音的10个会认生字卡片排列",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212250:p07:illustration_2",
+      "session": "output/session_20260522_212250",
+      "page_number": 7,
+      "page_title": "会认生字：读准字音，辨析字形",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "卡通小雨滴形状的生字游戏界面",
+      "acceptable_asset_ids": [
+        "kbpptx_63f62475c67d680b3cba",
+        "kbpptx_1be9af69c4f0704899d2",
+        "kbpptx_aaf639eb344b6fe80c40",
+        "kbpptx_c27bedecf95433e16dc4"
+      ],
+      "best_asset_ids": [
+        "kbpptx_63f62475c67d680b3cba"
+      ],
+      "should_reuse": true,
+      "notes": "卡通雨滴形象可作为雨滴生字游戏界面的核心图形。"
+    },
+    {
+      "query_id": "session_20260522_212250:p09:illustration_1",
+      "session": "output/session_20260522_212250",
+      "page_number": 9,
+      "page_title": "再读要求：读懂内容，梳理结构",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "3:4",
+      "query": "小朋友托着下巴思考课文内容",
+      "acceptable_asset_ids": [
+        "kbpptx_7272685d9b237de64ecf",
+        "kbpptx_6c283b5318980f6f89f9",
+        "kbpptx_794ff9e1e0a2a3785d5b",
+        "kbpptx_be0352cedb7f36b3d869",
+        "kbpptx_923d61bb1d9cbcf8cc5f"
+      ],
+      "best_asset_ids": [
+        "kbpptx_7272685d9b237de64ecf"
+      ],
+      "should_reuse": true,
+      "notes": "托腮思考的小学生课桌场景最接近思考课文内容。"
+    },
+    {
+      "query_id": "session_20260522_212250:p12:illustration_1",
+      "session": "output/session_20260522_212250",
+      "page_number": 12,
+      "page_title": "感受秋雨的特点",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "小朋友伸出手接凉凉的秋雨",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212250:p12:illustration_2",
+      "session": "output/session_20260522_212250",
+      "page_number": 12,
+      "page_title": "感受秋雨的特点",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "秋雨轻轻落在枫叶上的场景",
+      "acceptable_asset_ids": [
+        "kbpptx_3186e53672dcccc17c4a",
+        "kbpptx_e449f63ab22560e5da73",
+        "kbpptx_61dc389bf2ea3e02a009",
+        "kbpptx_2e9d6022458811b73fbf"
+      ],
+      "best_asset_ids": [
+        "kbpptx_e449f63ab22560e5da73"
+      ],
+      "should_reuse": true,
+      "notes": "秋叶/枫叶是核心对象，库中没有雨落枫叶特写。"
+    },
+    {
+      "query_id": "session_20260522_212250:p12:illustration_3",
+      "session": "output/session_20260522_212250",
+      "page_number": 12,
+      "page_title": "感受秋雨的特点",
+      "slot_key": "illustration_3",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "小朋友捧着课本轻声朗读",
+      "acceptable_asset_ids": [
+        "kbpptx_102d16cf898718f57907",
+        "kbpptx_4c6bdbee3f540b527010",
+        "kbpptx_1945be8ece8a044fd1d5"
+      ],
+      "best_asset_ids": [
+        "kbpptx_102d16cf898718f57907"
+      ],
+      "should_reuse": true,
+      "notes": "儿童阅读场景可接受，虽然缺少轻声朗读的明确动作。"
+    },
+    {
+      "query_id": "session_20260522_212250:p14:illustration_1",
+      "session": "output/session_20260522_212250",
+      "page_number": 14,
+      "page_title": "会写生字：结构分类",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "12个会写生字按结构分类排列的田字格卡片",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212250:p14:illustration_2",
+      "session": "output/session_20260522_212250",
+      "page_number": 14,
+      "page_title": "会写生字：结构分类",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "小朋友握着铅笔在田字格本上写字",
+      "acceptable_asset_ids": [
+        "kbpptx_a9561434c200a48289b5",
+        "kbpptx_60c135619c73b5c83960",
+        "kbpptx_67d761c8bd25056d6eb5",
+        "kbpptx_ca45c456ef2cffb5e94b",
+        "kbpptx_4e11948812b7e73e3cd5"
+      ],
+      "best_asset_ids": [
+        "kbpptx_a9561434c200a48289b5"
+      ],
+      "should_reuse": true,
+      "notes": "伏案写字小学生最接近田字格本写字场景。"
+    },
+    {
+      "query_id": "session_20260522_212250:p15:illustration_1",
+      "session": "output/session_20260522_212250",
+      "page_number": 15,
+      "page_title": "易错字书写提示",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "“枚”字田字格笔顺分解图",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212250:p15:illustration_2",
+      "session": "output/session_20260522_212250",
+      "page_number": 15,
+      "page_title": "易错字书写提示",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "“爽”字田字格笔顺分解图",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212250:p15:illustration_3",
+      "session": "output/session_20260522_212250",
+      "page_number": 15,
+      "page_title": "易错字书写提示",
+      "slot_key": "illustration_3",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "“争”字田字格笔顺分解图",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212250:p15:illustration_4",
+      "session": "output/session_20260522_212250",
+      "page_number": 15,
+      "page_title": "易错字书写提示",
+      "slot_key": "illustration_4",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "“频”字田字格笔顺分解图",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p01:hero_1",
+      "session": "output/session_20260522_212304",
+      "page_number": 1,
+      "page_title": "比尾巴",
+      "slot_key": "hero_1",
+      "role": "hero",
+      "aspect_ratio": "16:9",
+      "query": "多种小动物举着尾巴比赛的热闹场景",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p01:illustration_1",
+      "session": "output/session_20260522_212304",
+      "page_number": 1,
+      "page_title": "比尾巴",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "3:1",
+      "query": "彩色艺术字“比尾巴”",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p02:illustration_1",
+      "session": "output/session_20260522_212304",
+      "page_number": 2,
+      "page_title": "今天我们要学这些哦",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "3:4",
+      "query": "举着小旗子的卡通小导游形象",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p03:illustration_1",
+      "session": "output/session_20260522_212304",
+      "page_number": 3,
+      "page_title": "老朋友来打招呼啦",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "小鸟飞、马儿跑、鱼儿游的组合插画",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p03:illustration_2",
+      "session": "output/session_20260522_212304",
+      "page_number": 3,
+      "page_title": "老朋友来打招呼啦",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "两个卡通小人一问一答对话的场景",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p04:hero_1",
+      "session": "output/session_20260522_212304",
+      "page_number": 4,
+      "page_title": "森林比赛开始啦",
+      "slot_key": "hero_1",
+      "role": "hero",
+      "aspect_ratio": "16:9",
+      "query": "森林比赛舞台场景，挂着“比尾巴大赛”的横幅",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p04:illustration_1",
+      "session": "output/session_20260522_212304",
+      "page_number": 4,
+      "page_title": "森林比赛开始啦",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "卡通猴子形象",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p04:illustration_2",
+      "session": "output/session_20260522_212304",
+      "page_number": 4,
+      "page_title": "森林比赛开始啦",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "卡通兔子形象",
+      "acceptable_asset_ids": [
+        "kbpptx_8a1e887e4080fbfd0d53",
+        "kbpptx_c6c5949a3b619582c724",
+        "kbpptx_d94a128e4f39518e27dd",
+        "kbpptx_ed997f9a4b50ba3a4b24",
+        "kbpptx_3862d7da3ad480cb0b4f",
+        "kbpptx_372c53cd6511bf5cab85"
+      ],
+      "best_asset_ids": [
+        "kbpptx_8a1e887e4080fbfd0d53"
+      ],
+      "should_reuse": true,
+      "notes": "卡通小白兔形象可复用为兔子角色图。"
+    },
+    {
+      "query_id": "session_20260522_212304:p04:illustration_3",
+      "session": "output/session_20260522_212304",
+      "page_number": 4,
+      "page_title": "森林比赛开始啦",
+      "slot_key": "illustration_3",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "卡通松鼠形象",
+      "acceptable_asset_ids": [
+        "kbpptx_02620466249ee5d6ef58",
+        "kbpptx_78a2297f57ce9d704033"
+      ],
+      "best_asset_ids": [
+        "kbpptx_02620466249ee5d6ef58"
+      ],
+      "should_reuse": true,
+      "notes": "抱橡果卡通松鼠最适合作为松鼠角色图。"
+    },
+    {
+      "query_id": "session_20260522_212304:p04:illustration_4",
+      "session": "output/session_20260522_212304",
+      "page_number": 4,
+      "page_title": "森林比赛开始啦",
+      "slot_key": "illustration_4",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "卡通公鸡形象",
+      "acceptable_asset_ids": [
+        "kbpptx_9c61301d3cc5dfbf7095",
+        "kbpptx_d3e175664f3acb371d6a"
+      ],
+      "best_asset_ids": [
+        "kbpptx_9c61301d3cc5dfbf7095"
+      ],
+      "should_reuse": true,
+      "notes": "白公鸡卡通插画可作为公鸡角色图。"
+    },
+    {
+      "query_id": "session_20260522_212304:p04:illustration_5",
+      "session": "output/session_20260522_212304",
+      "page_number": 4,
+      "page_title": "森林比赛开始啦",
+      "slot_key": "illustration_5",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "卡通鸭子形象",
+      "acceptable_asset_ids": [
+        "kbpptx_1d7e4e4968bf99b96268",
+        "kbpptx_b636da5f4a2c3f384b71"
+      ],
+      "best_asset_ids": [
+        "kbpptx_1d7e4e4968bf99b96268"
+      ],
+      "should_reuse": true,
+      "notes": "水面黄色小鸭子最接近鸭子角色图。"
+    },
+    {
+      "query_id": "session_20260522_212304:p04:illustration_6",
+      "session": "output/session_20260522_212304",
+      "page_number": 4,
+      "page_title": "森林比赛开始啦",
+      "slot_key": "illustration_6",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "卡通孔雀形象",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p05:illustration_1",
+      "session": "output/session_20260522_212304",
+      "page_number": 5,
+      "page_title": "我们一起读课题",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "3:4",
+      "query": "田字格中带笔顺的“比”和“巴”两个字",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p08:illustration_1",
+      "session": "output/session_20260522_212304",
+      "page_number": 8,
+      "page_title": "生字宝宝大集合",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "带拼音的生字卡：比、尾、巴",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p08:illustration_2",
+      "session": "output/session_20260522_212304",
+      "page_number": 8,
+      "page_title": "生字宝宝大集合",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "带拼音的生字卡：谁、长、短、把、伞",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p08:illustration_3",
+      "session": "output/session_20260522_212304",
+      "page_number": 8,
+      "page_title": "生字宝宝大集合",
+      "slot_key": "illustration_3",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "带拼音的生字卡：兔、最、公",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p12:illustration_1",
+      "session": "output/session_20260522_212304",
+      "page_number": 12,
+      "page_title": "比赛结果我知道",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "挂在树上的猴子，突出长长的尾巴",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p12:illustration_2",
+      "session": "output/session_20260522_212304",
+      "page_number": 12,
+      "page_title": "比赛结果我知道",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "蹦跳的兔子，突出短短的尾巴",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p12:illustration_3",
+      "session": "output/session_20260522_212304",
+      "page_number": 12,
+      "page_title": "比赛结果我知道",
+      "slot_key": "illustration_3",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "举着大尾巴的松鼠，尾巴像撑开的伞",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p13:illustration_1",
+      "session": "output/session_20260522_212304",
+      "page_number": 13,
+      "page_title": "随文识字小课堂",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "提手旁、斜刀头偏旁示意图，搭配长、短、巴、把、伞、兔的生字卡",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p13:illustration_2",
+      "session": "output/session_20260522_212304",
+      "page_number": 13,
+      "page_title": "随文识字小课堂",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "降落伞的卡通图片",
+      "acceptable_asset_ids": [
+        "kbpptx_9de31fd7f0a278dc4481",
+        "kbpptx_47bd9aaef3851d685320",
+        "kbpptx_d910d2d6ca2c256a2b6a",
+        "kbpptx_f27b7b686a8f0d4f8090"
+      ],
+      "best_asset_ids": [
+        "kbpptx_9de31fd7f0a278dc4481"
+      ],
+      "should_reuse": true,
+      "notes": "红白环形降落伞比结构图/步骤图更适合作为卡通降落伞图片；kbpptx_f27b7b6 红白蓝三色降落伞含乘客也属可接受的卡通图。"
+    },
+    {
+      "query_id": "session_20260522_212304:p16:illustration_1",
+      "session": "output/session_20260522_212304",
+      "page_number": 16,
+      "page_title": "学写“比”字",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "田字格中带笔顺标注的“比”字",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p16:illustration_2",
+      "session": "output/session_20260522_212304",
+      "page_number": 16,
+      "page_title": "学写“比”字",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "田字格中的“比”字描红示例",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p17:illustration_1",
+      "session": "output/session_20260522_212304",
+      "page_number": 17,
+      "page_title": "学写“长”字",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "田字格中带笔顺标注的“长”字",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260522_212304:p17:illustration_2",
+      "session": "output/session_20260522_212304",
+      "page_number": 17,
+      "page_title": "学写“长”字",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "田字格中的“长”字描红示例",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p01:hero_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 1,
+      "page_title": "雾在哪里",
+      "slot_key": "hero_1",
+      "role": "hero",
+      "aspect_ratio": "4:3",
+      "query": "卡通风格的淘气雾孩子形象，白蒙蒙的圆滚滚雾团，带着调皮的笑脸",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p01:background_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 1,
+      "page_title": "雾在哪里",
+      "slot_key": "background_1",
+      "role": "background",
+      "aspect_ratio": "16:9",
+      "query": "被雾笼罩的城市海边远景，建筑和海面朦朦胧胧",
+      "acceptable_asset_ids": [
+        "kbpptx_24a2469294fb61195ac3",
+        "kbpptx_1265ebb2f3ccb342d5da",
+        "kbpptx_f71fd2b5a529cc9eb8b7",
+        "kbpptx_4ea97e9b9bd7e9f8d106"
+      ],
+      "best_asset_ids": [
+        "kbpptx_24a2469294fb61195ac3"
+      ],
+      "should_reuse": true,
+      "notes": "海滨城市与海岸景观最贴近城市海边远景，雾霾/雾景素材作为次优。"
+    },
+    {
+      "query_id": "session_20260523_010029:p02:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 2,
+      "page_title": "学习小目标",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "3:4",
+      "query": "举着小旗子的卡通雾孩子，旁边跟着写着“学习目标”的小牌子",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p03:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 3,
+      "page_title": "猜谜导入：认识自然小魔法师",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "飘动的白色雾团和升起的太阳同框，雾在阳光下慢慢变淡",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p04:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 4,
+      "page_title": "会认生字宝宝",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "14个生字整齐排列在彩色田字格卡片上，标注正确拼音",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p04:illustration_2",
+      "session": "output/session_20260523_010029",
+      "page_number": 4,
+      "page_title": "会认生字宝宝",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "两个田字格分别写“暗”和“岸”，旁边对应画着黑暗的房间和海边的岸，标注同音字提示",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p05:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 5,
+      "page_title": "识字小妙招",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "真实的海岸照片，海浪拍打着岸边的石头",
+      "acceptable_asset_ids": [
+        "kbpptx_24a2469294fb61195ac3"
+      ],
+      "best_asset_ids": [
+        "kbpptx_24a2469294fb61195ac3"
+      ],
+      "should_reuse": true,
+      "notes": "海滨城市沙滩与海岸景观满足海岸主题。"
+    },
+    {
+      "query_id": "session_20260523_010029:p05:illustration_2",
+      "session": "output/session_20260523_010029",
+      "page_number": 5,
+      "page_title": "识字小妙招",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "加一加识字演示图，四个拆分组合的汉字动画，分别显示偏旁和部件相加的过程",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p05:illustration_3",
+      "session": "output/session_20260523_010029",
+      "page_number": 5,
+      "page_title": "识字小妙招",
+      "slot_key": "illustration_3",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "古代水上木桥的插画，旁边对应“梁”字的古文字和现代汉字",
+      "acceptable_asset_ids": [
+        "kbpptx_30faa887e62bc701374c"
+      ],
+      "best_asset_ids": [
+        "kbpptx_30faa887e62bc701374c"
+      ],
+      "should_reuse": true,
+      "notes": "水上木桥插画与古文字“梁”完全匹配。"
+    },
+    {
+      "query_id": "session_20260523_010029:p06:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 6,
+      "page_title": "初读课文：整体感知",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "卡通雾孩子把大海、太阳、城市一个个藏进身后的口袋里的插画",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p08:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 8,
+      "page_title": "品读课文：雾到海上",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "雾中的大海，海水、船只都朦朦胧胧看不清",
+      "acceptable_asset_ids": [
+        "kbpptx_f71fd2b5a529cc9eb8b7",
+        "kbpptx_24a2469294fb61195ac3",
+        "kbpptx_4ea97e9b9bd7e9f8d106"
+      ],
+      "best_asset_ids": [
+        "kbpptx_f71fd2b5a529cc9eb8b7"
+      ],
+      "should_reuse": true,
+      "notes": "雾中水面最接近雾中大海，海岸景观和山间雾景为次优。"
+    },
+    {
+      "query_id": "session_20260523_010029:p08:illustration_2",
+      "session": "output/session_20260523_010029",
+      "page_number": 8,
+      "page_title": "品读课文：雾到海上",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "雾中的天空，太阳被雾挡住，周围一片灰蒙蒙",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p09:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 9,
+      "page_title": "句式小练习：无论……还是……都……",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "雾中的山林，松树和小蘑菇都被雾笼罩的插画",
+      "acceptable_asset_ids": [
+        "kbpptx_8b2ee5de48e121d115b5",
+        "kbpptx_4ea97e9b9bd7e9f8d106",
+        "kbpptx_29fe0989960f47c176be",
+        "kbpptx_f71fd2b5a529cc9eb8b7"
+      ],
+      "best_asset_ids": [
+        "kbpptx_8b2ee5de48e121d115b5"
+      ],
+      "should_reuse": true,
+      "notes": "雾气笼罩森林实景最接近雾中山林。"
+    },
+    {
+      "query_id": "session_20260523_010029:p10:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 10,
+      "page_title": "第一课时·写字指导",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "田字格中的“论”“船”“猫”三个字，标注左右宽窄比例提示",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p10:illustration_2",
+      "session": "output/session_20260523_010029",
+      "page_number": 10,
+      "page_title": "第一课时·写字指导",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "田字格中的“切”“该”“散”三个字，标注左右宽窄比例提示",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p10:illustration_3",
+      "session": "output/session_20260523_010029",
+      "page_number": 10,
+      "page_title": "第一课时·写字指导",
+      "slot_key": "illustration_3",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "卡通小朋友坐端正握笔写字的插画",
+      "acceptable_asset_ids": [
+        "kbpptx_a9561434c200a48289b5",
+        "kbpptx_60c135619c73b5c83960",
+        "kbpptx_67d761c8bd25056d6eb5",
+        "kbpptx_ca45c456ef2cffb5e94b",
+        "kbpptx_4e11948812b7e73e3cd5",
+        "kbpptx_0eae49c441f686f2e41b"
+      ],
+      "best_asset_ids": [
+        "kbpptx_4e11948812b7e73e3cd5"
+      ],
+      "should_reuse": true,
+      "notes": "正确读写姿势标注图最接近坐端正握笔写字。"
+    },
+    {
+      "query_id": "session_20260523_010029:p12:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 12,
+      "page_title": "复习导入",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "卡通小火车，每节车厢上写着本课的重点词语",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p13:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 13,
+      "page_title": "品读课文：雾到岸边",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "雾中的城市，房屋、街道、行人都朦朦胧胧看不清，还有一只小黑猫在雾里若隐若现",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p14:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 14,
+      "page_title": "段落小发现",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "三个步骤的卡通流程图，分别对应“说话”“藏东西”“景色变化”三个环节",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p15:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 15,
+      "page_title": "品读课文：雾把自己藏起来了",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "雾散之后的海边城市，阳光明亮，所有的东西都清晰可见，雾孩子慢慢变淡消失",
+      "acceptable_asset_ids": [
+        "kbpptx_24a2469294fb61195ac3"
+      ],
+      "best_asset_ids": [
+        "kbpptx_24a2469294fb61195ac3"
+      ],
+      "should_reuse": true,
+      "notes": "清晰海滨城市/海岸景观可用于雾散后的海边城市。"
+    },
+    {
+      "query_id": "session_20260523_010029:p16:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 16,
+      "page_title": "知识小科普：雾去哪里了？",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "雾的形成和消失的科普示意图，左边是低温下水汽凝结成雾，右边是太阳出来温度升高雾消散",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p17:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 17,
+      "page_title": "想一想：雾在你眼里是什么？",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "雾孩子的不同卡通形象，分别是捣蛋鬼、魔术师、小画家的样子",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_010029:p18:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 18,
+      "page_title": "第二课时·写字指导",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "田字格中的“步”字，标注笔画顺序，提示下面不要多写一点",
+      "acceptable_asset_ids": [
+        "kbpptx_b9f1f1d86227869f7163"
+      ],
+      "best_asset_ids": [
+        "kbpptx_b9f1f1d86227869f7163"
+      ],
+      "should_reuse": true,
+      "notes": "田字格中的“步”字匹配核心书写对象，但缺少笔顺提示。"
+    },
+    {
+      "query_id": "session_20260523_010029:p18:illustration_2",
+      "session": "output/session_20260523_010029",
+      "page_number": 18,
+      "page_title": "第二课时·写字指导",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "田字格中的“失”字，标注笔顺，重点提示撇的起笔位置",
+      "acceptable_asset_ids": [
+        "kbpptx_2b2b24c4d1de951cf607"
+      ],
+      "best_asset_ids": [
+        "kbpptx_2b2b24c4d1de951cf607"
+      ],
+      "should_reuse": true,
+      "notes": "米字格中的“失”字匹配核心书写对象，但缺少笔顺提示。"
+    },
+    {
+      "query_id": "session_20260523_010029:p20:illustration_1",
+      "session": "output/session_20260523_010029",
+      "page_number": 20,
+      "page_title": "小练习：闯关大挑战",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "32:15",
+      "query": "三个卡通关卡牌子，分别写着“基础关”“提升关”“拓展关”，旁边有星星奖励图标",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_012722:p02:illustration_1",
+      "session": "output/session_20260523_012722",
+      "page_number": 2,
+      "page_title": "课程目录",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "3:4",
+      "query": "凸透镜光线会聚示意图",
+      "acceptable_asset_ids": [
+        "kbpptx_8dc0022ce119b9cf7ca9",
+        "kbpptx_dc20ebf6e689c71b68d2",
+        "kbpptx_d40f9a68eb43e949d339",
+        "kbpptx_46a682b9cefb74a9981a",
+        "kbpptx_556bfc4903ceee3b6900",
+        "kbpptx_3617a2df027e1ee95b3d",
+        "kbpptx_0d95c0b68820bb27c7a4",
+        "kbpptx_33b9136b4011f2741498",
+        "kbpptx_7a2b3476f418f568d5ea"
+      ],
+      "best_asset_ids": [
+        "kbpptx_8dc0022ce119b9cf7ca9"
+      ],
+      "should_reuse": true,
+      "notes": "凸透镜折射/会聚光路图最贴近课程目录中的会聚示意。"
+    },
+    {
+      "query_id": "session_20260523_012722:p04:illustration_1",
+      "session": "output/session_20260523_012722",
+      "page_number": 4,
+      "page_title": "课堂导入：生活中的透镜现象",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "放大镜放大文字",
+      "acceptable_asset_ids": [
+        "kbpptx_e453a775e9a1c615b1bc",
+        "kbpptx_aacff0f169e7f3952d85"
+      ],
+      "best_asset_ids": [
+        "kbpptx_e453a775e9a1c615b1bc"
+      ],
+      "should_reuse": true,
+      "notes": "放大镜工具素材可承载放大镜放大文字的生活现象。"
+    },
+    {
+      "query_id": "session_20260523_012722:p04:illustration_2",
+      "session": "output/session_20260523_012722",
+      "page_number": 4,
+      "page_title": "课堂导入：生活中的透镜现象",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "照相机镜头特写",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_012722:p04:illustration_3",
+      "session": "output/session_20260523_012722",
+      "page_number": 4,
+      "page_title": "课堂导入：生活中的透镜现象",
+      "slot_key": "illustration_3",
+      "role": "illustration",
+      "aspect_ratio": "1:1",
+      "query": "老花镜",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_012722:p06:illustration_1",
+      "session": "output/session_20260523_012722",
+      "page_number": 6,
+      "page_title": "探究实验：凸透镜对光的作用",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "凸透镜会聚太阳光到白纸上形成光斑的实验场景",
+      "acceptable_asset_ids": [
+        "kbpptx_8dc0022ce119b9cf7ca9",
+        "kbpptx_dc20ebf6e689c71b68d2",
+        "kbpptx_d40f9a68eb43e949d339",
+        "kbpptx_46a682b9cefb74a9981a"
+      ],
+      "best_asset_ids": [
+        "kbpptx_8dc0022ce119b9cf7ca9"
+      ],
+      "should_reuse": true,
+      "notes": "库中无太阳光白纸实验场景，凸透镜会聚/折射光路图可作为概念替代。"
+    },
+    {
+      "query_id": "session_20260523_012722:p07:illustration_1",
+      "session": "output/session_20260523_012722",
+      "page_number": 7,
+      "page_title": "凸透镜核心概念",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "凸透镜光路图标注光心O、焦点F、焦距f、主光轴，展示平行光入射过焦点、过光心光线方向不变",
+      "acceptable_asset_ids": [
+        "kbpptx_8dc0022ce119b9cf7ca9",
+        "kbpptx_dc20ebf6e689c71b68d2",
+        "kbpptx_d40f9a68eb43e949d339",
+        "kbpptx_46a682b9cefb74a9981a",
+        "kbpptx_556bfc4903ceee3b6900",
+        "kbpptx_3617a2df027e1ee95b3d",
+        "kbpptx_0d95c0b68820bb27c7a4",
+        "kbpptx_33b9136b4011f2741498",
+        "kbpptx_7a2b3476f418f568d5ea"
+      ],
+      "best_asset_ids": [
+        "kbpptx_dc20ebf6e689c71b68d2"
+      ],
+      "should_reuse": true,
+      "notes": "焦点、焦距光路示意图最贴近O/F/f主光轴核心概念。"
+    },
+    {
+      "query_id": "session_20260523_012722:p08:illustration_1",
+      "session": "output/session_20260523_012722",
+      "page_number": 8,
+      "page_title": "初步探究：凸透镜成像特点",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "光具座上放置蜡烛、凸透镜、光屏，调整三心同高的实验装置图",
+      "acceptable_asset_ids": [
+        "kbpptx_2acba77b02a4d69a8873",
+        "kbpptx_10c1b8a8fe1fd864d457"
+      ],
+      "best_asset_ids": [
+        "kbpptx_2acba77b02a4d69a8873"
+      ],
+      "should_reuse": true,
+      "notes": "光具座、蜡烛、凸透镜、光屏实验装置完全匹配。"
+    },
+    {
+      "query_id": "session_20260523_012722:p09:illustration_1",
+      "session": "output/session_20260523_012722",
+      "page_number": 9,
+      "page_title": "初步成像规律总结",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "u>2f时凸透镜成倒立缩小实像的光路示意图",
+      "acceptable_asset_ids": [
+        "kbpptx_8dc0022ce119b9cf7ca9",
+        "kbpptx_dc20ebf6e689c71b68d2",
+        "kbpptx_d40f9a68eb43e949d339",
+        "kbpptx_46a682b9cefb74a9981a",
+        "kbpptx_556bfc4903ceee3b6900",
+        "kbpptx_3617a2df027e1ee95b3d",
+        "kbpptx_0d95c0b68820bb27c7a4",
+        "kbpptx_33b9136b4011f2741498",
+        "kbpptx_7a2b3476f418f568d5ea"
+      ],
+      "best_asset_ids": [
+        "kbpptx_46a682b9cefb74a9981a"
+      ],
+      "should_reuse": true,
+      "notes": "库中无u>2f专图，凸透镜特殊光线光路图可作为通用光路替代。"
+    },
+    {
+      "query_id": "session_20260523_012722:p09:illustration_2",
+      "session": "output/session_20260523_012722",
+      "page_number": 9,
+      "page_title": "初步成像规律总结",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "f<u<2f时凸透镜成倒立放大实像的光路示意图",
+      "acceptable_asset_ids": [
+        "kbpptx_8dc0022ce119b9cf7ca9",
+        "kbpptx_dc20ebf6e689c71b68d2",
+        "kbpptx_d40f9a68eb43e949d339",
+        "kbpptx_46a682b9cefb74a9981a",
+        "kbpptx_556bfc4903ceee3b6900",
+        "kbpptx_3617a2df027e1ee95b3d",
+        "kbpptx_0d95c0b68820bb27c7a4",
+        "kbpptx_33b9136b4011f2741498",
+        "kbpptx_7a2b3476f418f568d5ea"
+      ],
+      "best_asset_ids": [
+        "kbpptx_46a682b9cefb74a9981a"
+      ],
+      "should_reuse": true,
+      "notes": "库中无f<u<2f专图，凸透镜特殊光线光路图可作为通用光路替代。"
+    },
+    {
+      "query_id": "session_20260523_012722:p09:illustration_3",
+      "session": "output/session_20260523_012722",
+      "page_number": 9,
+      "page_title": "初步成像规律总结",
+      "slot_key": "illustration_3",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "u<f时凸透镜成正立放大虚像的光路示意图",
+      "acceptable_asset_ids": [
+        "kbpptx_8dc0022ce119b9cf7ca9",
+        "kbpptx_dc20ebf6e689c71b68d2",
+        "kbpptx_d40f9a68eb43e949d339",
+        "kbpptx_46a682b9cefb74a9981a",
+        "kbpptx_556bfc4903ceee3b6900",
+        "kbpptx_3617a2df027e1ee95b3d",
+        "kbpptx_0d95c0b68820bb27c7a4",
+        "kbpptx_33b9136b4011f2741498",
+        "kbpptx_7a2b3476f418f568d5ea"
+      ],
+      "best_asset_ids": [
+        "kbpptx_46a682b9cefb74a9981a"
+      ],
+      "should_reuse": true,
+      "notes": "库中无u<f虚像专图，凸透镜特殊光线光路图可作为通用光路替代。"
+    },
+    {
+      "query_id": "session_20260523_012722:p14:illustration_1",
+      "session": "output/session_20260523_012722",
+      "page_number": 14,
+      "page_title": "深化探究：特殊点成像特点",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "u=2f时凸透镜成等大实像、u=f时光线平行射出的对比光路图",
+      "acceptable_asset_ids": [
+        "kbpptx_8dc0022ce119b9cf7ca9",
+        "kbpptx_dc20ebf6e689c71b68d2",
+        "kbpptx_d40f9a68eb43e949d339",
+        "kbpptx_46a682b9cefb74a9981a",
+        "kbpptx_556bfc4903ceee3b6900",
+        "kbpptx_3617a2df027e1ee95b3d",
+        "kbpptx_0d95c0b68820bb27c7a4",
+        "kbpptx_33b9136b4011f2741498",
+        "kbpptx_7a2b3476f418f568d5ea"
+      ],
+      "best_asset_ids": [
+        "kbpptx_dc20ebf6e689c71b68d2"
+      ],
+      "should_reuse": true,
+      "notes": "库中无u=2f/u=f对比图，焦点焦距光路图可作为特殊点讲解替代。"
+    },
+    {
+      "query_id": "session_20260523_012722:p15:illustration_1",
+      "session": "output/session_20260523_012722",
+      "page_number": 15,
+      "page_title": "凸透镜成像完整规律汇总",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "凸透镜成像五种物距情况的汇总对比表格框架图，包含物距、像距、像的性质、应用四列",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_012722:p15:illustration_2",
+      "session": "output/session_20260523_012722",
+      "page_number": 15,
+      "page_title": "凸透镜成像完整规律汇总",
+      "slot_key": "illustration_2",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "凸透镜成像规律记忆口诀辅助示意图，标注两个分界点和动态变化",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_012722:p16:illustration_1",
+      "session": "output/session_20260523_012722",
+      "page_number": 16,
+      "page_title": "规律的生活应用",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "照相机、投影仪、放大镜的应用场景对比示意图，分别标注对应的物距范围",
+      "acceptable_asset_ids": [],
+      "best_asset_ids": [],
+      "should_reuse": false,
+      "notes": "No acceptable strict-index image based on the plan query and indexed asset fields."
+    },
+    {
+      "query_id": "session_20260523_012722:p17:illustration_1",
+      "session": "output/session_20260523_012722",
+      "page_number": 17,
+      "page_title": "成像光路图绘制规范",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "16:9",
+      "query": "凸透镜光路图绘制步骤演示图，标注两条特殊光线的传播路径，实线表示实像、虚线表示虚像",
+      "acceptable_asset_ids": [
+        "kbpptx_46a682b9cefb74a9981a",
+        "kbpptx_d40f9a68eb43e949d339",
+        "kbpptx_556bfc4903ceee3b6900",
+        "kbpptx_3617a2df027e1ee95b3d",
+        "kbpptx_8dc0022ce119b9cf7ca9",
+        "kbpptx_dc20ebf6e689c71b68d2",
+        "kbpptx_0d95c0b68820bb27c7a4"
+      ],
+      "best_asset_ids": [
+        "kbpptx_46a682b9cefb74a9981a"
+      ],
+      "should_reuse": true,
+      "notes": "凸透镜三条特殊光线光路图最适合绘制规范页。"
+    },
+    {
+      "query_id": "session_20260523_012722:p21:illustration_1",
+      "session": "output/session_20260523_012722",
+      "page_number": 21,
+      "page_title": "课后作业",
+      "slot_key": "illustration_1",
+      "role": "illustration",
+      "aspect_ratio": "4:3",
+      "query": "用老花镜测量焦距、用凸透镜观察文字的实践场景示意图",
+      "acceptable_asset_ids": [
+        "kbpptx_e453a775e9a1c615b1bc",
+        "kbpptx_aacff0f169e7f3952d85"
+      ],
+      "best_asset_ids": [
+        "kbpptx_e453a775e9a1c615b1bc"
+      ],
+      "should_reuse": true,
+      "notes": "放大镜素材可覆盖用凸透镜观察文字的实践部分。"
+    }
+  ]
+}

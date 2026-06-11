@@ -7,6 +7,8 @@ import pytest
 from edupptx.models import (
     GeneratedSlide,
     ImageNeed,
+    IMAGE_RATIO_SIZES,
+    IMAGE_RATIO_VALUES,
     InputContext,
     MaterialNeeds,
     PagePlan,
@@ -14,7 +16,48 @@ from edupptx.models import (
     PlanningMeta,
     SlideAssets,
     VisualPlan,
+    match_aspect_ratio,
+    normalize_image_aspect_ratio,
+    parse_aspect_ratio,
 )
+
+
+class TestImageNeed:
+    def test_normalizes_source_aliases(self):
+        assert ImageNeed(query="old photo", source="public_domain").source == "search"
+        assert ImageNeed(query="new illustration", source="seedream").source == "ai_generate"
+        assert ImageNeed(query="default illustration").source == "ai_generate"
+
+
+class TestImageAspectRatios:
+    def test_ratio_size_and_value_keys_match(self):
+        assert tuple(IMAGE_RATIO_VALUES.keys()) == tuple(IMAGE_RATIO_SIZES.keys())
+
+    def test_parse_ratio_string(self):
+        assert parse_aspect_ratio("32:15") == pytest.approx(32 / 15)
+        assert parse_aspect_ratio(" 4 : 3 ") == pytest.approx(4 / 3)
+
+    def test_parse_invalid_ratio_returns_none(self):
+        assert parse_aspect_ratio("wide") is None
+        assert parse_aspect_ratio("4:0") is None
+        assert parse_aspect_ratio("") is None
+
+    def test_normalize_supported_ratio_unchanged(self):
+        assert normalize_image_aspect_ratio("4:3") == "4:3"
+        assert normalize_image_aspect_ratio("16:9") == "16:9"
+
+    def test_normalize_unknown_ratio_to_nearest_supported(self):
+        assert normalize_image_aspect_ratio("32:15") == "16:9"
+        assert normalize_image_aspect_ratio("5:4") == "4:3"
+        assert normalize_image_aspect_ratio("2:3") == "3:4"
+
+    def test_normalize_invalid_ratio_to_default(self):
+        assert normalize_image_aspect_ratio("not-a-ratio") == "16:9"
+        assert normalize_image_aspect_ratio(None) == "16:9"
+
+    def test_match_aspect_ratio_uses_same_supported_set(self):
+        assert match_aspect_ratio(472, 210) == "16:9"
+        assert match_aspect_ratio(400, 300) == "4:3"
 
 
 class TestInputContext:

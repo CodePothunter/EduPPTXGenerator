@@ -1,0 +1,14 @@
+{
+  "need_count": 308,
+  "asset_count": 5936,
+  "should_reuse_count": 76,
+  "c00_skip_count": 62,
+  "empty_candidate_count": 232,
+  "group_counts": {
+    "C02_generic_subject_object": 201,
+    "C00_strict_text_problem_skip": 62,
+    "C01_irreplaceable_entity_event_action": 17,
+    "C03_scene_decor_container": 28
+  },
+  "method": "chatgpt_semantic_text_only_no_rule_filter_v1"
+}

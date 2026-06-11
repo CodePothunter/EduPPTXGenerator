@@ -7,6 +7,13 @@ from typing import TYPE_CHECKING
 
 from lxml import etree
 
+from edupptx.models import (
+    IMAGE_RATIO_VALUES,
+    iter_image_slot_keys,
+    normalize_image_aspect_ratio,
+)
+from edupptx.postprocess.svg_sanitizer import resolve_html_entities
+
 if TYPE_CHECKING:
     from edupptx.models import PagePlan
 
@@ -25,6 +32,7 @@ CONTENT_BOTTOM_LIMIT = 680
 TEXT_COLUMN_TOLERANCE = 60
 SUBTITLE_MAX_CHARS = 24
 MIN_TEXT_WRAP_WIDTH = 96.0
+IMAGE_FRAME_RATIO_TOLERANCE = 0.01
 TRANSLATE_RE = re.compile(r"translate\(\s*[-\d.]+(?:[\s,]+[-\d.]+)?\s*\)")
 WRAP_BREAK_AFTER_CHARS = set(" ,.;:!?，。！？；：、)]}】》」』")
 INLINE_STYLE_ATTRS = (
@@ -70,6 +78,9 @@ def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[st
     """Validate SVG, auto-fix issues. Returns (fixed_svg, list_of_warnings)."""
     warnings: list[str] = []
 
+    # Resolve HTML named entities (e.g. &nbsp;) to numeric char refs before the
+    # bare-& escaper below would otherwise mangle them into visible literal text.
+    svg_content = resolve_html_entities(svg_content)
     # Pre-clean XML-unsafe characters (common LLM artifacts)
     svg_content = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#)", "&amp;", svg_content)
     # Escape bare < not part of XML tags (e.g., "k < 0" in math formulas)
@@ -97,6 +108,7 @@ def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[st
     if not _uses_center_hero_layout(page):
         _wrap_long_text(root, warnings)
     _clamp_boundaries(root, warnings)
+    _fix_image_aspect_ratios(root, page, warnings)
     _fix_image_overflow(root, warnings)
     if not _uses_structured_table(page):
         if not _uses_center_hero_layout(page):
@@ -1717,6 +1729,154 @@ def _find_parent_card_for_box(
         if _text_starts_in_card(x, y, box, edge_slack=12, vertical_slack=24):
             candidates.append((rect, box))
     return _pick_best_card(candidates, x, y, bottom)
+
+
+def _image_href(img: etree._Element) -> str:
+    return img.get("href") or img.get("{http://www.w3.org/1999/xlink}href") or ""
+
+
+def _image_slot_ratios(page: PagePlan | None, warnings: list[str]) -> dict[str, str]:
+    if page is None:
+        return {}
+    ratios: dict[str, str] = {}
+    for slot_key, need in iter_image_slot_keys(page.material_needs.images or []):
+        original = str(need.aspect_ratio or "").strip()
+        normalized = normalize_image_aspect_ratio(original)
+        if normalized != original:
+            warnings.append(
+                "Unsupported image aspect ratio in SVG validation "
+                f"{original!r} for {slot_key}; using {normalized}"
+            )
+        ratios[f"__IMAGE_{slot_key.upper()}__"] = normalized
+    return ratios
+
+
+def _sync_image_clip_rect(
+    root: etree._Element,
+    img: etree._Element,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+) -> None:
+    clip_path = img.get("clip-path", "")
+    match = re.fullmatch(r"url\(#([^)]+)\)", clip_path.strip())
+    if not match:
+        return
+    clip_path_el = root.find(f".//{{{SVG_NS}}}clipPath[@id='{match.group(1)}']")
+    if clip_path_el is None:
+        return
+    rects = [
+        child
+        for child in clip_path_el
+        if isinstance(child.tag, str) and etree.QName(child.tag).localname == "rect"
+    ]
+    if len(rects) != 1:
+        return
+    rect = rects[0]
+    rect.set("x", _format_numeric(x))
+    rect.set("y", _format_numeric(y))
+    rect.set("width", _format_numeric(width))
+    rect.set("height", _format_numeric(height))
+
+
+def _fit_aspect_box_in_bounds(
+    center_x: float,
+    center_y: float,
+    preferred_width: float,
+    target_ratio: float,
+    bounds: tuple[float, float, float, float],
+) -> tuple[float, float, float, float] | None:
+    bound_x, bound_y, bound_w, bound_h = bounds
+    if bound_w <= 0 or bound_h <= 0 or target_ratio <= 0:
+        return None
+
+    max_width = min(bound_w, bound_h * target_ratio)
+    new_width = min(preferred_width, max_width)
+    new_height = new_width / target_ratio
+    if new_width <= 0 or new_height <= 0:
+        return None
+
+    new_x = center_x - new_width / 2
+    new_y = center_y - new_height / 2
+    new_x = min(max(new_x, bound_x), bound_x + bound_w - new_width)
+    new_y = min(max(new_y, bound_y), bound_y + bound_h - new_height)
+    return new_x, new_y, new_width, new_height
+
+
+def _image_repair_bounds(
+    root: etree._Element,
+    x: float,
+    y: float,
+    width: float,
+    height: float,
+) -> tuple[float, float, float, float]:
+    padding = 12.0
+    card_rect = _find_parent_card_for_box(root, x, y, y + height)
+    card_box = _rect_box(card_rect) if card_rect is not None else None
+    if card_box is None:
+        return 0.0, 0.0, float(MAX_X), float(MAX_Y)
+    card_x, card_y, card_w, card_h = card_box
+    return (
+        card_x + padding,
+        card_y + padding,
+        max(0.0, card_w - padding * 2),
+        max(0.0, card_h - padding * 2),
+    )
+
+
+def _fix_image_aspect_ratios(
+    root: etree._Element,
+    page: PagePlan | None,
+    warnings: list[str],
+) -> None:
+    slot_ratios = _image_slot_ratios(page, warnings)
+    if not slot_ratios:
+        return
+
+    for img in root.iter(f"{{{SVG_NS}}}image"):
+        href = _image_href(img)
+        expected_ratio_name = slot_ratios.get(href)
+        if expected_ratio_name is None:
+            continue
+        try:
+            x = float(img.get("x", "0"))
+            y = float(img.get("y", "0"))
+            width = float(img.get("width", "0"))
+            height = float(img.get("height", "0"))
+        except (TypeError, ValueError):
+            continue
+        if width <= 0 or height <= 0:
+            continue
+
+        target_ratio = IMAGE_RATIO_VALUES[expected_ratio_name]
+        current_ratio = width / height
+        if abs(current_ratio - target_ratio) / target_ratio <= IMAGE_FRAME_RATIO_TOLERANCE:
+            continue
+
+        center_x = x + width / 2
+        center_y = y + height / 2
+        bounds = _image_repair_bounds(root, x, y, width, height)
+        repaired = _fit_aspect_box_in_bounds(center_x, center_y, width, target_ratio, bounds)
+        if repaired is None:
+            warnings.append(
+                "Unable to repair image aspect ratio "
+                f"{href}: current={current_ratio:.3f}, expected={expected_ratio_name}"
+            )
+            continue
+
+        new_x, new_y, new_width, new_height = repaired
+        img.set("x", _format_numeric(new_x))
+        img.set("y", _format_numeric(new_y))
+        img.set("width", _format_numeric(new_width))
+        img.set("height", _format_numeric(new_height))
+        _sync_image_clip_rect(root, img, new_x, new_y, new_width, new_height)
+        warnings.append(
+            "Repaired image aspect ratio "
+            f"{href}: {current_ratio:.3f}->{expected_ratio_name} "
+            f"({int(round(width))}x{int(round(height))}->"
+            f"{int(round(new_width))}x{int(round(new_height))})"
+        )
 
 
 def _fix_image_overflow(root: etree._Element, warnings: list[str]) -> None:

@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-06-03T17:37:22",
+  "plan_paths": [
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_150913\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_150935\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151004\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151027\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151144\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151216\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151238\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151300\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151403\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151429\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151451\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151517\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151542\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151613\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151637\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151700\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151804\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151825\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151844\\plan.json",
+    "D:\\朱司琪\\实习\\EduPPTXGenerator\\output\\session_20260603_151907\\plan.json"
+  ],
+  "need_count": 308,
+  "index_fingerprints": [
+    {
+      "path": "D:\\朱司琪\\实习\\EduPPTXGenerator\\materials_library_ppt\\strict_reuse_indexes\\background.json",
+      "bytes": 697628,
+      "sha256": "ab939881f15d6986ce4c8ab9e9259dbea47ea29577112aef24629bfbed77f9f8"
+    },
+    {
+      "path": "D:\\朱司琪\\实习\\EduPPTXGenerator\\materials_library_ppt\\strict_reuse_indexes\\C01_irreplaceable_entity_event_action.json",
+      "bytes": 1470561,
+      "sha256": "d753a489c88bb4975be8393ff766749f44d7bd5491bb7a67a99fa36431223988"
+    },
+    {
+      "path": "D:\\朱司琪\\实习\\EduPPTXGenerator\\materials_library_ppt\\strict_reuse_indexes\\C02_generic_subject_object.json",
+      "bytes": 3580557,
+      "sha256": "4241cb541b9705aaf6ba8f1876133d7fdff52a733b2c0b03decdb7b8605e4342"
+    },
+    {
+      "path": "D:\\朱司琪\\实习\\EduPPTXGenerator\\materials_library_ppt\\strict_reuse_indexes\\C03_scene_decor_container.json",
+      "bytes": 1804432,
+      "sha256": "601e85b31f01fcc3feaab6f9a0bd4e66c3557cba05cadae90f20593fef150939"
+    }
+  ]
+}
