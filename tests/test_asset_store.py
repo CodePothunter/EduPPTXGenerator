@@ -111,6 +111,63 @@ def test_vector_migrate_load_roundtrip(tmp_path, monkeypatch):
     store.close()
 
 
+def test_backend_ab_equivalence_find_reusable(tmp_path, monkeypatch):
+    """R1 gate: json vs sqlite backend must return identical find_reusable matches."""
+    monkeypatch.setenv("EDUPPTX_AI_IMAGE_EMBEDDING_MODEL", "test-model")
+
+    def fake_encode(texts, *, model_name=db.DEFAULT_EMBEDDING_MODEL, query=False):
+        out = []
+        for t in texts:
+            v = np.zeros(16, dtype="float32")
+            for ch in str(t):
+                v[ord(ch) % 16] += 1.0
+            n = np.linalg.norm(v)
+            out.append((v / n if n > 0 else v).astype("float32"))
+        return np.asarray(out, dtype="float32")
+
+    monkeypatch.setattr(db, "_encode_embedding_texts", fake_encode)
+
+    src = tmp_path / "lib"
+    (src / "ai_images").mkdir(parents=True)
+    for a in ("a1", "a3"):
+        (src / "ai_images" / f"{a}.png").write_bytes(a.encode())
+    # both in the default route group (C03) so the un-classified target routes to them
+    mi = {
+        "schema_version": 14, "asset_root": str(src),
+        "assets": [
+            {"asset_id": "a1", "asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container",
+             "image_path": "ai_images/a1.png", "caption": "草原骏马奔腾", "subject": "语文", "aspect_ratio": "4:3", "general": True},
+            {"asset_id": "a3", "asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container",
+             "image_path": "ai_images/a3.png", "caption": "池塘里的小蝌蚪", "subject": "语文", "aspect_ratio": "4:3", "general": True},
+        ],
+    }
+    db.write_ai_image_split_match_indexes(mi, src)
+    db.write_ai_image_embedding_index({"assets": mi["assets"]}, src)
+
+    def lookup(prompt):
+        return db.find_reusable_ai_image_asset(
+            library_dir=(str(src),), asset_kind="page_image", prompt=prompt,
+            theme="t", grade="二年级", subject="语文", aspect_ratio="4:3", caption=prompt,
+            keyword_client=None, reuse_search_context=db.ReuseSearchContext(), llm_review_enabled=False,
+        )
+
+    def desc(m):
+        return None if not m else (m["asset"]["asset_id"], round(float(m.get("keyword_score") or 0), 3))
+
+    monkeypatch.setenv("EDUPPTX_REUSE_BACKEND", "json")
+    hit_json = desc(lookup("池塘里的小蝌蚪"))     # positive
+    miss_json = desc(lookup("完全无关的火箭发射器"))  # negative
+
+    AssetStore(src).migrate_from_split_index(embedding_index=db._read_ai_image_embedding_index(src)[0])
+
+    monkeypatch.setenv("EDUPPTX_REUSE_BACKEND", "sqlite")
+    hit_sqlite = desc(lookup("池塘里的小蝌蚪"))
+    miss_sqlite = desc(lookup("完全无关的火箭发射器"))
+
+    assert hit_json == hit_sqlite and hit_json is not None and hit_json[0] == "a3"
+    assert miss_json == miss_sqlite
+
+
 def test_library_db_exists_and_default_path(tmp_path):
     from edupptx.materials.asset_store import default_library_db_path, library_db_exists
 

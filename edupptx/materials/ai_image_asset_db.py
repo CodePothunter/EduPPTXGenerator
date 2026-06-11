@@ -1279,59 +1279,28 @@ def write_ai_image_split_match_indexes(
     return split_dir
 
 
-def read_ai_image_split_match_index(
-    library_dir: str | Path,
-    *,
-    split_dirname: str = STRICT_REUSE_INDEX_DIRNAME,
-) -> tuple[dict[str, Any], Path] | None:
-    """Read the binary reuse-group indexes as one in-memory index."""
+def _assemble_match_index_from_group_payloads(
+    group_payloads: list[tuple[str, dict[str, Any]]],
+    root: Path,
+) -> dict[str, Any] | None:
+    """Assemble the in-memory match index from per-group payloads (file- or sqlite-sourced).
 
-    root = Path(library_dir).expanduser().resolve()
-    split_dir = root / split_dirname
-    if not split_dir.exists():
-        return None
-
+    ``group_payloads`` is an ordered list of (group_file, payload); ``group_file`` is one
+    of the 4 read groups or 'background'. Reproduces the historical split-file assembly:
+    drop secondary projections + C00 (skip) from groups, dedup backgrounds when a
+    background split exists, and keep only backgrounds (kind-forced) from the bg group.
+    """
     assets: list[dict[str, Any]] = []
     warnings: list[str] = []
     source_payloads: list[dict[str, Any]] = []
-    found = False
-    background_split_path = split_dir / BACKGROUND_REUSE_INDEX_FILENAME
-    has_background_split = background_split_path.exists()
-    for group in _STRICT_REUSE_READ_GROUPS:
-        path = split_dir / f"{group}.json"
-        if not path.exists():
-            continue
-        found = True
-        payload = _read_existing_db(path)
+    has_background_split = any(group == BACKGROUND_REUSE_INDEX_GROUP for group, _ in group_payloads)
+    for group, payload in group_payloads:
         source_payloads.append(payload)
         raw_assets = payload.get("assets")
         if not isinstance(raw_assets, list):
-            warnings.append(f"split index skipped invalid assets: {path}")
+            warnings.append(f"split index skipped invalid assets: {group}")
             continue
-        for item in raw_assets:
-            if not isinstance(item, dict):
-                continue
-            asset = deepcopy(item)
-            if asset.get("secondary_projection") is True:
-                continue
-            asset["strict_reuse_group"] = _normalize_binary_reuse_group(
-                asset.get("strict_reuse_group") or payload.get("strict_reuse_group") or group,
-                default=_GENERAL_REUSE_GROUP,
-            )
-            if _is_skip_reuse_group(asset.get("strict_reuse_group")):
-                continue
-            if has_background_split and _is_background_asset(asset):
-                continue
-            assets.append(asset)
-        warnings.extend(_as_string_list(payload.get("warnings")))
-    if has_background_split:
-        found = True
-        payload = _read_existing_db(background_split_path)
-        source_payloads.append(payload)
-        raw_assets = payload.get("assets")
-        if not isinstance(raw_assets, list):
-            warnings.append(f"split index skipped invalid assets: {background_split_path}")
-        else:
+        if group == BACKGROUND_REUSE_INDEX_GROUP:
             for item in raw_assets:
                 if not isinstance(item, dict):
                     continue
@@ -1340,18 +1309,33 @@ def read_ai_image_split_match_index(
                     continue
                 asset["asset_kind"] = "background"
                 asset["strict_reuse_group"] = _normalize_binary_reuse_group(
-                    asset.get("strict_reuse_group"),
-                    default=_GENERAL_REUSE_GROUP,
+                    asset.get("strict_reuse_group"), default=_GENERAL_REUSE_GROUP
                 )
                 if _is_skip_reuse_group(asset.get("strict_reuse_group")):
                     continue
                 assets.append(asset)
+        else:
+            for item in raw_assets:
+                if not isinstance(item, dict):
+                    continue
+                asset = deepcopy(item)
+                if asset.get("secondary_projection") is True:
+                    continue
+                asset["strict_reuse_group"] = _normalize_binary_reuse_group(
+                    asset.get("strict_reuse_group") or payload.get("strict_reuse_group") or group,
+                    default=_GENERAL_REUSE_GROUP,
+                )
+                if _is_skip_reuse_group(asset.get("strict_reuse_group")):
+                    continue
+                if has_background_split and _is_background_asset(asset):
+                    continue
+                assets.append(asset)
         warnings.extend(_as_string_list(payload.get("warnings")))
-    if not found:
-        return None
 
+    if not source_payloads:
+        return None
     now = datetime.now(timezone.utc).isoformat()
-    first_payload = source_payloads[0] if source_payloads else {}
+    first_payload = source_payloads[0]
     index = {
         "schema_version": MATCH_INDEX_SCHEMA_VERSION,
         "built_at": first_payload.get("built_at") or now,
@@ -1365,6 +1349,44 @@ def read_ai_image_split_match_index(
     for key in ("ppt_extractor", "keyword_builder", "keyword_built_at"):
         if key in first_payload:
             index[key] = deepcopy(first_payload[key])
+    return index
+
+
+def read_ai_image_split_match_index(
+    library_dir: str | Path,
+    *,
+    split_dirname: str = STRICT_REUSE_INDEX_DIRNAME,
+) -> tuple[dict[str, Any], Path] | None:
+    """Read the binary reuse-group indexes as one in-memory index."""
+
+    root = Path(library_dir).expanduser().resolve()
+    if _use_sqlite_backend(root):
+        group_payloads = list(_get_asset_store(root).iter_group_payloads())
+        if not group_payloads:
+            return None
+        index = _assemble_match_index_from_group_payloads(group_payloads, root)
+        if index is None:
+            return None
+        from edupptx.materials.asset_store import default_library_db_path
+
+        return index, default_library_db_path(root)
+
+    split_dir = root / split_dirname
+    if not split_dir.exists():
+        return None
+    group_payloads = []
+    for group in _STRICT_REUSE_READ_GROUPS:
+        path = split_dir / f"{group}.json"
+        if path.exists():
+            group_payloads.append((group, _read_existing_db(path)))
+    background_split_path = split_dir / BACKGROUND_REUSE_INDEX_FILENAME
+    if background_split_path.exists():
+        group_payloads.append((BACKGROUND_REUSE_INDEX_GROUP, _read_existing_db(background_split_path)))
+    if not group_payloads:
+        return None
+    index = _assemble_match_index_from_group_payloads(group_payloads, root)
+    if index is None:
+        return None
     return index, split_dir
 
 
@@ -5345,6 +5367,36 @@ def _embedding_disabled() -> bool:
     return value in {"1", "true", "yes", "on"}
 
 
+def _reuse_backend() -> str:
+    return _clean_text(os.environ.get("EDUPPTX_REUSE_BACKEND")).lower() or "json"
+
+
+_ASSET_STORE_CACHE: dict[str, Any] = {}
+_ASSET_STORE_LOCK = threading.Lock()
+
+
+def _use_sqlite_backend(library_root: Path) -> bool:
+    """True when EDUPPTX_REUSE_BACKEND=sqlite and a library.db exists for this root."""
+    if _reuse_backend() != "sqlite":
+        return False
+    from edupptx.materials.asset_store import library_db_exists
+
+    return library_db_exists(library_root)
+
+
+def _get_asset_store(library_root: Path):
+    from edupptx.materials.asset_store import AssetStore
+
+    key = str(Path(library_root).expanduser().resolve())
+    with _ASSET_STORE_LOCK:
+        store = _ASSET_STORE_CACHE.get(key)
+        if store is None:
+            store = AssetStore(library_root)
+            store.connect()
+            _ASSET_STORE_CACHE[key] = store
+        return store
+
+
 def _embedding_model_name(model_name: str | None = None) -> str:
     configured = _clean_text(os.environ.get("EDUPPTX_AI_IMAGE_EMBEDDING_MODEL"))
     return configured or _clean_text(model_name) or DEFAULT_EMBEDDING_MODEL
@@ -7607,6 +7659,18 @@ def _read_existing_asset_index(library_root: Path, index_path: Path) -> tuple[di
 
 
 def _read_match_index_or_build(library_root: Path, db: dict[str, Any]) -> tuple[dict[str, Any], Path]:
+    if _use_sqlite_backend(library_root):
+        # sqlite backend: pure read, never rebuild/write on the read path.
+        from edupptx.materials.asset_store import default_library_db_path
+
+        result = read_ai_image_split_match_index(library_root)
+        if result is not None:
+            return result
+        return (
+            {"schema_version": MATCH_INDEX_SCHEMA_VERSION, "asset_count": 0, "assets": []},
+            default_library_db_path(library_root),
+        )
+
     index_path = library_root / DEFAULT_MATCH_INDEX_FILENAME
     split_index = read_ai_image_split_match_index(library_root)
     if split_index is not None:
@@ -7655,6 +7719,22 @@ def _route_match_index_for_target(
     asset_kind = _clean_text(target.get("asset_kind"))
     if not asset_kind:
         return None
+    if _use_sqlite_backend(library_root):
+        store = _get_asset_store(library_root)
+        if asset_kind == "background":
+            group = BACKGROUND_REUSE_INDEX_GROUP
+        else:
+            group = _normalize_binary_reuse_group(target.get("strict_reuse_group"), default=_GENERAL_REUSE_GROUP)
+        # An empty-but-valid route group must route to an EMPTY bucket (assets=[]),
+        # mirroring the JSON backend where <group>.json exists with assets:[]. Returning
+        # None here would let find_reusable fall into a more permissive non-routed path.
+        payload = store.load_group_payload(group) or {"strict_reuse_group": group, "asset_count": 0, "assets": []}
+        split_assets = payload.get("assets")
+        if not isinstance(split_assets, list):
+            split_assets = []
+        split_index = dict(payload)
+        split_index.setdefault("source_index_dir", str(library_root))
+        return split_index, library_root / "library.db", split_assets, group
     if asset_kind == "background":
         background_path = library_root / STRICT_REUSE_INDEX_DIRNAME / BACKGROUND_REUSE_INDEX_FILENAME
         if background_path.exists():
@@ -7792,6 +7872,28 @@ def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], 
     sidecar_model_name = _embedding_sidecar_model_name(model_name)
     if _embedding_disabled():
         return {}, {"enabled": False, "reason": "disabled_by_environment", "model": sidecar_model_name}
+    if _use_sqlite_backend(library_root):
+        try:
+            index = _get_asset_store(library_root).load_embedding_index()
+        except Exception as exc:
+            return {}, {
+                "enabled": False,
+                "reason": "embedding_index_read_failed",
+                "model": sidecar_model_name,
+                "warnings": [f"sqlite embedding index could not be read: {str(exc)[:180]}"],
+            }
+        if not index or index.get("vectors") is None or not (index.get("asset_ids") or []):
+            return {}, {"enabled": False, "reason": "missing_embedding_index", "model": sidecar_model_name}
+        meta = index.get("meta") or {}
+        vectors = index.get("vectors")
+        return index, {
+            "enabled": True,
+            "model": _embedding_sidecar_model_name(meta.get("model")) or sidecar_model_name,
+            "backend": "sqlite",
+            "asset_count": len(index.get("asset_ids") or []),
+            "background_color_bias_asset_count": len(index.get("background_color_bias_asset_ids") or []),
+            "vector_dim": int(vectors.shape[1]) if hasattr(vectors, "shape") and len(vectors.shape) == 2 else 0,
+        }
     index_path = library_root / DEFAULT_EMBEDDING_INDEX_FILENAME
     meta_path = library_root / DEFAULT_EMBEDDING_META_FILENAME
     if not index_path.exists() or not meta_path.exists():
