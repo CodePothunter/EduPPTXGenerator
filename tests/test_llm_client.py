@@ -84,7 +84,7 @@ class TestCreateLlmClient:
 
 class TestLLMClientChat:
     @patch("edupptx.llm_client.OpenAI")
-    def test_doubao_chat_omits_thinking_by_default(self, mock_openai_cls, chat_config):
+    def test_doubao_chat_disables_thinking_by_default(self, mock_openai_cls, chat_config):
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.choices = [MagicMock(message=MagicMock(content="ok"))]
@@ -95,7 +95,8 @@ class TestLLMClientChat:
         client.chat(messages=[{"role": "user", "content": "test"}])
 
         call_kwargs = mock_client.chat.completions.create.call_args.kwargs
-        assert "extra_body" not in call_kwargs
+        # 豆包端点未设 GEN_THINKING 时默认 disabled（结构化输出场景，回归 master 行为）
+        assert call_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
 
     @patch("edupptx.llm_client.OpenAI")
     def test_doubao_chat_uses_configured_thinking(self, mock_openai_cls, chat_config):
@@ -240,7 +241,7 @@ class TestDoubaoResponsesClientChat:
         assert call_kwargs.kwargs["store"] is False
 
     @patch("edupptx.llm_client.OpenAI")
-    def test_doubao_omits_thinking_by_default(self, mock_openai_cls, responses_config):
+    def test_doubao_disables_thinking_by_default(self, mock_openai_cls, responses_config):
         mock_client = MagicMock()
         mock_response = MagicMock()
         mock_response.output_text = "ok"
@@ -251,7 +252,8 @@ class TestDoubaoResponsesClientChat:
         client.chat(messages=[{"role": "user", "content": "test"}])
 
         call_kwargs = mock_client.responses.create.call_args.kwargs
-        assert "extra_body" not in call_kwargs
+        # 豆包端点未设 GEN_THINKING 时默认 disabled（回归 master 行为）
+        assert call_kwargs["extra_body"] == {"thinking": {"type": "disabled"}}
 
     @patch("edupptx.llm_client.OpenAI")
     def test_doubao_uses_configured_thinking(self, mock_openai_cls, responses_config):
@@ -419,6 +421,18 @@ class TestConfigProvider:
         assert config.asset_library_ingest_enabled is True
         assert config.asset_library_vlm_review is False
         assert config.debug_artifacts is False
+
+    def test_reuse_enabled_default_true(self):
+        assert Config().reuse_enabled is True
+
+    def test_from_env_disable_ai_image_reuse_switch(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("EDUPPTX_DISABLE_AI_IMAGE_REUSE", raising=False)
+        env_path = tmp_path / ".env"
+        env_path.write_text("", encoding="utf-8")
+        assert Config.from_env(env_path).reuse_enabled is True
+
+        env_path.write_text("EDUPPTX_DISABLE_AI_IMAGE_REUSE=1", encoding="utf-8")
+        assert Config.from_env(env_path).reuse_enabled is False
 
     def test_from_env_normalizes_llm_thinking_disable_alias(self, tmp_path, monkeypatch):
         monkeypatch.delenv("GEN_THINKING", raising=False)

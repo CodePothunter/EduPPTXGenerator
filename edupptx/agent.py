@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import hashlib
 import json
 import os
 import shutil
@@ -796,6 +797,9 @@ class PPTXAgent:
         from edupptx.materials.background_generator import build_background_content_prompt, generate_background
 
         prompt = build_background_content_prompt(draft.visual)
+        if not getattr(self.config, "reuse_enabled", True):
+            # 复用读路径总开关关闭：直接生成，跳过库检索与相关 LLM 调用
+            return await generate_background(draft.visual, self.config, session)
         keyword_client = self._build_llm_client()
         reuse_context = self._ai_image_reuse_context(draft)
         match = self._find_reusable_ai_image(
@@ -894,7 +898,9 @@ class PPTXAgent:
             routed = build_routed_image_needs(draft, page)
             routed_image_needs_by_page[page.page_number] = routed
             page.material_needs.images = routed
-        if _attach_ai_image_captions(routed_image_needs_by_page, keyword_client):
+        reuse_enabled = bool(getattr(self.config, "reuse_enabled", True))
+        # caption 仅用于复用匹配；总开关关闭时跳过该 LLM 批次
+        if reuse_enabled and _attach_ai_image_captions(routed_image_needs_by_page, keyword_client):
             session.save_plan(draft.model_dump())
         reuse_specs: list[dict[str, Any]] = []
 
@@ -916,7 +922,8 @@ class PPTXAgent:
                                 asset_path,
                             )
                         continue
-                    if need.source != "ai_generate":
+                    # 总开关关闭时，ai_generate 需求直接走生成（pending_fetch），不进复用池
+                    if need.source != "ai_generate" or not reuse_enabled:
                         pending_fetch_by_page[page.page_number].append((slot_key, need))
                         continue
                     debug_context = {
@@ -961,16 +968,17 @@ class PPTXAgent:
                         logger.warning("Icon not found: {}", icon_name)
 
         try:
-            _prewarm_reuse_target_keywords(
-                [spec["target"] for spec in reuse_specs],
-                keyword_client,
-                reuse_search_context.target_keyword_cache,
-                on_batch_cached=lambda _batch_count, _total_count: self._persist_reuse_query_cache(
-                    session,
-                    reuse_search_context,
-                ),
-            )
-            self._persist_reuse_query_cache(session, reuse_search_context)
+            if reuse_specs:
+                _prewarm_reuse_target_keywords(
+                    [spec["target"] for spec in reuse_specs],
+                    keyword_client,
+                    reuse_search_context.target_keyword_cache,
+                    on_batch_cached=lambda _batch_count, _total_count: self._persist_reuse_query_cache(
+                        session,
+                        reuse_search_context,
+                    ),
+                )
+                self._persist_reuse_query_cache(session, reuse_search_context)
         except Exception as exc:
             logger.warning("AI image generation reuse target keyword prewarm skipped: {}", str(exc)[:160])
 
@@ -1282,6 +1290,9 @@ class PPTXAgent:
         reuse_search_context=None,
         collect_candidates_only: bool = False,
     ):
+        # 复用读路径总开关兜底：即使有调用绕过上层短路，这里也直接放弃复用
+        if not getattr(self.config, "reuse_enabled", True):
+            return None
         try:
             from edupptx.materials.ai_image_asset_db import find_reusable_ai_image_asset
 
@@ -1402,7 +1413,13 @@ class PPTXAgent:
             if not assets:
                 return None
             store = AssetIngestJobStore(self._asset_ingest_job_db_path())
-            job_id = f"asset_ingest_{session.dir.name}"
+            # M-5: job_id 含资产集合内容指纹。仅用 session.dir.name 时，同一 session
+            # 重渲染会撞 PRIMARY KEY 被 INSERT OR IGNORE 静默丢弃，新素材永不入库。
+            # 加指纹后：同内容仍幂等，内容变（重渲染产出不同图）即新 job。
+            fingerprint = hashlib.sha256(
+                "\n".join(sorted(str(asset.get("asset_id") or "") for asset in assets)).encode("utf-8")
+            ).hexdigest()[:12]
+            job_id = f"asset_ingest_{session.dir.name}_{fingerprint}"
             store.enqueue(
                 job_id=job_id,
                 session_dir=session.dir,

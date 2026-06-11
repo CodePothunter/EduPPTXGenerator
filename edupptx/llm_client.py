@@ -40,8 +40,8 @@ class LLMClient:
             max_tokens=max_tokens,
         )
         if self._is_doubao:
-            if self._thinking:
-                kwargs["extra_body"] = {"thinking": {"type": self._thinking}}
+            # 豆包: 默认关闭深度思考（结构化输出场景），GEN_THINKING 可显式覆盖
+            kwargs["extra_body"] = {"thinking": {"type": self._thinking or "disabled"}}
         elif self._is_deepseek:
             extra_body: dict[str, Any] = {}
             if self._reasoning_effort:
@@ -129,8 +129,9 @@ class DoubaoResponsesClient(LLMClient):
         if getattr(self, "_web_search", False):
             kwargs["tools"] = [{"type": "web_search", "max_keyword": 3}]
 
-        if self._is_doubao and self._thinking:
-            kwargs["extra_body"] = {"thinking": {"type": self._thinking}}
+        if self._is_doubao:
+            # 豆包: 默认关闭深度思考，GEN_THINKING 可显式覆盖
+            kwargs["extra_body"] = {"thinking": {"type": self._thinking or "disabled"}}
 
         resp = self._client.responses.create(**kwargs)
         return resp.output_text or ""

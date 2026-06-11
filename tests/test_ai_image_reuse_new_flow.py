@@ -502,3 +502,15 @@ def test_candidate_policy_score_is_single_final_policy_score():
     }
 
     assert _candidate_policy_score(candidate) == 0.67
+
+
+def test_candidate_policy_score_renormalizes_when_embeddings_disabled(monkeypatch):
+    # M-1: 显式关闭 embedding 时，纯 BM25+substring 满分应归一化到 1.0，
+    # 而不是被 embedding 的 0.55 权重压到 0.45（否则 decide_reuse 几乎全拒）。
+    candidate = {"keyword_score": 1.0, "embedding_score": 0.0, "substring_score": 1.0}
+
+    monkeypatch.delenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", raising=False)
+    assert _candidate_policy_score(candidate) == 0.45  # 默认：embedding 缺失惩罚封顶
+
+    monkeypatch.setenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", "1")
+    assert _candidate_policy_score(candidate) == 1.0  # 关闭后按可用权重归一化

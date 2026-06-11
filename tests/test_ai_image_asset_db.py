@@ -534,6 +534,40 @@ def test_split_indexes_collapse_legacy_skip_groups_and_read_back_without_c00(tmp
     assert {asset["asset_id"] for asset in merged["assets"]} == {"subject"}
 
 
+def test_c00_split_index_accumulates_across_runs(tmp_path):
+    """M-4: 逐个 PPTX 入库时 C00.json 必须跨 run 累积，而非被整体覆盖丢失。"""
+
+    def _run(asset_id: str, caption: str) -> None:
+        write_ai_image_split_match_indexes(
+            {
+                "schema_version": 14,
+                "asset_root": str(tmp_path),
+                "assets": [
+                    {
+                        "asset_id": asset_id,
+                        "asset_kind": "page_image",
+                        "strict_reuse_group": "C00_strict_text_problem_skip",
+                        "original_image_path": f"skip_images/{asset_id}_original.png",
+                        "caption": caption,
+                    }
+                ],
+            },
+            tmp_path,
+        )
+
+    _run("deck1_problem", "first")
+    _run("deck2_problem", "second")
+    # 第三次重新入库 deck1（caption 更新）：current run 应覆盖同 id，旧 deck2 保留
+    _run("deck1_problem", "first_updated")
+
+    split_dir = tmp_path / image_db.STRICT_REUSE_INDEX_DIRNAME
+    payload = json.loads((split_dir / "C00_strict_text_problem_skip.json").read_text(encoding="utf-8"))
+    by_id = {a["asset_id"]: a for a in payload["assets"]}
+    assert set(by_id) == {"deck1_problem", "deck2_problem"}
+    assert by_id["deck1_problem"]["caption"] == "first_updated"  # current run wins
+    assert by_id["deck2_problem"]["caption"] == "second"  # earlier run preserved
+
+
 def test_split_indexes_write_gapless_active_group_names(tmp_path):
     index = {
         "schema_version": 14,
@@ -744,6 +778,44 @@ def test_query_embedding_cache_persists_to_configured_retrieve_dir(tmp_path, mon
 
     assert [row["asset"]["asset_id"] for row in second] == ["candidate"]
     assert second[0]["embedding_score"] == first[0]["embedding_score"]
+
+
+def test_rank_embedding_candidates_query_failure_records_status(tmp_path, monkeypatch):
+    """H-1: query-side encode failure must surface (status_sink), not silently return []."""
+    import numpy as np
+
+    image_db._EMBEDDING_QUERY_FAILURE_WARNED = False
+    target = {"asset_kind": "page_image", "caption": "cartoon apple card"}
+    asset = {
+        **_asset("candidate", "C02_generic_subject_object", prompt="cartoon apple card"),
+        "caption": "cartoon apple card",
+        "image_path": "ai_images/candidate.png",
+    }
+    embedding_index = {
+        "asset_ids": ["candidate"],
+        "vectors": np.asarray([[1.0, 0.0]], dtype="float32"),
+    }
+
+    def boom_encode(*_args, **_kwargs):
+        raise RuntimeError("model not found on this host")
+
+    monkeypatch.setattr(image_db, "_encode_embedding_texts", boom_encode)
+
+    status: dict = {"enabled": True}
+    result = image_db._rank_embedding_candidates(
+        target,
+        [asset],
+        library_root=tmp_path,
+        embedding_index=embedding_index,
+        limit=8,
+        query_embedding_cache={},
+        status_sink=status,
+    )
+
+    assert result == []
+    assert status["query_encode_failed"] is True
+    assert status["reason"] == "embedding_query_failed"
+    assert "RuntimeError" in status["query_encode_error"]
 
 
 def test_match_index_preserves_ppt_vlm_llm_comparison_fields():

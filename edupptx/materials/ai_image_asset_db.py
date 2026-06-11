@@ -286,12 +286,6 @@ KEYWORD_LED_LLM_REVIEW_MIN_EMBEDDING = 0.60
 EMBEDDING_LED_LLM_REVIEW_MIN_KEYWORD = 0.10
 EMBEDDING_LED_LLM_REVIEW_MIN_SUBSTRING = 0.10
 
-# Pre-LLM embedding floor: candidates routed to llm_review whose embedding
-# falls below this are deterministically rejected without an LLM call.
-# Calibrated on the materials_library_ppt eval: every acc/best LLM-required
-# candidate carried embedding >= 0.572, while ~61% of LLM-bound rejects
-# scored below 0.55 (often 0.0 from BM25-only acceptance paths).
-EMBEDDING_PRE_LLM_FLOOR = 0.55
 # Embedding rescue floor. Keyword-sparse candidates can fall below T_REJECT
 # even with strong semantic similarity; route those to LLM review instead of
 # silently hard-rejecting them.
@@ -1150,6 +1144,43 @@ def _c01_secondary_c03_projections(assets: list[dict[str, Any]]) -> list[dict[st
     return projections
 
 
+def _merge_skip_group_assets(existing: list[Any], current: list[Any]) -> list[dict[str, Any]]:
+    """Union skip-group (C00) assets by asset_id; current-run entries win, id-less kept.
+
+    M-4: C00 是归档/审计桶，不参与复用。读取端与构建端都会丢弃历史 C00，写端又每次
+    整体覆盖，导致逐个 PPTX 入库后 C00.json 只剩最后一批。写前按 asset_id 取并集让
+    C00 跨 run 累积。C00 无删除路径，故 union 安全。
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for asset in existing:
+        if not isinstance(asset, dict):
+            continue
+        aid = _clean_text(asset.get("asset_id"))
+        if aid:
+            merged[aid] = asset
+    extras: list[dict[str, Any]] = []
+    for asset in current:
+        if not isinstance(asset, dict):
+            continue
+        aid = _clean_text(asset.get("asset_id"))
+        if aid:
+            merged[aid] = asset
+        else:
+            extras.append(asset)
+    return [*merged.values(), *extras]
+
+
+def _read_split_group_assets(group_path: Path) -> list[dict[str, Any]]:
+    if not group_path.exists():
+        return []
+    try:
+        payload = json.loads(group_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return []
+    assets = payload.get("assets") if isinstance(payload, dict) else None
+    return assets if isinstance(assets, list) else []
+
+
 def write_ai_image_split_match_indexes(
     match_index: dict[str, Any],
     library_dir: str | Path,
@@ -1190,6 +1221,10 @@ def write_ai_image_split_match_indexes(
             group_assets.append(copied)
         if group == _GENERAL_REUSE_GROUP:
             group_assets.extend(_c01_secondary_c03_projections(split_source_assets))
+        group_path = split_dir / f"{group}.json"
+        if _is_skip_reuse_group(group):
+            # M-4: 写前与磁盘上旧 C00.json 取并集，避免跨 run 整体覆盖丢失归档。
+            group_assets = _merge_skip_group_assets(_read_split_group_assets(group_path), group_assets)
         payload = {
             "schema_version": match_index.get("schema_version", MATCH_INDEX_SCHEMA_VERSION),
             "strict_reuse_group": group,
@@ -1203,7 +1238,6 @@ def write_ai_image_split_match_indexes(
         for key in ("ppt_extractor", "keyword_builder", "keyword_built_at"):
             if key in match_index:
                 payload[key] = deepcopy(match_index[key])
-        group_path = split_dir / f"{group}.json"
         temp_path = group_path.with_name(f"{group_path.name}.tmp")
         temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         os.replace(temp_path, group_path)
@@ -1922,11 +1956,20 @@ def _candidate_policy_score(candidate: dict[str, Any], score_details: dict[str, 
     keyword_score = _candidate_score_component(candidate, details, "keyword_score", "score")
     embedding_score = _candidate_score_component(candidate, details, "embedding_score")
     substring_score = _candidate_score_component(candidate, details, "substring_score")
-    component_score = (
-        HYBRID_BM25_WEIGHT * keyword_score
-        + HYBRID_EMBEDDING_WEIGHT * embedding_score
-        + HYBRID_SUBSTRING_WEIGHT * substring_score
-    )
+    if _embedding_disabled():
+        # M-1: 显式关闭 embedding 时按可用信号权重重新归一化。否则 embedding 权重
+        # （0.55）计 0，满分只剩 0.45 < T_DIRECT，decide_reuse 几乎全拒，使
+        # EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS 这个文档化开关形同失效。
+        total_weight = HYBRID_BM25_WEIGHT + HYBRID_SUBSTRING_WEIGHT
+        component_score = (
+            HYBRID_BM25_WEIGHT * keyword_score + HYBRID_SUBSTRING_WEIGHT * substring_score
+        ) / max(total_weight, 1e-9)
+    else:
+        component_score = (
+            HYBRID_BM25_WEIGHT * keyword_score
+            + HYBRID_EMBEDDING_WEIGHT * embedding_score
+            + HYBRID_SUBSTRING_WEIGHT * substring_score
+        )
     if component_score <= 0.0:
         fallback = _candidate_score_component(candidate, details, "policy_score")
         if fallback > 0.0:
@@ -2236,50 +2279,6 @@ def _maybe_float_score(value: Any) -> float | None:
         return None
 
 
-def _embedding_pre_llm_floor_reject(
-    target: dict[str, Any],
-    score_details: dict[str, Any],
-    policy_result: dict[str, Any],
-    embedding_status: dict[str, Any] | None,
-    *,
-    floor: float = EMBEDDING_PRE_LLM_FLOOR,
-) -> dict[str, Any] | None:
-    """Reject llm_review candidates whose embedding sits below the floor.
-
-    Calibrated on materials_library_ppt: all acc/best LLM-required
-    candidates carry embedding >= 0.572, while a large share of LLM-bound
-    rejects score below 0.55 (often via BM25-only paths where embedding
-    is zero). Cutting them here avoids burning LLM budget on candidates
-    that ground-truth analysis shows have no chance of acceptance.
-
-    Skipped when embedding indexing is unavailable (every candidate's
-    embedding_score would be 0 and the floor cannot distinguish "real
-    low signal" from "no signal at all"). Backgrounds are also exempted:
-    their reuse uses background-specific scoring whose distribution is
-    not directly comparable.
-    """
-
-    if _clean_text(target.get("asset_kind")) == "background":
-        return None
-    if not _dict(embedding_status).get("enabled"):
-        return None
-    if _clean_text(policy_result.get("decision")) != "llm_review":
-        return None
-    embedding = _maybe_float_score(score_details.get("embedding_score"))
-    if embedding is None or embedding >= floor:
-        return None
-    return {
-        "decision": "reject",
-        "reason": "embedding_below_pre_llm_floor",
-        "confidence": 0.85,
-        "llm_skip_safe": True,
-        "embedding_pre_llm_floor_gate": {
-            "embedding_score": round(embedding, 4),
-            "floor": floor,
-        },
-    }
-
-
 def _review_reuse_candidate_with_vlm(
     vlm_client: Any | None,
     *,
@@ -2517,7 +2516,6 @@ def _apply_reuse_policy_to_ranked_candidates(
         candidate["policy_score"] = policy_score
         score_details["policy_score"] = policy_score
         candidate_asset = _dict(candidate.get("asset"))
-        candidate_embedding_status = _dict(candidate.get("_reuse_embedding_status") or embedding_status)
         candidate_df_ratio_lookup = candidate.get("_reuse_df_ratio_lookup")
         if not isinstance(candidate_df_ratio_lookup, dict):
             candidate_df_ratio_lookup = df_ratio_lookup
@@ -2538,17 +2536,6 @@ def _apply_reuse_policy_to_ranked_candidates(
             )
             if consistency_reject is not None:
                 policy_result = {**policy_result, **consistency_reject}
-        # Pre-LLM embedding floor: drop llm_review candidates that no
-        # acc/best ground-truth example reaches. See
-        # _embedding_pre_llm_floor_reject for calibration notes.
-        floor_reject = _embedding_pre_llm_floor_reject(
-            target,
-            score_details,
-            policy_result,
-            candidate_embedding_status,
-        )
-        if floor_reject is not None:
-            policy_result = {**policy_result, **floor_reject}
         pre_records.append({
             "candidate": candidate,
             "candidate_asset": candidate_asset,
@@ -3253,9 +3240,6 @@ def find_reusable_ai_image_asset(
             "llm_reuse_review_performed": _match_llm_reuse_review_performed(match) if match else False,
             "strict_reuse_occupancy": match.get("strict_reuse_occupancy") if match else None,
         }
-        if reason == "target_metadata_unknown":
-            debug_record["decision"]["unknown_fields"] = list(debug_record.get("unknown_metadata_fields") or [])
-            debug_record["decision"]["fallback"] = "ai_generation"
         _append_reuse_debug_record(
             debug_path,
             _reuse_debug_record_for_mode(debug_record, mode=reuse_debug_mode, match=match),
@@ -3277,20 +3261,6 @@ def find_reusable_ai_image_asset(
 
     target = _enrich_reuse_target_keywords_once(target, keyword_client, target_keyword_cache)
     target = _normalize_asset_for_match(target, for_target=True) or target
-    unknown_fields = _target_unknown_fields_for_reuse(target)
-    if unknown_fields:
-        debug_record["target"] = _reuse_debug_asset_payload(target)
-        debug_record["unknown_metadata_fields"] = unknown_fields
-        if _collect_candidates_only:
-            return {
-                "_reuse_candidate_collection": True,
-                "target": target,
-                "threshold": debug_record.get("threshold_used"),
-                "candidates": [],
-                "debug_record": debug_record,
-                "empty_reason": "target_metadata_unknown",
-            }
-        return finish("target_metadata_unknown")
     if _is_skip_reuse_group(target.get("strict_reuse_group")):
         debug_record["target"] = _reuse_debug_asset_payload(target)
         if _collect_candidates_only:
@@ -3399,6 +3369,7 @@ def find_reusable_ai_image_asset(
         query_embedding_cache_dir=(
             reuse_search_context.query_embedding_cache_dir if reuse_search_context else None
         ),
+        status_sink=embedding_status if isinstance(embedding_status, dict) else None,
     )
     substring_ranked_candidates = _rank_substring_candidates(
         target,
@@ -3435,11 +3406,10 @@ def find_reusable_ai_image_asset(
     debug_record["ranked_candidates"] = [
         _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in ranked_candidates
     ]
-    candidates = [
-        candidate
-        for candidate in ranked_candidates
-        if _candidate_passes_reuse_threshold(candidate, threshold, target=target)
-    ]
+    # 三档检索阈值（loose/medium/strict）当前不在此处闸门：真实裁决在
+    # decide_reuse(policy_score, T_DIRECT=0.75/T_REJECT=0.35) + LLM review(0.60)。
+    # 阈值真实恢复属行为变更，需 goldset 验证，留待后续调参阶段。
+    candidates = list(ranked_candidates)
     debug_record["policy_input_candidates"] = [
         _reuse_debug_candidate_payload(candidate, threshold=threshold) for candidate in candidates
     ]
@@ -6186,6 +6156,9 @@ def _write_query_embedding_disk_cache(
         )
 
 
+_EMBEDDING_QUERY_FAILURE_WARNED = False
+
+
 def _rank_embedding_candidates(
     target: dict[str, Any],
     assets: list[Any],
@@ -6195,6 +6168,7 @@ def _rank_embedding_candidates(
     limit: int,
     query_embedding_cache: dict[str, Any] | None = None,
     query_embedding_cache_dir: str | Path | None = None,
+    status_sink: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     vectors = embedding_index.get("vectors")
     asset_ids = embedding_index.get("asset_ids")
@@ -6255,7 +6229,25 @@ def _rank_embedding_candidates(
                 query_embedding_cache,
                 model_name=model_name,
             )
-    except Exception:
+    except Exception as exc:
+        # H-1: query-side embedding 编码/模型加载失败不能静默吞掉——否则复用会
+        # 无声退化为几乎全拒，状态却仍报 enabled。大声记录（进程级 once-guard
+        # 防刷屏）并把失败信号写进 embedding_status，让运维在 debug 输出可见。
+        global _EMBEDDING_QUERY_FAILURE_WARNED
+        message = (
+            f"AI image reuse embedding query encode FAILED ({type(exc).__name__}: "
+            f"{str(exc)[:200]}); reuse degrades to text-only recall. "
+            f"Check EDUPPTX_AI_IMAGE_EMBEDDING_MODEL (model='{_embedding_model_name()}')."
+        )
+        if not _EMBEDDING_QUERY_FAILURE_WARNED:
+            PROGRESS_LOGGER.warning(message)
+            _EMBEDDING_QUERY_FAILURE_WARNED = True
+        else:
+            PROGRESS_LOGGER.debug(message)
+        if status_sink is not None:
+            status_sink["query_encode_failed"] = True
+            status_sink["query_encode_error"] = f"{type(exc).__name__}: {str(exc)[:200]}"
+            status_sink.setdefault("reason", "embedding_query_failed")
         return []
 
     assets_by_id = {
@@ -6537,8 +6529,6 @@ def _reuse_static_filter_reject_reason(target: dict[str, Any], candidate: dict[s
     if target_group and candidate_group and target_group != candidate_group:
         return "strict_reuse_group_mismatch"
     subject_decision = _subject_scope_decision(target, candidate)
-    if _candidate_unknown_fields_for_reuse(candidate, subject_decision):
-        return "candidate_metadata_unknown"
     if not subject_decision["compatible"]:
         return "subject_mismatch"
     return ""
@@ -6607,9 +6597,6 @@ def _reuse_hard_filter_reject_reason(target: dict[str, Any], candidate: dict[str
         return "strict_reuse_group_mismatch"
 
     subject_decision = _subject_scope_decision(target, candidate)
-    candidate_unknown_fields = _candidate_unknown_fields_for_reuse(candidate, subject_decision)
-    if candidate_unknown_fields:
-        return "candidate_metadata_unknown"
 
     penalty = _aspect_ratio_penalty(target, candidate)
     if penalty < 0:
@@ -7428,15 +7415,6 @@ def _is_medium_embedding_review_candidate(
         policies.append(normalize_reuse_policy_fields(_dict(target)))
     levels = {_clean_text(policy.get("reuse_level")) for policy in policies}
     return "strict" not in levels and bool(levels & {"loose", "medium"})
-
-
-def _candidate_passes_reuse_threshold(
-    candidate: dict[str, Any],
-    threshold: float,
-    *,
-    target: dict[str, Any] | None = None,
-) -> bool:
-    return True
 
 
 def _reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: float | None) -> float:

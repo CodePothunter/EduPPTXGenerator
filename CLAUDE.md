@@ -79,11 +79,19 @@ edupptx/
   materials/
     image_provider.py         # 多源图片获取 (Pixabay/Unsplash/Seedream)
     background_generator.py   # Phase 2: Seedream 统一背景生成
-    backgrounds.py            # Pillow 程序化背景生成 (渐变/几何)
     seedream.py               # Seedream AI 文生图 provider
     pixabay.py                # Pixabay 图片搜索
     unsplash.py               # Unsplash 图片搜索
     icons.py                  # 255 个 Lucide SVG 图标
+    # ── AI 图片素材复用库 (v3) ──
+    ai_image_asset_db.py      # 复用核心: 建库/路由/三路召回/RRF/policy/review 编排
+    reuse_policy.py           # policy 阈值单一来源 (T_DIRECT=0.75/T_REJECT=0.35)
+    strict_reuse_classifier.py# C00-C03 分类 + C01→C03 secondary projection
+    caption_rules.py / general_rules.py / vlm_metadata_rules.py  # 建库与 plan 共用规则
+    ppt_dedupe.py             # 入库去重 (sha256 + pHash + 文本相似度)
+    asset_ingest_job_store.py # 入库 SQLite 队列 (WAL+租约)
+    vlm_asset_enricher.py     # VLM 入库审查 (默认关闭, 未充分调试)
+    reuse_observability.py / reuse_query_cache.py
   postprocess/
     svg_validator.py          # SVG 自动修复 (viewBox/字体/边界/重叠)
     svg_sanitizer.py          # PPT 兼容清理 (去 script/事件)
@@ -132,6 +140,14 @@ VISION_GEN_APIKEY=image-api-key
 
 - **`EDUPPTX_VISUAL_PLANNER_FORMAT`**: `json`（默认旧路径）| `design_md`（新 8 段 DESIGN.md 路径，写入 `session_dir/DESIGN.md`）
 - **`EDUPPTX_LINT_STRICT`**: `0`（默认）| `1`（contrast warning 升级为 error）
+- **`EDUPPTX_DISABLE_AI_IMAGE_REUSE`**: `0`（默认开启复用）| `1`（总开关关闭复用读路径，回到每次新生成、跳过复用专用 LLM 调用）
+- **`REUSE_LIBRARY_DIRS`**: 复用检索库目录列表（建议绝对路径；默认 `[LIBRARY_DIR, ./materials_library_ppt]`）
+- **`EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS`**: `0`（默认）| `1`（仅 BM25+substring，policy_score 按可用权重归一化）
+- 完整复用/入库/题库相关变量见 `README.md` 与 `.env.example`
+
+### AI 图片素材复用库 (v3)
+
+Phase 2（背景）与 Phase 2b（素材）在生成前先尝试从库复用：三路混合检索（BM25+embedding+substring）→ RRF → policy 阈值 → LLM/VLM review；命中则复用，否则回落生成。生成后 Phase 2c 把本次新图异步入库（后台 SQLite 队列 worker，不阻塞主路径）。C00-C03 四类教学语义分类，C00（精确文字/题目）跳过复用仅归档。详见复用核心模块与 `docs/handover/`（实习生交接文档）。
 
 ## 编码约定
 
