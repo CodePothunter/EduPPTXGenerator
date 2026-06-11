@@ -28,6 +28,16 @@ BUCKET_RULES = {
     "background": {"visual_threshold": 8, "text_threshold": 0.52, "require_asset_kind": False},
 }
 
+# dHash 汉明距离 <= 此值视为"高置信同图"（纯 resize→≈0，重编码→0-2）。此时无需
+# 文本佐证即合并——治"同一图片不同尺寸重复入库"，其 VLM caption 常不同（M-3）。
+# 灰区（此值 < distance <= visual_threshold）仍要求文本相似度，避免误并视觉相似的不同图。
+VISUAL_IDENTITY_DISTANCE = 2
+
+# dHash 是灰度梯度哈希、对颜色不敏感：纯色/低结构图都哈希成全 0，会被误判同图。
+# 故同一性短路额外要求平均色接近（L1 距离）——同图 resize/重编码 平均色≈不变，
+# 不同纯色块平均色差很大，借此区分。
+COLOR_IDENTITY_TOLERANCE = 24
+
 
 @dataclass
 class PptDedupeInfo:
@@ -42,6 +52,7 @@ class PptDedupeInfo:
     image_exists: bool
     file_sha256: str = ""
     perceptual_hash: str = ""
+    color_signature: tuple[int, int, int] = (0, 0, 0)
     width: int = 0
     height: int = 0
     file_size: int = 0
@@ -257,6 +268,7 @@ def _asset_info(root: Path, bucket: str, source_index: str, asset: dict[str, Any
         with Image.open(resolved) as img:
             info.width, info.height = img.size
         info.perceptual_hash = _perceptual_hash(resolved)
+        info.color_signature = _color_signature(resolved)
     except Exception:
         info.image_exists = False
     return info
@@ -313,7 +325,14 @@ def _visual_pair_reason(
     if distance > int(rule["visual_threshold"]):
         return None
     text_score = _text_similarity(left.asset, right.asset)
-    if text_score < float(rule["text_threshold"]):
+    # 视觉证据按强度分级：距离极小（<=VISUAL_IDENTITY_DISTANCE）且平均色接近即高置信
+    # 同图，单凭视觉合并（颜色门防 dHash 颜色盲点误并纯色块）；灰区仍要求文本佐证。
+    color_close = _color_distance(left.color_signature, right.color_signature) <= COLOR_IDENTITY_TOLERANCE
+    if distance <= VISUAL_IDENTITY_DISTANCE and color_close:
+        reason = "visual_identity_near_duplicate"
+    elif text_score >= float(rule["text_threshold"]):
+        reason = "visual_and_text_near_duplicate"
+    else:
         return None
     return {
         "bucket": bucket,
@@ -321,7 +340,7 @@ def _visual_pair_reason(
         "right": right.asset_id,
         "distance": distance,
         "text_similarity": round(text_score, 4),
-        "reason": "visual_and_text_near_duplicate",
+        "reason": reason,
     }
 
 
@@ -367,10 +386,19 @@ def _plan_group(
         for pair in (visual_pairs or [])
         if _clean_text(pair.get("left")) in ids and _clean_text(pair.get("right")) in ids
     ]
+    group_reason = reason
+    if relevant_pairs:
+        # 让报告区分"纯视觉同一性合并"与"视觉+文本佐证合并"，便于 dry-run 审阅。
+        pair_reasons = {_clean_text(pair.get("reason")) for pair in relevant_pairs}
+        group_reason = (
+            "visual_identity_near_duplicate"
+            if pair_reasons == {"visual_identity_near_duplicate"}
+            else "visual_and_text_near_duplicate"
+        )
     return {
         "bucket": bucket,
         "status": "mergeable",
-        "reason": reason,
+        "reason": group_reason,
         "kept": kept.asset_id,
         "removed": [info.asset_id for info in removed],
         "visual_distances": [pair["distance"] for pair in relevant_pairs],
@@ -468,6 +496,25 @@ def _perceptual_hash(path: Path) -> str:
         for x in range(8):
             bits.append("1" if pixels[row + x] > pixels[row + x + 1] else "0")
     return f"{int(''.join(bits), 2):016x}"
+
+
+def _color_signature(path: Path) -> tuple[int, int, int]:
+    """图像（合成到白底后）的平均 RGB，用于补足 dHash 的颜色盲点。"""
+    with Image.open(path) as img:
+        rgba = img.convert("RGBA")
+        background = Image.new("RGBA", rgba.size, (255, 255, 255, 255))
+        background.alpha_composite(rgba)
+        small = background.convert("RGB").resize((8, 8), Image.LANCZOS)
+        pixels = list(small.getdata())
+    count = len(pixels) or 1
+    r = sum(p[0] for p in pixels) // count
+    g = sum(p[1] for p in pixels) // count
+    b = sum(p[2] for p in pixels) // count
+    return (r, g, b)
+
+
+def _color_distance(left: tuple[int, int, int], right: tuple[int, int, int]) -> int:
+    return sum(abs(int(a) - int(b)) for a, b in zip(left, right))
 
 
 def _delete_asset_files(root: Path, asset: dict[str, Any]) -> list[str]:
