@@ -89,6 +89,7 @@ edupptx/
     strict_reuse_classifier.py# C00-C03 分类 + C01→C03 secondary projection
     caption_rules.py / general_rules.py / vlm_metadata_rules.py  # 建库与 plan 共用规则
     ppt_dedupe.py             # 入库去重 (sha256 + pHash + 文本相似度)
+    asset_store.py            # Phase B2: 复用库 sqlite-vec 后端 (library.db, EDUPPTX_REUSE_BACKEND=sqlite)
     asset_ingest_job_store.py # 入库 SQLite 队列 (WAL+租约)
     vlm_asset_enricher.py     # VLM 入库审查 (默认关闭, 未充分调试)
     reuse_observability.py / reuse_query_cache.py
@@ -141,6 +142,7 @@ VISION_GEN_APIKEY=image-api-key
 - **`EDUPPTX_VISUAL_PLANNER_FORMAT`**: `json`（默认旧路径）| `design_md`（新 8 段 DESIGN.md 路径，写入 `session_dir/DESIGN.md`）
 - **`EDUPPTX_LINT_STRICT`**: `0`（默认）| `1`（contrast warning 升级为 error）
 - **`EDUPPTX_DISABLE_AI_IMAGE_REUSE`**: `0`（默认开启复用）| `1`（总开关关闭复用读路径，回到每次新生成、跳过复用专用 LLM 调用）
+- **`EDUPPTX_REUSE_BACKEND`**: `json`（默认，split index + npz）| `sqlite`（单文件 `library.db`，sqlite-vec；需先 `edupptx assets migrate`，切默认前做 goldset A/B）
 - **`REUSE_LIBRARY_DIRS`**: 复用检索库目录列表（建议绝对路径；默认 `[LIBRARY_DIR, ./materials_library_ppt]`）
 - **`EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS`**: `0`（默认）| `1`（仅 BM25+substring，policy_score 按可用权重归一化）
 - 完整复用/入库/题库相关变量见 `README.md` 与 `.env.example`

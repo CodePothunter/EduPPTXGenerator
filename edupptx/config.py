@@ -52,6 +52,8 @@ class Config:
 
     # AI image reuse read path (set EDUPPTX_DISABLE_AI_IMAGE_REUSE=1 to roll back to no-reuse)
     reuse_enabled: bool = True
+    # Reuse library storage backend: "json" (split index + npz) | "sqlite" (library.db). Default json.
+    reuse_backend: str = "json"
     # Asset library background ingest
     asset_library_ingest_enabled: bool = True
     asset_library_vlm_review: bool = False
@@ -119,6 +121,7 @@ class Config:
             output_dir=Path(os.getenv("OUTPUT_DIR", "./output")),
             styles_dir=pkg_dir / "design" / "style_templates",
             reuse_enabled=not _env_bool("EDUPPTX_DISABLE_AI_IMAGE_REUSE", False),
+            reuse_backend=(os.getenv("EDUPPTX_REUSE_BACKEND", "json").strip().lower() or "json"),
             asset_library_vlm_review=_env_bool("EDUPPTX_ASSET_LIBRARY_VLM_REVIEW", False),
             asset_ingest_job_db=(
                 Path(os.getenv("EDUPPTX_ASSET_INGEST_JOB_DB", ""))
