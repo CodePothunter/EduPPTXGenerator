@@ -2445,28 +2445,36 @@ def _review_reuse_candidate_with_vlm(
     }
 
 
-def _r5_session_vlm_budget(near_miss_vlm_state: dict[str, Any] | None) -> tuple[bool, int]:
-    """Return ``(has_budget, used_count)`` for the R5 VLM verification.
+# R5 near-miss VLM budget is shared across the policy ThreadPoolExecutor
+# workers. A split check-then-act (read budget, run VLM, increment) lets two
+# workers both pass the check before either increments, overshooting
+# R5_MAX_VLM_CALLS_PER_SESSION. Reserve atomically up front under one lock so
+# the budget is a hard ceiling regardless of worker count.
+_R5_VLM_BUDGET_LOCK = threading.Lock()
 
-    Uses a dedicated shared dict — *not* ``reuse_session_state`` — because
-    the policy phase often runs in parallel with ``reuse_session_state``
-    set to ``None`` (to suppress occupancy races during scoring), but the
-    near-miss VLM budget must still be coordinated across the parallel
-    workers. A ``None`` dict here truly means "no coordination available",
-    which conservatively denies the budget.
+
+def _r5_try_reserve_session_vlm_budget(near_miss_vlm_state: dict[str, Any] | None) -> bool:
+    """Atomically reserve one VLM call from the session budget.
+
+    Returns ``True`` and increments the shared counter iff budget remained.
+    Uses a dedicated shared dict — *not* ``reuse_session_state`` — because the
+    policy phase often runs with ``reuse_session_state`` set to ``None`` (to
+    suppress occupancy races during scoring), but the near-miss VLM budget must
+    still be coordinated across the parallel workers. A ``None`` dict here truly
+    means "no coordination available", which conservatively denies the budget.
+
+    The reservation happens before the VLM call (not after), so a failed/raising
+    call still consumes its slot — the correct semantics for a cost ceiling.
     """
 
     if near_miss_vlm_state is None:
-        return False, 0
-    used = int(near_miss_vlm_state.get(R5_SESSION_VLM_COUNT_KEY) or 0)
-    return used < R5_MAX_VLM_CALLS_PER_SESSION, used
-
-
-def _r5_consume_session_vlm_budget(near_miss_vlm_state: dict[str, Any] | None) -> None:
-    if near_miss_vlm_state is None:
-        return
-    used = int(near_miss_vlm_state.get(R5_SESSION_VLM_COUNT_KEY) or 0)
-    near_miss_vlm_state[R5_SESSION_VLM_COUNT_KEY] = used + 1
+        return False
+    with _R5_VLM_BUDGET_LOCK:
+        used = int(near_miss_vlm_state.get(R5_SESSION_VLM_COUNT_KEY) or 0)
+        if used >= R5_MAX_VLM_CALLS_PER_SESSION:
+            return False
+        near_miss_vlm_state[R5_SESSION_VLM_COUNT_KEY] = used + 1
+        return True
 
 
 def _review_score_value(score_details: dict[str, Any], key: str) -> float:
@@ -2830,8 +2838,7 @@ def _apply_reuse_policy_to_ranked_candidates(
                 best_near_miss_gap = gap
                 best_near_miss_index = index
         if best_near_miss_index is not None:
-            has_budget, used = _r5_session_vlm_budget(near_miss_vlm_state)
-            if has_budget:
+            if _r5_try_reserve_session_vlm_budget(near_miss_vlm_state):
                 record = pre_records[best_near_miss_index]
                 candidate = record["candidate"]
                 policy_result = candidate.get("reuse_policy") or {}
@@ -4359,24 +4366,39 @@ def _new_reuse_debug_record(
     }
 
 
+# The reuse-debug log is appended from per-slide policy worker threads (the
+# `_phase2_materials` ThreadPoolExecutor). Each append is a read-modify-write
+# of one shared JSON file, so concurrent writers without coordination silently
+# lose records (last-writer-wins on the in-memory `queries` list) and clobber a
+# shared `.tmp` staging file (interleaved writes / FileNotFoundError on
+# os.replace). Serialize the whole RMW under one lock and stage to a per-thread
+# temp name so an interrupted writer can never corrupt a sibling's staging file.
+_REUSE_DEBUG_LOCK = threading.Lock()
+
+
 def _append_reuse_debug_record(path: str | Path | None, record: dict[str, Any]) -> None:
     if path is None or not record:
         return
     debug_path = Path(path).expanduser()
-    debug_path.parent.mkdir(parents=True, exist_ok=True)
-    existing = _read_json_if_exists(debug_path)
-    queries = existing.get("queries") if isinstance(existing, dict) else None
-    if not isinstance(queries, list):
-        queries = []
-    queries.append(record)
-    payload = {
-        "schema_version": 1,
-        "updated_at": datetime.now(timezone.utc).isoformat(),
-        "queries": queries,
-    }
-    temp_path = debug_path.with_name(f"{debug_path.name}.tmp")
-    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-    os.replace(temp_path, debug_path)
+    with _REUSE_DEBUG_LOCK:
+        debug_path.parent.mkdir(parents=True, exist_ok=True)
+        existing = _read_json_if_exists(debug_path)
+        queries = existing.get("queries") if isinstance(existing, dict) else None
+        if not isinstance(queries, list):
+            queries = []
+        queries.append(record)
+        payload = {
+            "schema_version": 1,
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "queries": queries,
+        }
+        temp_path = debug_path.with_name(
+            f"{debug_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
+        )
+        temp_path.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        os.replace(temp_path, debug_path)
 
 
 def _normalize_reuse_debug_mode(value: Any) -> str:

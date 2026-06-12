@@ -4,6 +4,7 @@ from pathlib import Path
 from edupptx.models import PagePlan, PlanningDraft, PlanningMeta
 from edupptx.planning.content_planner import finalize_reveal_pages
 from edupptx.planning.exercise_plan_binder import (
+    ExerciseRecord,
     bind_exercises_to_draft,
     load_exercise_bank,
     select_exercise_candidates,
@@ -125,3 +126,85 @@ def test_reveal_page_uses_database_answer_from_exercise_payload(tmp_path):
     reveal_text = "\n".join(str(item) for item in reveal_page.content_points)
     assert "答案：7/8" in reveal_text
     assert "计算 3/4 + 1/8" in reveal_text
+
+
+def test_bind_skips_hallucinated_ref_without_crashing(tmp_path):
+    # M-15: a ref the LLM invented (not in the bank) must degrade to a warning
+    # + skip, not crash the whole generation. The valid ref still binds.
+    records = load_exercise_bank(_write_bank(tmp_path))
+    draft = PlanningDraft(
+        meta=PlanningMeta(topic="八年级物理电路", subject="物理", grade="八年级"),
+        pages=[
+            PagePlan(
+                page_number=1,
+                page_type="exercise",
+                title="综合运用",
+                exercise_refs=["ex_img", "ex_ghost"],
+            )
+        ],
+    )
+
+    result = bind_exercises_to_draft(draft, records, session_dir=tmp_path / "session")
+
+    assert result.bound_count == 1
+    assert any("ex_ghost" in w for w in result.warnings)
+    # The dropped ref is pruned from the plan so nothing dangles.
+    assert draft.pages[0].exercise_refs == ["ex_img"]
+
+
+def test_bind_skips_answerless_record(tmp_path):
+    # M-15: a record with no answer cannot drive a reveal page -> skip + warn.
+    records = [
+        ExerciseRecord(
+            exercise_id="ex_noanswer",
+            category="A",
+            stem="无答案题目。",
+            subject="数学",
+            grade="五年级",
+            answer="",
+        )
+    ]
+    draft = PlanningDraft(
+        meta=PlanningMeta(topic="数学", subject="数学", grade="五年级"),
+        pages=[
+            PagePlan(
+                page_number=1,
+                page_type="exercise",
+                title="练一练",
+                exercise_refs=["ex_noanswer"],
+            )
+        ],
+    )
+
+    result = bind_exercises_to_draft(draft, records, session_dir=tmp_path / "session")
+
+    assert result.bound_count == 0
+    assert any("ex_noanswer" in w for w in result.warnings)
+    assert draft.pages[0].exercise_refs == []
+
+
+def test_bind_skips_missing_image_keeps_exercise(tmp_path):
+    # M-15: a missing image file drops just that asset, keeping the exercise's
+    # text bound — it must not abort the page or the pipeline.
+    records = load_exercise_bank(_write_bank(tmp_path))
+    (tmp_path / "circuit.png").unlink()  # remove the backing image after load
+    draft = PlanningDraft(
+        meta=PlanningMeta(topic="八年级物理电路", subject="物理", grade="八年级"),
+        pages=[
+            PagePlan(
+                page_number=1,
+                page_type="exercise",
+                title="综合运用",
+                exercise_refs=["ex_img"],
+            )
+        ],
+    )
+
+    result = bind_exercises_to_draft(draft, records, session_dir=tmp_path / "session")
+
+    assert result.bound_count == 1  # exercise still bound (text intact)
+    assert any("img_001" in w for w in result.warnings)
+    page = draft.pages[0]
+    assert page.exercise_payloads[0]["exercise_id"] == "ex_img"
+    # No exercise_asset image need survives since the file was gone.
+    assert all(img.source != "exercise_asset" for img in page.material_needs.images)
