@@ -294,7 +294,6 @@ TEXT_OVERLAP_REVIEW_THRESHOLD = 0.15
 TEXT_OVERLAP_EMBEDDING_THRESHOLD = 0.78
 
 CONTENT_PROMPT_REUSE_WEIGHT = 0.85
-ROUTE_REUSE_WEIGHT = 0.05
 ASPECT_REUSE_WEIGHT = 0.05
 LIGHT_CONTEXT_REUSE_WEIGHT = 0.05
 BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT = 0.85
@@ -6489,12 +6488,17 @@ def _rank_hybrid_reuse_candidates(
         candidate["score_details"] = _debug_score_details(score_details)
         results.append(candidate)
 
+    # R2: ranking is driven by policy_score (the single adjudication score), with
+    # keyword/embedding as deterministic tie-breakers. The RRF-normalized hybrid_score
+    # was only a 4th tie-breaker (the decision tier already bypasses it via policy_score,
+    # see the "hybrid_score ... unusable" note in _apply_reuse_policy_to_ranked_candidates),
+    # so it is dropped from ranking. rrf_score/hybrid_score remain as audit-only metrics.
     results.sort(
         key=lambda item: (
             float(item.get("policy_score") or 0.0),
             float(item.get("keyword_score") or 0.0),
             float(item.get("embedding_score") or 0.0),
-            float(item.get("hybrid_score") or 0.0),
+            float(item.get("substring_score") or 0.0),
         ),
         reverse=True,
     )
@@ -6554,23 +6558,6 @@ def _reuse_size_distance(target: dict[str, Any], candidate: dict[str, Any]) -> f
     if _aspect_ratio_penalty(target, candidate) < 0:
         return float("inf")
     return _aspect_ratio_loss(target, candidate)
-
-
-def _prefer_size_close_tier_item(tier_items: list[dict[str, Any]]) -> dict[str, Any]:
-    if not tier_items:
-        return {}
-    top_score = float(tier_items[0].get("keyword_score") or 0.0)
-    close_items = [
-        item for item in tier_items
-        if top_score - float(item.get("keyword_score") or 0.0) <= T_GAP
-    ]
-    return min(
-        close_items or tier_items,
-        key=lambda item: (
-            float(item.get("size_distance") or 0.0),
-            -float(item.get("keyword_score") or 0.0),
-        ),
-    )
 
 
 def _reuse_static_filter_reject_reason(target: dict[str, Any], candidate: dict[str, Any]) -> str:
@@ -6981,40 +6968,6 @@ def _weighted_hybrid_signal(
         total_weight += HYBRID_SUBSTRING_WEIGHT
         total_score += HYBRID_SUBSTRING_WEIGHT * _optional_score(substring_score)
     return total_score / max(total_weight, 1e-9)
-
-
-def _route_score_details(target: dict[str, Any], candidate: dict[str, Any]) -> dict[str, Any]:
-    target_page_type = _asset_page_type(target)
-    candidate_page_type = _asset_page_type(candidate)
-    target_grade_family = _route_grade_family(target)
-    candidate_grade_family = _route_grade_family(candidate)
-
-    page_type_match = _exact_route_match(target_page_type, candidate_page_type)
-    grade_family_match = _exact_route_match(target_grade_family, candidate_grade_family)
-    route_hits: list[dict[str, str]] = []
-    if page_type_match:
-        route_hits.append({"field": "page_type", "target": target_page_type, "candidate": candidate_page_type})
-    if grade_family_match:
-        route_hits.append(
-            {"field": "grade_family", "target": target_grade_family, "candidate": candidate_grade_family}
-        )
-
-    return {
-        "route_score": 0.55 * page_type_match + 0.45 * grade_family_match,
-        "route_hits": route_hits,
-        "route_page_type_match": page_type_match,
-        "route_grade_family_match": grade_family_match,
-        "target_route_page_type": target_page_type,
-        "candidate_route_page_type": candidate_page_type,
-        "target_route_grade_family": target_grade_family,
-        "candidate_route_grade_family": candidate_grade_family,
-    }
-
-
-def _exact_route_match(target_value: str, candidate_value: str) -> float:
-    target_value = _clean_text(target_value)
-    candidate_value = _clean_text(candidate_value)
-    return 1.0 if target_value and candidate_value and target_value == candidate_value else 0.0
 
 
 def _semantic_terms(
