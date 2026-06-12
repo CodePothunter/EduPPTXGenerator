@@ -1884,22 +1884,12 @@ def _normalize_reuse_library_dirs(
     return roots or [Path("materials_library").resolve()]
 
 
-def _load_reuse_library_for_search(
-    library_root: Path,
-    reuse_search_context: ReuseSearchContext | None,
-) -> dict[str, Any]:
-    cache_key = str(library_root)
-    if reuse_search_context is not None:
-        with reuse_search_context.cache_lock:
-            cached = reuse_search_context.library_cache.get(cache_key)
-            if isinstance(cached, dict):
-                return cached
-
+def _build_reuse_library_payload(library_root: Path) -> dict[str, Any]:
     db_path = library_root / DEFAULT_DB_FILENAME
     db = _read_existing_db(db_path)
     index, match_index_path = _read_match_index_or_build(library_root, db)
     embedding_index, embedding_status = _read_ai_image_embedding_index(library_root)
-    loaded = {
+    return {
         "library_root": library_root,
         "db_path": db_path,
         "db": db,
@@ -1908,13 +1898,30 @@ def _load_reuse_library_for_search(
         "embedding_index": embedding_index,
         "embedding_status": embedding_status,
     }
-    if reuse_search_context is not None:
-        with reuse_search_context.cache_lock:
-            cached = reuse_search_context.library_cache.get(cache_key)
-            if isinstance(cached, dict):
-                return cached
-            reuse_search_context.library_cache[cache_key] = loaded
-    return loaded
+
+
+def _load_reuse_library_for_search(
+    library_root: Path,
+    reuse_search_context: ReuseSearchContext | None,
+) -> dict[str, Any]:
+    if reuse_search_context is None:
+        return _build_reuse_library_payload(library_root)
+
+    # Single-flight (M-14): build INSIDE the lock so concurrent first-readers
+    # don't each rebuild the shared on-disk index. The previous double-checked
+    # form ran the build OUTSIDE the lock, so a fan-out of slides hitting a
+    # stale library all rebuilt the embedding sidecar in parallel. On-disk
+    # writes on the build path are atomic, so this only removes redundant work,
+    # never corruption. cache_lock is an RLock and the build never re-acquires
+    # it, so holding it across the build cannot deadlock.
+    cache_key = str(library_root)
+    with reuse_search_context.cache_lock:
+        cached = reuse_search_context.library_cache.get(cache_key)
+        if isinstance(cached, dict):
+            return cached
+        loaded = _build_reuse_library_payload(library_root)
+        reuse_search_context.library_cache[cache_key] = loaded
+        return loaded
 
 
 def _route_match_index_for_target_cached(
@@ -3425,6 +3432,7 @@ def find_reusable_ai_image_asset(
         substring_ranked=substring_ranked_candidates,
         threshold=threshold,
         limit=candidate_limit,
+        score_details_cache=score_details_cache,
     )
     for candidate in ranked_candidates:
         candidate["reuse_audit"] = _reuse_audit_payload(
@@ -6415,6 +6423,7 @@ def _rank_hybrid_reuse_candidates(
     substring_ranked: list[dict[str, Any]],
     threshold: float,
     limit: int,
+    score_details_cache: dict[int, dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     candidate_by_id: dict[str, dict[str, Any]] = {}
     rrf_scores: dict[str, float] = {}
@@ -6487,7 +6496,14 @@ def _rank_hybrid_reuse_candidates(
             candidate["keyword_score"] = round(float(score_details.get("score") or 0.0), 4)
             candidate["background_reuse_score"] = candidate["keyword_score"]
         else:
-            score_details = _score_reuse_candidate_details(target, asset)
+            # Reuse the first-pass score (cached by _rank_reuse_candidates) instead
+            # of recomputing it — _score_reuse_candidate_details is deterministic, so
+            # the cache value is identical. Copy before the .update() below so the
+            # shared cached dict is never mutated. A cache miss falls back to a fresh
+            # compute (the prior behaviour), so this is purely a redundant-work cut.
+            score_details = dict(
+                _cached_base_reuse_score_details(target, asset, score_details_cache)
+            )
             bm25_score = float(score_details.get("score") or 0.0)
             candidate["keyword_score"] = round(max(float(candidate.get("keyword_score") or 0.0), bm25_score), 4)
         candidate["rrf_score"] = round(rrf_scores.get(asset_id, 0.0), 6)
