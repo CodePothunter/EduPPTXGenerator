@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -102,25 +103,34 @@ class AssetStore:
     def __init__(self, library_dir: str | Path):
         self.library_root = Path(library_dir).expanduser().resolve()
         self.db_path = self.library_root / DEFAULT_DB_FILENAME
-        self._conn: sqlite3.Connection | None = None
-        self._vec_loaded = False
+        # Per-thread connections: the AssetStore instance is cached and shared across
+        # the retrieval ThreadPoolExecutor, but a sqlite3.Connection may only be used
+        # in its creating thread. WAL lets each thread read concurrently.
+        self._local = threading.local()
 
     # ---- connection / extension --------------------------------------------
     def connect(self) -> sqlite3.Connection:
-        if self._conn is not None:
-            return self._conn
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            return conn
         self.library_root.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(str(self.db_path), timeout=5.0)
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")
         conn.execute("PRAGMA foreign_keys=ON")
-        self._conn = conn
+        self._local.conn = conn
+        self._local.vec_loaded = False
+        self._load_vec(conn)  # load sqlite-vec on this thread's connection
         return conn
 
+    @property
+    def _vec_loaded(self) -> bool:
+        return bool(getattr(self._local, "vec_loaded", False))
+
     def _load_vec(self, conn: sqlite3.Connection) -> bool:
-        """Load sqlite-vec. On failure, log loudly (H-1 spirit) and degrade."""
-        if self._vec_loaded:
+        """Load sqlite-vec on this thread's connection. On failure, log loudly + degrade."""
+        if getattr(self._local, "vec_loaded", False):
             return True
         try:
             import sqlite_vec
@@ -128,7 +138,7 @@ class AssetStore:
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
             conn.enable_load_extension(False)
-            self._vec_loaded = True
+            self._local.vec_loaded = True
             return True
         except Exception as exc:
             logger.warning(
@@ -140,10 +150,11 @@ class AssetStore:
             return False
 
     def close(self) -> None:
-        if self._conn is not None:
-            self._conn.close()
-            self._conn = None
-            self._vec_loaded = False
+        conn = getattr(self._local, "conn", None)
+        if conn is not None:
+            conn.close()
+            self._local.conn = None
+            self._local.vec_loaded = False
 
     def __enter__(self) -> "AssetStore":
         self.connect()
