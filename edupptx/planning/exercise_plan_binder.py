@@ -261,14 +261,24 @@ def bind_exercises_to_draft(
         if not refs:
             continue
 
+        # Degrade gracefully: a hallucinated ref or an answer-less record drops
+        # that single ref (surfaced as a warning) instead of crashing the whole
+        # generation. The exercise feature is best-effort, not a hard gate.
         selected: list[ExerciseRecord] = []
         for exercise_id in refs:
             record = index.get(exercise_id)
             if record is None:
-                raise ValueError(f"exercise_ref not found in exercise bank: {exercise_id}")
+                warnings.append(f"exercise_ref not found in exercise bank, skipped: {exercise_id}")
+                continue
             if not record.answer:
-                raise ValueError(f"exercise_ref has no answer for reveal binding: {exercise_id}")
+                warnings.append(f"exercise_ref has no answer for reveal binding, skipped: {exercise_id}")
+                continue
             selected.append(record)
+
+        # Prune dropped refs from the plan so it never references an unbound id.
+        page.exercise_refs = [record.exercise_id for record in selected]
+        if not selected:
+            continue
 
         page.content_points = _build_source_content_points(selected)
         page.exercise_payloads = []
@@ -277,8 +287,9 @@ def bind_exercises_to_draft(
             if image.source != "exercise_asset"
         ]
         for record in selected:
-            image_payloads, image_needs, copied = _bind_images(record, session_root)
+            image_payloads, image_needs, copied, skipped = _bind_images(record, session_root)
             copied_image_count += copied
+            warnings.extend(skipped)
             page.exercise_payloads.append(_record_payload(record, image_payloads))
             page.material_needs.images.extend(image_needs)
             bound_count += 1
@@ -414,13 +425,19 @@ def _image_items(item: dict[str, Any]) -> list[Any]:
 def _bind_images(
     record: ExerciseRecord,
     session_root: Path,
-) -> tuple[list[dict[str, str]], list[ImageNeed], int]:
+) -> tuple[list[dict[str, str]], list[ImageNeed], int, list[str]]:
     payloads: list[dict[str, str]] = []
     image_needs: list[ImageNeed] = []
+    skipped: list[str] = []
     copied = 0
     for asset in record.image_assets:
         if not asset.path.exists():
-            raise FileNotFoundError(f"exercise image missing: {asset.path}")
+            # A missing image file drops just that asset (warned), keeping the
+            # exercise's text and any other images bound rather than aborting.
+            skipped.append(
+                f"exercise image missing, skipped: {record.exercise_id}/{asset.image_id} ({asset.path})"
+            )
+            continue
         target_aspect_ratio = normalize_image_aspect_ratio(asset.aspect_ratio)
         relative_path = Path("materials") / "exercises" / f"{record.exercise_id}_{asset.image_id}.png"
         destination = session_root / relative_path
@@ -448,7 +465,7 @@ def _bind_images(
             aspect_ratio=materialized_aspect_ratio,
             caption=asset.query,
         ))
-    return payloads, image_needs, copied
+    return payloads, image_needs, copied, skipped
 
 
 def _materialize_exercise_image(source: Path, destination: Path, *, target_aspect_ratio: str) -> str:
