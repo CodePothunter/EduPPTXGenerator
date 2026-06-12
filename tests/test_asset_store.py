@@ -216,6 +216,28 @@ def test_sqlite_write_path_ingest_syncs_db(tmp_path, monkeypatch):
     assert lookup("森林里的小鹿") == "a9"
 
 
+def test_store_reads_from_worker_threads(tmp_path):
+    """The cached store is shared across the retrieval ThreadPoolExecutor; reads from
+    worker threads must NOT raise 'SQLite objects created in a thread...' (thread-local conns)."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    src = tmp_path / "lib"
+    src.mkdir()
+    db.write_ai_image_split_match_indexes(_diverse_match_index(src), src)
+    store = AssetStore(src)
+    store.migrate_from_split_index(embedding_index=None)
+    store.connect()  # main-thread connection
+
+    def read():
+        payload = store.load_group_payload("C02_generic_subject_object")
+        return len((payload or {}).get("assets", []))
+
+    with ThreadPoolExecutor(max_workers=4) as ex:
+        results = list(ex.map(lambda _i: read(), range(8)))
+    assert all(r == 1 for r in results)  # a_c02 in C02, read OK from every worker thread
+    store.close()
+
+
 def test_library_db_exists_and_default_path(tmp_path):
     from edupptx.materials.asset_store import default_library_db_path, library_db_exists
 
