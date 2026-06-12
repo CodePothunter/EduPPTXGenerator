@@ -208,6 +208,13 @@ class AssetStore:
         conn.execute("DELETE FROM split_assets")
         conn.execute("DELETE FROM asset_source_refs")
         conn.execute("DELETE FROM asset_topic_refs")
+        # Full replace: clear vec tables too (re-migrate must not collide on PK; vec0
+        # has no INSERT OR REPLACE). Tables may not exist yet on a vectorless first run.
+        for vec_table in ("vec_text", "vec_color_bias"):
+            try:
+                conn.execute(f"DELETE FROM {vec_table}")
+            except sqlite3.OperationalError:
+                pass
 
         seen_source_assets: set[str] = set()
         passthrough: dict[str, Any] = {}
@@ -330,7 +337,7 @@ class AssetStore:
             if not aid:
                 continue
             conn.execute(
-                f"INSERT OR REPLACE INTO {table}(asset_id, embedding) VALUES (?, ?)",
+                f"INSERT INTO {table}(asset_id, embedding) VALUES (?, ?)",
                 (aid, sqlite_vec.serialize_float32([float(x) for x in vec])),
             )
             n += 1

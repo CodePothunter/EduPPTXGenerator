@@ -168,6 +168,54 @@ def test_backend_ab_equivalence_find_reusable(tmp_path, monkeypatch):
     assert miss_json == miss_sqlite
 
 
+def test_sqlite_write_path_ingest_syncs_db(tmp_path, monkeypatch):
+    """stage-3a: an ingest (write_ai_image_match_index) in sqlite mode must populate library.db
+    and stay reachable via find_reusable; a 2nd ingest updates the db."""
+    from edupptx.materials.asset_store import library_db_exists
+
+    monkeypatch.setenv("EDUPPTX_AI_IMAGE_EMBEDDING_MODEL", "test-model")
+
+    def fake_encode(texts, *, model_name=db.DEFAULT_EMBEDDING_MODEL, query=False):
+        out = []
+        for t in texts:
+            v = np.zeros(16, dtype="float32")
+            for ch in str(t):
+                v[ord(ch) % 16] += 1.0
+            n = np.linalg.norm(v)
+            out.append((v / n if n > 0 else v).astype("float32"))
+        return np.asarray(out, dtype="float32")
+
+    monkeypatch.setattr(db, "_encode_embedding_texts", fake_encode)
+
+    def asset(aid, cap):
+        return {"asset_id": aid, "asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container",
+                "image_path": f"ai_images/{aid}.png", "caption": cap, "subject": "语文", "aspect_ratio": "4:3", "general": True}
+
+    src = tmp_path / "lib"
+    (src / "ai_images").mkdir(parents=True)
+    for aid in ("a1", "a3", "a9"):
+        (src / "ai_images" / f"{aid}.png").write_bytes(aid.encode())
+
+    monkeypatch.setenv("EDUPPTX_REUSE_BACKEND", "sqlite")
+    db.write_ai_image_match_index({"schema_version": 18, "assets": [asset("a1", "草原骏马"), asset("a3", "池塘里的小蝌蚪")]}, src)
+    assert library_db_exists(src)
+    assert AssetStore(src).doctor()["split_assets"] == 2
+
+    def lookup(prompt):
+        m = db.find_reusable_ai_image_asset(
+            library_dir=(str(src),), asset_kind="page_image", prompt=prompt,
+            theme="t", grade="二年级", subject="语文", aspect_ratio="4:3", caption=prompt,
+            keyword_client=None, reuse_search_context=db.ReuseSearchContext(), llm_review_enabled=False)
+        return None if not m else m["asset"]["asset_id"]
+
+    assert lookup("池塘里的小蝌蚪") == "a3"
+
+    db.write_ai_image_match_index(
+        {"schema_version": 18, "assets": [asset("a1", "草原骏马"), asset("a3", "池塘里的小蝌蚪"), asset("a9", "森林里的小鹿")]}, src)
+    assert AssetStore(src).doctor()["split_assets"] == 3
+    assert lookup("森林里的小鹿") == "a9"
+
+
 def test_library_db_exists_and_default_path(tmp_path):
     from edupptx.materials.asset_store import default_library_db_path, library_db_exists
 

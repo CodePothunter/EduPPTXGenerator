@@ -1057,6 +1057,17 @@ def write_ai_image_match_index(
     legacy_target = root / index_filename
     if legacy_target.exists():
         legacy_target.unlink()
+    # B2 stage-3a (bridge): in sqlite mode keep library.db in sync from the freshly
+    # written split index + npz so new ingests are reachable via the sqlite read path.
+    # Reads the fresh .npz directly (not the branched reader, which would read the db).
+    # Direct json-skip write is R5; this guarantees db == json so read-parity holds.
+    if _reuse_backend() == "sqlite":
+        try:
+            from edupptx.materials.asset_store import AssetStore
+
+            AssetStore(root).migrate_from_split_index(embedding_index=_read_npz_embedding_index(root))
+        except Exception as exc:
+            PROGRESS_LOGGER.warning("sqlite library.db sync after write failed: {}", str(exc)[:160])
     return index, split_dir
 
 
@@ -7865,6 +7876,35 @@ def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: 
             report.get("model", model_name),
         )
     return report
+
+
+def _read_npz_embedding_index(library_root: Path) -> dict[str, Any] | None:
+    """Direct .npz embedding read with NO backend branch — for write-time db sync."""
+    index_path = library_root / DEFAULT_EMBEDDING_INDEX_FILENAME
+    meta_path = library_root / DEFAULT_EMBEDDING_META_FILENAME
+    if not index_path.exists() or not meta_path.exists():
+        return None
+    try:
+        import numpy as np
+
+        data = np.load(index_path, allow_pickle=False)
+        asset_ids = [str(item) for item in data["asset_ids"].tolist()]
+        vectors = np.asarray(data["vectors"], dtype="float32")
+        bg_ids: list[str] = []
+        bg_vectors = None
+        if "background_color_bias_asset_ids" in data.files and "background_color_bias_vectors" in data.files:
+            bg_ids = [str(item) for item in data["background_color_bias_asset_ids"].tolist()]
+            bg_vectors = np.asarray(data["background_color_bias_vectors"], dtype="float32")
+        meta = _read_json_if_exists(meta_path)
+    except Exception:
+        return None
+    return {
+        "asset_ids": asset_ids,
+        "vectors": vectors,
+        "background_color_bias_asset_ids": bg_ids,
+        "background_color_bias_vectors": bg_vectors,
+        "meta": meta,
+    }
 
 
 def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
