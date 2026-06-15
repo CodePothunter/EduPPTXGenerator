@@ -32,6 +32,17 @@ from edupptx.materials.reuse_policy import (
 from edupptx.materials.vlm_metadata_rules import (
     normalize_padding_capacity,
 )
+from edupptx.reuse._util import (
+    _as_int,
+    _clean_keyword,
+    _clean_text,
+    _client_model_name,
+    _dedupe_terms,
+    _dict,
+    _join_texts,
+    _read_existing_db,
+    _read_json_if_exists,
+)
 
 SCHEMA_VERSION = 1
 KEYWORD_SCHEMA_VERSION = 14
@@ -5359,13 +5370,6 @@ def _is_excluded_keyword(term: str, excluded: set[str]) -> bool:
     return False
 
 
-def _clean_keyword(value: Any) -> str:
-    text = _clean_text(value)
-    text = text.strip(" \t\r\n,;:.!?\"'[](){}<>")
-    text = text.strip("、，；：。！？“”‘’【】（）")
-    return text[:40]
-
-
 def _page_retrieval_text(asset: dict[str, Any]) -> str:
     return _asset_caption(asset)
 
@@ -5821,22 +5825,6 @@ def _strip_empty_match_fields(asset: dict[str, Any]) -> dict[str, Any]:
             continue
         cleaned[key] = value
     return cleaned
-
-
-def _dedupe_terms(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    terms: list[str] = []
-    for value in values:
-        term = _clean_keyword(value)
-        if not term or term in seen:
-            continue
-        seen.add(term)
-        terms.append(term)
-    return terms
-
-
-def _client_model_name(client: Any) -> str:
-    return _clean_text(getattr(client, "_model", "")) or _clean_text(getattr(client, "model", ""))
 
 
 _PROMPT_ROUTE_LIST_FIELDS = (
@@ -7641,18 +7629,6 @@ def _save_reusable_png_with_transparent_padding(
         image.save(dest_path, format="PNG", optimize=True)
 
 
-def _read_existing_db(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {
-            "warnings": [f"existing library DB could not be read: {path}"],
-        }
-    return data if isinstance(data, dict) else {"warnings": [f"existing library DB is not an object: {path}"]}
-
-
 def _read_existing_asset_index(library_root: Path, index_path: Path) -> tuple[dict[str, Any], Path]:
     split = read_ai_image_split_match_index(library_root)
     if split is not None:
@@ -8060,16 +8036,6 @@ def _match_asset_quality_score(asset: dict[str, Any]) -> float:
     if _background_route_terms(asset):
         score += 0.6
     return score
-
-
-def _read_json_if_exists(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
 
 
 def _load_reused_image_paths(session_dir: Path) -> set[str]:
@@ -8877,20 +8843,3 @@ def _relative_path(path: Path, root: Path) -> str:
         return str(path.resolve())
 
 
-def _dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _as_int(value: Any) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _clean_text(value: Any) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()
-
-
-def _join_texts(*texts: Any) -> str:
-    return "\n".join(_clean_text(text) for text in texts if _clean_text(text))
