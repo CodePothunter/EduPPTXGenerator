@@ -491,3 +491,17 @@ def _aspect_ratio_diff(target: dict[str, Any], candidate: dict[str, Any]) -> flo
     if t <= 0 or c <= 0:
         return 1.0
     return abs(t - c) / t
+
+
+def _target_unknown_fields_for_reuse(asset: dict[str, Any]) -> list[str]:
+    ignored = {"subject", "grade_norm", "grade_band"}
+    return [field for field in _target_metadata_unknown_fields(asset) if field not in ignored]
+
+
+def _candidate_unknown_fields_for_reuse(
+    asset: dict[str, Any],
+    subject_decision: dict[str, Any],
+) -> list[str]:
+    unknown = _target_metadata_unknown_fields(asset)
+    ignored = {"subject", "grade_norm", "grade_band"}
+    return [field for field in unknown if field not in ignored]
