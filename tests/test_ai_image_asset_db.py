@@ -320,7 +320,7 @@ def test_embedding_build_reuses_unchanged_vectors_and_encodes_only_changed_asset
             dtype="float32",
         )
 
-    monkeypatch.setattr(image_db, "_encode_embedding_texts", fake_encode_embedding_texts)
+    monkeypatch.setattr("edupptx.reuse._embedding._encode_embedding_texts", fake_encode_embedding_texts)
 
     report = image_db.write_ai_image_embedding_index(
         {"assets": [keep, changed_new, added]},
@@ -348,7 +348,7 @@ def test_embedding_build_writes_missing_caption_review_and_does_not_embed_query(
     def fail_encode(*_args, **_kwargs):
         raise AssertionError("query must not be embedded when caption is missing")
 
-    monkeypatch.setattr(image_db, "_encode_embedding_texts", fail_encode)
+    monkeypatch.setattr("edupptx.reuse._embedding._encode_embedding_texts", fail_encode)
     asset = {
         "asset_id": "missing_caption",
         "asset_kind": "page_image",
@@ -744,7 +744,7 @@ def test_query_embedding_cache_persists_to_configured_retrieve_dir(tmp_path, mon
         encode_calls.append(list(texts))
         return np.asarray([[1.0, 0.0] for _text in texts], dtype="float32")
 
-    monkeypatch.setattr(image_db, "_encode_embedding_texts", fake_encode)
+    monkeypatch.setattr("edupptx.reuse._embedding._encode_embedding_texts", fake_encode)
 
     first = image_db._rank_embedding_candidates(
         target,
@@ -764,7 +764,7 @@ def test_query_embedding_cache_persists_to_configured_retrieve_dir(tmp_path, mon
     def fail_encode(*_args, **_kwargs):
         raise AssertionError("query embedding should have been loaded from disk")
 
-    monkeypatch.setattr(image_db, "_encode_embedding_texts", fail_encode)
+    monkeypatch.setattr("edupptx.reuse._embedding._encode_embedding_texts", fail_encode)
 
     second = image_db._rank_embedding_candidates(
         target,
@@ -799,7 +799,7 @@ def test_rank_embedding_candidates_query_failure_records_status(tmp_path, monkey
     def boom_encode(*_args, **_kwargs):
         raise RuntimeError("model not found on this host")
 
-    monkeypatch.setattr(image_db, "_encode_embedding_texts", boom_encode)
+    monkeypatch.setattr("edupptx.reuse._embedding._encode_embedding_texts", boom_encode)
 
     status: dict = {"enabled": True}
     result = image_db._rank_embedding_candidates(

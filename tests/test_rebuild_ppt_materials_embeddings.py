@@ -13,7 +13,7 @@ def test_rebuilds_embedding_sidecars_from_existing_split_index(tmp_path, monkeyp
         return np.asarray([[float(index + 1), 0.0, 1.0] for index, _text in enumerate(texts)], dtype="float32")
 
     monkeypatch.setattr(
-        "edupptx.materials.ai_image_asset_db._encode_embedding_texts",
+        "edupptx.reuse._embedding._encode_embedding_texts",
         fake_encode_embedding_texts,
     )
     library = tmp_path / "materials_library_ppt"

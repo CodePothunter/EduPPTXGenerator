@@ -50,7 +50,7 @@ def _patch_embedding_encoder(monkeypatch) -> None:
         )
 
     monkeypatch.setattr(
-        "edupptx.materials.ai_image_asset_db._encode_embedding_texts",
+        "edupptx.reuse._embedding._encode_embedding_texts",
         fake_encode_embedding_texts,
     )
 
