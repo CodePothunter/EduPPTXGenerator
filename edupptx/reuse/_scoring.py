@@ -65,21 +65,20 @@ def _candidate_policy_score(candidate: dict[str, Any], score_details: dict[str, 
     details = _dict(score_details if score_details is not None else candidate.get("score_details"))
     keyword_score = _candidate_score_component(candidate, details, "keyword_score", "score")
     embedding_score = _candidate_score_component(candidate, details, "embedding_score")
-    substring_score = _candidate_score_component(candidate, details, "substring_score")
+    # R2b: substring 已由 _score_reuse_candidate_details(_weighted_hybrid_signal) 折叠进
+    # keyword_score；此处原有的独立 HYBRID_SUBSTRING_WEIGHT*substring 项把 substring 计了
+    # 两次（有效权重 ~0.31 反超 bm25 ~0.14）。改为只用 bm25+embedding 并按其权重重归一化，
+    # substring 仅经 keyword_score 内的折叠单算一次。
     if _embedding_disabled():
-        # M-1: 显式关闭 embedding 时按可用信号权重重新归一化。否则 embedding 权重
-        # （0.55）计 0，满分只剩 0.45 < T_DIRECT，decide_reuse 几乎全拒，使
+        # M-1: 显式关闭 embedding 时只剩 bm25，归一后 = keyword_score。否则 embedding
+        # 权重（0.55）计 0 会让满分 <T_DIRECT，decide_reuse 几乎全拒，使
         # EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS 这个文档化开关形同失效。
-        total_weight = HYBRID_BM25_WEIGHT + HYBRID_SUBSTRING_WEIGHT
-        component_score = (
-            HYBRID_BM25_WEIGHT * keyword_score + HYBRID_SUBSTRING_WEIGHT * substring_score
-        ) / max(total_weight, 1e-9)
+        component_score = keyword_score
     else:
+        total_weight = HYBRID_BM25_WEIGHT + HYBRID_EMBEDDING_WEIGHT
         component_score = (
-            HYBRID_BM25_WEIGHT * keyword_score
-            + HYBRID_EMBEDDING_WEIGHT * embedding_score
-            + HYBRID_SUBSTRING_WEIGHT * substring_score
-        )
+            HYBRID_BM25_WEIGHT * keyword_score + HYBRID_EMBEDDING_WEIGHT * embedding_score
+        ) / max(total_weight, 1e-9)
     if component_score <= 0.0:
         fallback = _candidate_score_component(candidate, details, "policy_score")
         if fallback > 0.0:
