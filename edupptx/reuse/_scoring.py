@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import os
 import re
+import threading
 from typing import Any
 
 from edupptx.reuse._util import (
@@ -288,6 +289,7 @@ def _score_reuse_candidate_details(
     bm25_score, bm25_hits = _bm25_similarity_with_hits(
         _bm25_tokens_from_values([target_text]),
         _bm25_tokens_from_values([candidate_text]),
+        corpus_stats=target.get("_corpus_stats"),
     )
     substring_score, substring_hits = _background_substring_similarity(
         _background_text_terms(target_text),
@@ -539,40 +541,109 @@ def _bm25_tokens_from_values(values: list[Any]) -> list[str]:
     return _dedupe_terms(tokens)
 
 
-def _bm25_similarity_with_hits(query_tokens: list[str], doc_tokens: list[str]) -> tuple[float, list[dict[str, str]]]:
+def _bm25_similarity_with_hits(
+    query_tokens: list[str],
+    doc_tokens: list[str],
+    *,
+    corpus_stats: dict[str, Any] | None = None,
+) -> tuple[float, list[dict[str, str]]]:
     query = [token for token in query_tokens if token]
     doc = [token for token in doc_tokens if token]
     if not query or not doc:
         return 0.0, []
 
-    score = _bm25_score(query, doc, [doc, query])
-    self_score = _bm25_score(query, query, [doc, query])
+    # R3: 有 corpus_stats（全库 df/N/avgdl）时用真实语料 IDF；否则回落旧的 [doc,query]
+    # 伪语料（N=2，匹配词 idf 恒 0.182，无词区分力）。self_score 归一仍保留。
+    if corpus_stats is not None:
+        score = _bm25_score(query, doc, corpus_stats=corpus_stats)
+        self_score = _bm25_score(query, query, corpus_stats=corpus_stats)
+    else:
+        score = _bm25_score(query, doc, [doc, query])
+        self_score = _bm25_score(query, query, [doc, query])
     normalized = 0.0 if self_score <= 0 else min(1.0, score / self_score)
     doc_terms = set(doc)
     hits = [{"target": token, "candidate": token} for token in _dedupe_terms(query) if token in doc_terms]
     return normalized, hits[:24]
 
 
-def _bm25_score(query_tokens: list[str], doc_tokens: list[str], corpus_docs: list[list[str]]) -> float:
-    if not query_tokens or not doc_tokens or not corpus_docs:
+def _bm25_score(
+    query_tokens: list[str],
+    doc_tokens: list[str],
+    corpus_docs: list[list[str]] | None = None,
+    *,
+    corpus_stats: dict[str, Any] | None = None,
+) -> float:
+    if not query_tokens or not doc_tokens:
         return 0.0
     k1 = 1.5
     b = 0.75
     doc_len = len(doc_tokens)
-    avgdl = sum(len(doc) for doc in corpus_docs) / max(1, len(corpus_docs))
     frequencies: dict[str, int] = {}
     for token in doc_tokens:
         frequencies[token] = frequencies.get(token, 0) + 1
+
+    if corpus_stats is not None:
+        # R3 真 IDF：df = 含该 term 的全库 asset 数，N = 全库 asset 数，avgdl = 全库平均长度。
+        n = max(1, int(corpus_stats.get("n") or 1))
+        df_map = corpus_stats.get("df") or {}
+        avgdl = float(corpus_stats.get("avgdl") or doc_len) or 1.0
+
+        def idf_of(token: str) -> float:
+            df = int(df_map.get(token, 0))
+            return math.log(1 + (n - df + 0.5) / (df + 0.5))
+    else:
+        if not corpus_docs:
+            return 0.0
+        avgdl = sum(len(doc) for doc in corpus_docs) / max(1, len(corpus_docs))
+
+        def idf_of(token: str) -> float:
+            containing_docs = sum(1 for doc in corpus_docs if token in set(doc))
+            return math.log(1 + (len(corpus_docs) - containing_docs + 0.5) / (containing_docs + 0.5))
+
     score = 0.0
     for token in _dedupe_terms(query_tokens):
         freq = frequencies.get(token, 0)
         if freq <= 0:
             continue
-        containing_docs = sum(1 for doc in corpus_docs if token in set(doc))
-        idf = math.log(1 + (len(corpus_docs) - containing_docs + 0.5) / (containing_docs + 0.5))
+        idf = idf_of(token)
         denom = freq + k1 * (1 - b + b * doc_len / max(avgdl, 1e-9))
         score += idf * (freq * (k1 + 1)) / max(denom, 1e-9)
     return score
+
+
+_CORPUS_STATS_CACHE: dict[str, dict[str, Any]] = {}
+_CORPUS_STATS_LOCK = threading.Lock()
+
+
+def _corpus_stats_from_assets(assets: list[Any]) -> dict[str, Any]:
+    """R3：从一组 asset 的检索文本算全库 BM25 语料统计（term→df、N、avgdl）。"""
+    df: dict[str, int] = {}
+    total_len = 0
+    n = 0
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        tokens = _bm25_tokens_from_values([_page_retrieval_text(asset)])
+        if not tokens:
+            continue
+        n += 1
+        total_len += len(tokens)
+        for token in set(tokens):
+            df[token] = df.get(token, 0) + 1
+    return {"df": df, "n": n, "avgdl": (total_len / n if n else 0.0)}
+
+
+def corpus_stats_for_library(library_root: Any, assets: list[Any]) -> dict[str, Any]:
+    """按 library_root 缓存全库语料统计（asset 数变则失效重算）。"""
+    key = str(library_root)
+    with _CORPUS_STATS_LOCK:
+        cached = _CORPUS_STATS_CACHE.get(key)
+        if cached is not None and cached.get("_n_assets") == len(assets):
+            return cached
+        stats = _corpus_stats_from_assets(assets)
+        stats["_n_assets"] = len(assets)
+        _CORPUS_STATS_CACHE[key] = stats
+        return stats
 
 
 def _term_in_text(term: str, text: str) -> bool:
