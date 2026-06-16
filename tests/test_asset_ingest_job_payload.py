@@ -115,7 +115,7 @@ def test_ingest_ai_image_asset_job_updates_embedding_incrementally(tmp_path: Pat
             dtype="float32",
         )
 
-    monkeypatch.setattr(image_db, "_encode_embedding_texts", fake_encode_embedding_texts)
+    monkeypatch.setattr("edupptx.reuse._embedding._encode_embedding_texts", fake_encode_embedding_texts)
 
     library_dir = tmp_path / "materials_library"
     first_session = tmp_path / "output" / "session_first"

@@ -88,7 +88,7 @@ def test_vector_migrate_load_roundtrip(tmp_path, monkeypatch):
             out.append(v)
         return np.asarray(out, dtype="float32")
 
-    monkeypatch.setattr(db, "_encode_embedding_texts", fake_encode)
+    monkeypatch.setattr("edupptx.reuse._embedding._encode_embedding_texts", fake_encode)
 
     src = tmp_path / "lib"
     src.mkdir()
@@ -125,7 +125,7 @@ def test_backend_ab_equivalence_find_reusable(tmp_path, monkeypatch):
             out.append((v / n if n > 0 else v).astype("float32"))
         return np.asarray(out, dtype="float32")
 
-    monkeypatch.setattr(db, "_encode_embedding_texts", fake_encode)
+    monkeypatch.setattr("edupptx.reuse._embedding._encode_embedding_texts", fake_encode)
 
     src = tmp_path / "lib"
     (src / "ai_images").mkdir(parents=True)
@@ -185,7 +185,7 @@ def test_sqlite_write_path_ingest_syncs_db(tmp_path, monkeypatch):
             out.append((v / n if n > 0 else v).astype("float32"))
         return np.asarray(out, dtype="float32")
 
-    monkeypatch.setattr(db, "_encode_embedding_texts", fake_encode)
+    monkeypatch.setattr("edupptx.reuse._embedding._encode_embedding_texts", fake_encode)
 
     def asset(aid, cap):
         return {"asset_id": aid, "asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container",

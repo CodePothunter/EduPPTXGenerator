@@ -201,6 +201,38 @@ from edupptx.reuse._normalize import (
     infer_subject,
     resolve_meta_grade_subject,
 )
+from edupptx.reuse._scoring import (
+    _aspect_ratio_loss,
+    _aspect_ratio_penalty,
+    _aspect_ratio_value,
+    _background_color_bias,
+    _background_prompt_doc_tokens,
+    _background_prompt_query_terms,
+    _background_prompt_query_tokens,
+    _background_substring_similarity,
+    _background_text_terms,
+    _bm25_score,
+    _bm25_similarity_with_hits,
+    _bm25_tokens_from_values,
+    _cached_base_reuse_score_details,
+    _candidate_policy_score,
+    _candidate_score_component,
+    _clean_background_route,
+    _copy_transform_policy,
+    _embedding_disabled,
+    _optional_int,
+    _optional_score,
+    _ratio_value,
+    _reuse_hard_filter_reject_reason,
+    _reuse_transform_policy,
+    _score_background_reuse_candidate_details,
+    _score_reuse_candidate_details,
+    _subject_scope_decision,
+    _target_transform_size,
+    _term_in_text,
+    _weighted_hybrid_signal,
+    normalize_aspect_bucket,
+)
 
 KEYWORD_REUSE_RULES_REFERENCE = Path(__file__).resolve().parent / "Reference" / "ai_image_reuse_metadata_rules.md"
 REUSE_REVIEW_SCORE_RULES_REFERENCE = Path(__file__).resolve().parent / "Reference" / "ai_image_reuse_review_score_rules.md"
@@ -265,46 +297,6 @@ def _review_worker_count(num_review_targets: int) -> int:
 LOGGER = logging.getLogger(__name__)
 
 
-def _relative_output_path(value: Any) -> str:
-    """Return repo-relative paths for JSON reports/debug payloads."""
-
-    if value is None:
-        return ""
-    raw = str(value).strip()
-    if not raw:
-        return ""
-    if "://" in raw:
-        return raw
-
-    normalized = raw.replace("\\", "/")
-    path = Path(raw).expanduser()
-    native_abs = path.is_absolute()
-    windows_abs = bool(re.match(r"^[A-Za-z]:[\\/]", raw))
-    posix_abs = normalized.startswith("/")
-    if not (native_abs or windows_abs or posix_abs):
-        return normalized
-
-    if native_abs:
-        try:
-            resolved = path.resolve(strict=False)
-        except Exception:
-            resolved = path
-        roots = (_PROJECT_ROOT, Path.cwd().resolve())
-        for root in roots:
-            try:
-                return resolved.relative_to(root).as_posix()
-            except ValueError:
-                continue
-
-    parts = [part for part in normalized.split("/") if part]
-    if _PROJECT_ROOT.name in parts:
-        start = parts.index(_PROJECT_ROOT.name) + 1
-        if start < len(parts):
-            return "/".join(parts[start:])
-    for marker in _OUTPUT_PATH_MARKERS:
-        if marker in parts:
-            return "/".join(parts[parts.index(marker) :])
-    return normalized
 
 
 def _relative_output_context(context: dict[str, Any] | None) -> dict[str, Any]:
@@ -351,9 +343,6 @@ class ReuseSearchContext:
 
 
 # BACKGROUND_REUSE_THRESHOLD imported from reuse_policy — single source of truth.
-
-_EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
-_EMBEDDING_MODEL_LOCK = threading.RLock()
 
 # Single source of truth for "style / form / usage / quality noise tokens
 # that saturate the library". Two assets sharing any of these does not
@@ -902,46 +891,8 @@ def write_ai_image_match_index(
     return index, split_dir
 
 
-def _embedding_missing_caption_review_item(asset: dict[str, Any]) -> dict[str, Any]:
-    item = {
-        "asset_id": _clean_text(asset.get("asset_id")),
-        "asset_kind": _clean_text(asset.get("asset_kind")),
-        "strict_reuse_group": _clean_text(asset.get("strict_reuse_group")),
-        "image_path": _clean_text(asset.get("image_path")),
-        "query": _clean_text(asset.get("query")),
-        "file_name": _clean_text(asset.get("file_name")),
-        "theme": _clean_text(asset.get("theme")),
-    }
-    source_refs = asset.get("source_pptx_refs")
-    if isinstance(source_refs, list):
-        item["source_pptx_refs"] = deepcopy(source_refs)
-    return {key: value for key, value in item.items() if value not in ("", [], None)}
 
 
-def _write_embedding_missing_caption_review(
-    path: Path,
-    *,
-    model_name: str,
-    assets: list[dict[str, Any]],
-) -> dict[str, Any] | None:
-    if not assets:
-        try:
-            path.unlink(missing_ok=True)
-        except Exception:
-            pass
-        return None
-    payload = {
-        "schema_version": 1,
-        "built_at": datetime.now(timezone.utc).isoformat(),
-        "model": model_name,
-        "missing_caption_count": len(assets),
-        "assets": [_embedding_missing_caption_review_item(asset) for asset in assets],
-    }
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temp_path = path.with_name(f"{path.name}.tmp")
-    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-    os.replace(temp_path, path)
-    return payload
 
 
 def _c01_secondary_c03_projections(assets: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1232,467 +1183,6 @@ def read_ai_image_split_match_index(
     return index, split_dir
 
 
-def write_ai_image_embedding_index(
-    match_index: dict[str, Any],
-    library_dir: str | Path,
-    *,
-    model_name: str = DEFAULT_EMBEDDING_MODEL,
-    index_filename: str = DEFAULT_EMBEDDING_INDEX_FILENAME,
-    meta_filename: str = DEFAULT_EMBEDDING_META_FILENAME,
-) -> dict[str, Any]:
-    """Write the vector sidecar index used by hybrid image reuse retrieval.
-
-    The build is checkpointed after each encode batch. If the process is
-    interrupted, rerunning the command resumes from the checkpoint and only
-    atomically replaces the final sidecar after every category is complete.
-    """
-
-    root = Path(library_dir).expanduser().resolve()
-    model_name = _embedding_model_name(model_name)
-    sidecar_model_name = _embedding_sidecar_model_name(model_name)
-    if _embedding_disabled():
-        return {
-            "enabled": False,
-            "reason": "disabled_by_environment",
-            "model": sidecar_model_name,
-        }
-
-    assets = match_index.get("assets")
-    if not isinstance(assets, list) or not assets:
-        return {
-            "enabled": False,
-            "reason": "empty_match_index",
-            "model": sidecar_model_name,
-        }
-
-    rows: list[tuple[str, str]] = []
-    background_color_bias_rows: list[tuple[str, str]] = []
-    missing_caption_assets: list[dict[str, Any]] = []
-    for asset in assets:
-        if not isinstance(asset, dict):
-            continue
-        asset_id = _clean_text(asset.get("asset_id"))
-        text = _asset_embedding_text(asset)
-        if asset_id and text:
-            rows.append((asset_id, text))
-        elif asset_id and not _is_background_asset(asset) and not _asset_caption(asset):
-            missing_caption_assets.append(asset)
-        color_bias = _background_color_bias(asset) if _is_background_asset(asset) else ""
-        if asset_id and color_bias:
-            background_color_bias_rows.append((asset_id, color_bias))
-
-    missing_caption_review_path = root / DEFAULT_EMBEDDING_MISSING_CAPTION_REVIEW_FILENAME
-    missing_caption_review = _write_embedding_missing_caption_review(
-        missing_caption_review_path,
-        model_name=sidecar_model_name,
-        assets=missing_caption_assets,
-    )
-    missing_caption_warnings = []
-    if missing_caption_review is not None:
-        missing_caption_warnings.append(
-            f"embedding_missing_caption:{len(missing_caption_assets)}:{_relative_output_path(missing_caption_review_path)}"
-        )
-    if not rows:
-        return {
-            "enabled": False,
-            "reason": "empty_embedding_text",
-            "model": sidecar_model_name,
-            "missing_caption_count": len(missing_caption_assets),
-            "missing_caption_review_path": _relative_output_path(missing_caption_review_path)
-            if missing_caption_review is not None
-            else "",
-            "warnings": missing_caption_warnings,
-        }
-
-    import numpy as np
-
-    index_path = root / index_filename
-    meta_path = root / meta_filename
-    index_path.parent.mkdir(parents=True, exist_ok=True)
-    checkpoint_index_path = index_path.with_name(f"{index_path.stem}.checkpoint{index_path.suffix}")
-    checkpoint_meta_path = meta_path.with_name(f"{meta_path.stem}.checkpoint.json")
-    try:
-        build_batch_size = int(
-            os.environ.get("EDUPPTX_AI_IMAGE_EMBEDDING_BUILD_BATCH_SIZE")
-            or DEFAULT_EMBEDDING_BATCH_SIZE
-        )
-    except ValueError:
-        build_batch_size = DEFAULT_EMBEDDING_BATCH_SIZE
-    build_batch_size = max(1, build_batch_size)
-
-    def rows_digest(items: list[tuple[str, str]]) -> str:
-        digest = hashlib.sha256()
-        for asset_id, text in items:
-            digest.update(asset_id.encode("utf-8"))
-            digest.update(b"\0")
-            digest.update(text.encode("utf-8"))
-            digest.update(b"\n")
-        return digest.hexdigest()
-
-    category_specs = [
-        {
-            "name": "asset",
-            "rows": rows,
-            "ids_key": "asset_ids",
-            "texts_key": None,
-            "vectors_key": "vectors",
-            "meta_assets_key": "assets",
-        },
-        {
-            "name": "background_color_bias",
-            "rows": background_color_bias_rows,
-            "ids_key": "background_color_bias_asset_ids",
-            "texts_key": None,
-            "vectors_key": "background_color_bias_vectors",
-            "meta_assets_key": "background_color_bias_assets",
-        },
-    ]
-    total_counts = {spec["name"]: len(spec["rows"]) for spec in category_specs}
-    total_texts = sum(total_counts.values())
-    fingerprint_payload = {
-        "schema_version": EMBEDDING_INDEX_SCHEMA_VERSION,
-        "model": sidecar_model_name,
-        "index_filename": index_filename,
-        "meta_filename": meta_filename,
-        "row_hashes": {
-            spec["name"]: rows_digest(spec["rows"])
-            for spec in category_specs
-        },
-    }
-    build_fingerprint = hashlib.sha256(
-        json.dumps(fingerprint_payload, ensure_ascii=False, sort_keys=True).encode("utf-8")
-    ).hexdigest()
-    encoded: dict[str, dict[str, Any]] = {
-        spec["name"]: {"ids": [], "texts": [], "vectors": None}
-        for spec in category_specs
-    }
-    reused_counts = {spec["name"]: 0 for spec in category_specs}
-    encoded_counts = {spec["name"]: 0 for spec in category_specs}
-
-    def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-        temp_path = path.with_name(f"{path.name}.tmp")
-        temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        os.replace(temp_path, path)
-
-    def write_npz_atomic(path: Path, payload: dict[str, Any]) -> None:
-        temp_path = path.with_name(f"{path.name}.tmp")
-        with temp_path.open("wb") as handle:
-            np.savez_compressed(handle, **payload)
-        os.replace(temp_path, path)
-
-    def checkpoint_payload() -> dict[str, Any]:
-        payload: dict[str, Any] = {}
-        for spec in category_specs:
-            state = encoded[spec["name"]]
-            vectors = state.get("vectors")
-            if vectors is None:
-                continue
-            ids = list(state.get("ids") or [])
-            if not ids:
-                continue
-            payload[spec["ids_key"]] = np.asarray(ids, dtype=str)
-            texts_key = spec.get("texts_key")
-            if texts_key:
-                payload[texts_key] = np.asarray(list(state.get("texts") or []), dtype=str)
-            payload[spec["vectors_key"]] = np.asarray(vectors, dtype="float32")
-        return payload
-
-    def checkpoint_meta() -> dict[str, Any]:
-        encoded_counts = {
-            spec["name"]: len(encoded[spec["name"]].get("ids") or [])
-            for spec in category_specs
-        }
-        return {
-            "checkpoint_schema_version": 1,
-            "schema_version": EMBEDDING_INDEX_SCHEMA_VERSION,
-            "build_fingerprint": build_fingerprint,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "model": sidecar_model_name,
-            "index_filename": index_filename,
-            "meta_filename": meta_filename,
-            "batch_size": build_batch_size,
-            "total_counts": total_counts,
-            "encoded_counts": encoded_counts,
-        }
-
-    def save_checkpoint(reason: str) -> None:
-        payload = checkpoint_payload()
-        if not payload:
-            return
-        write_npz_atomic(checkpoint_index_path, payload)
-        write_json_atomic(checkpoint_meta_path, checkpoint_meta())
-        encoded_total = sum(len(encoded[spec["name"]].get("ids") or []) for spec in category_specs)
-        PROGRESS_LOGGER.info(
-            "AI image embedding checkpoint saved: library={}, encoded={}/{}, reason={}, checkpoint={}",
-            root,
-            encoded_total,
-            total_texts,
-            reason,
-            checkpoint_index_path,
-        )
-
-    def validate_loaded_prefix(spec: dict[str, Any], ids: list[str], texts: list[str]) -> bool:
-        rows_for_spec = spec["rows"]
-        count = len(ids)
-        if count > len(rows_for_spec):
-            return False
-        if ids != [asset_id for asset_id, _text in rows_for_spec[:count]]:
-            return False
-        texts_key = spec.get("texts_key")
-        if texts_key and texts != [text for _asset_id, text in rows_for_spec[:count]]:
-            return False
-        return True
-
-    def load_checkpoint() -> None:
-        if not checkpoint_index_path.exists() or not checkpoint_meta_path.exists():
-            return
-        meta = _read_json_if_exists(checkpoint_meta_path)
-        if meta.get("build_fingerprint") != build_fingerprint:
-            PROGRESS_LOGGER.info(
-                "AI image embedding checkpoint ignored: library={}, reason=fingerprint_changed",
-                root,
-            )
-            return
-        try:
-            data = np.load(checkpoint_index_path, allow_pickle=False)
-            try:
-                for spec in category_specs:
-                    vectors_key = spec["vectors_key"]
-                    ids_key = spec["ids_key"]
-                    if vectors_key not in data.files or ids_key not in data.files:
-                        continue
-                    vectors = np.asarray(data[vectors_key], dtype="float32")
-                    if len(vectors.shape) == 1:
-                        vectors = vectors.reshape(1, -1)
-                    ids = [str(item) for item in data[ids_key].tolist()]
-                    count = min(len(ids), int(vectors.shape[0]))
-                    ids = ids[:count]
-                    vectors = vectors[:count]
-                    texts: list[str] = []
-                    texts_key = spec.get("texts_key")
-                    if texts_key:
-                        if texts_key not in data.files:
-                            raise ValueError(f"checkpoint missing {texts_key}")
-                        texts = [str(item) for item in data[texts_key].tolist()][:count]
-                    if not validate_loaded_prefix(spec, ids, texts):
-                        raise ValueError(f"checkpoint prefix mismatch: {spec['name']}")
-                    encoded[spec["name"]] = {
-                        "ids": ids,
-                        "texts": texts,
-                        "vectors": vectors,
-                    }
-            finally:
-                data.close()
-        except Exception as exc:
-            PROGRESS_LOGGER.warning(
-                "AI image embedding checkpoint ignored: library={}, reason={}",
-                root,
-                str(exc)[:180],
-            )
-            return
-
-        encoded_total = sum(len(encoded[spec["name"]].get("ids") or []) for spec in category_specs)
-        if encoded_total:
-            PROGRESS_LOGGER.info(
-                "AI image embedding checkpoint loaded: library={}, encoded={}/{}",
-                root,
-                encoded_total,
-                total_texts,
-            )
-
-    def append_vectors(existing: Any, new_vectors: Any) -> Any:
-        new_vectors = np.asarray(new_vectors, dtype="float32")
-        if len(new_vectors.shape) == 1:
-            new_vectors = new_vectors.reshape(1, -1)
-        if existing is None:
-            return new_vectors
-        return np.vstack([np.asarray(existing, dtype="float32"), new_vectors])
-
-    def load_reusable_sidecar() -> dict[str, dict[tuple[str, str], Any]]:
-        reusable: dict[str, dict[tuple[str, str], Any]] = {
-            spec["name"]: {}
-            for spec in category_specs
-        }
-        if not index_path.exists() or not meta_path.exists():
-            return reusable
-        meta = _read_json_if_exists(meta_path)
-        if (
-            int(meta.get("schema_version") or 0) != EMBEDDING_INDEX_SCHEMA_VERSION
-            or not _embedding_model_sidecar_matches(meta.get("model"), model_name, meta.get("model_identity"))
-        ):
-            return reusable
-        try:
-            data = np.load(index_path, allow_pickle=False)
-            try:
-                for spec in category_specs:
-                    ids_key = spec["ids_key"]
-                    vectors_key = spec["vectors_key"]
-                    meta_assets_key = spec["meta_assets_key"]
-                    refs = meta.get(meta_assets_key)
-                    if (
-                        ids_key not in data.files
-                        or vectors_key not in data.files
-                        or not isinstance(refs, list)
-                    ):
-                        continue
-                    ids = [str(item) for item in data[ids_key].tolist()]
-                    vectors = np.asarray(data[vectors_key], dtype="float32")
-                    if len(vectors.shape) == 1:
-                        vectors = vectors.reshape(1, -1)
-                    count = min(len(ids), int(vectors.shape[0]), len(refs))
-                    for index in range(count):
-                        ref = refs[index]
-                        if not isinstance(ref, dict):
-                            continue
-                        asset_id = _clean_text(ref.get("asset_id"))
-                        text_hash = _clean_text(ref.get("embedding_text_hash"))
-                        if not asset_id or not text_hash or asset_id != ids[index]:
-                            continue
-                        reusable[spec["name"]][(asset_id, text_hash)] = vectors[index:index + 1]
-            finally:
-                data.close()
-        except Exception as exc:
-            PROGRESS_LOGGER.warning(
-                "AI image embedding sidecar reuse ignored: library={}, reason={}",
-                root,
-                str(exc)[:180],
-            )
-        return reusable
-
-    reusable_vectors = load_reusable_sidecar()
-
-    def append_rows(
-        spec: dict[str, Any],
-        batch_rows: list[tuple[str, str]],
-        vectors: Any,
-        *,
-        reused: bool,
-    ) -> None:
-        name = spec["name"]
-        state = encoded[name]
-        vectors = np.asarray(vectors, dtype="float32")
-        if len(vectors.shape) == 1:
-            vectors = vectors.reshape(1, -1)
-        if int(vectors.shape[0]) != len(batch_rows):
-            raise ValueError(f"embedding vector count mismatch: {name}")
-        state["ids"].extend(asset_id for asset_id, _text in batch_rows)
-        if spec.get("texts_key"):
-            state["texts"].extend(text for _asset_id, text in batch_rows)
-        state["vectors"] = append_vectors(state.get("vectors"), vectors)
-        if reused:
-            reused_counts[name] += len(batch_rows)
-        else:
-            encoded_counts[name] += len(batch_rows)
-
-    def reusable_vector_for(spec: dict[str, Any], row: tuple[str, str]) -> Any:
-        asset_id, text = row
-        key = (asset_id, _embedding_text_hash(text))
-        return reusable_vectors.get(spec["name"], {}).get(key)
-
-    def encode_missing(spec: dict[str, Any]) -> None:
-        name = spec["name"]
-        spec_rows = spec["rows"]
-        state = encoded[name]
-        done = len(state.get("ids") or [])
-        while done < len(spec_rows):
-            row = spec_rows[done]
-            reusable = reusable_vector_for(spec, row)
-            if reusable is not None:
-                append_rows(spec, [row], reusable, reused=True)
-                done = len(state.get("ids") or [])
-                continue
-
-            batch_rows: list[tuple[str, str]] = []
-            cursor = done
-            while cursor < len(spec_rows) and len(batch_rows) < build_batch_size:
-                candidate = spec_rows[cursor]
-                if reusable_vector_for(spec, candidate) is not None:
-                    break
-                batch_rows.append(candidate)
-                cursor += 1
-            batch_texts = [text for _asset_id, text in batch_rows]
-            vectors = _encode_embedding_texts(batch_texts, model_name=model_name, query=False)
-            append_rows(spec, batch_rows, vectors, reused=False)
-            done = len(state.get("ids") or [])
-            save_checkpoint(f"{name}:{done}/{len(spec_rows)}")
-
-    try:
-        load_checkpoint()
-        for spec in category_specs:
-            if spec["rows"]:
-                encode_missing(spec)
-    except Exception as exc:
-        return {
-            "enabled": False,
-            "reason": "embedding_build_failed",
-            "model": sidecar_model_name,
-            "warnings": [f"AI image embedding index skipped: {str(exc)[:180]}"],
-        }
-
-    final_payload = checkpoint_payload()
-    vectors = encoded["asset"].get("vectors")
-    if vectors is None:
-        return {
-            "enabled": False,
-            "reason": "empty_embedding_vectors",
-            "model": sidecar_model_name,
-        }
-
-    meta = {
-        "schema_version": EMBEDDING_INDEX_SCHEMA_VERSION,
-        "built_at": datetime.now(timezone.utc).isoformat(),
-        "model": sidecar_model_name,
-        "index_filename": index_filename,
-        "match_asset_count": len(assets),
-        "asset_count": len(rows),
-        "non_embeddable_asset_count": max(0, len(assets) - len(rows)),
-        "background_color_bias_asset_count": len(background_color_bias_rows),
-        "missing_caption_count": len(missing_caption_assets),
-        "missing_caption_review_path": _relative_output_path(missing_caption_review_path)
-        if missing_caption_review is not None
-        else "",
-        "vector_dim": int(vectors.shape[1]) if len(vectors.shape) == 2 else 0,
-        "assets": [
-            {"asset_id": asset_id, "embedding_text_hash": _embedding_text_hash(text)}
-            for asset_id, text in rows
-        ],
-        "background_color_bias_assets": [
-            {"asset_id": asset_id, "embedding_text_hash": _embedding_text_hash(text)}
-            for asset_id, text in background_color_bias_rows
-        ],
-        "reused_asset_count": reused_counts["asset"],
-        "encoded_asset_count": encoded_counts["asset"],
-        "reused_background_color_bias_asset_count": reused_counts["background_color_bias"],
-        "encoded_background_color_bias_asset_count": encoded_counts["background_color_bias"],
-        "warnings": missing_caption_warnings,
-    }
-    write_npz_atomic(index_path, final_payload)
-    write_json_atomic(meta_path, meta)
-    try:
-        checkpoint_index_path.unlink(missing_ok=True)
-        checkpoint_meta_path.unlink(missing_ok=True)
-    except Exception:
-        pass
-    return {
-        "enabled": True,
-        "model": sidecar_model_name,
-        "index_path": _relative_output_path(index_path),
-        "meta_path": _relative_output_path(meta_path),
-        "match_asset_count": len(assets),
-        "asset_count": len(rows),
-        "non_embeddable_asset_count": max(0, len(assets) - len(rows)),
-        "background_color_bias_asset_count": len(background_color_bias_rows),
-        "missing_caption_count": len(missing_caption_assets),
-        "missing_caption_review_path": _relative_output_path(missing_caption_review_path)
-        if missing_caption_review is not None
-        else "",
-        "vector_dim": meta["vector_dim"],
-        "reused_asset_count": reused_counts["asset"],
-        "encoded_asset_count": encoded_counts["asset"],
-        "reused_background_color_bias_asset_count": reused_counts["background_color_bias"],
-        "encoded_background_color_bias_asset_count": encoded_counts["background_color_bias"],
-        "warnings": missing_caption_warnings,
-    }
 
 
 def _normalize_reuse_library_dirs(
@@ -1804,48 +1294,8 @@ def _select_best_library_reuse_match(matches: list[dict[str, Any]]) -> dict[str,
     return max(matches, key=rank)
 
 
-def _candidate_score_component(
-    candidate: dict[str, Any],
-    score_details: dict[str, Any],
-    key: str,
-    *aliases: str,
-) -> float:
-    values: list[float] = []
-    for source in (candidate, score_details):
-        for name in (key, *aliases):
-            if name not in source:
-                continue
-            try:
-                values.append(float(source.get(name) or 0.0))
-            except (TypeError, ValueError):
-                continue
-    return max(values) if values else 0.0
 
 
-def _candidate_policy_score(candidate: dict[str, Any], score_details: dict[str, Any] | None = None) -> float:
-    details = _dict(score_details if score_details is not None else candidate.get("score_details"))
-    keyword_score = _candidate_score_component(candidate, details, "keyword_score", "score")
-    embedding_score = _candidate_score_component(candidate, details, "embedding_score")
-    substring_score = _candidate_score_component(candidate, details, "substring_score")
-    if _embedding_disabled():
-        # M-1: 显式关闭 embedding 时按可用信号权重重新归一化。否则 embedding 权重
-        # （0.55）计 0，满分只剩 0.45 < T_DIRECT，decide_reuse 几乎全拒，使
-        # EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS 这个文档化开关形同失效。
-        total_weight = HYBRID_BM25_WEIGHT + HYBRID_SUBSTRING_WEIGHT
-        component_score = (
-            HYBRID_BM25_WEIGHT * keyword_score + HYBRID_SUBSTRING_WEIGHT * substring_score
-        ) / max(total_weight, 1e-9)
-    else:
-        component_score = (
-            HYBRID_BM25_WEIGHT * keyword_score
-            + HYBRID_EMBEDDING_WEIGHT * embedding_score
-            + HYBRID_SUBSTRING_WEIGHT * substring_score
-        )
-    if component_score <= 0.0:
-        fallback = _candidate_score_component(candidate, details, "policy_score")
-        if fallback > 0.0:
-            component_score = fallback
-    return round(max(0.0, min(1.0, float(component_score))), 4)
 
 
 def _global_reuse_candidate_rank(candidate: dict[str, Any]) -> tuple[float, float, float, float, float]:
@@ -4135,23 +3585,6 @@ def _average_rgb(image: Any) -> tuple[int, int, int]:
     return tuple(int(value) for value in stat.mean[:3])
 
 
-def _ratio_value(value: str) -> float:
-    value = _clean_text(value).lower()
-    if not value:
-        return 0.0
-    parts = re.split(r"[:/x×]", value)
-    if len(parts) == 2:
-        try:
-            width = float(parts[0])
-            height = float(parts[1])
-        except ValueError:
-            return 0.0
-        return width / height if width > 0 and height > 0 else 0.0
-    try:
-        parsed = float(value)
-    except ValueError:
-        return 0.0
-    return parsed if parsed > 0 else 0.0
 
 
 def _optional_float(value: Any) -> float | None:
@@ -4169,11 +3602,6 @@ def _clamp_score(value: Any) -> float:
     return max(0.0, min(1.0, score))
 
 
-def _optional_int(value: Any) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
 
 
 def _new_reuse_debug_record(
@@ -5093,140 +4521,49 @@ def _target_embedding_text(asset: dict[str, Any]) -> str:
     return _page_retrieval_text(asset)
 
 
-def _embedding_query_text(text: str) -> str:
-    text = _clean_text(text)
-    if not text:
-        return ""
-    return f"Instruct: 根据图片需求检索可复用的教学图片素材\nQuery: {text}"
 
 
-def _embedding_disabled() -> bool:
-    value = _clean_text(os.environ.get("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS")).lower()
-    return value in {"1", "true", "yes", "on"}
 
 
-def _reuse_backend() -> str:
-    return _clean_text(os.environ.get("EDUPPTX_REUSE_BACKEND")).lower() or "json"
+from edupptx.reuse._backend import (
+    _ASSET_STORE_CACHE,
+    _ASSET_STORE_LOCK,
+    _get_asset_store,
+    _reuse_backend,
+    _use_sqlite_backend,
+)
+from edupptx.reuse import _embedding as _reuse_embedding
+from edupptx.reuse._embedding import (
+    _EMBEDDING_MODEL_CACHE,
+    _EMBEDDING_MODEL_LOCK,
+    _embedding_missing_caption_review_item,
+    _embedding_model_name,
+    _embedding_model_sidecar_matches,
+    _embedding_query_text,
+    _embedding_refs_match,
+    _embedding_sidecar_model_name,
+    _embedding_text_hash,
+    _encode_embedding_texts,
+    _ensure_ai_image_embedding_index,
+    _load_embedding_model,
+    _read_ai_image_embedding_index,
+    _read_npz_embedding_index,
+    _relative_output_path,
+    _write_embedding_missing_caption_review,
+    write_ai_image_embedding_index,
+)
 
 
-_ASSET_STORE_CACHE: dict[str, Any] = {}
-_ASSET_STORE_LOCK = threading.Lock()
 
 
-def _use_sqlite_backend(library_root: Path) -> bool:
-    """True when EDUPPTX_REUSE_BACKEND=sqlite and a library.db exists for this root."""
-    if _reuse_backend() != "sqlite":
-        return False
-    from edupptx.materials.asset_store import library_db_exists
-
-    return library_db_exists(library_root)
 
 
-def _get_asset_store(library_root: Path):
-    from edupptx.materials.asset_store import AssetStore
-
-    key = str(Path(library_root).expanduser().resolve())
-    with _ASSET_STORE_LOCK:
-        store = _ASSET_STORE_CACHE.get(key)
-        if store is None:
-            store = AssetStore(library_root)
-            store.connect()
-            _ASSET_STORE_CACHE[key] = store
-        return store
 
 
-def _embedding_model_name(model_name: str | None = None) -> str:
-    configured = _clean_text(os.environ.get("EDUPPTX_AI_IMAGE_EMBEDDING_MODEL"))
-    return configured or _clean_text(model_name) or DEFAULT_EMBEDDING_MODEL
 
 
-def _embedding_sidecar_model_name(model_name: str | None = None) -> str:
-    if model_name is None:
-        model = _embedding_model_name()
-    else:
-        model = _clean_text(model_name)
-        if not model:
-            return ""
-    for part in Path(model.replace("\\", "/")).parts:
-        if part.startswith("models--"):
-            pieces = [piece for piece in part.split("--") if piece]
-            if pieces:
-                return pieces[-1]
-    name = Path(model.replace("\\", "/")).name
-    return name or model
 
 
-def _embedding_text_hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-
-def _embedding_model_sidecar_matches(
-    stored_model: Any,
-    current_model: str,
-    stored_identity: Any = None,
-) -> bool:
-    del stored_identity
-    return _embedding_sidecar_model_name(_clean_text(stored_model)) == _embedding_sidecar_model_name(
-        current_model
-    )
-
-
-def _load_embedding_model(model_name: str = DEFAULT_EMBEDDING_MODEL) -> Any:
-    model_name = _embedding_model_name(model_name)
-    with _EMBEDDING_MODEL_LOCK:
-        cached = _EMBEDDING_MODEL_CACHE.get(model_name)
-        if cached is not None:
-            return cached
-        from sentence_transformers import SentenceTransformer
-
-        PROGRESS_LOGGER.info("AI image embedding model load start: model={}", model_name)
-        model = SentenceTransformer(model_name)
-        _EMBEDDING_MODEL_CACHE[model_name] = model
-        PROGRESS_LOGGER.info("AI image embedding model load done: model={}", model_name)
-        return model
-
-
-def _encode_embedding_texts(
-    texts: list[str],
-    *,
-    model_name: str = DEFAULT_EMBEDDING_MODEL,
-    query: bool = False,
-) -> Any:
-    model_name = _embedding_model_name(model_name)
-    cleaned = [_clean_text(text) for text in texts if _clean_text(text)]
-    if not cleaned:
-        raise ValueError("empty embedding texts")
-    if query:
-        cleaned = [_embedding_query_text(text) for text in cleaned]
-    model = _load_embedding_model(model_name)
-    log_encode = len(cleaned) > 1 or not query
-    if log_encode:
-        PROGRESS_LOGGER.info(
-            "AI image embedding encode start: texts={}, query={}, model={}",
-            len(cleaned),
-            bool(query),
-            model_name,
-        )
-    with _EMBEDDING_MODEL_LOCK:
-        vectors = model.encode(
-            cleaned,
-            batch_size=DEFAULT_EMBEDDING_BATCH_SIZE,
-            convert_to_numpy=True,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-        )
-    if log_encode:
-        PROGRESS_LOGGER.info(
-            "AI image embedding encode done: texts={}, query={}, model={}",
-            len(cleaned),
-            bool(query),
-            model_name,
-        )
-    import numpy as np
-
-    if len(vectors.shape) == 1:
-        vectors = vectors.reshape(1, -1)
-    return np.asarray(vectors, dtype="float32")
 
 
 def _build_match_key(asset: dict[str, Any]) -> str:
@@ -5476,18 +4813,6 @@ def _strip_empty_match_fields(asset: dict[str, Any]) -> dict[str, Any]:
 
 
 
-def _clean_background_route(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-    route: dict[str, Any] = {}
-    for key in _BACKGROUND_ROUTE_FIELDS:
-        text = _clean_text(value.get(key))
-        if text:
-            route[key] = text
-    color_terms = _as_string_list(value.get("color_terms"))
-    if color_terms:
-        route["color_terms"] = _dedupe_terms(color_terms)
-    return route
 
 
 
@@ -5556,9 +4881,6 @@ def _background_route_terms(asset: dict[str, Any]) -> list[str]:
 
 
 
-def _background_color_bias(asset: dict[str, Any]) -> str:
-    route = _clean_background_route(asset.get("background_route"))
-    return _clean_text(route.get("background_color_bias"))
 
 
 def _strip_background_color_bias_from_prompt(prompt: str, color_bias: str) -> str:
@@ -5673,19 +4995,6 @@ def _rank_reuse_candidates(
     return scored[: max(1, int(limit or DEFAULT_REUSE_CANDIDATE_LIMIT))]
 
 
-def _cached_base_reuse_score_details(
-    target: dict[str, Any],
-    candidate: dict[str, Any],
-    score_details_cache: dict[int, dict[str, Any]] | None,
-) -> dict[str, Any]:
-    if score_details_cache is None:
-        return _score_reuse_candidate_details(target, candidate)
-    cache_key = id(candidate)
-    details = score_details_cache.get(cache_key)
-    if details is None:
-        details = _score_reuse_candidate_details(target, candidate)
-        score_details_cache[cache_key] = details
-    return details
 
 
 def _query_embedding_cache_paths(cache_dir: str | Path) -> tuple[Path, Path]:
@@ -5834,7 +5143,7 @@ def _rank_embedding_candidates(
             cache_key = f"{model_name}:{purpose}:{text}"
             if cache_key in query_embedding_cache:
                 return query_embedding_cache[cache_key]
-            encoded = _encode_embedding_texts([text], query=True)[0]
+            encoded = _reuse_embedding._encode_embedding_texts([text], query=True)[0]
             query_embedding_cache[cache_key] = encoded
             disk_cache_dirty = True
             return encoded
@@ -6086,53 +5395,10 @@ def _rank_hybrid_reuse_candidates(
     return results[: max(1, int(limit or DEFAULT_REUSE_CANDIDATE_LIMIT))]
 
 
-def _copy_transform_policy(target: dict[str, Any], candidate: dict[str, Any], *, reason: str) -> dict[str, Any]:
-    return {
-        "decision": "accept",
-        "mode": "copy",
-        "crop_loss": 0.0,
-        "transform_penalty": 0.0,
-        "candidate_aspect_ratio": _asset_aspect_ratio_label(candidate),
-        "target_aspect_ratio": _asset_aspect_ratio_label(target),
-        "reason": reason,
-    }
 
 
-def _reuse_transform_policy(target: dict[str, Any], candidate: dict[str, Any], *, reason: str) -> dict[str, Any]:
-    target_bucket = normalize_aspect_bucket(_asset_aspect_ratio_label(target))
-    candidate_bucket = normalize_aspect_bucket(_asset_aspect_ratio_label(candidate))
-    if target_bucket == candidate_bucket and target_bucket in _ASPECT_REUSE_BUCKET_VALUES:
-        return _copy_transform_policy(target, candidate, reason=reason)
-    if (target_bucket, candidate_bucket) not in ALLOWED_CROSS_ASPECT_RATIO_REUSE_PAIRS:
-        return _copy_transform_policy(target, candidate, reason=reason)
-
-    policy = {
-        "decision": "accept",
-        "mode": "transparent_pad",
-        "crop_loss": round(_aspect_ratio_loss(target, candidate), 4),
-        "transform_penalty": ASPECT_RATIO_ADJACENT_PENALTY,
-        "candidate_aspect_ratio": candidate_bucket,
-        "target_aspect_ratio": target_bucket,
-        "reason": "transparent_pad_cross_aspect",
-    }
-    target_size = _target_transform_size(target)
-    if target_size is not None:
-        policy["target_width"], policy["target_height"] = target_size
-    return policy
 
 
-def _target_transform_size(target: dict[str, Any]) -> tuple[int, int] | None:
-    for width_key, height_key in (
-        ("target_width", "target_height"),
-        ("padded_width", "padded_height"),
-        ("actual_width", "actual_height"),
-        ("width", "height"),
-    ):
-        width = _optional_int(target.get(width_key))
-        height = _optional_int(target.get(height_key))
-        if width and height and width > 0 and height > 0:
-            return width, height
-    return None
 
 
 def _reuse_size_distance(target: dict[str, Any], candidate: dict[str, Any]) -> float:
@@ -6217,63 +5483,12 @@ def _eligible_reuse_assets(
     return eligible, summary
 
 
-def _reuse_hard_filter_reject_reason(target: dict[str, Any], candidate: dict[str, Any]) -> str:
-    target_group = _normalize_binary_reuse_group(target.get("strict_reuse_group"), default="")
-    candidate_group = _normalize_binary_reuse_group(candidate.get("strict_reuse_group"), default="")
-    if target_group == _CONTENT_REUSE_GROUP:
-        return "material_category_skip"
-    if candidate_group == _CONTENT_REUSE_GROUP:
-        return "candidate_material_category_skip"
-    if target_group and candidate_group and target_group != candidate_group:
-        return "strict_reuse_group_mismatch"
-
-    subject_decision = _subject_scope_decision(target, candidate)
-
-    penalty = _aspect_ratio_penalty(target, candidate)
-    if penalty < 0:
-        return "aspect_ratio_too_far"
-
-    if not subject_decision["compatible"]:
-        return "subject_mismatch"
-    return ""
 
 
 
 
 
 
-def _subject_scope_decision(target: Any, candidate: Any) -> dict[str, Any]:
-    target_subject = _asset_subject_value(target)
-    candidate_subject = _asset_subject_value(candidate)
-    candidate_general = _asset_general_value(candidate)
-    general_missing = candidate_general is None
-    defaulted_from_other = bool(candidate_subject == _OTHER_SUBJECT)
-
-    if candidate_general is True:
-        mode = "general"
-        compatible = True
-    elif defaulted_from_other:
-        mode = "subject_other_default"
-        compatible = True
-    elif target_subject in _KNOWN_SUBJECTS and candidate_subject == target_subject:
-        mode = "same_subject"
-        compatible = True
-    elif target_subject == _OTHER_SUBJECT:
-        mode = "target_subject_unknown"
-        compatible = False
-    else:
-        mode = "subject_mismatch"
-        compatible = False
-
-    return {
-        "compatible": compatible,
-        "subject_filter_mode": mode,
-        "target_subject": target_subject,
-        "candidate_subject": candidate_subject,
-        "candidate_general": candidate_general,
-        "general_missing": general_missing,
-        "general_defaulted_from_subject_other": defaulted_from_other,
-    }
 
 
 def _subject_scope_compatible(target_subject: Any, candidate_subject: Any) -> bool:
@@ -6282,263 +5497,22 @@ def _subject_scope_compatible(target_subject: Any, candidate_subject: Any) -> bo
 
 
 
-def _score_reuse_candidate_details(
-    target: dict[str, Any],
-    candidate: dict[str, Any],
-) -> dict[str, Any]:
-    if _clean_text(target.get("asset_kind")) != _clean_text(candidate.get("asset_kind")):
-        return {"score": 0.0, "reject_reason": "asset_kind_mismatch"}
-    if _is_background_asset(target):
-        return _score_background_reuse_candidate_details(target, candidate)
-
-    subject_filter = _subject_scope_decision(target, candidate)
-    hard_reject = _reuse_hard_filter_reject_reason(target, candidate)
-    transform_policy = _reuse_transform_policy(target, candidate, reason="aspect_ratio_aligned")
-    if hard_reject:
-        return {
-            "score": 0.0,
-            "reject_reason": hard_reject,
-            "subject_filter": subject_filter,
-            "transform_policy": transform_policy,
-            "content_match_score": 0.0,
-            "route_score": 0.0,
-            "route_hits": [],
-            "core_score": 0.0,
-            "core_hits": [],
-            "missing_core_groups": [],
-            "aspect_score": 0.0,
-            "raw_score_before_transform_penalty": 0.0,
-        }
-
-    target_text = _page_retrieval_text(target)
-    candidate_text = _page_retrieval_text(candidate)
-    bm25_score, bm25_hits = _bm25_similarity_with_hits(
-        _bm25_tokens_from_values([target_text]),
-        _bm25_tokens_from_values([candidate_text]),
-    )
-    substring_score, substring_hits = _background_substring_similarity(
-        _background_text_terms(target_text),
-        candidate_text,
-    )
-    score = _weighted_hybrid_signal(
-        bm25_score=bm25_score,
-        embedding_score=None,
-        substring_score=substring_score,
-        use_hybrid=True,
-    )
-    if score <= 0:
-        return {
-            "score": 0.0,
-            "reject_reason": "no_retrieval_text_match",
-            "subject_filter": subject_filter,
-            "content_match_score": 0.0,
-            "route_score": 0.0,
-            "route_hits": [],
-            "core_score": bm25_score,
-            "core_hits": bm25_hits,
-            "missing_core_groups": [],
-            "aspect_score": 1.0,
-            "transform_policy": transform_policy,
-            "raw_score_before_transform_penalty": 0.0,
-        }
-    return {
-        "score": max(0.0, min(1.0, score)),
-        "reject_reason": "",
-        "subject_filter": subject_filter,
-        "content_match_score": max(0.0, min(1.0, score)),
-        "route_score": 0.0,
-        "route_hits": [],
-        "core_score": bm25_score,
-        "core_hits": bm25_hits,
-        "missing_core_groups": [],
-        "aspect_score": 1.0,
-        "transform_policy": transform_policy,
-        "raw_score_before_transform_penalty": max(0.0, min(1.0, score)),
-    }
 
 
-def _score_background_reuse_candidate_details(
-    target: dict[str, Any],
-    candidate: dict[str, Any],
-    *,
-    prompt_embedding_score: float | None = None,
-    prompt_substring_score: float | None = None,
-    color_bias_embedding_score: float | None = None,
-) -> dict[str, Any]:
-    if _clean_text(target.get("asset_kind")) != _clean_text(candidate.get("asset_kind")):
-        return {"score": 0.0, "reject_reason": "asset_kind_mismatch"}
-
-    subject_filter = _subject_scope_decision(target, candidate)
-    hard_reject = _reuse_hard_filter_reject_reason(target, candidate)
-    transform_policy = _copy_transform_policy(target, candidate, reason="aspect_ratio_aligned")
-    if hard_reject:
-        return {
-            "score": 0.0,
-            "reject_reason": hard_reject,
-            "subject_filter": subject_filter,
-            "background_reuse_score": 0.0,
-            "background_prompt_match_score": 0.0,
-            "background_prompt_bm25_score": 0.0,
-            "background_prompt_bm25_hits": [],
-            "background_prompt_embedding_score": _optional_score(prompt_embedding_score),
-            "background_prompt_substring_score": 0.0,
-            "background_prompt_substring_hits": [],
-            "background_color_bias_used": False,
-            "background_color_bias_match_score": 0.0,
-            "background_color_bias_bm25_score": 0.0,
-            "background_color_bias_bm25_hits": [],
-            "background_color_bias_embedding_score": _optional_score(color_bias_embedding_score),
-            "background_color_bias_substring_score": 0.0,
-            "background_color_bias_substring_hits": [],
-            "content_match_score": 0.0,
-            "route_score": 0.0,
-            "route_hits": [],
-            "core_score": 0.0,
-            "core_hits": [],
-            "missing_core_groups": [],
-            "aspect_score": 0.0,
-            "transform_policy": transform_policy,
-            "raw_score_before_transform_penalty": 0.0,
-        }
-
-    prompt_bm25_score, prompt_bm25_hits = _bm25_similarity_with_hits(
-        _background_prompt_query_tokens(target),
-        _background_prompt_doc_tokens(candidate),
-    )
-    local_prompt_substring_score, prompt_substring_hits = _background_substring_similarity(
-        _background_prompt_query_terms(target),
-        _background_retrieval_text(candidate),
-    )
-    prompt_substring = max(_optional_score(prompt_substring_score), local_prompt_substring_score)
-    prompt_embedding = _optional_score(prompt_embedding_score)
-    prompt_match_score = _weighted_hybrid_signal(
-        bm25_score=prompt_bm25_score,
-        embedding_score=prompt_embedding_score,
-        substring_score=prompt_substring,
-        use_hybrid=True,
-    )
-
-    target_bias = _background_color_bias(target)
-    candidate_bias = _background_color_bias(candidate)
-    color_bias_used = bool(target_bias and candidate_bias)
-    color_bias_bm25_score = 0.0
-    color_bias_bm25_hits: list[dict[str, str]] = []
-    color_bias_substring_score = 0.0
-    color_bias_substring_hits: list[str] = []
-    color_bias_match_score = 0.0
-    if color_bias_used:
-        color_bias_bm25_score, color_bias_bm25_hits = _bm25_similarity_with_hits(
-            _bm25_tokens_from_values([target_bias]),
-            _bm25_tokens_from_values([candidate_bias]),
-        )
-        color_bias_substring_score, color_bias_substring_hits = _background_substring_similarity(
-            _background_text_terms(target_bias),
-            candidate_bias,
-        )
-        color_bias_match_score = _weighted_hybrid_signal(
-            bm25_score=color_bias_bm25_score,
-            embedding_score=color_bias_embedding_score,
-            substring_score=color_bias_substring_score,
-            use_hybrid=True,
-        )
-
-    raw_score = (
-        BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT * prompt_match_score
-        + BACKGROUND_COLOR_BIAS_REUSE_WEIGHT * color_bias_match_score
-        if color_bias_used
-        else prompt_match_score
-    )
-    score = raw_score
-    reject_reason = "" if score > 0 else "no_background_prompt_match"
-    return {
-        "score": max(0.0, min(1.0, score)),
-        "reject_reason": reject_reason,
-        "subject_filter": subject_filter,
-        "background_reuse_score": max(0.0, min(1.0, score)),
-        "background_prompt_match_score": max(0.0, min(1.0, prompt_match_score)),
-        "background_prompt_bm25_score": prompt_bm25_score,
-        "background_prompt_bm25_hits": prompt_bm25_hits,
-        "background_prompt_embedding_score": prompt_embedding,
-        "background_prompt_substring_score": prompt_substring,
-        "background_prompt_substring_hits": prompt_substring_hits,
-        "background_color_bias_used": color_bias_used,
-        "background_color_bias_match_score": max(0.0, min(1.0, color_bias_match_score)),
-        "background_color_bias_bm25_score": color_bias_bm25_score,
-        "background_color_bias_bm25_hits": color_bias_bm25_hits,
-        "background_color_bias_embedding_score": _optional_score(color_bias_embedding_score),
-        "background_color_bias_substring_score": color_bias_substring_score,
-        "background_color_bias_substring_hits": color_bias_substring_hits,
-        "content_match_score": max(0.0, min(1.0, prompt_match_score)),
-        "route_score": 0.0,
-        "route_hits": [],
-        "core_score": prompt_bm25_score,
-        "core_hits": prompt_bm25_hits,
-        "missing_core_groups": [],
-        "aspect_score": 0.0,
-        "transform_policy": transform_policy,
-        "raw_score_before_transform_penalty": max(0.0, min(1.0, raw_score)),
-    }
 
 
-def _background_prompt_query_terms(asset: dict[str, Any]) -> list[str]:
-    return _background_text_terms(_background_retrieval_text(asset))
 
 
-def _background_prompt_query_tokens(asset: dict[str, Any]) -> list[str]:
-    return _bm25_tokens_from_values(_background_prompt_query_terms(asset))
 
 
-def _background_prompt_doc_tokens(asset: dict[str, Any]) -> list[str]:
-    return _bm25_tokens_from_values([_background_retrieval_text(asset)])
 
 
-def _background_text_terms(text: str) -> list[str]:
-    text = _clean_text(text)
-    if not text:
-        return []
-    terms = [text]
-    terms.extend(re.findall(r"[A-Za-z0-9]+|[一-鿿]{2,}", text.casefold()))
-    return _dedupe_terms(terms)[:16]
 
 
-def _background_substring_similarity(query_terms: list[str], candidate_text: str) -> tuple[float, list[str]]:
-    terms = [term for term in _dedupe_terms(query_terms) if len(term.replace(" ", "")) >= 2]
-    candidate_text = _clean_text(candidate_text)
-    if not terms or not candidate_text:
-        return 0.0, []
-    hits = [term for term in terms if _term_in_text(term, candidate_text)]
-    return len(hits) / max(1, len(terms)), hits[:16]
 
 
-def _optional_score(value: float | None) -> float:
-    if value is None:
-        return 0.0
-    try:
-        return max(0.0, min(1.0, float(value)))
-    except (TypeError, ValueError):
-        return 0.0
 
 
-def _weighted_hybrid_signal(
-    *,
-    bm25_score: float,
-    embedding_score: float | None,
-    substring_score: float | None,
-    use_hybrid: bool,
-) -> float:
-    bm25_score = _optional_score(bm25_score)
-    if not use_hybrid:
-        return bm25_score
-
-    total_weight = HYBRID_BM25_WEIGHT
-    total_score = HYBRID_BM25_WEIGHT * bm25_score
-    if embedding_score is not None:
-        total_weight += HYBRID_EMBEDDING_WEIGHT
-        total_score += HYBRID_EMBEDDING_WEIGHT * _optional_score(embedding_score)
-    if substring_score is not None:
-        total_weight += HYBRID_SUBSTRING_WEIGHT
-        total_score += HYBRID_SUBSTRING_WEIGHT * _optional_score(substring_score)
-    return total_score / max(total_weight, 1e-9)
 
 
 def _semantic_terms(
@@ -6634,65 +5608,10 @@ def _debug_score_details(details: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _bm25_tokens_from_values(values: list[Any]) -> list[str]:
-    tokens: list[str] = []
-    for value in values:
-        if isinstance(value, (list, tuple)):
-            tokens.extend(_bm25_tokens_from_values(list(value)))
-            continue
-        text = _clean_text(value)
-        if not text:
-            continue
-        lowered = text.casefold()
-        tokens.append(lowered)
-        for part in re.findall(r"[A-Za-z0-9]+|[一-鿿]+", lowered):
-            tokens.append(part)
-            if re.fullmatch(r"[一-鿿]+", part):
-                max_n = min(4, len(part))
-                for n in range(2, max_n + 1):
-                    for idx in range(0, len(part) - n + 1):
-                        tokens.append(part[idx:idx + n])
-            elif len(part) > 3:
-                for sub in re.split(r"[_\-\s]+", part):
-                    if sub:
-                        tokens.append(sub)
-    return _dedupe_terms(tokens)
 
 
-def _bm25_similarity_with_hits(query_tokens: list[str], doc_tokens: list[str]) -> tuple[float, list[dict[str, str]]]:
-    query = [token for token in query_tokens if token]
-    doc = [token for token in doc_tokens if token]
-    if not query or not doc:
-        return 0.0, []
-
-    score = _bm25_score(query, doc, [doc, query])
-    self_score = _bm25_score(query, query, [doc, query])
-    normalized = 0.0 if self_score <= 0 else min(1.0, score / self_score)
-    doc_terms = set(doc)
-    hits = [{"target": token, "candidate": token} for token in _dedupe_terms(query) if token in doc_terms]
-    return normalized, hits[:24]
 
 
-def _bm25_score(query_tokens: list[str], doc_tokens: list[str], corpus_docs: list[list[str]]) -> float:
-    if not query_tokens or not doc_tokens or not corpus_docs:
-        return 0.0
-    k1 = 1.5
-    b = 0.75
-    doc_len = len(doc_tokens)
-    avgdl = sum(len(doc) for doc in corpus_docs) / max(1, len(corpus_docs))
-    frequencies: dict[str, int] = {}
-    for token in doc_tokens:
-        frequencies[token] = frequencies.get(token, 0) + 1
-    score = 0.0
-    for token in _dedupe_terms(query_tokens):
-        freq = frequencies.get(token, 0)
-        if freq <= 0:
-            continue
-        containing_docs = sum(1 for doc in corpus_docs if token in set(doc))
-        idf = math.log(1 + (len(corpus_docs) - containing_docs + 0.5) / (containing_docs + 0.5))
-        denom = freq + k1 * (1 - b + b * doc_len / max(avgdl, 1e-9))
-        score += idf * (freq * (k1 + 1)) / max(denom, 1e-9)
-    return score
 
 
 def _overlap_score(target_terms: list[str], candidate_terms: list[str]) -> float:
@@ -6731,10 +5650,6 @@ def _candidate_hybrid_text(asset: dict[str, Any]) -> str:
     return _page_retrieval_text(asset)
 
 
-def _term_in_text(term: str, text: str) -> bool:
-    term = _clean_keyword(term).replace(" ", "")
-    text = _clean_text(text).replace(" ", "")
-    return bool(term and text and term in text)
 
 
 def _transform_rejects_candidate(candidate: dict[str, Any]) -> bool:
@@ -7017,35 +5932,8 @@ def _aspect_ratio_score(target: dict[str, Any], candidate: dict[str, Any]) -> fl
     return 0.6 if target_orientation and target_orientation == candidate_orientation else 0.2
 
 
-def normalize_aspect_bucket(value: Any = "", *, width: float | int | None = None, height: float | int | None = None) -> str:
-    if width is not None and height is not None:
-        try:
-            w = float(width)
-            h = float(height)
-        except (TypeError, ValueError):
-            ratio = 0.0
-        else:
-            ratio = w / h if w > 0 and h > 0 else 0.0
-    else:
-        text = _clean_text(value)
-        if text in ASPECT_REUSE_BUCKETS:
-            return text
-        ratio = _ratio_value(text)
-    if ratio <= 0:
-        return "other"
-    best_bucket = "other"
-    best_loss = float("inf")
-    for bucket, bucket_ratio in _ASPECT_REUSE_BUCKET_VALUES.items():
-        loss = 1.0 - min(ratio, bucket_ratio) / max(ratio, bucket_ratio)
-        if loss < best_loss:
-            best_loss = loss
-            best_bucket = bucket
-    return best_bucket if best_loss <= _ASPECT_BUCKET_MAX_LOSS else "other"
 
 
-def _aspect_ratio_value(asset: dict[str, Any]) -> float:
-    bucket = normalize_aspect_bucket(_asset_aspect_ratio_label(asset))
-    return _ASPECT_REUSE_BUCKET_VALUES.get(bucket, 0.0)
 
 
 def _aspect_ratio_diff(target: dict[str, Any], candidate: dict[str, Any]) -> float:
@@ -7056,22 +5944,8 @@ def _aspect_ratio_diff(target: dict[str, Any], candidate: dict[str, Any]) -> flo
     return abs(t - c) / t
 
 
-def _aspect_ratio_loss(target: dict[str, Any], candidate: dict[str, Any]) -> float:
-    t = _aspect_ratio_value(target)
-    c = _aspect_ratio_value(candidate)
-    if t <= 0 or c <= 0:
-        return 1.0
-    return 1.0 - min(t, c) / max(t, c)
 
 
-def _aspect_ratio_penalty(target: dict[str, Any], candidate: dict[str, Any]) -> float:
-    target_bucket = normalize_aspect_bucket(_asset_aspect_ratio_label(target))
-    candidate_bucket = normalize_aspect_bucket(_asset_aspect_ratio_label(candidate))
-    if target_bucket == candidate_bucket and target_bucket in _ASPECT_REUSE_BUCKET_VALUES:
-        return 0.0
-    if (target_bucket, candidate_bucket) in ALLOWED_CROSS_ASPECT_RATIO_REUSE_PAIRS:
-        return ASPECT_RATIO_ADJACENT_PENALTY
-    return -1.0
 
 
 def _ratio_orientation(value: str) -> str:
@@ -7267,211 +6141,12 @@ def _route_match_index_for_target(
     return split_index, split_path, split_assets, route_group
 
 
-def _embedding_refs_match(stored_refs: Any, expected_refs: list[dict[str, str]]) -> bool | None:
-    if not isinstance(stored_refs, list):
-        return None
-    stored_pairs: list[tuple[str, str]] = []
-    for item in stored_refs:
-        if not isinstance(item, dict):
-            return False
-        asset_id = _clean_text(item.get("asset_id"))
-        text_hash = _clean_text(item.get("embedding_text_hash"))
-        if not asset_id or not text_hash:
-            return False
-        stored_pairs.append((asset_id, text_hash))
-    expected_pairs = [
-        (_clean_text(item.get("asset_id")), _clean_text(item.get("embedding_text_hash")))
-        for item in expected_refs
-    ]
-    return sorted(stored_pairs) == sorted(expected_pairs)
 
 
-def _ensure_ai_image_embedding_index(match_index: dict[str, Any], library_root: Path) -> dict[str, Any]:
-    model_name = _embedding_model_name()
-    sidecar_model_name = _embedding_sidecar_model_name(model_name)
-    if _embedding_disabled():
-        return {"enabled": False, "reason": "disabled_by_environment", "model": sidecar_model_name}
-    index_path = library_root / DEFAULT_EMBEDDING_INDEX_FILENAME
-    meta_path = library_root / DEFAULT_EMBEDDING_META_FILENAME
-    meta = _read_json_if_exists(meta_path)
-    assets = match_index.get("assets")
-    match_asset_count = len(assets) if isinstance(assets, list) else 0
-    expected_count = 0
-    expected_background_color_bias_count = 0
-    expected_asset_refs: list[dict[str, str]] = []
-    expected_background_color_bias_refs: list[dict[str, str]] = []
-    if isinstance(assets, list):
-        for asset in assets:
-            if not isinstance(asset, dict):
-                continue
-            asset_id = _clean_text(asset.get("asset_id"))
-            text = _asset_embedding_text(asset)
-            if asset_id and text:
-                expected_count += 1
-                expected_asset_refs.append(
-                    {
-                        "asset_id": asset_id,
-                        "embedding_text_hash": _embedding_text_hash(text),
-                    }
-                )
-            color_bias = _background_color_bias(asset) if _is_background_asset(asset) else ""
-            if asset_id and color_bias:
-                expected_background_color_bias_count += 1
-                expected_background_color_bias_refs.append(
-                    {
-                        "asset_id": asset_id,
-                        "embedding_text_hash": _embedding_text_hash(color_bias),
-                    }
-                )
-    non_embeddable_asset_count = max(0, match_asset_count - expected_count)
-    asset_refs_match = _embedding_refs_match(meta.get("assets"), expected_asset_refs)
-    background_color_bias_refs_match = _embedding_refs_match(
-        meta.get("background_color_bias_assets"),
-        expected_background_color_bias_refs,
-    )
-    if (
-        index_path.exists()
-        and meta_path.exists()
-        and int(meta.get("schema_version") or 0) == EMBEDDING_INDEX_SCHEMA_VERSION
-        and _embedding_model_sidecar_matches(meta.get("model"), model_name, meta.get("model_identity"))
-        and int(meta.get("asset_count") or -1) == expected_count
-        and int(meta.get("background_color_bias_asset_count") or 0) == expected_background_color_bias_count
-        and (asset_refs_match is not False)
-        and (background_color_bias_refs_match is not False)
-    ):
-        return {
-            "enabled": True,
-            "model": sidecar_model_name,
-            "index_path": _relative_output_path(index_path),
-            "meta_path": _relative_output_path(meta_path),
-            "asset_count": expected_count,
-            "match_asset_count": match_asset_count,
-            "non_embeddable_asset_count": non_embeddable_asset_count,
-            "background_color_bias_asset_count": int(meta.get("background_color_bias_asset_count") or 0),
-            "vector_dim": int(meta.get("vector_dim") or 0),
-        }
-    PROGRESS_LOGGER.info(
-        "AI image embedding index build start: library={}, assets={}, embeddable_assets={}, model={}, reason=missing_or_stale_sidecar",
-        library_root,
-        match_asset_count,
-        expected_count,
-        model_name,
-    )
-    report = write_ai_image_embedding_index(match_index, library_root)
-    if report.get("enabled"):
-        PROGRESS_LOGGER.info(
-            "AI image embedding index build done: library={}, assets={}, model={}, vector_dim={}",
-            library_root,
-            report.get("asset_count", 0),
-            report.get("model", model_name),
-            report.get("vector_dim", 0),
-        )
-    else:
-        PROGRESS_LOGGER.warning(
-            "AI image embedding index build skipped: library={}, reason={}, model={}",
-            library_root,
-            report.get("reason") or "unknown",
-            report.get("model", model_name),
-        )
-    return report
 
 
-def _read_npz_embedding_index(library_root: Path) -> dict[str, Any] | None:
-    """Direct .npz embedding read with NO backend branch — for write-time db sync."""
-    index_path = library_root / DEFAULT_EMBEDDING_INDEX_FILENAME
-    meta_path = library_root / DEFAULT_EMBEDDING_META_FILENAME
-    if not index_path.exists() or not meta_path.exists():
-        return None
-    try:
-        import numpy as np
-
-        data = np.load(index_path, allow_pickle=False)
-        asset_ids = [str(item) for item in data["asset_ids"].tolist()]
-        vectors = np.asarray(data["vectors"], dtype="float32")
-        bg_ids: list[str] = []
-        bg_vectors = None
-        if "background_color_bias_asset_ids" in data.files and "background_color_bias_vectors" in data.files:
-            bg_ids = [str(item) for item in data["background_color_bias_asset_ids"].tolist()]
-            bg_vectors = np.asarray(data["background_color_bias_vectors"], dtype="float32")
-        meta = _read_json_if_exists(meta_path)
-    except Exception:
-        return None
-    return {
-        "asset_ids": asset_ids,
-        "vectors": vectors,
-        "background_color_bias_asset_ids": bg_ids,
-        "background_color_bias_vectors": bg_vectors,
-        "meta": meta,
-    }
 
 
-def _read_ai_image_embedding_index(library_root: Path) -> tuple[dict[str, Any], dict[str, Any]]:
-    model_name = _embedding_model_name()
-    sidecar_model_name = _embedding_sidecar_model_name(model_name)
-    if _embedding_disabled():
-        return {}, {"enabled": False, "reason": "disabled_by_environment", "model": sidecar_model_name}
-    if _use_sqlite_backend(library_root):
-        try:
-            index = _get_asset_store(library_root).load_embedding_index()
-        except Exception as exc:
-            return {}, {
-                "enabled": False,
-                "reason": "embedding_index_read_failed",
-                "model": sidecar_model_name,
-                "warnings": [f"sqlite embedding index could not be read: {str(exc)[:180]}"],
-            }
-        if not index or index.get("vectors") is None or not (index.get("asset_ids") or []):
-            return {}, {"enabled": False, "reason": "missing_embedding_index", "model": sidecar_model_name}
-        meta = index.get("meta") or {}
-        vectors = index.get("vectors")
-        return index, {
-            "enabled": True,
-            "model": _embedding_sidecar_model_name(meta.get("model")) or sidecar_model_name,
-            "backend": "sqlite",
-            "asset_count": len(index.get("asset_ids") or []),
-            "background_color_bias_asset_count": len(index.get("background_color_bias_asset_ids") or []),
-            "vector_dim": int(vectors.shape[1]) if hasattr(vectors, "shape") and len(vectors.shape) == 2 else 0,
-        }
-    index_path = library_root / DEFAULT_EMBEDDING_INDEX_FILENAME
-    meta_path = library_root / DEFAULT_EMBEDDING_META_FILENAME
-    if not index_path.exists() or not meta_path.exists():
-        return {}, {"enabled": False, "reason": "missing_embedding_index", "model": sidecar_model_name}
-    try:
-        import numpy as np
-
-        data = np.load(index_path, allow_pickle=False)
-        asset_ids = [str(item) for item in data["asset_ids"].tolist()]
-        vectors = np.asarray(data["vectors"], dtype="float32")
-        background_color_bias_asset_ids: list[str] = []
-        background_color_bias_vectors = None
-        if "background_color_bias_asset_ids" in data.files and "background_color_bias_vectors" in data.files:
-            background_color_bias_asset_ids = [
-                str(item) for item in data["background_color_bias_asset_ids"].tolist()
-            ]
-            background_color_bias_vectors = np.asarray(data["background_color_bias_vectors"], dtype="float32")
-        meta = _read_json_if_exists(meta_path)
-    except Exception as exc:
-        return {}, {
-            "enabled": False,
-            "reason": "embedding_index_read_failed",
-            "model": sidecar_model_name,
-            "warnings": [f"AI image embedding index could not be read: {str(exc)[:180]}"],
-        }
-    return {
-        "asset_ids": asset_ids,
-        "vectors": vectors,
-        "background_color_bias_asset_ids": background_color_bias_asset_ids,
-        "background_color_bias_vectors": background_color_bias_vectors,
-        "meta": meta,
-    }, {
-        "enabled": True,
-        "model": _embedding_sidecar_model_name(meta.get("model")) or sidecar_model_name,
-        "index_path": _relative_output_path(index_path),
-        "meta_path": _relative_output_path(meta_path),
-        "asset_count": len(asset_ids),
-        "background_color_bias_asset_count": len(background_color_bias_asset_ids),
-        "vector_dim": int(vectors.shape[1]) if len(vectors.shape) == 2 else 0,
-    }
 
 
 def _file_sha256(path: Path) -> str:
