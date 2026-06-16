@@ -244,8 +244,8 @@ find_reusable_ai_image_asset → 硬过滤 eligible_assets
 - 测试体量大头压在复用库；主线靠 `test_agent_*`（高度 monkeypatch）间接覆盖，非真实端到端。
 - `test_reuse/` 评测依赖真实库 + 真实 LLM key，非 CI 可无人值守。
 
-### 🔴 CLAUDE.md Self-Validation 要求未落地
-CLAUDE.md 末尾要求把 `tests/visual_qa.py` 集成进主管线"生成后自动校验"。实际：`visual_qa.py` 只有 bbox/重叠检测函数（未实现 LibreOffice→PNG 闭环），`agent.py` grep 不到任何 visual_qa 调用，要求的 `tests/test_visual_qa.py` 不存在。**明确未兑现的需求。**
+### ℹ️ visual_qa：刻意保持轻量（非债）
+`tests/visual_qa.py` 的 `analyze_pptx` 已实现对最终 PPTX 的几何体检（4 类：重叠>10% / 文字溢出 / 越界 / 空旷>70%，severity 分级），并接进 `edupptx gen --qa`（opt-in）。**重型集成（LibreOffice→PNG 像素渲染 + pytest 包装 + 每次生成自动跑）按用户决定刻意不做**（太重：系统依赖 + 需真实 LLM + 拖慢主路径）。原 CLAUDE.md `## Self-Validation` 指令已移除。
 
 ### 🟡 文档与代码不符（多处）
 - **reviewer 不是迭代循环**：CLAUDE.md 说 reviewer 是"cairosvg 直渲→审查→修→再生成迭代循环"，实际 `review_and_fix_svg` 是**单次 LLM pass**（无渲染、无重试、无收敛判断）。cairosvg 只在 `pptx_assembler.py`/`icons.py`，不在 review 回路。
