@@ -5072,34 +5072,13 @@ def _embedding_query_text(text: str) -> str:
 
 
 
-def _reuse_backend() -> str:
-    return _clean_text(os.environ.get("EDUPPTX_REUSE_BACKEND")).lower() or "json"
-
-
-_ASSET_STORE_CACHE: dict[str, Any] = {}
-_ASSET_STORE_LOCK = threading.Lock()
-
-
-def _use_sqlite_backend(library_root: Path) -> bool:
-    """True when EDUPPTX_REUSE_BACKEND=sqlite and a library.db exists for this root."""
-    if _reuse_backend() != "sqlite":
-        return False
-    from edupptx.materials.asset_store import library_db_exists
-
-    return library_db_exists(library_root)
-
-
-def _get_asset_store(library_root: Path):
-    from edupptx.materials.asset_store import AssetStore
-
-    key = str(Path(library_root).expanduser().resolve())
-    with _ASSET_STORE_LOCK:
-        store = _ASSET_STORE_CACHE.get(key)
-        if store is None:
-            store = AssetStore(library_root)
-            store.connect()
-            _ASSET_STORE_CACHE[key] = store
-        return store
+from edupptx.reuse._backend import (
+    _ASSET_STORE_CACHE,
+    _ASSET_STORE_LOCK,
+    _get_asset_store,
+    _reuse_backend,
+    _use_sqlite_backend,
+)
 
 
 def _embedding_model_name(model_name: str | None = None) -> str:
