@@ -299,22 +299,6 @@ LOGGER = logging.getLogger(__name__)
 
 
 
-def _relative_output_context(context: dict[str, Any] | None) -> dict[str, Any]:
-    payload = dict(context or {})
-    for key in (
-        "reuse_library_dir",
-        "library_dir",
-        "asset_root",
-        "output_root",
-        "session_dir",
-        "plan_file",
-        "debug_path",
-        "match_index_path",
-        "db_path",
-    ):
-        if key in payload:
-            payload[key] = _relative_output_path(payload.get(key))
-    return payload
 
 @dataclass
 class ReuseSearchContext:
@@ -2814,22 +2798,6 @@ def _reuse_audit_payload(
     }
 
 
-def _flat_reuse_audit_fields(audit: dict[str, Any]) -> dict[str, Any]:
-    keys = (
-        "target_theme",
-        "target_topic_refs",
-        "target_page_number",
-        "candidate_theme",
-        "candidate_topic_refs",
-        "same_topic_ref",
-        "topic_ref_overlap",
-        "target_aspect_ratio",
-        "candidate_aspect_ratio",
-        "same_theme",
-        "cross_theme",
-        "candidate_available",
-    )
-    return {key: audit.get(key) for key in keys if key in audit}
 
 
 def _materialize_plan_reuse_match(
@@ -3112,78 +3080,17 @@ def _average_rgb(image: Any) -> tuple[int, int, int]:
 
 
 
-def _optional_float(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
 
 
 
 
 
 
-def _new_reuse_debug_record(
-    *,
-    library_root: Path,
-    db_path: Path,
-    match_index_path: Path,
-    asset_count: int,
-    candidate_limit: int,
-    min_keyword_score: float | None,
-    context: dict[str, Any] | None,
-) -> dict[str, Any]:
-    return {
-        "ts": datetime.now(timezone.utc).isoformat(),
-        "context": _relative_output_context(context),
-        "asset_root": _relative_output_path(library_root),
-        "db_path": _relative_output_path(db_path),
-        "match_index_path": _relative_output_path(match_index_path),
-        "asset_count": asset_count,
-        "candidate_limit": candidate_limit,
-        "min_keyword_score": min_keyword_score,
-        "threshold_used": min_keyword_score,
-        "target": {},
-        "candidate_scores": [],
-        "ranked_candidates": [],
-        "policy_input_candidates": [],
-        "decision": {},
-    }
 
 
-# The reuse-debug log is appended from per-slide policy worker threads (the
-# `_phase2_materials` ThreadPoolExecutor). Each append is a read-modify-write
-# of one shared JSON file, so concurrent writers without coordination silently
-# lose records (last-writer-wins on the in-memory `queries` list) and clobber a
-# shared `.tmp` staging file (interleaved writes / FileNotFoundError on
-# os.replace). Serialize the whole RMW under one lock and stage to a per-thread
-# temp name so an interrupted writer can never corrupt a sibling's staging file.
-_REUSE_DEBUG_LOCK = threading.Lock()
+# _REUSE_DEBUG_LOCK + debug-record writers moved to reuse/_debug.py (re-imported below).
 
 
-def _append_reuse_debug_record(path: str | Path | None, record: dict[str, Any]) -> None:
-    if path is None or not record:
-        return
-    debug_path = Path(path).expanduser()
-    with _REUSE_DEBUG_LOCK:
-        debug_path.parent.mkdir(parents=True, exist_ok=True)
-        existing = _read_json_if_exists(debug_path)
-        queries = existing.get("queries") if isinstance(existing, dict) else None
-        if not isinstance(queries, list):
-            queries = []
-        queries.append(record)
-        payload = {
-            "schema_version": 1,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
-            "queries": queries,
-        }
-        temp_path = debug_path.with_name(
-            f"{debug_path.name}.{os.getpid()}.{threading.get_ident()}.tmp"
-        )
-        temp_path.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8"
-        )
-        os.replace(temp_path, debug_path)
 
 
 def _normalize_reuse_debug_mode(value: Any) -> str:
@@ -3196,139 +3103,16 @@ def _normalize_reuse_debug_mode(value: Any) -> str:
     return "full"
 
 
-def _reuse_debug_record_for_mode(
-    record: dict[str, Any],
-    *,
-    mode: str,
-    match: dict[str, Any] | None,
-) -> dict[str, Any]:
-    if mode == "off":
-        return {}
-    if mode == "full":
-        return record
-
-    summary = {
-        "ts": record.get("ts"),
-        "debug_mode": "summary",
-        "context": record.get("context") or {},
-        "asset_root": record.get("asset_root"),
-        "db_path": record.get("db_path"),
-        "match_index_path": record.get("match_index_path"),
-        "asset_count": record.get("asset_count"),
-        "candidate_limit": record.get("candidate_limit"),
-        "threshold_used": record.get("threshold_used"),
-        "llm_review_enabled": bool(record.get("llm_review_enabled")),
-        "embedding_index": record.get("embedding_index") or {},
-        "target": record.get("target") or {},
-        "decision": record.get("decision") or {},
-    }
-    if match is not None:
-        summary["reused_asset"] = _reuse_debug_candidate_summary(
-            _reuse_debug_candidate_payload(match, threshold=_optional_float(record.get("threshold_used")))
-        )
-    else:
-        summary["no_reuse_top_candidates"] = _reuse_no_match_top_candidate_summaries(record, limit=2)
-    return summary
-
-
-def _reuse_no_match_top_candidate_summaries(record: dict[str, Any], *, limit: int = 2) -> list[dict[str, Any]]:
-    for key in ("policy_candidates", "policy_input_candidates", "ranked_candidates", "candidate_scores"):
-        candidates = record.get(key)
-        if isinstance(candidates, list) and candidates:
-            return [_reuse_debug_candidate_summary(item) for item in candidates[:limit] if isinstance(item, dict)]
-    return []
-
-
-def _reuse_debug_candidate_summary(candidate: dict[str, Any]) -> dict[str, Any]:
-    policy = _dict(candidate.get("reuse_policy"))
-    audit = _dict(candidate.get("reuse_audit"))
-    llm_review_performed = bool(policy.get("llm_review_performed"))
-    payload = {
-        "asset_id": candidate.get("asset_id"),
-        "image_path": _relative_output_path(candidate.get("image_path")),
-        "candidate_image_path": _relative_output_path(candidate.get("candidate_image_path")),
-        "caption": _asset_caption(candidate),
-        "reuse_level": candidate.get("reuse_level"),
-        "keyword_score": candidate.get("keyword_score"),
-        "embedding_score": candidate.get("embedding_score"),
-        "substring_score": candidate.get("substring_score"),
-        "policy_score": candidate.get("policy_score"),
-        "hybrid_score": candidate.get("hybrid_score"),
-        "score_gap_to_threshold": candidate.get("score_gap_to_threshold"),
-        "reuse_audit": audit,
-        "llm_reuse_review_performed": llm_review_performed,
-        "reuse_policy": {
-            "decision": policy.get("decision"),
-            "reason": policy.get("reason"),
-            "missing": policy.get("missing") or [],
-            "conflicts": policy.get("conflicts") or [],
-            "review_items": policy.get("review_items") or [],
-            "llm_review_required": bool(policy.get("llm_review_required")),
-            "llm_review_performed": llm_review_performed,
-            "llm_review": policy.get("llm_review") or {},
-        },
-        "strict_reuse_occupancy": candidate.get("strict_reuse_occupancy") or {},
-    }
-    payload.update(_flat_reuse_audit_fields(audit))
-    return payload
 
 
 
 
-def _reuse_debug_candidate_payload(candidate: dict[str, Any], *, threshold: float | None = None) -> dict[str, Any]:
-    payload = _reuse_debug_asset_payload(_dict(candidate.get("asset")))
-    payload["keyword_score"] = candidate.get("keyword_score")
-    payload["embedding_score"] = candidate.get("embedding_score")
-    payload["substring_score"] = candidate.get("substring_score")
-    payload["policy_score"] = candidate.get("policy_score") or _candidate_policy_score(candidate)
-    payload["hybrid_score"] = candidate.get("hybrid_score")
-    payload["rrf_score"] = candidate.get("rrf_score")
-    payload["retrieval_ranks"] = candidate.get("retrieval_ranks") or {}
-    payload["substring_hits"] = candidate.get("substring_hits") or []
-    payload["candidate_image_path"] = _relative_output_path(candidate.get("candidate_image_path"))
-    payload["score_details"] = candidate.get("score_details") or {}
-    payload["reuse_policy"] = candidate.get("reuse_policy") or {}
-    payload["reuse_audit"] = candidate.get("reuse_audit") or {}
-    payload.update(_flat_reuse_audit_fields(_dict(payload["reuse_audit"])))
-    payload["llm_reuse_review_performed"] = bool(_dict(payload["reuse_policy"]).get("llm_review_performed"))
-    payload["strict_reuse_occupancy"] = candidate.get("strict_reuse_occupancy") or {}
-    if threshold is not None:
-        payload["threshold_used"] = threshold
-        payload["score_gap_to_threshold"] = round(float(candidate.get("keyword_score") or 0.0) - threshold, 4)
-    return payload
 
 
-def _collect_reuse_candidate_debug(
-    target: dict[str, Any],
-    assets: list[Any],
-    library_root: Path,
-    score_details_cache: dict[int, dict[str, Any]] | None = None,
-) -> list[dict[str, Any]]:
-    rows: list[dict[str, Any]] = []
-    for item in assets:
-        if not isinstance(item, dict):
-            continue
-        payload = _reuse_debug_asset_payload(item)
-        image_path = _resolve_asset_image_path(library_root, item.get("image_path"))
-        if image_path is None or not image_path.exists():
-            payload["keyword_score"] = 0.0
-            payload["candidate_image_path"] = _relative_output_path(image_path)
-            payload["score_details"] = {
-                "score": 0.0,
-                "reject_reason": "missing_candidate_image",
-            }
-            rows.append(payload)
-            continue
 
-        details = _cached_base_reuse_score_details(target, item, score_details_cache)
-        score = float(details.get("score") or 0.0)
-        payload["keyword_score"] = round(score, 4)
-        payload["candidate_image_path"] = _relative_output_path(image_path)
-        payload["score_details"] = _debug_score_details(details)
-        rows.append(payload)
 
-    rows.sort(key=lambda item: float(item.get("keyword_score") or 0.0), reverse=True)
-    return rows
+
+
 
 
 def enrich_ai_image_asset_db_keywords(
@@ -3950,6 +3734,19 @@ from edupptx.reuse._build import (
     build_ai_image_asset_db,
     normalize_grade_info,
     write_ai_image_match_index,
+)
+from edupptx.reuse._debug import (
+    _REUSE_DEBUG_LOCK,
+    _append_reuse_debug_record,
+    _collect_reuse_candidate_debug,
+    _flat_reuse_audit_fields,
+    _new_reuse_debug_record,
+    _optional_float,
+    _relative_output_context,
+    _reuse_debug_candidate_payload,
+    _reuse_debug_candidate_summary,
+    _reuse_debug_record_for_mode,
+    _reuse_no_match_top_candidate_summaries,
 )
 
 
