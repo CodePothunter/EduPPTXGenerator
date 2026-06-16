@@ -109,7 +109,7 @@ def test_load_reuse_library_is_single_flight(monkeypatch, tmp_path):
             "embedding_status": {},
         }
 
-    monkeypatch.setattr(ai_db, "_build_reuse_library_payload", fake_build)
+    monkeypatch.setattr("edupptx.reuse._decide._build_reuse_library_payload", fake_build)
 
     def load(_):
         start.wait()  # release all readers simultaneously
