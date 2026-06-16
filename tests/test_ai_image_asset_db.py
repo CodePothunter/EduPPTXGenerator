@@ -1660,13 +1660,14 @@ def test_embed_rescue_floor_default_is_0_70():
 def test_embed_rescue_floor_respects_env(monkeypatch):
     import importlib
 
+    # EMBED_RESCUE_FLOOR 现定义在 reuse._decide（随裁决层迁出），reload 该模块以重读 env。
     monkeypatch.setenv("EDUPPTX_REUSE_EMBED_RESCUE_FLOOR", "0.60")
-    import edupptx.materials.ai_image_asset_db as db
+    import edupptx.reuse._decide as dec
 
-    importlib.reload(db)
-    assert db.EMBED_RESCUE_FLOOR == 0.60
+    importlib.reload(dec)
+    assert dec.EMBED_RESCUE_FLOOR == 0.60
     monkeypatch.delenv("EDUPPTX_REUSE_EMBED_RESCUE_FLOOR", raising=False)
-    importlib.reload(db)
+    importlib.reload(dec)
 
 
 def test_embedding_rescue_decision_rescues_high_embedding():

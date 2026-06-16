@@ -110,7 +110,7 @@ def test_eligible_static_subset_cached_per_group_subject(monkeypatch):
         calls["n"] += 1
         return orig(t, c)
 
-    monkeypatch.setattr(db, "_reuse_static_filter_reject_reason", counting)
+    monkeypatch.setattr("edupptx.reuse._decide._reuse_static_filter_reject_reason", counting)
 
     ctx = db.ReuseSearchContext()
     db._eligible_reuse_assets(target_16_9, assets, ctx, "lib", "C02_generic_subject_object")
@@ -198,9 +198,9 @@ def _patch_rankers_empty(monkeypatch, seen=None):
             return []
         return fake
 
-    monkeypatch.setattr(db, "_rank_reuse_candidates", capture("bm25"))
-    monkeypatch.setattr(db, "_rank_embedding_candidates", capture("embedding"))
-    monkeypatch.setattr(db, "_rank_substring_candidates", capture("substring"))
+    monkeypatch.setattr("edupptx.reuse._decide._rank_reuse_candidates", capture("bm25"))
+    monkeypatch.setattr("edupptx.reuse._decide._rank_embedding_candidates", capture("embedding"))
+    monkeypatch.setattr("edupptx.reuse._decide._rank_substring_candidates", capture("substring"))
 
 
 def test_rankers_only_see_eligible_assets(tmp_path, monkeypatch):
@@ -229,7 +229,7 @@ def test_debug_scan_skipped_when_no_debug_path(tmp_path, monkeypatch):
         calls["n"] += 1
         return orig(*args, **kwargs)
 
-    monkeypatch.setattr(db, "_collect_reuse_candidate_debug", counting)
+    monkeypatch.setattr("edupptx.reuse._decide._collect_reuse_candidate_debug", counting)
 
     _run_search(tmp_path, debug_path=None)
     assert calls["n"] == 0  # 生产路径跳过
