@@ -13,6 +13,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import edupptx.materials.ai_image_asset_db as ai_db
+import edupptx.reuse._scoring as scoring_mod
 from edupptx.materials.ai_image_asset_db import (
     ReuseSearchContext,
     _load_reuse_library_for_search,
@@ -45,13 +46,16 @@ def test_rank_hybrid_reuses_cached_score_details(monkeypatch, tmp_path):
     real_details = ai_db._score_reuse_candidate_details(target, asset)
 
     calls = {"n": 0}
-    orig = ai_db._score_reuse_candidate_details
+    # Patch where the function is defined (reuse._scoring): _cached_base_reuse_score_details
+    # calls it via its own module global, so patching the ai_image_asset_db re-export
+    # would not intercept the internal call after the A5 scoring extraction.
+    orig = scoring_mod._score_reuse_candidate_details
 
     def counting(t, c):
         calls["n"] += 1
         return orig(t, c)
 
-    monkeypatch.setattr(ai_db, "_score_reuse_candidate_details", counting)
+    monkeypatch.setattr(scoring_mod, "_score_reuse_candidate_details", counting)
 
     cache = {id(asset): real_details}
     results = _rank_hybrid_reuse_candidates(
