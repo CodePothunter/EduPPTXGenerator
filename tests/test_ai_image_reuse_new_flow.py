@@ -501,16 +501,18 @@ def test_candidate_policy_score_is_single_final_policy_score():
         "score_details": {"keyword_score": 0.0},
     }
 
-    assert _candidate_policy_score(candidate) == 0.67
+    # R2b: substring 已折叠进 keyword_score，policy 只用 bm25+embedding 并按权重归一化：
+    # (0.25*0.6 + 0.55*0.8) / (0.25+0.55) = 0.59/0.80 = 0.7375。独立 substring_score 不再计入。
+    assert _candidate_policy_score(candidate) == 0.7375
 
 
 def test_candidate_policy_score_renormalizes_when_embeddings_disabled(monkeypatch):
-    # M-1: 显式关闭 embedding 时，纯 BM25+substring 满分应归一化到 1.0，
-    # 而不是被 embedding 的 0.55 权重压到 0.45（否则 decide_reuse 几乎全拒）。
+    # M-1: 显式关闭 embedding 时只剩 bm25，归一后 = keyword_score（不被 embedding 0.55 权重压低）。
     candidate = {"keyword_score": 1.0, "embedding_score": 0.0, "substring_score": 1.0}
 
     monkeypatch.delenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", raising=False)
-    assert _candidate_policy_score(candidate) == 0.45  # 默认：embedding 缺失惩罚封顶
+    # R2b: embedding 启用但为 0 → (0.25*1.0 + 0.55*0)/0.80 = 0.3125。substring 不再独立计入。
+    assert _candidate_policy_score(candidate) == 0.3125
 
     monkeypatch.setenv("EDUPPTX_DISABLE_AI_IMAGE_EMBEDDINGS", "1")
-    assert _candidate_policy_score(candidate) == 1.0  # 关闭后按可用权重归一化
+    assert _candidate_policy_score(candidate) == 1.0  # 关闭 embedding 后归一 = keyword_score
