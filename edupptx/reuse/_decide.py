@@ -57,6 +57,7 @@ from edupptx.reuse._normalize import (
     _normalize_binary_reuse_group,
 )
 from edupptx.reuse._scoring import (
+    corpus_stats_for_library,
     _aspect_ratio_loss,
     _aspect_ratio_penalty,
     _bm25_tokens_from_values,
@@ -1128,6 +1129,10 @@ def find_reusable_ai_image_asset(
 
     target = _enrich_reuse_target_keywords_once(target, keyword_client, target_keyword_cache)
     target = _normalize_asset_for_match(target, for_target=True) or target
+    # R3: 把全库 BM25 语料统计（term→df / N / avgdl，按 library_root 缓存）挂到 target，
+    # 供 _score_reuse_candidate_details 的 bm25 用真实 IDF（取代 [doc,query] 伪语料 N=2）。
+    if isinstance(assets, list) and assets:
+        target["_corpus_stats"] = corpus_stats_for_library(library_root, assets)
     if _is_skip_reuse_group(target.get("strict_reuse_group")):
         debug_record["target"] = _reuse_debug_asset_payload(target)
         if _collect_candidates_only:
