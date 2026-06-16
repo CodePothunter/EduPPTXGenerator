@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from edupptx.materials.reuse_policy import normalize_reuse_policy_fields
 
 from edupptx.reuse._util import (
     _clean_keyword,
@@ -13,10 +12,8 @@ from edupptx.reuse._util import (
     _dict,
 )
 from edupptx.reuse._constants import (
-    BACKGROUND_REUSE_GATE_THRESHOLDS,
     BM25_GRAY_REUSE_THRESHOLD,
     EMBEDDING_GRAY_REUSE_THRESHOLD,
-    PAGE_IMAGE_REUSE_GATE_THRESHOLDS,
     TEXT_OVERLAP_EMBEDDING_THRESHOLD,
     TEXT_OVERLAP_REVIEW_THRESHOLD,
     VISUAL_GENERIC_REUSE_THRESHOLD,
@@ -275,202 +272,6 @@ def _target_is_background_like(target: dict[str, Any]) -> bool:
     value = _clean_text(_dict(target).get("page_type")).casefold()
     return bool(value and value in _BACKGROUND_LIKE_ROLE_TOKENS)
 
-
-def _reuse_gate_profile(target: dict[str, Any] | None) -> str:
-    if target is None:
-        return "medium"
-    if _clean_text(target.get("asset_kind")) == "background":
-        return "background"
-    policy = normalize_reuse_policy_fields(_dict(target))
-    group = _normalize_binary_reuse_group(_dict(target).get("strict_reuse_group"), default="")
-    has_strict_knowledge = group in {
-        "C01_irreplaceable_entity_event_action",
-    }
-    # Background-like page_image slot: declared via page_type by
-    # ``_target_is_background_like``. Treated as ambience (loose) rather
-    # than precise content for LLM-review purposes. Guarded by absence of
-    # strict knowledge so a "background_1 with 写字" slot keeps strict.
-    if _target_is_background_like(_dict(target)) and not has_strict_knowledge:
-        return "loose"
-
-    level = _clean_text(policy.get("reuse_level")) or "medium"
-    if level == "strict":
-        return "strict_knowledge"
-    return level if level in {"loose", "medium"} else "medium"
-
-
-def _reuse_gate_thresholds_for_target(target: dict[str, Any] | None) -> dict[str, float]:
-    profile = _reuse_gate_profile(target)
-    if profile == "background":
-        return BACKGROUND_REUSE_GATE_THRESHOLDS
-    return PAGE_IMAGE_REUSE_GATE_THRESHOLDS.get(profile, PAGE_IMAGE_REUSE_GATE_THRESHOLDS["medium"])
-
-
-def _is_text_overlap_review_slot(target: dict[str, Any] | None, candidate: dict[str, Any]) -> bool:
-    candidate_asset = _dict(candidate.get("asset")) or _dict(candidate)
-    groups = {
-        _normalize_binary_reuse_group(_dict(target).get("strict_reuse_group"), default="") if target is not None else "",
-        _normalize_binary_reuse_group(candidate_asset.get("strict_reuse_group"), default=""),
-    }
-    return bool(groups & {
-        "C01_irreplaceable_entity_event_action",
-    })
-
-
-def _reuse_gate_reason(
-    *,
-    target: dict[str, Any] | None,
-    candidate: dict[str, Any],
-    keyword_score: float,
-    embedding_score: float,
-    substring_score: float,
-) -> str:
-    if _transform_rejects_candidate(candidate):
-        return ""
-    thresholds = _reuse_gate_thresholds_for_target(target)
-    if keyword_score < thresholds["keyword_min"] and embedding_score < thresholds["embedding_min"]:
-        return ""
-    if keyword_score >= thresholds["keyword_high"]:
-        return "keyword_high_review"
-    if embedding_score >= thresholds["embedding_high"]:
-        return "embedding_high_review"
-    if (
-        _is_text_overlap_review_slot(target, candidate)
-        and substring_score >= TEXT_OVERLAP_REVIEW_THRESHOLD
-        and embedding_score >= TEXT_OVERLAP_EMBEDDING_THRESHOLD
-    ):
-        return "text_overlap_embedding_review"
-    if keyword_score >= thresholds["keyword_gray_high"] and embedding_score >= thresholds["embedding_gray_low"]:
-        return "keyword_led_gray_review"
-    if embedding_score >= thresholds["embedding_gray_high"] and keyword_score >= thresholds["keyword_gray_low"]:
-        return "embedding_led_gray_review"
-    return ""
-
-
-def _reuse_acceptance_reason(
-    candidate: dict[str, Any],
-    threshold: float | None = None,
-    *,
-    target: dict[str, Any] | None = None,
-) -> str:
-    threshold = VISUAL_GENERIC_REUSE_THRESHOLD if threshold is None else float(threshold)
-    if _transform_rejects_candidate(candidate):
-        return ""
-    if candidate.get("background_reuse_score") is not None:
-        keyword_score = float(candidate.get("background_reuse_score") or candidate.get("keyword_score") or 0.0)
-        embedding_score = float(candidate.get("embedding_score") or 0.0)
-        substring_score = float(candidate.get("substring_score") or 0.0)
-        return (
-            "background_threshold"
-            if _reuse_gate_reason(
-                target=target,
-                candidate=candidate,
-                keyword_score=keyword_score,
-                embedding_score=embedding_score,
-                substring_score=substring_score,
-            )
-            else ""
-        )
-
-    bm25_score = float(candidate.get("keyword_score") or 0.0)
-    embedding_score = float(candidate.get("embedding_score") or 0.0)
-    substring_score = float(candidate.get("substring_score") or 0.0)
-    thresholds = _reuse_gate_thresholds_for_target(target)
-    if bm25_score >= threshold and embedding_score >= thresholds["embedding_min"]:
-        return "bm25_threshold"
-    gate_reason = _reuse_gate_reason(
-        target=target,
-        candidate=candidate,
-        keyword_score=bm25_score,
-        embedding_score=embedding_score,
-        substring_score=substring_score,
-    )
-    if gate_reason:
-        return gate_reason
-    if _is_strict_embedding_review_candidate(target, candidate, embedding_score):
-        return "strict_embedding_review"
-    if _is_strict_semantic_gray_review_candidate(
-        target,
-        candidate,
-        bm25_score=bm25_score,
-        embedding_score=embedding_score,
-        substring_score=substring_score,
-    ):
-        return "strict_semantic_gray_review"
-    if bm25_score >= BM25_GRAY_REUSE_THRESHOLD and embedding_score >= EMBEDDING_GRAY_REUSE_THRESHOLD:
-        return "embedding_gray_zone"
-    if bm25_score >= max(0.0, threshold - 0.03) and substring_score >= 0.35 and embedding_score >= 0.62:
-        return "substring_embedding_gray_zone"
-    if _is_medium_embedding_review_candidate(target, candidate, embedding_score):
-        return "medium_embedding_review"
-    return ""
-
-
-def _is_strict_embedding_review_candidate(
-    target: dict[str, Any] | None,
-    candidate: dict[str, Any],
-    embedding_score: float,
-) -> bool:
-    # Threshold inlined from former reuse_policy.STRICT_EMBEDDING_REVIEW_THRESHOLD
-    if embedding_score < 0.78:
-        return False
-    asset = _dict(candidate.get("asset"))
-    if _clean_text(asset.get("asset_kind")) == "background":
-        return False
-    policies = [normalize_reuse_policy_fields(asset)]
-    if target is not None:
-        policies.append(normalize_reuse_policy_fields(_dict(target)))
-    return any(policy.get("reuse_level") == "strict" for policy in policies)
-
-
-def _is_strict_semantic_gray_review_candidate(
-    target: dict[str, Any] | None,
-    candidate: dict[str, Any],
-    *,
-    bm25_score: float,
-    embedding_score: float,
-    substring_score: float,
-) -> bool:
-    # Thresholds inlined from former reuse_policy constants
-    if target is None:
-        return False
-    if embedding_score < 0.70:  # STRICT_SEMANTIC_GRAY_REVIEW_THRESHOLD
-        return False
-    if bm25_score < 0.20 and substring_score < 0.25:  # STRICT_SEMANTIC_GRAY_BM25_THRESHOLD
-        return False
-
-    asset = _dict(candidate.get("asset"))
-    if _clean_text(asset.get("asset_kind")) == "background":
-        return False
-
-    target_theme = _clean_text(target.get("theme"))
-    candidate_theme = _clean_text(asset.get("theme"))
-    if not (target_theme and candidate_theme and target_theme == candidate_theme):
-        return False
-
-    policies = [
-        normalize_reuse_policy_fields(asset),
-        normalize_reuse_policy_fields(_dict(target)),
-    ]
-    return any(policy.get("reuse_level") == "strict" for policy in policies)
-
-
-def _is_medium_embedding_review_candidate(
-    target: dict[str, Any] | None,
-    candidate: dict[str, Any],
-    embedding_score: float,
-) -> bool:
-    # Threshold inlined from former reuse_policy.MEDIUM_EMBEDDING_REVIEW_THRESHOLD
-    if embedding_score < 0.80:
-        return False
-    asset = _dict(candidate.get("asset"))
-    if _clean_text(asset.get("asset_kind")) == "background":
-        return False
-    policies = [normalize_reuse_policy_fields(asset)]
-    if target is not None:
-        policies.append(normalize_reuse_policy_fields(_dict(target)))
-    levels = {_clean_text(policy.get("reuse_level")) for policy in policies}
-    return "strict" not in levels and bool(levels & {"loose", "medium"})
 
 
 def _aspect_ratio_score(target: dict[str, Any], candidate: dict[str, Any]) -> float:
