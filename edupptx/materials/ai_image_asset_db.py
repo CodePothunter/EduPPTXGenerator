@@ -347,25 +347,6 @@ from edupptx.reuse._context import ReuseSearchContext
 
 
 
-def _select_best_library_reuse_match(matches: list[dict[str, Any]]) -> dict[str, Any] | None:
-    if not matches:
-        return None
-
-    def rank(match: dict[str, Any]) -> tuple[float, float, float, float, float, float]:
-        policy = _dict(match.get("reuse_policy"))
-        decision = _clean_text(policy.get("decision"))
-        decision_rank = 2.0 if decision in {"direct_reuse", "full_match"} else 1.0 if decision == "generic_support" else 0.0
-        score_details = _dict(match.get("score_details"))
-        return (
-            decision_rank,
-            float(match.get("policy_score") or score_details.get("policy_score") or 0.0),
-            float(match.get("keyword_score") or 0.0),
-            float(match.get("hybrid_score") or score_details.get("hybrid_score") or 0.0),
-            float(match.get("embedding_score") or score_details.get("embedding_score") or 0.0),
-            -float(match.get("library_search_order") or 0),
-        )
-
-    return max(matches, key=rank)
 
 
 
@@ -536,12 +517,6 @@ def _select_best_library_reuse_match(matches: list[dict[str, Any]]) -> dict[str,
 
 
 
-def _effective_grade_band(asset: dict[str, Any]) -> str:
-    """存量资产 band=其他 但 grade_norm 已知时，派生出有效 band（避免幽灵 unknown 拦截）。"""
-    band = _normalize_grade_band_value(asset.get("grade_band"))
-    if band != _OTHER_GRADE:
-        return band
-    return grade_band_from_norm(asset.get("grade_norm"))
 
 
 
@@ -550,15 +525,6 @@ def _effective_grade_band(asset: dict[str, Any]) -> str:
 
 
 
-def _target_metadata_unknown_fields(asset: dict[str, Any]) -> list[str]:
-    unknown: list[str] = []
-    if _normalize_subject_value(asset.get("subject")) == _OTHER_SUBJECT:
-        unknown.append("subject")
-    if _normalize_grade_norm_value(asset.get("grade_norm")) == _OTHER_GRADE:
-        unknown.append("grade_norm")
-    if _effective_grade_band(asset) == _OTHER_GRADE:
-        unknown.append("grade_band")
-    return unknown
 
 
 def _target_unknown_fields_for_reuse(asset: dict[str, Any]) -> list[str]:
@@ -589,29 +555,6 @@ def _candidate_unknown_fields_for_reuse(
 
 
 
-def _clean_semantic_aliases(value: Any) -> dict[str, list[str]]:
-    aliases: dict[str, list[str]] = {}
-    if not isinstance(value, dict):
-        return aliases
-    for raw_key, raw_values in value.items():
-        key = _clean_keyword(raw_key)
-        if not key:
-            continue
-        terms = _keyword_list(raw_values, max_items=6)
-        if terms:
-            aliases[key] = terms
-    return aliases
-
-
-def _merge_semantic_aliases(*items: dict[str, list[str]]) -> dict[str, list[str]]:
-    merged: dict[str, list[str]] = {}
-    for aliases in items:
-        for key, values in aliases.items():
-            clean_key = _clean_keyword(key)
-            if not clean_key:
-                continue
-            merged[clean_key] = _dedupe_terms([*merged.get(clean_key, []), *values])[:8]
-    return merged
 
 
 
@@ -622,27 +565,8 @@ def _merge_semantic_aliases(*items: dict[str, list[str]]) -> dict[str, list[str]
 
 
 
-def _context_exclusions(asset: dict[str, Any]) -> set[str]:
-    grade = _clean_text(asset.get("grade"))
-    subject = _clean_text(asset.get("subject"))
-    grade_info = _grade_info_from_asset(asset)
-    exclusions = {
-        grade,
-        _clean_text(asset.get("grade_norm")),
-        _clean_text(asset.get("grade_band")),
-        _clean_text(grade_info.get("grade_norm")),
-        _clean_text(grade_info.get("grade_band")),
-        subject,
-        _unit_ref_for_asset(asset),
-    }
-    if grade and subject:
-        exclusions.add(f"{grade}{subject}")
-        exclusions.add(f"{grade} {subject}")
-    grade_norm = _clean_text(grade_info.get("grade_norm"))
-    if grade_norm and subject:
-        exclusions.add(f"{grade_norm}{subject}")
-        exclusions.add(f"{grade_norm} {subject}")
-    return {item for item in exclusions if item}
+
+
 
 
 
@@ -878,6 +802,35 @@ from edupptx.reuse._ingest import (
     ingest_ai_image_asset_library_from_output,
     update_ai_image_asset_library,
 )
+from edupptx.reuse._gates import (
+    _aspect_ratio_diff,
+    _aspect_ratio_score,
+    _clean_core_keyword_terms,
+    _clean_semantic_aliases,
+    _context_exclusions,
+    _effective_grade_band,
+    _extract_entity_from_visual_style_term,
+    _is_generic_core_term,
+    _is_medium_embedding_review_candidate,
+    _is_strict_embedding_review_candidate,
+    _is_strict_semantic_gray_review_candidate,
+    _is_text_overlap_review_slot,
+    _looks_like_style_or_usage_term,
+    _merge_semantic_aliases,
+    _overlap_score,
+    _overlap_score_with_hits,
+    _reuse_acceptance_reason,
+    _reuse_gate_profile,
+    _reuse_gate_reason,
+    _reuse_gate_thresholds_for_target,
+    _select_best_library_reuse_match,
+    _semantic_coverage,
+    _semantic_terms,
+    _subject_scope_compatible,
+    _target_is_background_like,
+    _target_metadata_unknown_fields,
+    _terms_match,
+)
 
 
 
@@ -902,57 +855,12 @@ from edupptx.reuse._ingest import (
 
 
 
-def _clean_core_keyword_terms(terms: list[str]) -> tuple[list[str], list[str]]:
-    core_terms: list[str] = []
-    style_terms: list[str] = []
-    for term in terms:
-        if _is_generic_core_term(term):
-            continue
-        if _looks_like_style_or_usage_term(term):
-            style_terms.append(term)
-            extracted = _extract_entity_from_visual_style_term(term)
-            if extracted and not _is_generic_core_term(extracted):
-                core_terms.append(extracted)
-            continue
-        core_terms.append(term)
-    return _dedupe_terms(core_terms), _dedupe_terms(style_terms)
 
 
-def _is_generic_core_term(term: str) -> bool:
-    normalized = _clean_keyword(term).casefold().replace(" ", "")
-    if not normalized:
-        return True
-    return normalized in {item.casefold().replace(" ", "") for item in _NOISE_TOKENS}
 
 
-def _looks_like_style_or_usage_term(term: str) -> bool:
-    normalized = _clean_keyword(term).casefold().replace(" ", "")
-    if not normalized:
-        return False
-    if any(marker.casefold() in normalized for marker in _CORE_USAGE_MARKERS):
-        return True
-    if any(marker.casefold() in normalized for marker in _CORE_STYLE_MARKERS):
-        return True
-    if any(form.casefold() in normalized for form in _VISUAL_FORM_MARKERS) and any(
-        marker.casefold() in normalized for marker in _STYLE_DESCRIPTOR_MARKERS
-    ):
-        return True
-    return False
 
 
-def _extract_entity_from_visual_style_term(term: str) -> str:
-    cleaned = _clean_keyword(term)
-    if not cleaned:
-        return ""
-    compact = cleaned.replace(" ", "")
-    for marker in _STYLE_DESCRIPTOR_MARKERS:
-        compact = compact.replace(marker, "")
-    for marker in _CORE_STYLE_MARKERS:
-        compact = compact.replace(marker, "")
-    for marker in _VISUAL_FORM_MARKERS:
-        if compact.endswith(marker):
-            compact = compact[: -len(marker)]
-    return _clean_keyword(compact)
 
 
 
@@ -1035,8 +943,6 @@ def _extract_entity_from_visual_style_term(term: str) -> str:
 
 
 
-def _subject_scope_compatible(target_subject: Any, candidate_subject: Any) -> bool:
-    return bool(_subject_scope_decision(target_subject, candidate_subject)["compatible"])
 
 
 
@@ -1059,36 +965,8 @@ def _subject_scope_compatible(target_subject: Any, candidate_subject: Any) -> bo
 
 
 
-def _semantic_terms(
-    asset: dict[str, Any],
-    field: str,
-    *,
-    fallback_fields: tuple[str, ...] = (),
-    max_items: int = 12,
-) -> list[str]:
-    terms = _keyword_list(asset.get(field), max_items=max_items)
-    if not terms:
-        for fallback in fallback_fields:
-            terms.extend(_keyword_list(asset.get(fallback), max_items=max_items))
-            if terms:
-                break
-    return _dedupe_terms(terms)[:max_items]
 
 
-def _semantic_coverage(
-    target_terms: list[str],
-    candidate_terms: list[str],
-    *,
-    neutral: float,
-) -> tuple[float, list[dict[str, str]], list[str]]:
-    if not target_terms:
-        return neutral, [], []
-    if not candidate_terms:
-        return 0.0, [], target_terms
-    score, hits = _overlap_score_with_hits(target_terms, candidate_terms)
-    matched = {_clean_keyword(item.get("target")) for item in hits}
-    missing = [term for term in target_terms if _clean_keyword(term) not in matched]
-    return score, hits, missing
 
 
 
@@ -1099,33 +977,10 @@ def _semantic_coverage(
 
 
 
-def _overlap_score(target_terms: list[str], candidate_terms: list[str]) -> float:
-    score, _hits = _overlap_score_with_hits(target_terms, candidate_terms)
-    return score
 
 
-def _overlap_score_with_hits(
-    target_terms: list[str],
-    candidate_terms: list[str],
-) -> tuple[float, list[dict[str, str]]]:
-    if not target_terms or not candidate_terms:
-        return 0.0, []
-    hits: list[dict[str, str]] = []
-    for target in target_terms:
-        matched = next((candidate for candidate in candidate_terms if _terms_match(target, candidate)), "")
-        if matched:
-            hits.append({"target": target, "candidate": matched})
-    return len(hits) / len(target_terms), hits
 
 
-def _terms_match(left: str, right: str) -> bool:
-    left = _clean_keyword(left)
-    right = _clean_keyword(right)
-    if not left or not right:
-        return False
-    if left == right:
-        return True
-    return min(len(left), len(right)) >= 2 and (left in right or right in left)
 
 
 
@@ -1141,244 +996,37 @@ def _terms_match(left: str, right: str) -> bool:
 # instead of substring matching against arbitrary slot strings.
 
 
-def _target_is_background_like(target: dict[str, Any]) -> bool:
-    """True iff the target's page_type declares it as a backdrop slot.
-
-    Single helper so the "background-like" classification has one place to
-    maintain. Matches exact token equality (after casefold), not substring
-    containment, to avoid false-positives like "background_decoration".
-    """
-
-    value = _clean_text(_dict(target).get("page_type")).casefold()
-    return bool(value and value in _BACKGROUND_LIKE_ROLE_TOKENS)
-
-
-def _reuse_gate_profile(target: dict[str, Any] | None) -> str:
-    if target is None:
-        return "medium"
-    if _clean_text(target.get("asset_kind")) == "background":
-        return "background"
-    policy = normalize_reuse_policy_fields(_dict(target))
-    group = _normalize_binary_reuse_group(_dict(target).get("strict_reuse_group"), default="")
-    has_strict_knowledge = group in {
-        "C01_irreplaceable_entity_event_action",
-    }
-    # Background-like page_image slot: declared via page_type by
-    # ``_target_is_background_like``. Treated as ambience (loose) rather
-    # than precise content for LLM-review purposes. Guarded by absence of
-    # strict knowledge so a "background_1 with 写字" slot keeps strict.
-    if _target_is_background_like(_dict(target)) and not has_strict_knowledge:
-        return "loose"
-
-    level = _clean_text(policy.get("reuse_level")) or "medium"
-    if level == "strict":
-        return "strict_knowledge"
-    return level if level in {"loose", "medium"} else "medium"
-
-
-
-def _reuse_gate_thresholds_for_target(target: dict[str, Any] | None) -> dict[str, float]:
-    profile = _reuse_gate_profile(target)
-    if profile == "background":
-        return BACKGROUND_REUSE_GATE_THRESHOLDS
-    return PAGE_IMAGE_REUSE_GATE_THRESHOLDS.get(profile, PAGE_IMAGE_REUSE_GATE_THRESHOLDS["medium"])
-
-
-def _is_text_overlap_review_slot(target: dict[str, Any] | None, candidate: dict[str, Any]) -> bool:
-    candidate_asset = _dict(candidate.get("asset")) or _dict(candidate)
-    groups = {
-        _normalize_binary_reuse_group(_dict(target).get("strict_reuse_group"), default="") if target is not None else "",
-        _normalize_binary_reuse_group(candidate_asset.get("strict_reuse_group"), default=""),
-    }
-    return bool(groups & {
-        "C01_irreplaceable_entity_event_action",
-    })
-
-
-def _reuse_gate_reason(
-    *,
-    target: dict[str, Any] | None,
-    candidate: dict[str, Any],
-    keyword_score: float,
-    embedding_score: float,
-    substring_score: float,
-) -> str:
-    if _transform_rejects_candidate(candidate):
-        return ""
-    thresholds = _reuse_gate_thresholds_for_target(target)
-    if keyword_score < thresholds["keyword_min"] and embedding_score < thresholds["embedding_min"]:
-        return ""
-    if keyword_score >= thresholds["keyword_high"]:
-        return "keyword_high_review"
-    if embedding_score >= thresholds["embedding_high"]:
-        return "embedding_high_review"
-    if (
-        _is_text_overlap_review_slot(target, candidate)
-        and substring_score >= TEXT_OVERLAP_REVIEW_THRESHOLD
-        and embedding_score >= TEXT_OVERLAP_EMBEDDING_THRESHOLD
-    ):
-        return "text_overlap_embedding_review"
-    if keyword_score >= thresholds["keyword_gray_high"] and embedding_score >= thresholds["embedding_gray_low"]:
-        return "keyword_led_gray_review"
-    if embedding_score >= thresholds["embedding_gray_high"] and keyword_score >= thresholds["keyword_gray_low"]:
-        return "embedding_led_gray_review"
-    return ""
-
-
-
-
-def _reuse_acceptance_reason(
-    candidate: dict[str, Any],
-    threshold: float | None = None,
-    *,
-    target: dict[str, Any] | None = None,
-) -> str:
-    threshold = VISUAL_GENERIC_REUSE_THRESHOLD if threshold is None else float(threshold)
-    if _transform_rejects_candidate(candidate):
-        return ""
-    if candidate.get("background_reuse_score") is not None:
-        keyword_score = float(candidate.get("background_reuse_score") or candidate.get("keyword_score") or 0.0)
-        embedding_score = float(candidate.get("embedding_score") or 0.0)
-        substring_score = float(candidate.get("substring_score") or 0.0)
-        return (
-            "background_threshold"
-            if _reuse_gate_reason(
-                target=target,
-                candidate=candidate,
-                keyword_score=keyword_score,
-                embedding_score=embedding_score,
-                substring_score=substring_score,
-            )
-            else ""
-        )
-
-    bm25_score = float(candidate.get("keyword_score") or 0.0)
-    embedding_score = float(candidate.get("embedding_score") or 0.0)
-    substring_score = float(candidate.get("substring_score") or 0.0)
-    thresholds = _reuse_gate_thresholds_for_target(target)
-    if bm25_score >= threshold and embedding_score >= thresholds["embedding_min"]:
-        return "bm25_threshold"
-    gate_reason = _reuse_gate_reason(
-        target=target,
-        candidate=candidate,
-        keyword_score=bm25_score,
-        embedding_score=embedding_score,
-        substring_score=substring_score,
-    )
-    if gate_reason:
-        return gate_reason
-    if _is_strict_embedding_review_candidate(target, candidate, embedding_score):
-        return "strict_embedding_review"
-    if _is_strict_semantic_gray_review_candidate(
-        target,
-        candidate,
-        bm25_score=bm25_score,
-        embedding_score=embedding_score,
-        substring_score=substring_score,
-    ):
-        return "strict_semantic_gray_review"
-    if bm25_score >= BM25_GRAY_REUSE_THRESHOLD and embedding_score >= EMBEDDING_GRAY_REUSE_THRESHOLD:
-        return "embedding_gray_zone"
-    if bm25_score >= max(0.0, threshold - 0.03) and substring_score >= 0.35 and embedding_score >= 0.62:
-        return "substring_embedding_gray_zone"
-    if _is_medium_embedding_review_candidate(target, candidate, embedding_score):
-        return "medium_embedding_review"
-    return ""
-
-
-def _is_strict_embedding_review_candidate(
-    target: dict[str, Any] | None,
-    candidate: dict[str, Any],
-    embedding_score: float,
-) -> bool:
-    # Threshold inlined from former reuse_policy.STRICT_EMBEDDING_REVIEW_THRESHOLD
-    if embedding_score < 0.78:
-        return False
-    asset = _dict(candidate.get("asset"))
-    if _clean_text(asset.get("asset_kind")) == "background":
-        return False
-    policies = [normalize_reuse_policy_fields(asset)]
-    if target is not None:
-        policies.append(normalize_reuse_policy_fields(_dict(target)))
-    return any(policy.get("reuse_level") == "strict" for policy in policies)
-
-
-def _is_strict_semantic_gray_review_candidate(
-    target: dict[str, Any] | None,
-    candidate: dict[str, Any],
-    *,
-    bm25_score: float,
-    embedding_score: float,
-    substring_score: float,
-) -> bool:
-    # Thresholds inlined from former reuse_policy constants
-    if target is None:
-        return False
-    if embedding_score < 0.70:  # STRICT_SEMANTIC_GRAY_REVIEW_THRESHOLD
-        return False
-    if bm25_score < 0.20 and substring_score < 0.25:  # STRICT_SEMANTIC_GRAY_BM25_THRESHOLD
-        return False
-
-    asset = _dict(candidate.get("asset"))
-    if _clean_text(asset.get("asset_kind")) == "background":
-        return False
-
-    target_theme = _clean_text(target.get("theme"))
-    candidate_theme = _clean_text(asset.get("theme"))
-    if not (target_theme and candidate_theme and target_theme == candidate_theme):
-        return False
-
-    policies = [
-        normalize_reuse_policy_fields(asset),
-        normalize_reuse_policy_fields(_dict(target)),
-    ]
-    return any(policy.get("reuse_level") == "strict" for policy in policies)
-
-
-def _is_medium_embedding_review_candidate(
-    target: dict[str, Any] | None,
-    candidate: dict[str, Any],
-    embedding_score: float,
-) -> bool:
-    # Threshold inlined from former reuse_policy.MEDIUM_EMBEDDING_REVIEW_THRESHOLD
-    if embedding_score < 0.80:
-        return False
-    asset = _dict(candidate.get("asset"))
-    if _clean_text(asset.get("asset_kind")) == "background":
-        return False
-    policies = [normalize_reuse_policy_fields(asset)]
-    if target is not None:
-        policies.append(normalize_reuse_policy_fields(_dict(target)))
-    levels = {_clean_text(policy.get("reuse_level")) for policy in policies}
-    return "strict" not in levels and bool(levels & {"loose", "medium"})
 
 
 
 
 
 
-def _aspect_ratio_score(target: dict[str, Any], candidate: dict[str, Any]) -> float:
-    target_ratio = normalize_aspect_bucket(_asset_aspect_ratio_label(target))
-    candidate_ratio = normalize_aspect_bucket(_asset_aspect_ratio_label(candidate))
-    if not target_ratio or not candidate_ratio:
-        return 0.5
-    if target_ratio == candidate_ratio:
-        return 1.0
-    target_orientation = _ratio_orientation(target_ratio)
-    candidate_orientation = _ratio_orientation(candidate_ratio)
-    return 0.6 if target_orientation and target_orientation == candidate_orientation else 0.2
 
 
 
 
 
 
-def _aspect_ratio_diff(target: dict[str, Any], candidate: dict[str, Any]) -> float:
-    t = _aspect_ratio_value(target)
-    c = _aspect_ratio_value(candidate)
-    if t <= 0 or c <= 0:
-        return 1.0
-    return abs(t - c) / t
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
