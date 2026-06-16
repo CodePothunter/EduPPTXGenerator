@@ -16,6 +16,7 @@ python-version
 # Generated files
 backgrounds_cache/
 materials_library/
+materials_library_ppt/
 /output/
 *.pptx
 
