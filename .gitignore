@@ -30,3 +30,6 @@ tools/
 # Test / build temp dirs and caches
 .tmp_*/
 .pytest_cache/
+
+# 复用评测 run 产物
+report/
