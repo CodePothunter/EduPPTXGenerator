@@ -32,46 +32,186 @@ from edupptx.materials.reuse_policy import (
 from edupptx.materials.vlm_metadata_rules import (
     normalize_padding_capacity,
 )
+from edupptx.reuse._util import (
+    _as_int,
+    _clean_keyword,
+    _clean_text,
+    _client_model_name,
+    _dedupe_terms,
+    _dict,
+    _join_texts,
+    _read_existing_db,
+    _read_json_if_exists,
+)
+from edupptx.reuse._constants import (
+    ALLOWED_CROSS_ASPECT_RATIO_REUSE_PAIRS,
+    ASPECT_RATIO_ADJACENT_PENALTY,
+    ASPECT_RATIO_TOLERANCE_ADJACENT,
+    ASPECT_RATIO_TOLERANCE_SAME,
+    ASPECT_REUSE_BUCKETS,
+    ASPECT_REUSE_WEIGHT,
+    BACKGROUND_COLOR_BIAS_REUSE_WEIGHT,
+    BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT,
+    BACKGROUND_REUSE_GATE_THRESHOLDS,
+    BACKGROUND_REUSE_INDEX_FILENAME,
+    BACKGROUND_REUSE_INDEX_GROUP,
+    BM25_GRAY_REUSE_THRESHOLD,
+    CONTENT_PROMPT_REUSE_WEIGHT,
+    CONTENT_REUSE_GROUP,
+    DEFAULT_DB_FILENAME,
+    DEFAULT_EMBEDDING_BATCH_SIZE,
+    DEFAULT_EMBEDDING_INDEX_FILENAME,
+    DEFAULT_EMBEDDING_META_FILENAME,
+    DEFAULT_EMBEDDING_MISSING_CAPTION_REVIEW_FILENAME,
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE,
+    DEFAULT_KEYWORD_BATCH_SIZE,
+    DEFAULT_LIBRARY_IMAGE_DIR,
+    DEFAULT_MATCH_INDEX_FILENAME,
+    DEFAULT_MIN_REUSE_KEYWORD_SCORE,
+    DEFAULT_QUERY_EMBEDDING_CACHE_FILENAME,
+    DEFAULT_QUERY_EMBEDDING_CACHE_META_FILENAME,
+    DEFAULT_REUSE_CANDIDATE_LIMIT,
+    DEFAULT_REUSE_MAX_WORKERS,
+    DEFAULT_RRF_K,
+    EMBEDDING_GRAY_REUSE_THRESHOLD,
+    EMBEDDING_INDEX_SCHEMA_VERSION,
+    EMBEDDING_KEYWORD_GAP_REJECT_THRESHOLD,
+    EMBEDDING_LED_LLM_REVIEW_MIN_KEYWORD,
+    EMBEDDING_LED_LLM_REVIEW_MIN_SUBSTRING,
+    GENERAL_REUSE_GROUP,
+    HYBRID_BM25_WEIGHT,
+    HYBRID_EMBEDDING_WEIGHT,
+    HYBRID_SUBSTRING_WEIGHT,
+    KEYWORD_LED_LLM_REVIEW_MIN_EMBEDDING,
+    KEYWORD_LED_LLM_REVIEW_MIN_KEYWORD,
+    KEYWORD_SCHEMA_VERSION,
+    LEGACY_STRICT_REUSE_GROUPS,
+    LIGHT_CONTEXT_REUSE_WEIGHT,
+    MATCH_INDEX_SCHEMA_VERSION,
+    MAX_LLM_REVIEWS_PER_QUERY,
+    MAX_LLM_REVIEW_WORKERS,
+    PAGE_IMAGE_REUSE_GATE_THRESHOLDS,
+    PREWARM_KEYWORD_BATCH_SIZE,
+    PREWARM_KEYWORD_MAX_WORKERS,
+    QUERY_EMBEDDING_CACHE_SCHEMA_VERSION,
+    R5_MAX_VLM_CALLS_PER_SESSION,
+    R5_NEAR_MISS_EPSILON,
+    R5_SESSION_VLM_COUNT_KEY,
+    REUSE_DEBUG_FILENAME,
+    REUSE_MANIFEST_FILENAME,
+    REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD,
+    SCHEMA_VERSION,
+    STRICT_REUSE_GROUPS,
+    STRICT_REUSE_INDEX_DIRNAME,
+    STRICT_REUSE_MAX_PER_SESSION,
+    TEXT_OVERLAP_EMBEDDING_THRESHOLD,
+    TEXT_OVERLAP_REVIEW_THRESHOLD,
+    VISUAL_GENERIC_REUSE_THRESHOLD,
+    _ALLOWED_GRADE_BANDS,
+    _ALLOWED_GRADE_NORMS,
+    _ALLOWED_SUBJECTS,
+    _ASPECT_BUCKET_MAX_LOSS,
+    _ASPECT_REUSE_BUCKET_VALUES,
+    _BACKGROUND_LIKE_ROLE_TOKENS,
+    _BACKGROUND_REUSE_TARGET_METADATA_FIELDS,
+    _BACKGROUND_ROUTE_FIELDS,
+    _BACKGROUND_ROUTE_MATCH_FIELDS,
+    _CONTENT_REUSE_GROUP,
+    _CORE_STYLE_MARKERS,
+    _CORE_USAGE_MARKERS,
+    _EMBEDDING_QUERY_FAILURE_WARNED,
+    _GENERAL_REUSE_GROUP,
+    _GRADE_ARABIC_TO_CN,
+    _HIGH_GRADE_BAND,
+    _IMAGE_SUFFIXES,
+    _JUNIOR_ALIASES,
+    _KNOWN_SUBJECTS,
+    _LOW_GRADE_BAND,
+    _LOW_GRADE_NORMS,
+    _METADATA_PASSTHROUGH_FIELDS,
+    _NOISE_TOKENS,
+    _OTHER_GRADE,
+    _OTHER_SUBJECT,
+    _OUTPUT_PATH_MARKERS,
+    _PAGE_REUSE_TARGET_METADATA_FIELDS,
+    _PAGE_TYPE_CONTEXT_SUMMARIES,
+    _PPT_COMPARISON_PASSTHROUGH_FIELDS,
+    _PRECISION_SIGNAL_STOPWORDS,
+    _PROJECT_ROOT,
+    _PROMPT_ROUTE_LIST_FIELDS,
+    _REUSE_TARGET_METADATA_SEEDED_FIELD,
+    _REVIEW_PASSTHROUGH_FIELDS,
+    _SENIOR_ALIASES,
+    _STRICT_REUSE_PASSTHROUGH_FIELDS,
+    _STRICT_REUSE_READ_GROUPS,
+    _STYLE_DESCRIPTOR_MARKERS,
+    _TOPIC_REF_LEADING_NOISE_RE,
+    _TOPIC_REF_SUBJECT_PREFIXES,
+    _TOPIC_REF_TRAILING_NOISE,
+    _TOPIC_REF_WRAPPER_RE,
+    _VISUAL_FORM_MARKERS,
+)
+from edupptx.reuse._assets import (
+    _as_string_list,
+    _asset_aspect_ratio_label,
+    _asset_caption,
+    _asset_content_prompt,
+    _asset_embedding_text,
+    _asset_general_value,
+    _asset_generation_prompt,
+    _asset_page_type,
+    _asset_query,
+    _asset_style_prompt,
+    _asset_subject_value,
+    _background_retrieval_text,
+    _clean_prompt_route,
+    _clean_topic_ref,
+    _is_background_asset,
+    _is_excluded_keyword,
+    _keyword_list,
+    _normalize_subject_value,
+    _optional_bool,
+    _page_retrieval_text,
+    _route_style_prompt,
+    _source_pptx_refs_for_asset,
+    _topic_refs_for_asset,
+    _unit_ref_for_asset,
+    extract_topic_refs,
+)
+from edupptx.reuse._normalize import (
+    _build_meta_grade_subject_normalizer_messages,
+    _call_meta_grade_subject_normalizer,
+    _extract_grade_token,
+    _extract_subject_token,
+    _is_standard_grade_band_value,
+    _is_standard_grade_norm_value,
+    _is_standard_subject_value,
+    _load_json_response,
+    _meta_grade_subject_fields_are_standard,
+    _normalize_binary_reuse_group,
+    _normalize_grade_band_value,
+    _normalize_grade_norm_value,
+    _normalize_meta_grade_subject_payload,
+    _normalize_subject_scope,
+    _strip_fences,
+    grade_band_from_norm,
+    infer_grade,
+    infer_grade_band,
+    infer_subject,
+    resolve_meta_grade_subject,
+)
 
-SCHEMA_VERSION = 1
-KEYWORD_SCHEMA_VERSION = 14
-DEFAULT_DB_FILENAME = "ai_image_asset_db.json"
-DEFAULT_MATCH_INDEX_FILENAME = "ai_image_match_index.json"
-DEFAULT_EMBEDDING_INDEX_FILENAME = "ai_image_embedding_index.npz"
-DEFAULT_EMBEDDING_META_FILENAME = "ai_image_embedding_meta.json"
-DEFAULT_EMBEDDING_MISSING_CAPTION_REVIEW_FILENAME = "ai_image_embedding_missing_caption_review.json"
-DEFAULT_QUERY_EMBEDDING_CACHE_FILENAME = "ai_image_query_embedding_cache.npz"
-DEFAULT_QUERY_EMBEDDING_CACHE_META_FILENAME = "ai_image_query_embedding_cache_meta.json"
-DEFAULT_EMBEDDING_MODEL = "Qwen/Qwen3-Embedding-0.6B"
-MATCH_INDEX_SCHEMA_VERSION = 14
-EMBEDDING_INDEX_SCHEMA_VERSION = 5
-QUERY_EMBEDDING_CACHE_SCHEMA_VERSION = 1
-DEFAULT_KEYWORD_BATCH_SIZE = 8
-DEFAULT_EMBEDDING_BATCH_SIZE = 16
-DEFAULT_REUSE_MAX_WORKERS = 4
-DEFAULT_LIBRARY_IMAGE_DIR = "ai_images"
-REUSE_MANIFEST_FILENAME = "ai_image_reuse_manifest.json"
-REUSE_DEBUG_FILENAME = "ai_image_reuse_debug.json"
 KEYWORD_REUSE_RULES_REFERENCE = Path(__file__).resolve().parent / "Reference" / "ai_image_reuse_metadata_rules.md"
 REUSE_REVIEW_SCORE_RULES_REFERENCE = Path(__file__).resolve().parent / "Reference" / "ai_image_reuse_review_score_rules.md"
-DEFAULT_REUSE_CANDIDATE_LIMIT = 8
-DEFAULT_MIN_REUSE_KEYWORD_SCORE: float | None = None
-DEFAULT_HYBRID_RETRIEVAL_POOL_SIZE = 20
-DEFAULT_RRF_K = 60
-HYBRID_BM25_WEIGHT = 0.25
-HYBRID_EMBEDDING_WEIGHT = 0.55
-HYBRID_SUBSTRING_WEIGHT = 0.20
-BM25_GRAY_REUSE_THRESHOLD = 0.23
-EMBEDDING_GRAY_REUSE_THRESHOLD = 0.72
-STRICT_REUSE_MAX_PER_SESSION = 2
-REUSE_REVIEW_ACCEPT_SCORE_THRESHOLD = 0.60
+# Env-driven config kept here (not in _constants) so importlib.reload(ai_image_asset_db)
+# re-reads EDUPPTX_REUSE_EMBED_RESCUE_FLOOR — see test_embed_rescue_floor_respects_env.
+EMBED_RESCUE_FLOOR = float(os.environ.get("EDUPPTX_REUSE_EMBED_RESCUE_FLOOR", "0.70"))
 # Per-query LLM review budget. Caps the number of llm_review calls made
 # for a single target so a noisy candidate pool can't burn the LLM on a
 # long tail of equivalent-quality candidates after the top contender has
 # already been judged. K=5 gives embedding-first ordering enough room to
 # recover strong semantic matches without opening the full candidate tail.
-MAX_LLM_REVIEWS_PER_QUERY = 5
-MAX_LLM_REVIEW_WORKERS = 15
 
 
 def _get_llm_max_workers() -> int:
@@ -93,31 +233,7 @@ def _review_worker_count(num_review_targets: int) -> int:
     return max(1, min(_get_llm_max_workers(), MAX_LLM_REVIEWS_PER_QUERY, max(0, int(num_review_targets))))
 
 
-ASPECT_REUSE_BUCKETS = ("1:1", "3:4", "4:3", "9:16", "16:9", "other")
-_ASPECT_REUSE_BUCKET_VALUES = {
-    "1:1": 1.0,
-    "3:4": 3 / 4,
-    "4:3": 4 / 3,
-    "9:16": 9 / 16,
-    "16:9": 16 / 9,
-}
-_ASPECT_BUCKET_MAX_LOSS = 0.08
 
-ASPECT_RATIO_TOLERANCE_SAME = 0.08
-ASPECT_RATIO_TOLERANCE_ADJACENT = 0.15
-ASPECT_RATIO_ADJACENT_PENALTY = 0.05
-ALLOWED_CROSS_ASPECT_RATIO_REUSE_PAIRS = frozenset(
-    {
-        ("4:3", "16:9"),
-        ("16:9", "4:3"),
-        ("3:4", "9:16"),
-        ("9:16", "3:4"),
-        ("4:3", "1:1"),
-        ("1:1", "4:3"),
-        ("3:4", "1:1"),
-        ("1:1", "3:4"),
-    }
-)
 
 # Q1/P7: embedding-keyword consistency gate.
 #
@@ -131,7 +247,6 @@ ALLOWED_CROSS_ASPECT_RATIO_REUSE_PAIRS = frozenset(
 # normalized token. That catches cases where the lexical mismatch is accidental
 # while still treating a large embedding-vs-keyword gap as a "wrong content"
 # signal without burning an LLM call.
-EMBEDDING_KEYWORD_GAP_REJECT_THRESHOLD = 0.40
 
 # R5: near-miss VLM image verification.
 #
@@ -145,19 +260,9 @@ EMBEDDING_KEYWORD_GAP_REJECT_THRESHOLD = 0.40
 #
 # Per-session budget is enforced through ``reuse_session_state`` so the
 # fallback cannot run away on a session with many near-misses.
-R5_NEAR_MISS_EPSILON = 0.05
-R5_MAX_VLM_CALLS_PER_SESSION = 3
-R5_SESSION_VLM_COUNT_KEY = "near_miss_vlm_calls_used"
 # Deterministic LLM reject is now signalled directly by the policy via the
 # ``llm_skip_safe`` field on policy_result.
 LOGGER = logging.getLogger(__name__)
-_PROJECT_ROOT = Path(__file__).resolve().parents[2]
-_OUTPUT_PATH_MARKERS = (
-    "output",
-    "materials_library",
-    "materials_library_ppt",
-    "report",
-)
 
 
 def _relative_output_path(value: Any) -> str:
@@ -238,295 +343,22 @@ class ReuseSearchContext:
     eligible_static_cache: dict[tuple[str, str, str, str], list[dict[str, Any]]] = field(default_factory=dict)
     cache_lock: Any = field(default_factory=threading.RLock, repr=False)
 
-BACKGROUND_REUSE_GATE_THRESHOLDS = {
-    "keyword_min": 0.00,
-    "embedding_min": 0.42,
-    "keyword_high": 0.32,
-    "embedding_high": 0.70,
-    "keyword_gray_high": 0.18,
-    "embedding_gray_low": 0.52,
-    "embedding_gray_high": 0.60,
-    "keyword_gray_low": 0.00,
-}
-PAGE_IMAGE_REUSE_GATE_THRESHOLDS = {
-    "loose": {
-        "keyword_min": 0.00,
-        "embedding_min": 0.46,
-        "keyword_high": 0.50,
-        "embedding_high": 0.70,
-        "keyword_gray_high": 0.20,
-        "embedding_gray_low": 0.52,
-        "embedding_gray_high": 0.60,
-        "keyword_gray_low": 0.00,
-    },
-    "medium": {
-        "keyword_min": 0.00,
-        "embedding_min": 0.50,
-        "keyword_high": 0.52,
-        "embedding_high": 0.72,
-        "keyword_gray_high": 0.22,
-        "embedding_gray_low": 0.55,
-        "embedding_gray_high": 0.62,
-        "keyword_gray_low": 0.00,
-    },
-    "strict_knowledge": {
-        "keyword_min": 0.20,
-        "embedding_min": 0.55,
-        "keyword_high": 0.64,
-        "embedding_high": 0.80,
-        "keyword_gray_high": 0.45,
-        "embedding_gray_low": 0.70,
-        "embedding_gray_high": 0.76,
-        "keyword_gray_low": 0.25,
-    },
-}
 
-KEYWORD_LED_LLM_REVIEW_MIN_KEYWORD = 0.28
-KEYWORD_LED_LLM_REVIEW_MIN_EMBEDDING = 0.60
-EMBEDDING_LED_LLM_REVIEW_MIN_KEYWORD = 0.10
-EMBEDDING_LED_LLM_REVIEW_MIN_SUBSTRING = 0.10
 
 # Embedding rescue floor. Keyword-sparse candidates can fall below T_REJECT
 # even with strong semantic similarity; route those to LLM review instead of
 # silently hard-rejecting them.
-EMBED_RESCUE_FLOOR = float(os.environ.get("EDUPPTX_REUSE_EMBED_RESCUE_FLOOR", "0.70"))
-TEXT_OVERLAP_REVIEW_THRESHOLD = 0.15
-TEXT_OVERLAP_EMBEDDING_THRESHOLD = 0.78
 
-CONTENT_PROMPT_REUSE_WEIGHT = 0.85
-ASPECT_REUSE_WEIGHT = 0.05
-LIGHT_CONTEXT_REUSE_WEIGHT = 0.05
-BACKGROUND_CONTENT_PROMPT_REUSE_WEIGHT = 0.85
-BACKGROUND_COLOR_BIAS_REUSE_WEIGHT = 0.15
 
-VISUAL_GENERIC_REUSE_THRESHOLD = 0.28
 # BACKGROUND_REUSE_THRESHOLD imported from reuse_policy — single source of truth.
 
 _EMBEDDING_MODEL_CACHE: dict[str, Any] = {}
 _EMBEDDING_MODEL_LOCK = threading.RLock()
 
-_IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".webp")
-_TOPIC_REF_WRAPPER_RE = re.compile(r"[《〈「『“\"]([^《》〈〉「」『』“”\"']{1,40})[》〉」』”\"]")
-_TOPIC_REF_LEADING_NOISE_RE = re.compile(
-    r"^(?:小学|初中|高中)?(?:[一二三四五六七八九十\d]+年级|高[一二三\d]|初[一二三\d]|小[一二三四五六\d])"
-)
-_TOPIC_REF_SUBJECT_PREFIXES = (
-    "语文",
-    "数学",
-    "英语",
-    "物理",
-    "化学",
-    "生物",
-    "历史",
-    "地理",
-    "政治",
-    "道德与法治",
-    "科学",
-    "信息技术",
-)
-_TOPIC_REF_TRAILING_NOISE = (
-    "课文教学",
-    "教学课件",
-    "课件",
-    "教学设计",
-    "单元复习",
-    "专题复习",
-    "复习课",
-    "讲解",
-    "导入",
-    "练习",
-    "教学",
-    "课程",
-    "PPT",
-    "ppt",
-)
-_REVIEW_PASSTHROUGH_FIELDS = (
-    "vlm_match_quality",
-    "regenerate",
-)
-_STRICT_REUSE_PASSTHROUGH_FIELDS = (
-    "strict_reuse_group",
-    "strict_reuse_secondary_group",
-    "secondary_reuse_query",
-    "secondary_reuse_caption",
-    "strict_reuse_confidence",
-    "strict_reuse_reason",
-    "strict_reuse_signals",
-)
-_PPT_COMPARISON_PASSTHROUGH_FIELDS = (
-    "vlm_caption",
-    "vlm_general",
-    "llm_general",
-)
-_METADATA_PASSTHROUGH_FIELDS = (
-    *_REVIEW_PASSTHROUGH_FIELDS,
-    *_STRICT_REUSE_PASSTHROUGH_FIELDS,
-    *_PPT_COMPARISON_PASSTHROUGH_FIELDS,
-)
-_REUSE_TARGET_METADATA_SEEDED_FIELD = "_reuse_target_metadata_seeded"
-_PAGE_REUSE_TARGET_METADATA_FIELDS = (
-    "caption",
-    "context_summary",
-    "teaching_intent",
-    "subject",
-    "grade_norm",
-    "grade_band",
-    "general",
-    "strict_reuse_group",
-    "strict_reuse_secondary_group",
-    "secondary_reuse_query",
-    "secondary_reuse_caption",
-    "strict_reuse_confidence",
-    "strict_reuse_reason",
-    "strict_reuse_signals",
-)
-_BACKGROUND_REUSE_TARGET_METADATA_FIELDS = (
-    "normalized_prompt",
-    "color_temperature",
-    "context_summary",
-    "teaching_intent",
-    "subject",
-    "grade_norm",
-    "grade_band",
-    "general",
-    "strict_reuse_group",
-    "strict_reuse_secondary_group",
-    "strict_reuse_confidence",
-    "strict_reuse_reason",
-    "strict_reuse_signals",
-)
-_BACKGROUND_ROUTE_FIELDS = (
-    "template_family",
-    "style_name",
-    "palette_id",
-    "primary_color",
-    "secondary_color",
-    "accent_color",
-    "card_bg_color",
-    "secondary_bg_color",
-    "background_color_bias",
-)
-_BACKGROUND_ROUTE_MATCH_FIELDS = (
-    "background_color_bias",
-)
-_GENERAL_REUSE_GROUP = "C03_scene_decor_container"
-_CONTENT_REUSE_GROUP = "C00_strict_text_problem_skip"
-GENERAL_REUSE_GROUP = _GENERAL_REUSE_GROUP
-CONTENT_REUSE_GROUP = _CONTENT_REUSE_GROUP
-STRICT_REUSE_INDEX_DIRNAME = "strict_reuse_indexes"
-BACKGROUND_REUSE_INDEX_GROUP = "background"
-BACKGROUND_REUSE_INDEX_FILENAME = "background.json"
-STRICT_REUSE_GROUPS = (
-    "C00_strict_text_problem_skip",
-    "C01_irreplaceable_entity_event_action",
-    "C02_generic_subject_object",
-    "C03_scene_decor_container",
-)
-LEGACY_STRICT_REUSE_GROUPS: tuple[str, ...] = ()
-_STRICT_REUSE_READ_GROUPS = STRICT_REUSE_GROUPS
-_PAGE_TYPE_CONTEXT_SUMMARIES = {
-    "cover": "作为封面主视觉，建立课程主题和导入氛围",
-    "toc": "作为目录页辅助导览插图，引导学生理解本节课学习路径",
-    "content": "作为内容页辅助说明插图，帮助学生理解本页知识点",
-    "exercise": "作为练习页辅助插图，帮助学生理解互动任务",
-    "summary": "作为总结页辅助记忆插图，帮助学生回顾核心内容",
-    "closing": "作为结束页辅助插图，形成课程收束氛围",
-}
 # Single source of truth for "style / form / usage / quality noise tokens
 # that saturate the library". Two assets sharing any of these does not
 # constitute precision evidence — only sharing a more discriminative
 # keyword does.
-_NOISE_TOKENS = frozenset({
-    # Form/medium descriptors
-    "插画", "教学插画", "配图", "主图", "图标", "logo",
-    "背景", "场景", "示意图", "图片",
-    # Style/quality descriptors
-    "编辑感", "风格", "风格统一",
-    "简洁", "清晰", "简洁清晰", "高清",
-    "背景简洁",
-    # Usage / negative descriptors
-    "无文字", "无文字水印",
-    "教学示意",
-    # Audience / subject descriptors
-    "语文教学",
-    "高年级", "低年级",
-    "高年级风格", "低年级风格", "高年级编辑感",
-    # Tooling
-    "ppt", "ai",
-})
-_PRECISION_SIGNAL_STOPWORDS = frozenset(s.casefold() for s in _NOISE_TOKENS)
-_CORE_STYLE_MARKERS = (
-    "风格",
-    "画风",
-    "色调",
-    "构图",
-    "质感",
-    "肌理",
-    "水印",
-    "logo",
-)
-_STYLE_DESCRIPTOR_MARKERS = (
-    "卡通",
-    "手绘",
-    "写实",
-    "抽象",
-    "简约",
-    "极简",
-    "线稿",
-    "淡彩",
-    "水彩",
-    "扁平",
-    "绘本",
-    "编辑感",
-    "高年级",
-    "低年级",
-    "教学",
-)
-_VISUAL_FORM_MARKERS = (
-    "插画",
-    "图标",
-    "配图",
-    "主图",
-    "背景",
-    "示意图",
-)
-_CORE_USAGE_MARKERS = (
-    "适合",
-    "用于",
-    "教学用",
-    "教学插画",
-    "教学配图",
-    "教学示意",
-    "课堂导入",
-    "无多余",
-    "不要",
-    "避免",
-)
-_LOW_GRADE_BAND = "低年级"
-_HIGH_GRADE_BAND = "高年级"
-_OTHER_GRADE = "其他"
-_OTHER_SUBJECT = "其他"
-_ALLOWED_GRADE_NORMS = frozenset(
-    (
-        "一年级",
-        "二年级",
-        "三年级",
-        "四年级",
-        "五年级",
-        "六年级",
-        "七年级",
-        "八年级",
-        "九年级",
-        "高一",
-        "高二",
-        "高三",
-        _OTHER_GRADE,
-    )
-)
-_ALLOWED_GRADE_BANDS = frozenset((_LOW_GRADE_BAND, _HIGH_GRADE_BAND, _OTHER_GRADE))
-_ALLOWED_SUBJECTS = frozenset(("语文", "数学", "物理", _OTHER_SUBJECT))
-_KNOWN_SUBJECTS = frozenset({"语文", "数学", "物理"})
-_LOW_GRADE_NORMS = frozenset(("一年级", "二年级", "三年级"))
 
 
 def build_ai_image_asset_db(
@@ -2106,11 +1938,9 @@ def _reuse_target_keyword_workers() -> int:
 # throughput/latency trade-off unless a caller explicitly overrides it.
 # Previous experiments used many short batches running in parallel: each LLM
 # round-trip is wall-clock bound, so total time ≈ (longest batch latency).
-PREWARM_KEYWORD_BATCH_SIZE = DEFAULT_KEYWORD_BATCH_SIZE
 
 # Concurrency cap for the prewarm thread pool. Tuned so a typical 16-need
 # plan fits in 3-4 parallel batches without saturating the upstream API.
-PREWARM_KEYWORD_MAX_WORKERS = DEFAULT_REUSE_MAX_WORKERS
 
 
 def _prewarm_reuse_target_keywords(
@@ -4954,32 +4784,8 @@ def _load_reuse_review_score_rules_reference() -> str:
     return text
 
 
-def _load_json_response(raw: Any) -> dict[str, Any] | list[Any]:
-    text = _strip_fences(str(raw or ""))
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        try:
-            import json_repair
-
-            repaired = json_repair.loads(text)
-        except Exception:
-            raise
-        if not isinstance(repaired, (dict, list)):
-            raise ValueError("keyword LLM response is not a JSON object or array")
-        return repaired
 
 
-def _strip_fences(text: str) -> str:
-    text = text.strip()
-    if not text.startswith("```"):
-        return text
-    lines = text.splitlines()
-    if lines:
-        lines = lines[1:]
-    if lines and lines[-1].strip() == "```":
-        lines = lines[:-1]
-    return "\n".join(lines).strip()
 
 
 def _keyword_payload_by_asset_id(response: dict[str, Any] | list[Any]) -> dict[str, dict[str, Any]]:
@@ -5000,14 +4806,8 @@ def _keyword_payload_by_asset_id(response: dict[str, Any] | list[Any]) -> dict[s
     return by_id
 
 
-def _normalize_grade_norm_value(value: Any) -> str:
-    text = _clean_text(value)
-    return text if text in _ALLOWED_GRADE_NORMS else _OTHER_GRADE
 
 
-def _normalize_grade_band_value(value: Any) -> str:
-    text = _clean_text(value)
-    return text if text in _ALLOWED_GRADE_BANDS else _OTHER_GRADE
 
 
 def _effective_grade_band(asset: dict[str, Any]) -> str:
@@ -5018,13 +4818,8 @@ def _effective_grade_band(asset: dict[str, Any]) -> str:
     return grade_band_from_norm(asset.get("grade_norm"))
 
 
-def _normalize_subject_value(value: Any) -> str:
-    text = _clean_text(value)
-    return text if text in _ALLOWED_SUBJECTS else _OTHER_SUBJECT
 
 
-def _optional_bool(value: Any) -> bool | None:
-    return value if isinstance(value, bool) else None
 
 
 def _apply_general_from_payload(asset: dict[str, Any], payload: dict[str, Any]) -> None:
@@ -5243,64 +5038,12 @@ def _merge_semantic_aliases(*items: dict[str, list[str]]) -> dict[str, list[str]
     return merged
 
 
-def extract_topic_refs(*texts: Any) -> list[str]:
-    """Extract compact lesson/knowledge-topic anchors from theme-like text."""
-
-    wrapped: list[str] = []
-    for text in texts:
-        clean = _clean_text(text)
-        if not clean:
-            continue
-        wrapped.extend(_clean_topic_ref(match.group(1)) for match in _TOPIC_REF_WRAPPER_RE.finditer(clean))
-    wrapped = _dedupe_terms([item for item in wrapped if item])
-    if wrapped:
-        return wrapped[:6]
-
-    fallback: list[str] = []
-    for text in texts:
-        topic = _clean_topic_ref(text)
-        if topic:
-            fallback.append(topic)
-    return _dedupe_terms(fallback)[:6]
 
 
-def _topic_refs_for_asset(asset: dict[str, Any]) -> list[str]:
-    explicit = _keyword_list(asset.get("topic_refs"), max_items=6)
-    if explicit:
-        return explicit
-    return extract_topic_refs(asset.get("theme"))
 
 
-def _unit_ref_for_asset(asset: dict[str, Any]) -> str:
-    return _clean_topic_ref(asset.get("unit_ref") or asset.get("unit"))
 
 
-def _clean_topic_ref(value: Any) -> str:
-    text = _clean_text(value).strip("《》〈〉「」『』“”\"'()（）[]【】 ")
-    if not text:
-        return ""
-    text = _TOPIC_REF_LEADING_NOISE_RE.sub("", text).strip()
-    changed = True
-    while changed:
-        changed = False
-        for subject in _TOPIC_REF_SUBJECT_PREFIXES:
-            if text.startswith(subject) and len(text) > len(subject):
-                text = text[len(subject):].strip()
-                changed = True
-                break
-    changed = True
-    while changed:
-        changed = False
-        for suffix in _TOPIC_REF_TRAILING_NOISE:
-            if text.endswith(suffix) and len(text) > len(suffix):
-                text = text[: -len(suffix)].strip()
-                changed = True
-                break
-    text = text.strip("：:，,。；;、-_/ ")
-    compact = text.replace(" ", "")
-    if not compact or len(compact) > 40:
-        return ""
-    return text
 
 
 def _context_exclusions(asset: dict[str, Any]) -> set[str]:
@@ -5326,52 +5069,12 @@ def _context_exclusions(asset: dict[str, Any]) -> set[str]:
     return {item for item in exclusions if item}
 
 
-def _keyword_list(value: Any, *, max_items: int, exclude: set[str] | None = None) -> list[str]:
-    if isinstance(value, str):
-        raw_items: list[Any] = re.split(r"[,;\n、，；]+", value)
-    elif isinstance(value, (list, tuple)):
-        raw_items = list(value)
-    else:
-        raw_items = []
-
-    terms: list[str] = []
-    seen: set[str] = set()
-    excluded = exclude or set()
-    for item in raw_items:
-        term = _clean_keyword(item)
-        if not term or term in seen or _is_excluded_keyword(term, excluded):
-            continue
-        seen.add(term)
-        terms.append(term)
-        if len(terms) >= max_items:
-            break
-    return terms
 
 
-def _is_excluded_keyword(term: str, excluded: set[str]) -> bool:
-    normalized = term.replace(" ", "")
-    for value in excluded:
-        blocked = value.replace(" ", "")
-        if normalized == blocked:
-            return True
-        if len(blocked) >= 4 and blocked in normalized:
-            return True
-    return False
 
 
-def _clean_keyword(value: Any) -> str:
-    text = _clean_text(value)
-    text = text.strip(" \t\r\n,;:.!?\"'[](){}<>")
-    text = text.strip("、，；：。！？“”‘’【】（）")
-    return text[:40]
 
 
-def _page_retrieval_text(asset: dict[str, Any]) -> str:
-    return _asset_caption(asset)
-
-
-def _background_retrieval_text(asset: dict[str, Any]) -> str:
-    return _clean_text(asset.get("normalized_prompt"))
 
 
 def _build_match_text(asset: dict[str, Any]) -> str:
@@ -5381,11 +5084,6 @@ def _build_match_text(asset: dict[str, Any]) -> str:
     return _page_retrieval_text(asset)
 
 
-def _asset_embedding_text(asset: dict[str, Any]) -> str:
-    if _is_background_asset(asset):
-        return _background_retrieval_text(asset)
-
-    return _page_retrieval_text(asset)
 
 
 def _target_embedding_text(asset: dict[str, Any]) -> str:
@@ -5705,55 +5403,6 @@ def _normalize_rich_asset_fields(asset: dict[str, Any], *, keep_match_keywords: 
     asset.update(cleaned)
 
 
-def _source_pptx_refs_for_asset(asset: dict[str, Any]) -> list[dict[str, Any]]:
-    raw_refs = asset.get("source_pptx_refs")
-    if not isinstance(raw_refs, list):
-        return []
-    refs: list[dict[str, Any]] = []
-    seen: set[tuple[str, ...]] = set()
-    for raw in raw_refs:
-        if not isinstance(raw, dict):
-            continue
-        ref: dict[str, Any] = {
-            "pptx_id": _clean_text(raw.get("pptx_id")),
-            "period_id": _clean_text(raw.get("period_id")),
-            "file_path": _clean_text(raw.get("file_path")),
-            "file_name": _clean_text(raw.get("file_name")),
-            "absolute_path": _clean_text(raw.get("absolute_path")),
-            "source": _clean_text(raw.get("source")),
-        }
-        slide_no = _clean_text(raw.get("slide_no"))
-        shape_idx = _clean_text(raw.get("shape_idx"))
-        source_media_path = _clean_text(raw.get("source_media_path"))
-        if slide_no:
-            try:
-                ref["slide_no"] = int(slide_no)
-            except ValueError:
-                ref["slide_no"] = slide_no
-        if shape_idx:
-            try:
-                ref["shape_idx"] = int(shape_idx)
-            except ValueError:
-                ref["shape_idx"] = shape_idx
-        if source_media_path:
-            ref["source_media_path"] = source_media_path
-        ref = {key: value for key, value in ref.items() if value not in ("", None)}
-        if not any(ref.get(key) for key in ("pptx_id", "file_path", "file_name", "absolute_path")):
-            continue
-        key = (
-            _clean_text(ref.get("pptx_id")),
-            _clean_text(ref.get("file_path")),
-            _clean_text(ref.get("absolute_path")),
-            _clean_text(ref.get("slide_no")),
-            _clean_text(ref.get("shape_idx")),
-            _clean_text(ref.get("source_media_path")),
-            _clean_text(ref.get("source")),
-        )
-        if key in seen:
-            continue
-        seen.add(key)
-        refs.append(ref)
-    return refs
 
 
 def _clean_core_keyword_terms(terms: list[str]) -> tuple[list[str], list[str]]:
@@ -5823,77 +5472,8 @@ def _strip_empty_match_fields(asset: dict[str, Any]) -> dict[str, Any]:
     return cleaned
 
 
-def _dedupe_terms(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    terms: list[str] = []
-    for value in values:
-        term = _clean_keyword(value)
-        if not term or term in seen:
-            continue
-        seen.add(term)
-        terms.append(term)
-    return terms
 
 
-def _client_model_name(client: Any) -> str:
-    return _clean_text(getattr(client, "_model", "")) or _clean_text(getattr(client, "model", ""))
-
-
-_PROMPT_ROUTE_LIST_FIELDS = (
-    "profile_ids",
-    "profile_prompt_terms",
-    "role_prompt_terms",
-    "page_type_prompt_terms",
-    "aspect_ratio_prompt_terms",
-    "quality_terms",
-    "negative_terms",
-)
-
-
-def _clean_prompt_route(value: Any) -> dict[str, Any]:
-    if not isinstance(value, dict):
-        return {}
-
-    route: dict[str, Any] = {}
-    template_family = _clean_text(value.get("template_family"))
-    if template_family:
-        route["template_family"] = template_family
-
-    profiles: list[dict[str, Any]] = []
-    raw_profiles = value.get("profiles")
-    if isinstance(raw_profiles, list):
-        for profile in raw_profiles:
-            if not isinstance(profile, dict):
-                continue
-            item: dict[str, Any] = {}
-            profile_id = _clean_text(profile.get("id"))
-            if profile_id:
-                item["id"] = profile_id
-            try:
-                item["priority"] = int(profile.get("priority", 0))
-            except (TypeError, ValueError):
-                pass
-            prompt_terms = _as_string_list(profile.get("prompt_terms"))
-            negative_terms = _as_string_list(profile.get("negative_terms"))
-            if prompt_terms:
-                item["prompt_terms"] = prompt_terms
-            if negative_terms:
-                item["negative_terms"] = negative_terms
-            if item:
-                profiles.append(item)
-    if profiles:
-        route["profiles"] = profiles
-
-    for key in _PROMPT_ROUTE_LIST_FIELDS:
-        terms = _as_string_list(value.get(key))
-        if terms:
-            route[key] = _dedupe_terms(terms)
-
-    style_prompt = _clean_text(value.get("style_prompt"))
-    if style_prompt:
-        route["style_prompt"] = style_prompt
-
-    return route
 
 
 def _clean_background_route(value: Any) -> dict[str, Any]:
@@ -5910,22 +5490,6 @@ def _clean_background_route(value: Any) -> dict[str, Any]:
     return route
 
 
-def _route_style_prompt(route: dict[str, Any]) -> str:
-    explicit = _clean_text(route.get("style_prompt"))
-    if explicit:
-        return explicit
-
-    terms: list[str] = []
-    for key in (
-        "profile_prompt_terms",
-        "role_prompt_terms",
-        "page_type_prompt_terms",
-        "aspect_ratio_prompt_terms",
-        "quality_terms",
-        "negative_terms",
-    ):
-        terms.extend(_as_string_list(route.get(key)))
-    return " ".join(_dedupe_terms(terms))
 
 
 def _route_match_text(asset: dict[str, Any]) -> str:
@@ -5984,26 +5548,12 @@ def _background_route_terms(asset: dict[str, Any]) -> list[str]:
     return terms
 
 
-def _asset_content_prompt(asset: dict[str, Any]) -> str:
-    return _clean_text(asset.get("content_prompt")) or _clean_text(asset.get("prompt"))
 
 
-def _asset_caption(asset: dict[str, Any]) -> str:
-    return _clean_text(asset.get("caption"))
 
 
-def _asset_query(asset: dict[str, Any]) -> str:
-    """Verbose classification text. Falls back to legacy verbose fields so
-    pre-rebuild libraries stay classifiable."""
-    return (
-        _clean_text(asset.get("query"))
-        or _clean_text(asset.get("detail_prompt"))
-        or _asset_content_prompt(asset)
-    )
 
 
-def _is_background_asset(asset: dict[str, Any]) -> bool:
-    return _clean_text(asset.get("asset_kind")) == "background"
 
 
 def _background_color_bias(asset: dict[str, Any]) -> str:
@@ -6024,16 +5574,10 @@ def _strip_background_color_bias_from_prompt(prompt: str, color_bias: str) -> st
     return _clean_text(stripped)
 
 
-def _asset_generation_prompt(asset: dict[str, Any]) -> str:
-    return _clean_text(asset.get("generation_prompt")) or _clean_text(asset.get("normalized_prompt"))
 
 
-def _asset_style_prompt(asset: dict[str, Any]) -> str:
-    return _clean_text(asset.get("style_prompt")) or _route_style_prompt(_clean_prompt_route(asset.get("prompt_route")))
 
 
-def _asset_page_type(asset: dict[str, Any]) -> str:
-    return _clean_text(asset.get("page_type"))
 
 
 def _route_grade_family(asset: dict[str, Any]) -> str:
@@ -6248,7 +5792,6 @@ def _write_query_embedding_disk_cache(
         )
 
 
-_EMBEDDING_QUERY_FAILURE_WARNED = False
 
 
 def _rank_embedding_candidates(
@@ -6695,16 +6238,8 @@ def _reuse_hard_filter_reject_reason(target: dict[str, Any], candidate: dict[str
     return ""
 
 
-def _asset_general_value(asset_or_value: Any) -> bool | None:
-    if isinstance(asset_or_value, dict):
-        return _optional_bool(asset_or_value.get("general"))
-    return None
 
 
-def _asset_subject_value(asset_or_value: Any) -> str:
-    if isinstance(asset_or_value, dict):
-        return _normalize_subject_value(asset_or_value.get("subject"))
-    return _normalize_subject_value(asset_or_value)
 
 
 def _subject_scope_decision(target: Any, candidate: Any) -> dict[str, Any]:
@@ -6745,8 +6280,6 @@ def _subject_scope_compatible(target_subject: Any, candidate_subject: Any) -> bo
     return bool(_subject_scope_decision(target_subject, candidate_subject)["compatible"])
 
 
-def _normalize_subject_scope(value: Any) -> str:
-    return _normalize_subject_value(value)
 
 
 def _score_reuse_candidate_details(
@@ -7229,18 +6762,6 @@ def _embedding_rescue_decision(
 # Page type values that mark a page_image slot as serving an ambience
 # purpose rather than precise content. Used by ``_target_is_background_like``
 # instead of substring matching against arbitrary slot strings.
-_BACKGROUND_LIKE_ROLE_TOKENS = frozenset({
-    "background",
-    "background_1",
-    "background_2",
-    "backdrop",
-    "ambient",
-    "atmosphere",
-    "背景",
-    "背景图",
-    "背景插画",
-    "氛围",
-})
 
 
 def _target_is_background_like(target: dict[str, Any]) -> bool:
@@ -7482,8 +7003,6 @@ def _reuse_threshold_for_target(target: dict[str, Any], explicit_threshold: floa
     return policy_reuse_threshold_for_target(target)
 
 
-def _asset_aspect_ratio_label(asset: dict[str, Any]) -> str:
-    return _clean_text(asset.get("aspect_ratio")) or _clean_text(asset.get("aspect_bucket"))
 
 
 def _aspect_ratio_score(target: dict[str, Any], candidate: dict[str, Any]) -> float:
@@ -7639,18 +7158,6 @@ def _save_reusable_png_with_transparent_padding(
                 canvas.paste(image, (left, top), image)
                 image = canvas
         image.save(dest_path, format="PNG", optimize=True)
-
-
-def _read_existing_db(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {
-            "warnings": [f"existing library DB could not be read: {path}"],
-        }
-    return data if isinstance(data, dict) else {"warnings": [f"existing library DB is not an object: {path}"]}
 
 
 def _read_existing_asset_index(library_root: Path, index_path: Path) -> tuple[dict[str, Any], Path]:
@@ -8062,16 +7569,6 @@ def _match_asset_quality_score(asset: dict[str, Any]) -> float:
     return score
 
 
-def _read_json_if_exists(path: Path) -> dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
-    return data if isinstance(data, dict) else {}
-
-
 def _load_reused_image_paths(session_dir: Path) -> set[str]:
     manifest = _read_json_if_exists(session_dir / "materials" / REUSE_MANIFEST_FILENAME)
     entries = manifest.get("reused_assets")
@@ -8186,11 +7683,6 @@ def _resolve_asset_image_path(root: Path, image_path: Any) -> Path | None:
     return path if path.is_absolute() else root / path
 
 
-def _as_string_list(value: Any) -> list[str]:
-    if isinstance(value, list):
-        return [_clean_text(item) for item in value if _clean_text(item)]
-    text = _clean_text(value)
-    return [text] if text else []
 
 
 def _preserve_review_fields(asset: dict[str, Any]) -> dict[str, Any]:
@@ -8275,9 +7767,6 @@ def _apply_strict_reuse_group_from_payload(asset: dict[str, Any], payload: dict[
         asset.pop("secondary_reuse_caption", None)
 
 
-def _normalize_binary_reuse_group(value: Any, *, default: str = _GENERAL_REUSE_GROUP) -> str:
-    from edupptx.materials.strict_reuse_classifier import normalize_strict_reuse_group
-    return normalize_strict_reuse_group(value, default=default)
 
 
 def _is_skip_reuse_group(value: Any) -> bool:
@@ -8305,235 +7794,34 @@ def normalize_grade_info(*texts: Any) -> dict[str, Any]:
     return {"grade_norm": grade_norm, "grade_band": grade_band}
 
 
-def infer_grade(*texts: Any) -> str:
-    """Return a valid LLM-provided grade enum, or ``其他`` when absent/invalid."""
-
-    return _normalize_grade_norm_value(next((text for text in texts if _clean_text(text)), ""))
 
 
-def infer_grade_band(*texts: Any) -> str:
-    """Return a valid LLM-provided grade band enum, or ``其他`` when absent/invalid."""
-
-    return _normalize_grade_band_value(next((text for text in texts if _clean_text(text)), ""))
 
 
-def grade_band_from_norm(grade_norm: Any) -> str:
-    """从 grade_norm 派生学段：一-三年级→低年级；四年级及以上(含初/高中)→高年级；其他→其他。"""
-    norm = _normalize_grade_norm_value(grade_norm)
-    if norm == _OTHER_GRADE:
-        return _OTHER_GRADE
-    return _LOW_GRADE_BAND if norm in _LOW_GRADE_NORMS else _HIGH_GRADE_BAND
 
 
-def infer_subject(*texts: Any) -> str:
-    """返回合法学科枚举，缺失/越界时返回其他。"""
-    return _normalize_subject_value(next((text for text in texts if _clean_text(text)), ""))
 
 
-def _is_standard_subject_value(value: Any) -> bool:
-    text = _clean_text(value)
-    return bool(text) and text in _ALLOWED_SUBJECTS
 
 
-def _is_standard_grade_norm_value(value: Any) -> bool:
-    text = _clean_text(value)
-    return bool(text) and text in _ALLOWED_GRADE_NORMS
 
 
-def _is_standard_grade_band_value(value: Any) -> bool:
-    text = _clean_text(value)
-    return bool(text) and text in _ALLOWED_GRADE_BANDS
 
 
-def _meta_grade_subject_fields_are_standard(
-    *,
-    subject: Any,
-    grade: Any,
-    grade_band: Any,
-) -> bool:
-    return (
-        _is_standard_subject_value(subject)
-        and _is_standard_grade_norm_value(grade)
-        and _is_standard_grade_band_value(grade_band)
-    )
 
 
-def _normalize_meta_grade_subject_payload(payload: Any) -> dict[str, str]:
-    data: dict[str, Any]
-    if isinstance(payload, list):
-        data = _dict(payload[0]) if payload else {}
-    else:
-        data = _dict(payload)
-    if isinstance(data.get("meta"), dict):
-        data = _dict(data.get("meta"))
-    if isinstance(data.get("deck_metadata"), dict):
-        data = _dict(data.get("deck_metadata"))
-
-    grade = infer_grade(data.get("grade", data.get("grade_norm")))
-    band = infer_grade_band(data.get("grade_band"))
-    if band == _OTHER_GRADE:
-        band = grade_band_from_norm(grade)
-    return {
-        "subject": infer_subject(data.get("subject")),
-        "grade": grade,
-        "grade_band": band,
-    }
 
 
-def _build_meta_grade_subject_normalizer_messages(
-    *,
-    subject_hint: Any = "",
-    grade_hint: Any = "",
-    grade_band_hint: Any = "",
-    topic: Any = "",
-    audience: Any = "",
-    requirements: Any = "",
-) -> list[dict[str, str]]:
-    payload = {
-        "subject_hint": _clean_text(subject_hint),
-        "grade_hint": _clean_text(grade_hint),
-        "grade_band_hint": _clean_text(grade_band_hint),
-        "topic": _clean_text(topic),
-        "audience": _clean_text(audience),
-        "requirements": _clean_text(requirements),
-    }
-    system = (
-        "你只做 PPT/deck 级学科与年级字段归一化。必须只返回严格 JSON 对象，"
-        "字段只能包含 subject、grade、grade_band。"
-        "subject 只能是：语文、数学、物理、其他。"
-        "grade 只能是：一年级、二年级、三年级、四年级、五年级、六年级、七年级、八年级、九年级、高一、高二、高三、其他。"
-        "grade_band 只能是：低年级、高年级、其他。"
-        "根据输入 hints、topic、audience、requirements 归一化；无法判断时输出其他。"
-        "不要输出图片级字段，不要判断具体图片。"
-    )
-    return [
-        {"role": "system", "content": system},
-        {"role": "user", "content": json.dumps(payload, ensure_ascii=False, indent=2)},
-    ]
 
 
-def _call_meta_grade_subject_normalizer(
-    client: Any,
-    *,
-    subject_hint: Any = "",
-    grade_hint: Any = "",
-    grade_band_hint: Any = "",
-    topic: Any = "",
-    audience: Any = "",
-    requirements: Any = "",
-) -> dict[str, str]:
-    messages = _build_meta_grade_subject_normalizer_messages(
-        subject_hint=subject_hint,
-        grade_hint=grade_hint,
-        grade_band_hint=grade_band_hint,
-        topic=topic,
-        audience=audience,
-        requirements=requirements,
-    )
-    chat_json = getattr(client, "chat_json", None)
-    if callable(chat_json):
-        try:
-            response = chat_json(messages=messages, temperature=0.0, max_tokens=800, max_retries=1)
-        except TypeError:
-            response = chat_json(messages, temperature=0.0, max_tokens=800)
-    else:
-        chat = getattr(client, "chat", None)
-        if not callable(chat):
-            raise TypeError("meta normalizer client must provide chat_json() or chat()")
-        response = _load_json_response(chat(messages=messages, temperature=0.0, max_tokens=800))
-    return _normalize_meta_grade_subject_payload(response)
 
 
-_GRADE_ARABIC_TO_CN = {"1": "一", "2": "二", "3": "三", "4": "四", "5": "五",
-                       "6": "六", "7": "七", "8": "八", "9": "九"}
-_JUNIOR_ALIASES = (("初一", "七年级"), ("初二", "八年级"), ("初三", "九年级"))
-_SENIOR_ALIASES = (("高一", "高一"), ("高二", "高二"), ("高三", "高三"))
 
 
-def _extract_grade_token(text: Any) -> str:
-    """从自由文本里抽出 grade_norm 枚举，抽不到返回其他。"""
-    t = _clean_text(text)
-    if not t:
-        return _OTHER_GRADE
-    for alias, norm in _SENIOR_ALIASES:
-        if alias in t:
-            return norm
-    for alias, norm in _JUNIOR_ALIASES:
-        if alias in t:
-            return norm
-    m = re.search(r"([一二三四五六七八九])年级", t)
-    if m:
-        return f"{m.group(1)}年级"
-    m = re.search(r"([1-9])\s*年级", t)
-    if m:
-        return f"{_GRADE_ARABIC_TO_CN[m.group(1)]}年级"
-    return _OTHER_GRADE
 
 
-def _extract_subject_token(text: Any) -> str:
-    """从自由文本里抽出学科枚举，抽不到返回其他。"""
-    t = _clean_text(text)
-    for subject in ("语文", "数学", "物理"):
-        if subject in t:
-            return subject
-    return _OTHER_SUBJECT
 
 
-def resolve_meta_grade_subject(
-    *,
-    llm_subject: Any = "",
-    llm_grade: Any = "",
-    llm_grade_band: Any = "",
-    topic: Any = "",
-    audience: Any = "",
-    requirements: Any = "",
-    normalizer_client: Any | None = None,
-) -> dict[str, str]:
-    """deck 级判定一次：LLM 优先，缺失则从 topic/audience/requirements 抽，band 最后从 grade 派生。"""
-    if _meta_grade_subject_fields_are_standard(
-        subject=llm_subject,
-        grade=llm_grade,
-        grade_band=llm_grade_band,
-    ):
-        return {
-            "subject": _normalize_subject_value(llm_subject),
-            "grade": _normalize_grade_norm_value(llm_grade),
-            "grade_band": _normalize_grade_band_value(llm_grade_band),
-        }
-
-    if normalizer_client is not None:
-        try:
-            return _call_meta_grade_subject_normalizer(
-                normalizer_client,
-                subject_hint=llm_subject,
-                grade_hint=llm_grade,
-                grade_band_hint=llm_grade_band,
-                topic=topic,
-                audience=audience,
-                requirements=requirements,
-            )
-        except Exception as exc:
-            PROGRESS_LOGGER.warning("Deck metadata LLM normalization skipped: {}", str(exc)[:160])
-
-    source_text = " ".join(
-        _clean_text(t)
-        for t in (llm_subject, llm_grade, llm_grade_band, topic, audience, requirements)
-        if _clean_text(t)
-    )
-
-    subject = infer_subject(llm_subject)
-    if subject == _OTHER_SUBJECT:
-        subject = _extract_subject_token(source_text)
-
-    grade = infer_grade(llm_grade)
-    if grade == _OTHER_GRADE:
-        grade = _extract_grade_token(source_text)
-
-    band = infer_grade_band(llm_grade_band)
-    if band == _OTHER_GRADE:
-        band = grade_band_from_norm(grade)
-
-    return {"subject": subject, "grade": grade, "grade_band": band}
 
 
 def _iter_session_dirs(root: Path):
@@ -8877,20 +8165,3 @@ def _relative_path(path: Path, root: Path) -> str:
         return str(path.resolve())
 
 
-def _dict(value: Any) -> dict[str, Any]:
-    return value if isinstance(value, dict) else {}
-
-
-def _as_int(value: Any) -> int | None:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _clean_text(value: Any) -> str:
-    return re.sub(r"\s+", " ", str(value or "")).strip()
-
-
-def _join_texts(*texts: Any) -> str:
-    return "\n".join(_clean_text(text) for text in texts if _clean_text(text))
