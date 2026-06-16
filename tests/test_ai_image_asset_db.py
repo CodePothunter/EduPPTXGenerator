@@ -15,16 +15,12 @@ from edupptx.materials.ai_image_asset_db import (
     HYBRID_SUBSTRING_WEIGHT,
     MAX_LLM_REVIEW_WORKERS,
     MAX_LLM_REVIEWS_PER_QUERY,
-    BACKGROUND_REUSE_GATE_THRESHOLDS,
-    PAGE_IMAGE_REUSE_GATE_THRESHOLDS,
     _apply_strict_reuse_group_from_payload,
     _apply_keyword_payload,
     _asset_embedding_text,
     _build_keyword_messages,
     _candidate_unknown_fields_for_reuse,
     _candidate_hybrid_text,
-    _reuse_gate_profile,
-    _reuse_gate_thresholds_for_target,
     _reuse_debug_asset_payload,
     _reuse_hard_filter_reject_reason,
     _reuse_review_accept_score_threshold,
@@ -990,28 +986,6 @@ def test_review_accept_threshold_is_single_cross_category_value():
         {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"},
         policy_result={"llm_accept_threshold_override": 0.66},
     ) == 0.66
-
-
-def test_reuse_gate_profiles_follow_current_four_material_categories():
-    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container"}) == "loose"
-    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"}) == "medium"
-    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C01_irreplaceable_entity_event_action"}) == "strict_knowledge"
-    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}) == "medium"
-    assert _reuse_gate_profile({"asset_kind": "page_image", "strict_reuse_group": "C00_strict_text_problem_skip"}) == "medium"
-
-
-def test_reuse_gate_thresholds_are_single_cross_ppt_values():
-    loose_target = {"asset_kind": "page_image", "strict_reuse_group": "C03_scene_decor_container"}
-    medium_target = {"asset_kind": "page_image", "strict_reuse_group": "C02_generic_subject_object"}
-    strict_target = {"asset_kind": "page_image", "strict_reuse_group": "C01_irreplaceable_entity_event_action"}
-
-    assert _reuse_gate_thresholds_for_target(loose_target) == PAGE_IMAGE_REUSE_GATE_THRESHOLDS["loose"]
-    assert _reuse_gate_thresholds_for_target(medium_target) == PAGE_IMAGE_REUSE_GATE_THRESHOLDS["medium"]
-    assert _reuse_gate_thresholds_for_target(strict_target) == PAGE_IMAGE_REUSE_GATE_THRESHOLDS["strict_knowledge"]
-    assert _reuse_gate_thresholds_for_target({"asset_kind": "background"}) == BACKGROUND_REUSE_GATE_THRESHOLDS
-    assert PAGE_IMAGE_REUSE_GATE_THRESHOLDS["loose"]["keyword_min"] == 0.0
-    assert PAGE_IMAGE_REUSE_GATE_THRESHOLDS["medium"]["keyword_min"] == 0.0
-    assert BACKGROUND_REUSE_GATE_THRESHOLDS["keyword_min"] == 0.0
 
 
 def test_keyword_prompt_requests_llm_subject_and_grade_enums():

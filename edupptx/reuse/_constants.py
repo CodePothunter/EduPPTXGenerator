@@ -125,50 +125,6 @@ _OUTPUT_PATH_MARKERS = (
     "report",
 )
 
-BACKGROUND_REUSE_GATE_THRESHOLDS = {
-    "keyword_min": 0.00,
-    "embedding_min": 0.42,
-    "keyword_high": 0.32,
-    "embedding_high": 0.70,
-    "keyword_gray_high": 0.18,
-    "embedding_gray_low": 0.52,
-    "embedding_gray_high": 0.60,
-    "keyword_gray_low": 0.00,
-}
-
-PAGE_IMAGE_REUSE_GATE_THRESHOLDS = {
-    "loose": {
-        "keyword_min": 0.00,
-        "embedding_min": 0.46,
-        "keyword_high": 0.50,
-        "embedding_high": 0.70,
-        "keyword_gray_high": 0.20,
-        "embedding_gray_low": 0.52,
-        "embedding_gray_high": 0.60,
-        "keyword_gray_low": 0.00,
-    },
-    "medium": {
-        "keyword_min": 0.00,
-        "embedding_min": 0.50,
-        "keyword_high": 0.52,
-        "embedding_high": 0.72,
-        "keyword_gray_high": 0.22,
-        "embedding_gray_low": 0.55,
-        "embedding_gray_high": 0.62,
-        "keyword_gray_low": 0.00,
-    },
-    "strict_knowledge": {
-        "keyword_min": 0.20,
-        "embedding_min": 0.55,
-        "keyword_high": 0.64,
-        "embedding_high": 0.80,
-        "keyword_gray_high": 0.45,
-        "embedding_gray_low": 0.70,
-        "embedding_gray_high": 0.76,
-        "keyword_gray_low": 0.25,
-    },
-}
-
 KEYWORD_LED_LLM_REVIEW_MIN_KEYWORD = 0.28
 
 KEYWORD_LED_LLM_REVIEW_MIN_EMBEDDING = 0.60
