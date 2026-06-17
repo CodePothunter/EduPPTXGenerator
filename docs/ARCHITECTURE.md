@@ -117,6 +117,7 @@
 拿到 policy_score 后，`decide_reuse` 三档切：**最高分 ≥ 0.75 且和第二名差 ≥ 0.02 → 直接复用**；**< 0.35 → 直接拒**；**中间灰区 → 送 LLM review**（阈值 0.60，每个 query 最多看 5 个候选）。总开关 `EDUPPTX_DISABLE_AI_IMAGE_REUSE=1` 时整条读路径跳过，每次都新生成。
 
 **Phase 2c 异步入库**：这次新生成的图要进库，但**绝不阻塞主路径**——`_enqueue_asset_library_update_job` 往一个 SQLite 队列里塞一条 job（job_id 含图片内容的 sha256 指纹，保证同图幂等、改图算新 job），队列用 WAL + `BEGIN IMMEDIATE` 全局串行（同一时刻只跑一个 job，防止并发写互相覆盖 split 文件）；然后 `subprocess.Popen` 起一个 detached 子进程去慢慢入库，主进程立刻往下走。
+> 失败可见性：worker 是 fire-and-forget，所以它标 failed 的 job、被 kill 卡在 running 的 job、以及启动即崩导致永远 queued 的 job 本来全是静默的。`AssetIngestJobStore.health_summary()` 只读地把这三类暴露出来，下次运行入队前会 `logger.warning`，也可随时 `edupptx assets ingest-status <library_dir>` 查。
 
 ---
 
@@ -254,14 +255,13 @@ find_reusable_ai_image_asset → 硬过滤 eligible_assets
 - ~~reviewer 迭代循环 / "11 种布局" / 复用代码未反映 `reuse/` 子包~~ → 已于 `0802781` 对齐 CLAUDE.md（reviewer 单次 pass、13 种布局、reuse 子包），本条只剩上面的目录项。（注：CLAUDE.md 把复用代码挂 `ai_image_asset_db.py` 名下其实**没错**——它正是 §3.1 说的常驻公共门面。）
 
 ### 🟡 vlm_asset_enricher 未收尾
-- prompt 仍写"7 个类别 C00-C06"，但实际只有 4 类 C00-C03，框架文字与注入规则自相矛盾，会诱导 VLM 输出非法类别。
-- `VLM_REDESCRIBE_SYSTEM_PROMPT` 被连续赋值两次，第一版是死代码。
-- 默认关闭、"未充分调试"。
+- ~~prompt 写"7 个类别 C00-C06" / `VLM_REDESCRIBE_SYSTEM_PROMPT` 双重赋值死代码~~ → 已修（见"本轮已清"）。
+- 仍**默认关闭、"未充分调试"**——这是剩下的真实状态，不是 bug。
 
 ### 🟡 Phase 3 模板资产 / 代码契约不匹配
 - `bar/line/pie/kpi` 四图表模板**未被消费**（chart 映射只有 timeline/relation）。
 - `data`/`case` 页型**永远走无模板分支**（页型→模板映射没它们）。
-- reuse 族 `summary.svg` 的预览叫 `summery.png`（拼写）。
+- ~~reuse 族 `summary.svg` 的预览叫 `summery.png`（拼写）~~ → 已修（见"本轮已清"）。
 
 ### 🟡 SVG→PPTX 几何简化
 - 坐标变换是"累加 translate + 乘积 scale"，**非完整 2D 仿射矩阵**：`<g>` 上的 `rotate`/`matrix()` 被忽略，带旋转的组渲染错位（注：`<path>` 自身 transform 里的 rotate 现已按 SVG 轴心语义正确摆放，见"本轮已清"）。
@@ -271,10 +271,11 @@ find_reusable_ai_image_asset → 硬过滤 eligible_assets
 - 路径包围盒只采样锚点/控制点，不解贝塞尔极值，曲线鼓出盒外部分可能被裁。
 
 ### 🟡 其他卫生 / dead config
-- `cli.py` reuse-check 命令的中文 help 是**乱码**（编码事故，单点）。
+- ~~`cli.py` reuse-check 命令的中文 help 是**乱码**~~ → 已修（见"本轮已清"）。
 - `style_linter` 只检查 ResolvedStyle 固定语义色对，**不检查 SVG 实际渲染出的任意颜色对**——LLM 自选配色对比度无人把关。
 - 入库队列全局串行化（有意，防互覆）但吞吐上限低；库变大后每 job 全量重写 split JSON，**写放大明显**。
 - 入库期无感知去重：同图换 asset_id 重入会当新图收录，靠离线脚本事后清。
+- 入库 worker 是 detached fire-and-forget：**失败可见性已补**（`health_summary` + 下次运行告警 + `assets ingest-status`，见"本轮已清"），但**单实例守卫 / 卡死 worker 回收 / pid 存活探测仍缺**（多 worker 竞争靠租约互斥兜底、不堆积；卡死 worker 无人 kill）。
 - `config.py` `web_search` 字段不从 env 解析（仅 CLI flag）；`style_schema.py` `slide_overrides` 定义但 resolve_style 全程未消费（dead config surface）。
 
 ### ✅ 本轮已清（旧版列为债，现已修）
@@ -290,6 +291,13 @@ find_reusable_ai_image_asset → 硬过滤 eligible_assets
 - ~~`convert_path` 读了 rotate 角度却用 PPT 包围盒中心当轴心（SVG 是绕原点/`cx cy`），带旋转 path 落位错~~ → 解析 `cx cy` + 落点偏移 `(Rot(θ)-I)·(中心-轴心)`（带 `svg_to_shapes` 首个几何回归测试）。
 - ~~`convert_g` 下传组 fill/stroke/opacity 用 `child.set()` 永久改写子元素、从不还原，bleed 进共享节点的后续渲染~~ → 注入仅转换期生效、`finally` 还原（带回归测试）。
 - ~~空 deck（0 页 draft / 空 slides 批）让 `min(len, concurrency)=0` → `ThreadPoolExecutor(max_workers=0)` 抛 ValueError~~ → Phase 3/4 均改 `max(1, min(...))`（带回归测试）。
+
+**P3 卫生（独立 re-audit 新发现并修复）：**
+- ~~`general_rules` 注入 live LLM 的文字引用幽灵类别 C03/C04/C05（实际只有 C00 skip）；`vlm_asset_enricher` "7 类别 C00-C06" + 双重赋值死代码~~ → 纠正为 4 类 C00-C03 / 删死代码（契约测试钉幽灵类别）。
+- ~~`cli.py` reuse-check 4 个中文 help 乱码；`prompts._CHART_TEMPLATE_MAP` 指向不存在的 `relation.svg`；`_gates.py` 重复 import；reuse 族 `summery.png` 拼写~~ → 全修（chart map 文件名存在性契约测试）。
+
+**可观测性（基于上面 §5 的 detached worker 缺口）：**
+- ~~入库 worker 失败完全静默（标 failed / 被 kill 卡 running / 启动即崩永远 queued 都看不见）~~ → `AssetIngestJobStore.health_summary()` 三桶只读暴露 + 下次运行 `logger.warning` + `edupptx assets ingest-status`（对抗审查后修了 HIGH 级 DB 路径不一致 + 补 stuck_queued 桶；5 条 store/CLI 回归测试）。**注：单实例守卫 / 卡死回收仍未做。**
 
 **此前批次：**
 - ~~8896 行单体"维护性炸弹"~~ → Phase A 重构成 `reuse/` 19 模块子包（注：拆的是内部实现，对外仍是常驻门面，见 §3.1）。
@@ -352,7 +360,7 @@ find_reusable_ai_image_asset → 硬过滤 eligible_assets
 ### 7.3 CLI 命令面
 
 - **主路径**：`gen` / `render`（从 plan.json）/ `plan`
-- **复用运维**：`reuse-check` / `asset-ingest` / `embedding-build` / `strict-reuse-classify` / `strict-reuse-export-check` / `vlm-enrich` / `assets migrate|export|doctor`
+- **复用运维**：`reuse-check` / `asset-ingest` / `embedding-build` / `strict-reuse-classify` / `strict-reuse-export-check` / `vlm-enrich` / `assets migrate|export|doctor|ingest-status`
 - **风格**：`styles`（含 convert）
 
 ### 7.4 关键设计决策（代码自证）
