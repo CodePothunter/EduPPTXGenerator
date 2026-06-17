@@ -33,3 +33,4 @@ tools/
 
 # 复用评测 run 产物
 report/
+edupptx/output/__init__.py
