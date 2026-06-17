@@ -1423,6 +1423,23 @@ class PPTXAgent:
             if not assets:
                 return None
             store = AssetIngestJobStore(self._asset_ingest_job_db_path())
+            # Surface prior background-ingest failures: the detached worker is
+            # fire-and-forget, so a job it marked failed (or one left stuck
+            # 'running' because the worker was killed mid-job) is otherwise
+            # silent. Report it on the next run. Never let this block enqueue.
+            try:
+                health = store.health_summary()
+                if health["failed"] or health["stale_running"] or health["stuck_queued"]:
+                    logger.warning(
+                        "Prior AI image ingest jobs need attention: {} failed, {} stalled "
+                        "(worker killed mid-job or running past its lease), {} stuck queued "
+                        "(worker may be crashing at startup). Inspect: "
+                        "edupptx assets ingest-status {} (queue db: {})",
+                        health["failed"], health["stale_running"], health["stuck_queued"],
+                        self.config.library_dir, self._asset_ingest_job_db_path(),
+                    )
+            except Exception as exc:
+                logger.debug("ingest job health check skipped: {}", str(exc)[:120])
             # M-5: job_id 含资产集合内容指纹。仅用 session.dir.name 时，同一 session
             # 重渲染会撞 PRIMARY KEY 被 INSERT OR IGNORE 静默丢弃，新素材永不入库。
             # 加指纹后：同内容仍幂等，内容变（重渲染产出不同图）即新 job。

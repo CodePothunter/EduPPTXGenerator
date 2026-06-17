@@ -1265,5 +1265,55 @@ def assets_doctor(library_dir: str, as_json: bool):
         _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
 
 
+@assets.command("ingest-status")
+@click.argument("library_dir", type=click.Path(exists=True, file_okay=False))
+@click.option("--db", "db_override", default=None, type=click.Path(),
+              help="入库队列 DB 路径（默认按 EDUPPTX_ASSET_INGEST_JOB_DB / library_dir 解析）")
+@click.option("--json", "as_json", is_flag=True, help="JSON 输出")
+def assets_ingest_status(library_dir: str, db_override: str | None, as_json: bool):
+    """检查后台入库队列：失败 / 卡住 / 堆积未处理的 job。"""
+    import os
+
+    from edupptx.materials.asset_ingest_job_store import (
+        AssetIngestJobStore,
+        default_asset_ingest_job_db_path,
+    )
+
+    # Resolve the queue DB exactly as the agent does (agent._asset_ingest_job_db_path):
+    # explicit --db, then the EDUPPTX_ASSET_INGEST_JOB_DB override, then the default
+    # next to library_dir. Otherwise an override deployment would make this command
+    # inspect a different (empty) DB than the one jobs are written to and give a
+    # false all-clear — the exact silent failure this command exists to surface.
+    raw = db_override or os.environ.get("EDUPPTX_ASSET_INGEST_JOB_DB", "").strip()
+    db_path = Path(raw).expanduser().resolve() if raw else default_asset_ingest_job_db_path(library_dir)
+    if not db_path.exists():
+        _emit_result(
+            {"ok": True, "failed": 0, "stale_running": 0, "stuck_queued": 0,
+             "db_path": str(db_path), "note": "no ingest queue db yet"},
+            as_json=as_json,
+            human_lines=[f"无入库队列 DB（{db_path}）"],
+        )
+        return
+    try:
+        store = AssetIngestJobStore(db_path)
+        health = store.health_summary()
+        lines = [
+            f"入库队列 DB: {db_path}",
+            f"失败 job: {health['failed']}",
+            f"卡住 job（worker 被杀 / 超租约）: {health['stale_running']}",
+            f"堆积未处理 job（worker 可能启动即崩）: {health['stuck_queued']}",
+        ]
+        for job in health["failed_jobs"]:
+            lines.append(f"  ✗ {job['job_id']}: {str(job['error'])[:120]}")
+        for job in health["stale_jobs"]:
+            lines.append(f"  ⏸ {job['job_id']} (lease_until={job['lease_until']})")
+        for job in health["stuck_jobs"]:
+            lines.append(f"  ⧖ {job['job_id']} (queued_at={job['created_at']})")
+        _emit_result({"ok": True, "db_path": str(db_path), **health}, as_json=as_json, human_lines=lines)
+    except Exception as e:
+        logger.error("Ingest status check failed: {}", e)
+        _emit_error(str(e), as_json=as_json, kind=type(e).__name__)
+
+
 if __name__ == "__main__":
     main()

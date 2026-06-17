@@ -315,6 +315,68 @@ class AssetIngestJobStore:
                 (message, job_id),
             )
 
+    def health_summary(
+        self, *, now: datetime | None = None, sample: int = 5, stuck_queued_seconds: int = 900
+    ) -> dict[str, Any]:
+        """Read-only snapshot of unhealthy ingest jobs, for surfacing otherwise
+        silent background failures:
+
+        - ``failed``: jobs the worker marked failed.
+        - ``stale_running``: jobs stuck ``running`` past their lease — the worker
+          died / was killed before marking a terminal status, so the lease
+          expires un-renewed.
+        - ``stuck_queued``: jobs still ``queued`` well past enqueue time, meaning
+          no worker is draining them (e.g. every launched worker dies at startup
+          on a bad .env *before* it can claim). Without this bucket a startup
+          crash is invisible — the job never reaches failed/running.
+        """
+        now_dt = (now or _utc_now()).astimezone(timezone.utc)
+        now_iso = _iso(now_dt)
+        stuck_before_iso = _iso(now_dt - timedelta(seconds=max(0, stuck_queued_seconds)))
+        with self._connect() as conn:
+            failed_rows = conn.execute(
+                "SELECT job_id, error_message, finished_at FROM asset_ingest_jobs "
+                "WHERE status = 'failed' ORDER BY finished_at DESC, created_at DESC"
+            ).fetchall()
+            # lease_until != '' guards a malformed running row: '' sorts before
+            # any ISO timestamp, so it would otherwise falsely match '<= now'.
+            stale_rows = conn.execute(
+                "SELECT job_id, worker_id, lease_until FROM asset_ingest_jobs "
+                "WHERE status = 'running' AND lease_until != '' AND lease_until <= ? "
+                "ORDER BY lease_until ASC",
+                (now_iso,),
+            ).fetchall()
+            stuck_rows = conn.execute(
+                "SELECT job_id, created_at FROM asset_ingest_jobs "
+                "WHERE status = 'queued' AND created_at <= ? ORDER BY created_at ASC",
+                (stuck_before_iso,),
+            ).fetchall()
+        return {
+            "failed": len(failed_rows),
+            "stale_running": len(stale_rows),
+            "stuck_queued": len(stuck_rows),
+            "failed_jobs": [
+                {
+                    "job_id": row["job_id"],
+                    "error": row["error_message"],
+                    "finished_at": row["finished_at"],
+                }
+                for row in failed_rows[:sample]
+            ],
+            "stale_jobs": [
+                {
+                    "job_id": row["job_id"],
+                    "worker_id": row["worker_id"],
+                    "lease_until": row["lease_until"],
+                }
+                for row in stale_rows[:sample]
+            ],
+            "stuck_jobs": [
+                {"job_id": row["job_id"], "created_at": row["created_at"]}
+                for row in stuck_rows[:sample]
+            ],
+        }
+
     def get_job(self, job_id: str) -> dict[str, Any] | None:
         with self._connect() as conn:
             row = conn.execute(

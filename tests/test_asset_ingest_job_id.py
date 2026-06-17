@@ -17,6 +17,10 @@ class _CapturingStore:
     def enqueue(self, *, job_id, **_kwargs):
         _CapturingStore.seen.append(job_id)
 
+    def health_summary(self, **_kwargs):
+        return {"failed": 0, "stale_running": 0, "stuck_queued": 0,
+                "failed_jobs": [], "stale_jobs": [], "stuck_jobs": []}
+
 
 def _enqueue_with_assets(agent, session, assets, monkeypatch):
     monkeypatch.setattr(
