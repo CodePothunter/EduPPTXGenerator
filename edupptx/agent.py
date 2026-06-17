@@ -332,6 +332,16 @@ class PPTXAgent:
 
         session = Session.from_existing(plan_path.parent)
         session_dir = session.dir
+        # Preserve the user's hand-edited input before save_plan normalizes and
+        # overwrites plan.json: the model roundtrip + template/image routing can
+        # silently drop or alter fields the user added, and save_plan writes the
+        # very plan.json the user just edited. Mirror the current input to
+        # plan.input.json each render so it is always recoverable.
+        import shutil
+        input_backup = plan_path.with_name("plan.input.json")
+        if plan_path.resolve() != input_backup.resolve():
+            shutil.copyfile(plan_path, input_backup)
+            logger.info("Preserved input plan -> {}", input_backup)
         session.save_plan(draft.model_dump())
 
         # v3.2: pick up an existing DESIGN.md so user edits flow into Phase 3.

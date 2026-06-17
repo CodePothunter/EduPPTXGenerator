@@ -918,14 +918,19 @@ def convert_path(elem: ET.Element, ctx: ConvertContext) -> str:
     commands = normalize_path_commands(commands)
 
     tx, ty, rot = 0.0, 0.0, 0
+    rot_deg, pivot_cx, pivot_cy = 0.0, 0.0, 0.0
     transform = elem.get("transform")
     if transform:
         t_m = re.search(r"translate\(\s*([-\d.]+)[\s,]+([-\d.]+)\s*\)", transform)
         if t_m:
             tx, ty = float(t_m.group(1)), float(t_m.group(2))
-        r_m = re.search(r"rotate\(\s*([-\d.]+)", transform)
+        # rotate(angle) pivots about the origin; rotate(angle cx cy) about (cx,cy)
+        r_m = re.search(r"rotate\(\s*([-\d.]+)(?:[\s,]+([-\d.]+)[\s,]+([-\d.]+))?", transform)
         if r_m:
-            rot = int(float(r_m.group(1)) * ANGLE_UNIT)
+            rot_deg = float(r_m.group(1))
+            rot = int(rot_deg * ANGLE_UNIT)
+            if r_m.group(2) is not None and r_m.group(3) is not None:
+                pivot_cx, pivot_cy = float(r_m.group(2)), float(r_m.group(3))
 
     path_xml, min_x, min_y, width, height = path_commands_to_drawingml(
         commands, ctx.translate_x + tx, ctx.translate_y + ty,
@@ -933,6 +938,20 @@ def convert_path(elem: ET.Element, ctx: ConvertContext) -> str:
     )
     if not path_xml:
         return ""
+    # SVG rotate() pivots about the SVG pivot (origin, or cx/cy), but PowerPoint's
+    # rot pivots about the shape's bbox center. Offset placement by
+    # (Rot(theta)-I)*(bbox_center - pivot) so PPT's center-rotation lands exactly
+    # where SVG's pivot-rotation would. Zero when theta==0 → non-rotated paths
+    # are untouched. (pivot is mapped into final coords the same way points are.)
+    if rot:
+        theta = math.radians(rot_deg)
+        cos_t, sin_t = math.cos(theta), math.sin(theta)
+        pivot_x = ctx.translate_x + tx + ctx.scale_x * pivot_cx
+        pivot_y = ctx.translate_y + ty + ctx.scale_y * pivot_cy
+        vx = (min_x + width / 2) - pivot_x
+        vy = (min_y + height / 2) - pivot_y
+        min_x += (cos_t - 1) * vx - sin_t * vy
+        min_y += sin_t * vx + (cos_t - 1) * vy
     w_emu, h_emu = px_to_emu(width), px_to_emu(height)
     geom = (f'<a:custGeom><a:avLst/><a:gdLst/><a:ahLst/><a:cxnLst/>'
             f'<a:rect l="l" t="t" r="r" b="b"/>'
