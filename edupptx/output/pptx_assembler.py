@@ -88,6 +88,28 @@ def _set_text_frame_text(text_frame, text: str) -> None:
 # ── Native Shapes Mode (Default) ──────────────────────
 
 
+def _background_pic_xml(slide_num: int, bg_rel_id: str) -> str:
+    """Full-slide background picture, layered at the bottom of a slide.
+
+    Shared by the native happy path and the embed fallback so a slide that
+    degrades to image embedding still gets the same shared background as its
+    natively-rendered peers (otherwise the failed slide alone would lose it).
+    """
+    return (
+        f'<p:pic>\n<p:nvPicPr>\n'
+        f'<p:cNvPr id="99{slide_num}" name="Background"/>\n'
+        f'<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>\n'
+        f'<p:nvPr/>\n</p:nvPicPr>\n<p:blipFill>\n'
+        f'<a:blip r:embed="{bg_rel_id}"/>\n'
+        f'<a:stretch><a:fillRect/></a:stretch>\n'
+        f'</p:blipFill>\n<p:spPr>\n'
+        f'<a:xfrm><a:off x="0" y="0"/>'
+        f'<a:ext cx="{SLIDE_W}" cy="{SLIDE_H}"/></a:xfrm>\n'
+        f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>\n'
+        f'</p:spPr>\n</p:pic>\n'
+    )
+
+
 def _assemble_native_shapes(svg_paths: list[Path], output_path: Path,
                              bg_path: Path | None = None) -> Path:
     """Convert SVG elements to native DrawingML shapes (directly editable)."""
@@ -134,23 +156,10 @@ def _assemble_native_shapes(svg_paths: list[Path], output_path: Path,
                 bg_rel_id = ""
                 if bg_media_name:
                     bg_rel_id = f"rIdBg{i}"
-                    bg_pic_xml = (
-                        f'<p:pic>\n<p:nvPicPr>\n'
-                        f'<p:cNvPr id="99{i}" name="Background"/>\n'
-                        f'<p:cNvPicPr><a:picLocks noChangeAspect="1"/></p:cNvPicPr>\n'
-                        f'<p:nvPr/>\n</p:nvPicPr>\n<p:blipFill>\n'
-                        f'<a:blip r:embed="{bg_rel_id}"/>\n'
-                        f'<a:stretch><a:fillRect/></a:stretch>\n'
-                        f'</p:blipFill>\n<p:spPr>\n'
-                        f'<a:xfrm><a:off x="0" y="0"/>'
-                        f'<a:ext cx="{SLIDE_W}" cy="{SLIDE_H}"/></a:xfrm>\n'
-                        f'<a:prstGeom prst="rect"><a:avLst/></a:prstGeom>\n'
-                        f'</p:spPr>\n</p:pic>\n'
-                    )
                     # Insert after <p:grpSpPr>...</p:grpSpPr> (before SVG shapes)
                     slide_xml = slide_xml.replace(
                         '</p:grpSpPr>\n',
-                        f'</p:grpSpPr>\n{bg_pic_xml}',
+                        f'</p:grpSpPr>\n{_background_pic_xml(i, bg_rel_id)}',
                         1,
                     )
 
@@ -191,8 +200,12 @@ def _assemble_native_shapes(svg_paths: list[Path], output_path: Path,
 
             except Exception as e:
                 logger.warning("Native shapes failed for {}: {} — falling back to SVG embed", svg_path.name, e)
-                # Fallback: embed as SVG+PNG image for this slide
-                _embed_single_slide_fallback(extract_dir, media_dir, rels_dir, svg_path, i)
+                # Fallback: embed as SVG+PNG image for this slide (keep the shared
+                # background so the degraded slide still matches its peers).
+                _embed_single_slide_fallback(
+                    extract_dir, media_dir, rels_dir, svg_path, i,
+                    bg_media_name=bg_media_name,
+                )
 
         # Update Content_Types
         ct_path = extract_dir / "[Content_Types].xml"
@@ -216,8 +229,13 @@ def _assemble_native_shapes(svg_paths: list[Path], output_path: Path,
 
 
 def _embed_single_slide_fallback(extract_dir: Path, media_dir: Path,
-                                  rels_dir: Path, svg_path: Path, slide_num: int):
-    """Fallback: embed a single slide as SVG+PNG image when native conversion fails."""
+                                  rels_dir: Path, svg_path: Path, slide_num: int,
+                                  bg_media_name: str = ""):
+    """Fallback: embed a single slide as SVG+PNG image when native conversion fails.
+
+    Still layers the shared background (copied once by the caller) so a slide that
+    degrades to embedding doesn't silently lose the backdrop its peers keep.
+    """
     svg_name = f"image{slide_num}.svg"
     png_name = f"image{slide_num}.png"
     shutil.copy(svg_path, media_dir / svg_name)
@@ -227,9 +245,20 @@ def _embed_single_slide_fallback(extract_dir: Path, media_dir: Path,
     svg_rid = "rId3" if png_ok else "rId2"
 
     slide_xml = _make_slide_xml(slide_num, png_rid, svg_rid, png_ok)
+
+    bg_rel_id = ""
+    if bg_media_name:
+        bg_rel_id = f"rIdBg{slide_num}"
+        # Layer the background beneath the embedded slide image.
+        slide_xml = slide_xml.replace(
+            '</p:grpSpPr>\n',
+            f'</p:grpSpPr>\n    {_background_pic_xml(slide_num, bg_rel_id)}',
+            1,
+        )
     (extract_dir / "ppt" / "slides" / f"slide{slide_num}.xml").write_text(slide_xml, encoding="utf-8")
 
-    rels_xml = _make_slide_rels(png_rid, png_name, svg_rid, svg_name, png_ok)
+    rels_xml = _make_slide_rels(png_rid, png_name, svg_rid, svg_name, png_ok,
+                                bg_rel_id=bg_rel_id, bg_media_name=bg_media_name)
     (rels_dir / f"slide{slide_num}.xml.rels").write_text(rels_xml, encoding="utf-8")
 
     # Ensure SVG/PNG content types
@@ -356,13 +385,16 @@ def _make_slide_xml(slide_num: int, png_rid: str, svg_rid: str, has_png: bool) -
 </p:sld>'''
 
 
-def _make_slide_rels(png_rid: str, png_name: str, svg_rid: str, svg_name: str, has_png: bool) -> str:
+def _make_slide_rels(png_rid: str, png_name: str, svg_rid: str, svg_name: str, has_png: bool,
+                     *, bg_rel_id: str = "", bg_media_name: str = "") -> str:
     rels = [
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/slideLayout" Target="../slideLayouts/slideLayout7.xml"/>',
     ]
     if has_png:
         rels.append(f'<Relationship Id="{png_rid}" Type="{IMAGE_REL_TYPE}" Target="../media/{png_name}"/>')
     rels.append(f'<Relationship Id="{svg_rid}" Type="{IMAGE_REL_TYPE}" Target="../media/{svg_name}"/>')
+    if bg_rel_id and bg_media_name:
+        rels.append(f'<Relationship Id="{bg_rel_id}" Type="{IMAGE_REL_TYPE}" Target="../media/{bg_media_name}"/>')
     return f'''<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <Relationships xmlns="{NS_RELS}">
   {'  '.join(rels)}
