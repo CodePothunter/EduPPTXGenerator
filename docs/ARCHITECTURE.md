@@ -242,8 +242,9 @@ find_reusable_ai_image_asset → 硬过滤 eligible_assets
 
 > 全部基于读真代码。优先级 🔴 高 / 🟡 中。**已修项见末尾"本轮已清"。**
 
-### 🔴 测试覆盖严重失衡
-- **SVG→PPTX 输出层几乎零测试**：`svg_to_shapes.py`(1899 行核心)、`pptx_assembler.py`、`svg_generator.py`、`svg_reviewer.py`、`document_parser.py`、`web_researcher.py`、`pixabay.py`、`unsplash.py` —— 多数在 `tests/` 零直接引用。rect→custGeom / EMU 坐标 / CJK 字体等关键逻辑无回归保护。
+### 🔴 测试覆盖失衡（最严重的两处已补，仍有尾巴）
+- **`svg_to_shapes.py`（1899 行核心）+ `pptx_assembler.py` 现已有回归网**（见"本轮已清"：核心转换 32 例 + 背景兜底）——rect→custGeom / EMU / CJK 双字体 / 弧线 / 渐变 / 描边 / 图片 / 公开入口都钉住了。
+- **仍零直接测试**：`svg_generator.py`、`svg_reviewer.py`、`document_parser.py`、`web_researcher.py`、`pixabay.py`、`unsplash.py`。
 - 测试体量大头压在复用库；主线靠 `test_agent_*`（高度 monkeypatch）间接覆盖，非真实端到端。
 - `test_reuse/` 评测依赖真实库 + 真实 LLM key，非 CI 可无人值守。
 
@@ -298,6 +299,10 @@ find_reusable_ai_image_asset → 硬过滤 eligible_assets
 
 **可观测性（基于上面 §5 的 detached worker 缺口）：**
 - ~~入库 worker 失败完全静默（标 failed / 被 kill 卡 running / 启动即崩永远 queued 都看不见）~~ → `AssetIngestJobStore.health_summary()` 三桶只读暴露 + 下次运行 `logger.warning` + `edupptx assets ingest-status`（对抗审查后修了 HIGH 级 DB 路径不一致 + 补 stuck_queued 桶；5 条 store/CLI 回归测试）。**注：单实例守卫 / 卡死回收仍未做。**
+
+**卖点输出层测试网（补 §5 🔴 测试缺口）：**
+- ~~`svg_to_shapes.py` / `pptx_assembler.py` 近零测试~~ → 核心转换 26 例（元素/EMU/CJK 双字体/弧线端点/渐变/描边/图片/公开入口端到端）+ 旋转 4 + 组继承 2；经 9-agent 对抗审查（期望值零缺陷、无套套逻辑，据审查补渐变/描边/图片三处 HIGH 缺口）。
+- ~~native 转换失败降级 embed 时静默丢共享背景（仅那页缺背景）~~ → 抽 `_background_pic_xml` 共享 helper，native+兜底都用；兜底补背景图层 + rel（带回归测试，旧码 FAIL 验证）。
 
 **此前批次：**
 - ~~8896 行单体"维护性炸弹"~~ → Phase A 重构成 `reuse/` 19 模块子包（注：拆的是内部实现，对外仍是常驻门面，见 §3.1）。
