@@ -83,8 +83,15 @@ def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[st
     svg_content = resolve_html_entities(svg_content)
     # Pre-clean XML-unsafe characters (common LLM artifacts)
     svg_content = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#)", "&amp;", svg_content)
-    # Escape bare < not part of XML tags (e.g., "k < 0" in math formulas)
-    svg_content = re.sub(r"<(?![a-zA-Z/!?])", "&lt;", svg_content)
+    # Escape bare "<" that is not the start of a real tag (e.g. the inequalities
+    # "n<k" / "0<x<1" common in math & chemistry slides). A real tag is
+    # "<" + optional "/" + name + ... + ">" with no intervening "<"; a
+    # comment / PI / CDATA / doctype starts with "<!" or "<?". Any other "<"
+    # (one with no closing ">" before the next "<") is literal text. The old
+    # heuristic only looked at the single char after "<", so "n<k" (letter, no
+    # space) was misread as a tag open and made lxml reject the whole slide —
+    # which silently returned the UNPARSED original, skipping every other fix.
+    svg_content = re.sub(r"<(?![A-Za-z/][^<>]*>|[!?])", "&lt;", svg_content)
 
     try:
         root = etree.fromstring(svg_content.encode("utf-8"), parser=_SAFE_PARSER)
@@ -117,6 +124,11 @@ def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[st
         _normalize_stacked_card_heights(root, warnings)
     if _uses_timeline_layout(page):
         _normalize_timeline_layout(root, page, warnings)
+    # The overlap / card-height / timeline passes above move text vertically and
+    # can push it past the bottom edge that _clamp_boundaries enforced earlier.
+    # Re-clamp text baselines so the "nothing below the canvas" invariant holds
+    # at the end of Phase 4. Idempotent: a no-op when nothing was pushed off.
+    _clamp_text_baseline_y(root, warnings)
     _check_image_hrefs(root, warnings)
     _warn_layout_issues(root, warnings, page)
 
@@ -789,6 +801,16 @@ def _clamp_boundaries(root: etree._Element, warnings: list[str]) -> None:
             )
 
     # Text: clamp y so that the alphabetic-baseline text bbox stays in canvas
+    _clamp_text_baseline_y(root, warnings)
+
+
+def _clamp_text_baseline_y(root: etree._Element, warnings: list[str]) -> None:
+    """Pull any <text> whose baseline sits below the canvas back inside it.
+
+    Split out of _clamp_boundaries so it can also run as a final pass after the
+    overlap / card-height / timeline passes, which move text vertically and
+    would otherwise leave it off-canvas with nothing to re-clamp it.
+    """
     for el in root.iter(f"{{{SVG_NS}}}text"):
         if _has_translated_group_ancestor(el):
             continue

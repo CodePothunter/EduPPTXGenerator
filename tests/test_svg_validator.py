@@ -313,3 +313,71 @@ class TestHtmlEntityResolution:
         text = "".join(etree.fromstring(fixed.encode()).itertext())
         assert "&nbsp;" not in text
         assert " " in text
+
+
+class TestBareLessThanInMathText:
+    """Regression: a bare '<' in math/chemistry text written WITHOUT a space
+    after it (e.g. 'n<k', '0<x<1') used to be misread as a tag open, making
+    lxml reject the slide. validate_and_fix then returned the UNPARSED original,
+    silently skipping every other auto-fix. The escaper must recognise these as
+    literal text while leaving real (nested) tags untouched."""
+
+    def test_bare_lt_no_space_does_not_disable_the_whole_fixer(self):
+        # The inequality is glued to a letter ("n<k") AND the font is unsafe.
+        # If the bare '<' aborts parsing, the font fix never runs — so asserting
+        # the font WAS replaced proves the fixer did not bail out.
+        body = '<text x="100" y="200" font-family="Comic Sans" font-size="16">当 n<k 时</text>'
+        fixed, warnings = validate_and_fix(_make_svg(body))
+        assert not any("parse error" in w.lower() for w in warnings)
+        assert "Noto Sans SC" in fixed  # downstream font fix still ran
+        text = "".join(etree.fromstring(fixed.encode()).itertext())
+        assert "n<k" in text  # &lt; round-trips back to a literal '<'
+
+    def test_chained_inequality_preserved(self):
+        body = '<text x="100" y="200" font-size="16">满足 0<x<1 的实数</text>'
+        fixed, warnings = validate_and_fix(_make_svg(body))
+        assert not any("parse error" in w.lower() for w in warnings)
+        text = "".join(etree.fromstring(fixed.encode()).itertext())
+        assert "0<x<1" in text
+
+    def test_bare_lt_with_space_still_handled(self):
+        # The case the old regex already handled must keep working.
+        body = '<text x="100" y="200" font-size="16">当 k < 0 时</text>'
+        fixed, warnings = validate_and_fix(_make_svg(body))
+        assert not any("parse error" in w.lower() for w in warnings)
+        text = "".join(etree.fromstring(fixed.encode()).itertext())
+        assert "k < 0" in text
+
+    def test_real_nested_tspan_not_corrupted(self):
+        # The tag-shaped lookahead must NOT escape genuine inline child tags.
+        body = (
+            '<text x="100" y="200" font-size="16">'
+            '前缀<tspan font-weight="bold">重点</tspan>后缀</text>'
+        )
+        fixed, warnings = validate_and_fix(_make_svg(body))
+        assert not any("parse error" in w.lower() for w in warnings)
+        root = etree.fromstring(fixed.encode())
+        assert len(root.findall(f".//{{{SVG_NS}}}tspan")) == 1
+        assert "重点" in "".join(root.itertext())
+
+
+class TestTextReClampAfterOverlap:
+    """Regression: _fix_text_overlaps cascades stacked text downward with no
+    upper bound, and it runs AFTER _clamp_boundaries — so the lower lines used
+    to march past y=720 (off-canvas, invisible) with nothing to re-clamp them.
+    A final text re-clamp must keep every line inside the canvas."""
+
+    def test_overlap_cascade_does_not_push_text_off_canvas(self):
+        # Six near-identical lines bunched 5px apart near the bottom edge: the
+        # overlap fix pushes each well below the previous, cascading past 720
+        # (≈780 for the last line) before this fix was added.
+        lines = "".join(
+            f'<text x="120" y="{y}" font-size="20">内容行 {i} 的描述文字</text>'
+            for i, y in enumerate(range(650, 680, 5))  # 650,655,660,665,670,675
+        )
+        fixed, warnings = validate_and_fix(_make_svg(lines))
+        assert any("overlap" in w.lower() for w in warnings)  # scenario engaged
+        root = etree.fromstring(fixed.encode())
+        ys = [float(t.get("y")) for t in root.iter(f"{{{SVG_NS}}}text")]
+        assert ys
+        assert max(ys) <= 720, f"text pushed off-canvas: {ys}"
