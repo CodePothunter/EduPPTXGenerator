@@ -35,7 +35,7 @@ _MAX_TEMPLATE_CHARS = 3000  # Token budget per template
 _DEFAULT_TEMPLATE_FAMILY = "复用"
 _CHART_TEMPLATE_MAP = {
     "timeline": ("timeline.svg",),
-    "relation": ("relation.svg", "关系图.svg"),
+    "relation": ("关系图.svg",),
 }
 
 _IMAGE_BOUNDARY_RULES = """

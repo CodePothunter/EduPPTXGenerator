@@ -50,9 +50,6 @@ from edupptx.reuse._store import (
 from edupptx.reuse._decide import (
     _transform_rejects_candidate,
 )
-from edupptx.reuse._decide import (
-    _transform_rejects_candidate,
-)
 
 
 def _select_best_library_reuse_match(matches: list[dict[str, Any]]) -> dict[str, Any] | None:

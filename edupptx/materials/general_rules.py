@@ -14,7 +14,7 @@ from typing import Any
 
 GENERAL_RULE = """判断该素材本身是否可在语文、数学、物理之间跨学科通用复用（general）。
 只看 query 描述的画面内容，对 theme、subject、grade、来源课程一律盲视。
-本判断只在非 skip（C03/C04/C05）素材上评估——skip 类已前置短路，不进入此判断。
+本判断只在非 skip（C00 精确文字/题目页）素材上评估——skip 类已前置短路，不进入此判断。
 判定顺序：先查强-false，命中任一即 general=false；都不命中则 general=true。不要因“判断模糊”就默认 false。
 
 强-false（命中任一即 false）：

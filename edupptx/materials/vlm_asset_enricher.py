@@ -68,36 +68,15 @@ VLM_SYSTEM_PROMPT = """你是一个素材库的图像验证器。给定一张教
 VLM_SYSTEM_PROMPT += """
 
 额外素材分类判断：
-- 同时判断图片应归入哪个素材分类，输出 visual_reuse_group 为以下 7 个类别 ID 之一。
+- 同时判断图片应归入哪个素材分类，输出 visual_reuse_group 为以下 4 个类别 ID 之一。
 """ + MATERIAL_CATEGORY_RULES_TEXT + """
 - visual_reuse_confidence 表示你对该分类判断的置信度，0-1。
 - visual_reuse_reason 格式："属于<类别中文名>：<画面主体描述>"。
 - 输出 JSON 需要额外包含：
-  "visual_reuse_group": "<C00-C06 类别ID>",
+  "visual_reuse_group": "<C00-C03 类别ID>",
   "visual_reuse_confidence": 0.0,
   "visual_reuse_reason": "..."
 """
-
-VLM_REDESCRIBE_SYSTEM_PROMPT = """你是教学课件素材库的图片标注助手。给定一张图片和原始元数据，只根据图片实际内容重新生成可复用语义描述，只返回严格 JSON。
-
-输出 JSON 结构：
-{
-  "content_prompt": "短中文图片需求，只描述图片本体",
-  "detail_prompt": "完整的视觉细节描述，保留布局、控件、装饰、配色等",
-  "context_summary": "一句 20-40 个汉字的短句，描述画面内容和页面功能",
-  "teaching_intent": "该图服务的教学动作或学习目标",
-  "general": false
-}
-
-规则：
-1. content_prompt 只回答“这张图实际是什么”，写成可直接检索图片的短中文名词短语，长度不超过 30 个汉字。
-2. 不要沿用原始元数据中被图片否定的对象、文字、数量、动作或教学事实。
-3. 如果图片是空白卡片、空白边框、空白举牌等可叠字素材，content_prompt 必须显式写“空白”或“不含具体文字”。
-4. detail_prompt 记录主体外观、数量、布局、背景、装饰、配色、构图和可见文字；不得虚构图片里没有的文字。
-5. context_summary 写“画面内容 + 页面功能”，不要只写页面类型。
-6. teaching_intent 写该图按真实画面可支持的教学动作或学习目标。
-7. general 必须是布尔值，表示当前图片本身是否可跨语文、数学、物理通用复用。只有明确不依赖具体学科、固定文字、固定数字、精确图形关系、课文故事、文化身份或科学实验结构时才输出 true；模糊时输出 false。
-8. 不输出 core_keywords、semantic_aliases、query_aliases、constraints 或结构之外字段。"""
 
 VLM_REDESCRIBE_SYSTEM_PROMPT = """你是教学课件素材库的图片标注助手。给定一张图片和原始元数据，只根据图片实际内容写出可重新生成该图的完整 query，只返回严格 JSON。
 

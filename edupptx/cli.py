@@ -597,10 +597,10 @@ def plan(topic: str, requirements: str, file_path: str | None, research: bool,
 
 @main.command("reuse-check")
 @click.argument("topic")
-@click.option("--requirements", "-r", default="", help="闄勫姞瑕佹眰")
-@click.option("--file", "file_path", default=None, type=click.Path(exists=True), help="杈撳叆鏂囨。")
-@click.option("--research", is_flag=True, help="鍚敤鑱旂綉鎼滅储")
-@click.option("--output", "-o", default="./output", type=click.Path(), help="杈撳嚭鐩綍")
+@click.option("--requirements", "-r", default="", help="附加要求")
+@click.option("--file", "file_path", default=None, type=click.Path(exists=True), help="输入文档 (PDF/Word/MD/TXT)")
+@click.option("--research", is_flag=True, help="启用联网搜索充实内容")
+@click.option("--output", "-o", default="./output", type=click.Path(), help="输出目录")
 @click.option("--env-file", default=".env", help=".env file path")
 @click.option("--keywords/--no-keywords", default=True, show_default=True, help="Use LLM keyword enrichment for reuse targets")
 @_llm_profile_option
