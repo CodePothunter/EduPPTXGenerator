@@ -10,6 +10,12 @@ from lxml import etree
 SVG_NS = "http://www.w3.org/2000/svg"
 TSPAN_TAG = f"{{{SVG_NS}}}tspan"
 
+# Hardened parser: blocks XXE / external DTD / network fetches. Single source of
+# truth for the parse-time security posture — svg_validator imports this same
+# instance so both Phase 4 parse paths (validate_and_fix and sanitize_for_ppt)
+# are hardened identically.
+_SAFE_PARSER = etree.XMLParser(resolve_entities=False, no_network=True)
+
 EVENT_ATTRS = re.compile(r"^on[a-z]+$", re.IGNORECASE)
 _POSITION_ATTRS = {"x", "y", "dx", "dy", "rotate", "textLength", "lengthAdjust"}
 
@@ -48,11 +54,14 @@ def sanitize_for_ppt(svg_content: str) -> str:
     svg_content = resolve_html_entities(svg_content)
     # Pre-clean unescaped &
     svg_content = re.sub(r"&(?!amp;|lt;|gt;|quot;|apos;|#)", "&amp;", svg_content)
-    # Pre-clean unescaped < in text content (e.g., "k < 0" in math formulas)
-    # Match < that is NOT part of a valid XML tag start (< followed by letter or / or !)
-    svg_content = re.sub(r"<(?![a-zA-Z/!?])", "&lt;", svg_content)
+    # Pre-clean bare "<" that is not the start of a real tag (e.g. "n<k",
+    # "0<x<1" in math/chemistry). A real tag closes with ">" before the next
+    # "<"; anything else is literal text. (See svg_validator for the full
+    # rationale — the old next-char-only heuristic let "n<k" abort parsing,
+    # which made sanitize bail out and skip every fix incl. <script> removal.)
+    svg_content = re.sub(r"<(?![A-Za-z/][^<>]*>|[!?])", "&lt;", svg_content)
     try:
-        root = etree.fromstring(svg_content.encode("utf-8"))
+        root = etree.fromstring(svg_content.encode("utf-8"), parser=_SAFE_PARSER)
     except etree.XMLSyntaxError:
         return svg_content  # Return as-is if unparseable
 

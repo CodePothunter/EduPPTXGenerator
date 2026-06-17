@@ -119,3 +119,43 @@ class TestResolveHtmlEntitiesUnit:
         assert resolve_html_entities("&notareal;") == "&notareal;"
         assert resolve_html_entities("Tom & Jerry") == "Tom & Jerry"
         assert resolve_html_entities("&#160;") == "&#160;"
+
+
+class TestParserHardening:
+    """P1-a: sanitize_for_ppt previously parsed with the DEFAULT lxml parser,
+    so the entity-expansion / XXE hardening that svg_validator already applied
+    covered only one of the two Phase 4 parse paths."""
+
+    def test_safe_parser_does_not_expand_internal_entities(self):
+        from lxml import etree
+
+        from edupptx.postprocess.svg_sanitizer import _SAFE_PARSER
+
+        xml = (
+            '<!DOCTYPE svg [<!ENTITY x "PWNED">]>'
+            f'<svg xmlns="{SVG_NS}"><text>&x;</text></svg>'
+        )
+        root = etree.fromstring(xml.encode(), parser=_SAFE_PARSER)
+        assert "PWNED" not in "".join(root.itertext())
+
+    def test_both_phase4_parse_paths_share_one_hardened_parser(self):
+        from edupptx.postprocess import svg_sanitizer, svg_validator
+
+        assert svg_sanitizer._SAFE_PARSER is svg_validator._SAFE_PARSER
+
+
+class TestBareLessThanInSanitizer:
+    """Regression: the sanitizer carried the same buggy bare-'<' escaper as the
+    validator. A glued inequality like 'n<k' aborted parsing, which made
+    sanitize_for_ppt bail out — and crucially skip <script>/event-handler
+    stripping. The fix must keep both the math text and the sanitization."""
+
+    def test_bare_lt_no_space_does_not_skip_sanitization(self):
+        from lxml import etree
+
+        body = '<script>steal()</script><text x="10" y="10">n<k</text>'
+        out = sanitize_for_ppt(_make_svg(body))
+        assert "<script" not in out  # sanitization still ran
+        assert "steal" not in out
+        text = "".join(etree.fromstring(out.encode()).itertext())
+        assert "n<k" in text  # inequality preserved as literal text

@@ -12,7 +12,7 @@ from edupptx.models import (
     iter_image_slot_keys,
     normalize_image_aspect_ratio,
 )
-from edupptx.postprocess.svg_sanitizer import resolve_html_entities
+from edupptx.postprocess.svg_sanitizer import _SAFE_PARSER, resolve_html_entities
 
 if TYPE_CHECKING:
     from edupptx.models import PagePlan
@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 SVG_NS = "http://www.w3.org/2000/svg"
 NSMAP = {"svg": SVG_NS}
 
-# Hardened parser: blocks XXE / external DTDs / network fetches.
-_SAFE_PARSER = etree.XMLParser(resolve_entities=False, no_network=True)
+# _SAFE_PARSER (XXE/DTD/network-hardened) is imported from svg_sanitizer so both
+# Phase 4 parse paths share one hardened parser config (single source of truth).
 
 EXPECTED_VIEWBOX = "0 0 1280 720"
 MAX_X = 1280

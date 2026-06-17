@@ -1562,6 +1562,7 @@ class PPTXAgent:
                 logger.warning("Slide {}: {}", slide.page_number, w)
 
             # Step 2: LLM Review (only if meaningful warnings exist)
+            review_ran = False
             if do_review and draft and page is not None and _needs_llm_review(page, warnings):
                 from edupptx.postprocess.svg_reviewer import review_and_fix_svg
                 fixed_svg = review_and_fix_svg(
@@ -1570,8 +1571,19 @@ class PPTXAgent:
                     draft.visual,
                     self.config,
                 )
+                review_ran = True
             elif do_review and warnings:
                 logger.debug("Slide {}: skipping LLM review (only minor auto-fixes)", slide.page_number)
+
+            # Step 2b: Re-validate after the LLM review. review_and_fix_svg is a
+            # single LLM pass whose only structural guard is a placeholder count;
+            # it can re-introduce off-canvas elements / unsafe fonts that Step 1
+            # already fixed. Re-running the deterministic validator restores the
+            # quality floor for exactly the slides that warranted review.
+            if review_ran:
+                fixed_svg, review_warnings = validate_and_fix(fixed_svg, page=page)
+                for w in review_warnings:
+                    logger.warning("Slide {} (post-review): {}", slide.page_number, w)
 
             # Step 3: Sanitize for PPT
             clean_svg = sanitize_for_ppt(fixed_svg)
