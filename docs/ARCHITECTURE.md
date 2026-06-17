@@ -264,7 +264,7 @@ find_reusable_ai_image_asset → 硬过滤 eligible_assets
 - reuse 族 `summary.svg` 的预览叫 `summery.png`（拼写）。
 
 ### 🟡 SVG→PPTX 几何简化
-- 坐标变换是"累加 translate + 乘积 scale"，**非完整 2D 仿射矩阵**：`<g>` 上的 `rotate`/`matrix()` 被忽略，带旋转的组渲染错位（注：`<path>` 自身 transform 里的 rotate 是有读的）。
+- 坐标变换是"累加 translate + 乘积 scale"，**非完整 2D 仿射矩阵**：`<g>` 上的 `rotate`/`matrix()` 被忽略，带旋转的组渲染错位（注：`<path>` 自身 transform 里的 rotate 现已按 SVG 轴心语义正确摆放，见"本轮已清"）。
 - `radialGradient` 固定输出居中圆，忽略 cx/cy/fx/fy/r。
 - `build_shadow_xml` 把 dx 钳到非负，dx<0（向左偏移）阴影方向算错。
 - `convert_use` 用临时 set/del 原地改 defs 共享元素，非线程安全且缺 finally 还原。
@@ -284,6 +284,10 @@ find_reusable_ai_image_asset → 硬过滤 eligible_assets
 - ~~`_clamp_boundaries` 在 `_fix_text_overlaps` 之前跑、之后无人再夹，堆叠文字级联越过 720 出画布~~ → overlap/card/timeline 后补 `_clamp_text_baseline_y`（P0，回归测试实测旧版可达 y=780）。
 - ~~`sanitize_for_ppt` 用默认 lxml parser，XXE/实体硬化只覆盖两条解析路径的一条~~ → 与 validator 共用同一 `_SAFE_PARSER`（P1，单一安全配置来源）。
 - ~~LLM review 后直接 sanitize，确定性质量底线对"最需要它的页"被绕过~~ → review 真跑过的页 review 后**再跑一次 `validate_and_fix`**（P1，回归测试）。
+
+**输出/编排 MEDIUM（独立 re-audit 新发现并修复）：**
+- ~~`run_from_plan`（render）入口 `save_plan` 覆盖用户手改的 plan.json，model roundtrip 丢弃未知字段且无可恢复~~ → save_plan 前把输入逐字节镜像到 `plan.input.json`（带回归测试）。
+- ~~`convert_path` 读了 rotate 角度却用 PPT 包围盒中心当轴心（SVG 是绕原点/`cx cy`），带旋转 path 落位错~~ → 解析 `cx cy` + 落点偏移 `(Rot(θ)-I)·(中心-轴心)`（带 `svg_to_shapes` 首个几何回归测试）。
 
 **此前批次：**
 - ~~8896 行单体"维护性炸弹"~~ → Phase A 重构成 `reuse/` 19 模块子包（注：拆的是内部实现，对外仍是常驻门面，见 §3.1）。
