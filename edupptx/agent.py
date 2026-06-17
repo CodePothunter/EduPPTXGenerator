@@ -1621,8 +1621,9 @@ class PPTXAgent:
             path.write_text(clean_svg, encoding="utf-8")
             return slide.page_number, path
 
-        # Parallel review: concurrency follows config
-        max_workers = min(len(slides), self.config.llm_concurrency)
+        # Parallel review: concurrency follows config. max(1, ...) guards the
+        # empty-deck case — ThreadPoolExecutor(max_workers=0) raises ValueError.
+        max_workers = max(1, min(len(slides), self.config.llm_concurrency))
         results: dict[int, Path] = {}
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:

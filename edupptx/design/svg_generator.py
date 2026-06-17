@@ -180,7 +180,9 @@ async def generate_slide_svgs(
                 if on_slide is not None:
                     on_slide(slide)
     else:
-        max_workers = min(total_pages, config.llm_concurrency)
+        # max(1, ...) guards the empty-pages case: ThreadPoolExecutor(max_workers=0)
+        # raises ValueError. (No pages means no tasks are submitted regardless.)
+        max_workers = max(1, min(total_pages, config.llm_concurrency))
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             future_to_page = {}
             for page in draft.pages:
