@@ -267,7 +267,7 @@ find_reusable_ai_image_asset → 硬过滤 eligible_assets
 - 坐标变换是"累加 translate + 乘积 scale"，**非完整 2D 仿射矩阵**：`<g>` 上的 `rotate`/`matrix()` 被忽略，带旋转的组渲染错位（注：`<path>` 自身 transform 里的 rotate 现已按 SVG 轴心语义正确摆放，见"本轮已清"）。
 - `radialGradient` 固定输出居中圆，忽略 cx/cy/fx/fy/r。
 - `build_shadow_xml` 把 dx 钳到非负，dx<0（向左偏移）阴影方向算错。
-- `convert_use` 用临时 set/del 原地改 defs 共享元素，非线程安全且缺 finally 还原。
+- `convert_use` 用临时 set/del 原地改 defs 共享元素还原（set→convert→restore，但无 try/finally；实际因 `convert_element` 内部 try/except 不会泄漏，非线程安全仍在）。（`convert_g` 此前更糟——下传组属性后**完全不还原**，已修，见"本轮已清"。）
 - 路径包围盒只采样锚点/控制点，不解贝塞尔极值，曲线鼓出盒外部分可能被裁。
 
 ### 🟡 其他卫生 / dead config
@@ -288,6 +288,8 @@ find_reusable_ai_image_asset → 硬过滤 eligible_assets
 **输出/编排 MEDIUM（独立 re-audit 新发现并修复）：**
 - ~~`run_from_plan`（render）入口 `save_plan` 覆盖用户手改的 plan.json，model roundtrip 丢弃未知字段且无可恢复~~ → save_plan 前把输入逐字节镜像到 `plan.input.json`（带回归测试）。
 - ~~`convert_path` 读了 rotate 角度却用 PPT 包围盒中心当轴心（SVG 是绕原点/`cx cy`），带旋转 path 落位错~~ → 解析 `cx cy` + 落点偏移 `(Rot(θ)-I)·(中心-轴心)`（带 `svg_to_shapes` 首个几何回归测试）。
+- ~~`convert_g` 下传组 fill/stroke/opacity 用 `child.set()` 永久改写子元素、从不还原，bleed 进共享节点的后续渲染~~ → 注入仅转换期生效、`finally` 还原（带回归测试）。
+- ~~空 deck（0 页 draft / 空 slides 批）让 `min(len, concurrency)=0` → `ThreadPoolExecutor(max_workers=0)` 抛 ValueError~~ → Phase 3/4 均改 `max(1, min(...))`（带回归测试）。
 
 **此前批次：**
 - ~~8896 行单体"维护性炸弹"~~ → Phase A 重构成 `reuse/` 19 模块子包（注：拆的是内部实现，对外仍是常驻门面，见 §3.1）。
