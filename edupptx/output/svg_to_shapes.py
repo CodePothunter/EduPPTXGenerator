@@ -1770,11 +1770,24 @@ def convert_g(elem: ET.Element, ctx: ConvertContext) -> str:
     child_ctx = ctx.child(dx, dy, sx, sy, filter_id)
     shapes = []
     for child in elem:
-        # Propagate group attributes to children
+        # Propagate group presentation attrs onto the child for the duration of
+        # its conversion only, then restore. Children can be shared nodes
+        # (reached again via <use> into <defs>, or another group); a permanent
+        # child.set() would bleed this group's fill/stroke/opacity into those
+        # later renders. Restore in finally so the tree is left untouched.
+        saved: dict[str, str | None] = {}
         for attr, value in group_attrs.items():
             if not child.get(attr):
+                saved[attr] = child.attrib.get(attr)
                 child.set(attr, value)
-        shape_xml = convert_element(child, child_ctx)
+        try:
+            shape_xml = convert_element(child, child_ctx)
+        finally:
+            for attr, original in saved.items():
+                if original is None:
+                    child.attrib.pop(attr, None)
+                else:
+                    child.attrib[attr] = original
         if shape_xml:
             shapes.append(shape_xml)
     ctx.sync_from_child(child_ctx)
