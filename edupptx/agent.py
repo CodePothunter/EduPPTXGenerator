@@ -73,6 +73,38 @@ def _needs_llm_review(page: PagePlan | None, warnings: list[str]) -> bool:
     return False  # All warnings are minor auto-fixes
 
 
+def _is_dark_palette(visual) -> bool:
+    """True for a dark theme (dark cards / light text), e.g. `-s edu_tech`.
+
+    The generated SVG canvas is transparent by design — the page background
+    image shows through. A dark palette assumes a dark canvas, but a reused or
+    absent background can leave it light and wash out on-canvas text. Detect the
+    dark case by the card-background luminance so we can back it with a dark rect.
+    """
+    try:
+        from edupptx.postprocess.style_linter import wcag_relative_luminance
+        return wcag_relative_luminance(getattr(visual, "card_bg_color", "#FFFFFF")) < 0.2
+    except Exception:
+        return False
+
+
+def _inject_dark_canvas(svg: str, visual) -> str:
+    """Prepend an opaque full-page rect in the page color as the bottom layer.
+
+    Makes a dark theme coherent regardless of the background image: a flat dark
+    canvas under cards (slightly lighter) and light on-canvas text. Uses the
+    darker `secondary_bg_color` so cards keep a little elevation. Inserted right
+    after the opening <svg> tag so it sits beneath all content.
+    """
+    import re as _re
+    fill = getattr(visual, "secondary_bg_color", "") or getattr(visual, "card_bg_color", "#0F172A")
+    rect = f'<rect x="0" y="0" width="1280" height="720" fill="{fill}"/>'
+    match = _re.search(r"<svg\b[^>]*>", svg)
+    if not match:
+        return svg
+    return svg[: match.end()] + rect + svg[match.end():]
+
+
 def _attach_ai_image_captions(
     routed_image_needs_by_page: dict[int, list[Any]],
     client: Any | None,
@@ -176,6 +208,21 @@ class PPTXAgent:
             routing.palette_id,
             routing.resolved_by,
         )
+
+        # An explicit `-s <theme>` locks that theme's palette, overriding the
+        # keyword-routed one. Default/unknown/"edu_emerald" → None → keep auto.
+        # Overriding `palette` here covers both visual-planning paths below
+        # (JSON and DESIGN.md), which consume this same object.
+        from edupptx.design.template_router import palette_for_style
+        forced_palette = palette_for_style(style)
+        if forced_palette is not None:
+            logger.info(
+                "CLI --style '{}' locks palette (was routed '{}')",
+                style, routing.palette_id,
+            )
+            palette = forced_palette
+            routing.palette_id = forced_palette.id  # keep plan.json / image routing consistent
+            draft.style_routing = routing
 
         session.log_step("page_variant_assignment", "Matching template variants to outline pages")
         draft = self._phase1b_page_variant_assignment(draft, manifest)
@@ -1619,6 +1666,11 @@ class PPTXAgent:
 
             # Step 3: Sanitize for PPT
             clean_svg = sanitize_for_ppt(fixed_svg)
+
+            # Step 3.1: Dark-canvas backing for dark palettes (e.g. -s edu_tech).
+            # Runs after all validation so the full-page rect never trips a check.
+            if draft and _is_dark_palette(draft.visual):
+                clean_svg = _inject_dark_canvas(clean_svg, draft.visual)
 
             # Step 3.3: Render LaTeX formulas
             from edupptx.postprocess.latex_renderer import render_latex_formulas

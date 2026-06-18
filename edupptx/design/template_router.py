@@ -75,6 +75,67 @@ class PalettePreset(BaseModel):
     heading_color: str = "#0F172A"
 
 
+# ── CLI `-s/--style` → locked color palette ──────────────────────────────────
+# When a user explicitly passes `-s <theme>`, that theme's palette overrides the
+# keyword-routed one (see agent._run_async + palette_for_style). Each entry's
+# colors mirror the canonical comment in design/style_templates/<theme>.svg.
+# "edu_emerald" is the click default, so it doubles as the "auto-route" sentinel
+# and palette_for_style() leaves it to the keyword router (see _AUTO_STYLE).
+_STYLE_PALETTES: dict[str, PalettePreset] = {
+    "edu_academic": PalettePreset(
+        id="edu_academic", label="Academic Deep Blue",
+        primary_color="#1E40AF", secondary_color="#3B82F6", accent_color="#F59E0B",
+        card_bg_color="#FFFFFF", secondary_bg_color="#EFF6FF",
+        text_color="#1F2937", heading_color="#1E3A8A",
+        background_color_bias="冷蓝、学术、严谨",
+    ),
+    "edu_emerald": PalettePreset(
+        id="edu_emerald", label="Emerald Green",
+        primary_color="#10B981", secondary_color="#059669", accent_color="#F59E0B",
+        card_bg_color="#FFFFFF", secondary_bg_color="#ECFDF5",
+        text_color="#374151", heading_color="#065F46",
+        background_color_bias="自然、生命、温润",
+    ),
+    "edu_minimal": PalettePreset(
+        id="edu_minimal", label="Minimal Gray",
+        primary_color="#374151", secondary_color="#9CA3AF", accent_color="#6366F1",
+        card_bg_color="#FAFAFA", secondary_bg_color="#F3F4F6",
+        text_color="#374151", heading_color="#111827",
+        background_color_bias="极简、留白、克制",
+    ),
+    "edu_tech": PalettePreset(
+        id="edu_tech", label="Tech Dark",
+        primary_color="#06B6D4", secondary_color="#22D3EE", accent_color="#A78BFA",
+        card_bg_color="#1E293B", secondary_bg_color="#0F172A",
+        text_color="#E2E8F0", heading_color="#22D3EE",
+        background_color_bias="科技、深色、未来",
+    ),
+    "edu_warm": PalettePreset(
+        id="edu_warm", label="Warm Orange",
+        primary_color="#F97316", secondary_color="#FB923C", accent_color="#FBBF24",
+        card_bg_color="#FFFFFF", secondary_bg_color="#FEF3C7",
+        text_color="#57534E", heading_color="#9A3412",
+        background_color_bias="暖橙、活泼、亲和",
+    ),
+}
+
+# The click default for `-s`; passing it (or nothing) means "let the keyword
+# router decide the palette", so it is NOT a lockable theme.
+_AUTO_STYLE = "edu_emerald"
+
+
+def palette_for_style(style_name: str | None) -> PalettePreset | None:
+    """Return the locked palette for an explicit `-s <theme>`, else None (auto).
+
+    None / empty / the click-default "edu_emerald" / any unknown name → None,
+    leaving the keyword-routed palette untouched. The other four themes return
+    their preset so the user's explicit choice drives all colors.
+    """
+    if not style_name or style_name == _AUTO_STYLE:
+        return None
+    return _STYLE_PALETTES.get(style_name)
+
+
 class PaletteRoutingRule(BaseModel):
     """One global palette routing rule loaded from design references."""
 
@@ -923,6 +984,11 @@ def resolve_palette_preset(
     preferred = _find_palette_by_id(manifest, preferred_palette_id)
     if preferred is not None:
         return preferred
+
+    # A CLI-locked style id (set by agent._run_async) resolves to its preset so
+    # plan.json round-trips and any later id→palette lookup stays consistent.
+    if preferred_palette_id and preferred_palette_id in _STYLE_PALETTES:
+        return _STYLE_PALETTES[preferred_palette_id]
 
     reference_palette, reference_rule = _choose_reference_palette(routing_text)
     if reference_palette is not None and reference_rule is not None:
