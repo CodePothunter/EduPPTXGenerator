@@ -1237,44 +1237,47 @@ class PPTXAgent:
 
         await asyncio.gather(*(fetch_page_pending(page) for page in draft.pages))
 
-        # Post-pipeline observability: write the logical-need summary and
-        # append any coverage-gap events to the cross-session log. Failures
-        # here MUST NOT abort generation, so we trap broadly.
-        try:
-            from edupptx.materials.reuse_observability import (
-                DEFAULT_COVERAGE_LOG_FILENAME,
-                append_coverage_gap_events,
-                write_reuse_logical_summary,
-            )
-            summary = write_reuse_logical_summary(debug_path)
-            if summary is not None:
-                logger.info(
-                    "AI image reuse logical summary: checks={}, matched={}, match_rate={}",
-                    summary.get("logical_check_count"),
-                    summary.get("matched_count"),
-                    summary.get("match_rate"),
+        # Post-pipeline observability: write the logical-need summary and append
+        # any coverage-gap events to the cross-session log. Only meaningful when
+        # debug artifacts were written this run — with debug_path None there is
+        # nothing to summarize, and calling the summary writer with None would
+        # raise. Failures here MUST NOT abort generation, so we trap broadly.
+        if debug_path is not None:
+            try:
+                from edupptx.materials.reuse_observability import (
+                    DEFAULT_COVERAGE_LOG_FILENAME,
+                    append_coverage_gap_events,
+                    write_reuse_logical_summary,
                 )
-            # The coverage log lives at the repo root by default so it
-            # accumulates across sessions; users can override with the env
-            # variable EDUPPTX_REUSE_COVERAGE_LOG.
-            import os as _os
-            coverage_log_path = _os.environ.get("EDUPPTX_REUSE_COVERAGE_LOG")
-            if coverage_log_path:
-                coverage_log = Path(coverage_log_path)
-            else:
-                coverage_log = Path.cwd() / DEFAULT_COVERAGE_LOG_FILENAME
-            appended = append_coverage_gap_events(debug_path, log_path=coverage_log)
-            if appended:
-                logger.info(
-                    "AI image reuse coverage gap events appended: count={}, log={}",
-                    appended,
-                    coverage_log,
+                summary = write_reuse_logical_summary(debug_path)
+                if summary is not None:
+                    logger.info(
+                        "AI image reuse logical summary: checks={}, matched={}, match_rate={}",
+                        summary.get("logical_check_count"),
+                        summary.get("matched_count"),
+                        summary.get("match_rate"),
+                    )
+                # The coverage log lives at the repo root by default so it
+                # accumulates across sessions; users can override with the env
+                # variable EDUPPTX_REUSE_COVERAGE_LOG.
+                import os as _os
+                coverage_log_path = _os.environ.get("EDUPPTX_REUSE_COVERAGE_LOG")
+                if coverage_log_path:
+                    coverage_log = Path(coverage_log_path)
+                else:
+                    coverage_log = Path.cwd() / DEFAULT_COVERAGE_LOG_FILENAME
+                appended = append_coverage_gap_events(debug_path, log_path=coverage_log)
+                if appended:
+                    logger.info(
+                        "AI image reuse coverage gap events appended: count={}, log={}",
+                        appended,
+                        coverage_log,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "AI image reuse observability skipped: {}",
+                    str(exc)[:200],
                 )
-        except Exception as exc:
-            logger.warning(
-                "AI image reuse observability skipped: {}",
-                str(exc)[:200],
-            )
 
         return assets_by_page
 

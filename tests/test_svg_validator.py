@@ -4,7 +4,12 @@ import pytest
 from lxml import etree
 
 from edupptx.models import ImageNeed, MaterialNeeds, PagePlan
-from edupptx.postprocess.svg_validator import validate_and_fix
+from edupptx.postprocess.svg_validator import (
+    _warn_layout_issues,
+    _warn_text_overflows_card,
+    _warn_title_over_image,
+    validate_and_fix,
+)
 
 
 SVG_NS = "http://www.w3.org/2000/svg"
@@ -381,3 +386,118 @@ class TestTextReClampAfterOverlap:
         ys = [float(t.get("y")) for t in root.iter(f"{{{SVG_NS}}}text")]
         assert ys
         assert max(ys) <= 720, f"text pushed off-canvas: {ys}"
+
+
+def _cover_page() -> PagePlan:
+    return PagePlan(page_number=1, page_type="cover", title="封面", layout_hint="center_hero")
+
+
+class TestTextOverflowCardMatching:
+    """The overflow check must measure against the real card, not a header strip."""
+
+    def test_header_strip_not_mistaken_for_card(self):
+        # Card body (y100..260) with a coloured header strip (y100..140) on top.
+        # Body text sits below the strip but inside the card — must NOT warn.
+        root = etree.fromstring(
+            _make_svg(
+                '<rect x="100" y="100" width="400" height="160" rx="12" fill="#f5f5f5"/>'
+                '<rect x="100" y="100" width="400" height="40" rx="12" fill="#4C8DAE"/>'
+                '<text x="120" y="180" font-size="16" fill="#333">正文一行'
+                '<tspan x="120" dy="26">正文二行落在卡内</tspan></text>'
+            ).encode()
+        )
+        warnings: list[str] = []
+        _warn_text_overflows_card(root, warnings)
+        assert not any("文字超出卡片下边界" in w for w in warnings)
+
+    def test_genuine_overflow_flagged(self):
+        # Five lines in a short card spill well past its bottom (y200).
+        root = etree.fromstring(
+            _make_svg(
+                '<rect x="100" y="100" width="400" height="100" rx="12" fill="#eee"/>'
+                '<text x="120" y="130" font-size="20" fill="#333">行1'
+                '<tspan x="120" dy="40">行2</tspan><tspan x="120" dy="40">行3</tspan>'
+                '<tspan x="120" dy="40">行4</tspan><tspan x="120" dy="40">行5</tspan></text>'
+            ).encode()
+        )
+        warnings: list[str] = []
+        _warn_text_overflows_card(root, warnings)
+        assert any("文字超出卡片下边界" in w for w in warnings)
+
+
+class TestTitleOverImage:
+    """Cover/hero title sitting on an image needs a backing plate for legibility."""
+
+    def test_unscrimmed_title_over_image_warns(self):
+        root = etree.fromstring(
+            _make_svg(
+                '<image x="200" y="110" width="880" height="460" href="__IMAGE_HERO_1__"/>'
+                '<text x="640" y="520" font-size="60" text-anchor="middle" '
+                'fill="#356B87">认识时间时分秒</text>'
+            ).encode()
+        )
+        warnings: list[str] = []
+        _warn_title_over_image(root, warnings, _cover_page())
+        assert any("封面标题压图" in w for w in warnings)
+
+    def test_title_with_scrim_plate_ok(self):
+        # A snug white plate (not full containment) painted above the image and
+        # below the text counts as a scrim — no warning.
+        root = etree.fromstring(
+            _make_svg(
+                '<image x="200" y="110" width="880" height="460" href="__IMAGE_HERO_1__"/>'
+                '<rect x="320" y="478" width="640" height="74" rx="12" fill="#ffffff"/>'
+                '<text x="640" y="520" font-size="60" text-anchor="middle" '
+                'fill="#356B87">认识时间时分秒</text>'
+            ).encode()
+        )
+        warnings: list[str] = []
+        _warn_title_over_image(root, warnings, _cover_page())
+        assert not any("封面标题压图" in w for w in warnings)
+
+    def test_non_center_hero_page_not_checked(self):
+        page = PagePlan(page_number=4, page_type="content", title="x", layout_hint="bento_3col")
+        root = etree.fromstring(
+            _make_svg(
+                '<image x="200" y="110" width="880" height="460" href="__IMAGE_ILLUSTRATION_1__"/>'
+                '<text x="640" y="520" font-size="60" text-anchor="middle" '
+                'fill="#356B87">大字标题压图</text>'
+            ).encode()
+        )
+        warnings: list[str] = []
+        _warn_title_over_image(root, warnings, page)
+        assert warnings == []
+
+
+class TestTitlePositionCenterHeroSkip:
+    """A centred title on center_hero/cover/closing pages is correct, not broken."""
+
+    def test_center_hero_low_title_not_flagged(self):
+        root = etree.fromstring(
+            _make_svg(
+                '<text x="640" y="300" font-size="44" font-weight="700" '
+                'text-anchor="middle" fill="#333">感谢学习</text>'
+            ).encode()
+        )
+        warnings: list[str] = []
+        _warn_layout_issues(
+            root,
+            warnings,
+            PagePlan(page_number=16, page_type="closing", title="谢谢", layout_hint="center_hero"),
+        )
+        assert not any("页面标题位置异常" in w for w in warnings)
+
+    def test_content_page_low_title_flagged(self):
+        root = etree.fromstring(
+            _make_svg(
+                '<text x="60" y="300" font-size="32" font-weight="700" '
+                'fill="#333">标题被埋低了</text>'
+            ).encode()
+        )
+        warnings: list[str] = []
+        _warn_layout_issues(
+            root,
+            warnings,
+            PagePlan(page_number=4, page_type="content", title="x", layout_hint="bento_3col"),
+        )
+        assert any("页面标题位置异常" in w for w in warnings)

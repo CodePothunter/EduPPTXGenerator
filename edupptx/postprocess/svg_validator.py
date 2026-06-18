@@ -136,6 +136,7 @@ def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[st
     _check_image_hrefs(root, warnings)
     _warn_layout_issues(root, warnings, page)
     _warn_text_overflows_card(root, warnings)
+    _warn_title_over_image(root, warnings, page)
 
     fixed = etree.tostring(root, encoding="unicode", xml_declaration=False)
     return fixed, warnings
@@ -544,6 +545,52 @@ def _find_text_container_rect(
             abs((item[1][1] + item[1][3] / 2.0) - ((ty + text_bottom) / 2.0)),
         ),
     )[0]
+
+
+def _find_enclosing_card_rect(
+    root: etree._Element,
+    tx: float,
+    ty: float,
+) -> etree._Element | None:
+    """Find the card a text actually sits inside — for overflow checking only.
+
+    Unlike _find_text_container_rect (which tolerates an 80px downward slack so
+    it can pick a narrow column for wrap-width estimation), this requires the
+    text's start baseline to fall within the rect's own vertical span. That
+    excludes a card's coloured header strip — a short rect at the card top that
+    the body text sits *below* — which _find_text_container_rect would otherwise
+    mis-pick as the container, producing phantom overflow measured against the
+    header's bottom edge instead of the real card bottom.
+    """
+    candidates: list[tuple[etree._Element, tuple[float, float, float, float]]] = []
+    for rect in root.iter(f"{{{SVG_NS}}}rect"):
+        if _element_in_defs(rect) or _has_translated_group_ancestor(rect):
+            continue
+        box = _rect_box(rect)
+        if box is None:
+            continue
+        rx, ry, rw, rh = box
+        if rw < 100 or rh < 36:
+            continue
+        if rh <= 8 and ry <= 2:  # full-width top accent bar, not a card
+            continue
+        # Horizontal: text start within the rect (small edge slack).
+        if not (rx - 6 <= tx <= rx + rw + 6):
+            continue
+        # Vertical: the text START must sit inside the rect body — at or just
+        # below the top, and above the bottom. A header strip ends above the
+        # body text it labels, so the body text's start is below the strip's
+        # bottom and the strip is correctly excluded here.
+        if not (ry - 6 <= ty <= ry + rh):
+            continue
+        candidates.append((rect, box))
+
+    if not candidates:
+        return None
+
+    # Among rects that genuinely enclose the start, the tightest by area is the
+    # card itself (the page background is larger; the header strip is gone).
+    return min(candidates, key=lambda item: item[1][2] * item[1][3])[0]
 
 
 def _estimate_wrap_width(
@@ -2191,8 +2238,10 @@ def _warn_layout_issues(
             )
 
     # 1. Page title position check
-    # First bold large text should be near y=50, except divider-like section pages.
-    if page is None or page.page_type != "section":
+    # First bold large text should be near y=50 on normal content pages. Skip
+    # pages whose title is centred by design — cover, section dividers, closing,
+    # and any center_hero layout — where a title at y~280 is correct, not broken.
+    if not _uses_center_hero_layout(page):
         for t in texts:
             fs_str = t.get("font-size", "16")
             try:
@@ -2262,13 +2311,133 @@ def _warn_layout_issues(
             )
 
 
+def _has_backing_plate(
+    root: etree._Element,
+    order: dict[etree._Element, int],
+    tleft: float,
+    top: float,
+    tright: float,
+    bottom: float,
+    img_order: int,
+    t_order: int,
+) -> bool:
+    """True when a rect renders above the image but below the text and backs
+    the title band — i.e. an intentional scrim/plate already protects it.
+
+    The plate need not fully contain the band: a scrim sized tightly to the
+    glyphs (cap height, not full ascent) still protects legibility. So we credit
+    any rect that sits under the text centre and covers the majority of the band
+    (≥60% width, ≥45% height). Full containment would miss exactly the snug
+    plates the review LLM tends to add, leaving a phantom warning on a fixed page.
+    """
+    cx = (tleft + tright) / 2.0
+    cy = (top + bottom) / 2.0
+    band_w = max(1.0, tright - tleft)
+    band_h = max(1.0, bottom - top)
+    for rect in root.iter(f"{{{SVG_NS}}}rect"):
+        if _element_in_defs(rect) or _has_translated_group_ancestor(rect):
+            continue
+        r_order = order.get(rect, 0)
+        if not (img_order < r_order < t_order):
+            continue
+        box = _rect_box(rect)
+        if box is None:
+            continue
+        rx, ry, rw, rh = box
+        if not (rx <= cx <= rx + rw and ry <= cy <= ry + rh):
+            continue
+        ov_w = min(tright, rx + rw) - max(tleft, rx)
+        ov_h = min(bottom, ry + rh) - max(top, ry)
+        if ov_w >= band_w * 0.6 and ov_h >= band_h * 0.45:
+            return True
+    return False
+
+
+def _warn_title_over_image(
+    root: etree._Element,
+    warnings: list[str],
+    page: PagePlan | None,
+) -> None:
+    """Flag a cover/hero title sitting on top of an image with no backing plate.
+
+    On center_hero pages the generator sometimes drops a near-full-bleed hero
+    image and then centres the title on top of it with no scrim, wrecking
+    legibility (seen on playful covers where the hero art is busy). Pure
+    geometry + painter z-order; emits a (review-triggering) warning rather than
+    mutating, matching this module's "validator reports, review LLM fixes" split.
+    """
+    if not _uses_center_hero_layout(page):
+        return
+
+    # Pre-order index: a later index paints on top.
+    order = {el: i for i, el in enumerate(root.iter())}
+
+    images: list[tuple[int, tuple[float, float, float, float]]] = []
+    for img in root.iter(f"{{{SVG_NS}}}image"):
+        if _element_in_defs(img) or _has_translated_group_ancestor(img):
+            continue
+        try:
+            ix = float(img.get("x", "0"))
+            iy = float(img.get("y", "0"))
+            iw = float(img.get("width", "0"))
+            ih = float(img.get("height", "0"))
+        except (ValueError, TypeError):
+            continue
+        if iw < 200 or ih < 150:  # only sizeable hero images can bury a title
+            continue
+        images.append((order.get(img, 0), (ix, iy, iw, ih)))
+    if not images:
+        return
+
+    for t in root.iter(f"{{{SVG_NS}}}text"):
+        if _element_in_defs(t) or _has_translated_group_ancestor(t):
+            continue
+        try:
+            fs = float((t.get("font-size", "16") or "16").replace("px", ""))
+            tx = float(t.get("x", "0"))
+            ty = float(t.get("y", "0"))
+        except (ValueError, TypeError):
+            continue
+        if fs < 30:  # title-sized text only
+            continue
+        t_order = order.get(t, 0)
+        top = ty - fs
+        bottom = _get_text_bottom_y(t)
+        half_w = max(60.0, len(_text_content(t)) * fs * 0.5)
+        if t.get("text-anchor") == "middle":
+            tleft, tright = tx - half_w, tx + half_w
+        else:
+            tleft, tright = tx, tx + 2 * half_w
+
+        for img_order, (ix, iy, iw, ih) in images:
+            if img_order >= t_order:
+                continue  # image is not painted below the text
+            v = min(bottom, iy + ih) - max(top, iy)
+            h = min(tright, ix + iw) - max(tleft, ix)
+            if v <= 0 or h <= 0:
+                continue
+            if v < (bottom - top) * 0.5:
+                continue  # only a glancing vertical overlap
+            if _has_backing_plate(root, order, tleft, top, tright, bottom, img_order, t_order):
+                continue
+            warnings.append(
+                "封面标题压图：大号标题直接覆盖在 hero 图片上且无背景蒙版，可读性差。"
+                "应将标题移出图片区（图片缩到一侧/下部，留出文字净区），"
+                "或在标题文字后加一层半透明圆角 rect 作蒙版"
+            )
+            return  # one warning per slide is enough
+
+
 def _warn_text_overflows_card(root: etree._Element, warnings: list[str]) -> None:
     """Report text whose wrapped lines spill past the bottom of their own card.
 
-    Pure geometry, no LLM. Uses the start-position container matcher (not
-    _find_parent_card, which only matches text that already fits within ~28px)
-    so genuinely large vertical overflow is caught rather than skipped.
-    Borrowed from OfficeCLI's `view issues` overflow heuristic.
+    Pure geometry, no LLM. Uses _find_enclosing_card_rect (which requires the
+    text's start to sit inside the rect's vertical span) so a card's coloured
+    header strip is not mistaken for the card — that mismatch produced phantom
+    "overflow" against the strip's bottom on dense summary pages that actually
+    render fine. Genuine overflow (start inside the card, last line spilling
+    past its bottom) is still caught. Borrowed from OfficeCLI's `view issues`
+    overflow heuristic.
     """
     for text_el in root.iter(f"{{{SVG_NS}}}text"):
         if _element_in_defs(text_el) or _has_translated_group_ancestor(text_el):
@@ -2281,7 +2450,7 @@ def _warn_text_overflows_card(root: etree._Element, warnings: list[str]) -> None
         except (ValueError, TypeError):
             continue
         text_bottom = _get_text_bottom_y(text_el)
-        container = _find_text_container_rect(root, tx, ty, text_bottom)
+        container = _find_enclosing_card_rect(root, tx, ty)
         if container is None:
             continue
         box = _rect_box(container)

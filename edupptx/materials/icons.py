@@ -19,6 +19,20 @@ _FALLBACK_SVG = (
     "</svg>"
 )
 
+# Common Lucide names the generator asks for that are absent from our 255-icon
+# subset → nearest available icon. A related icon reads far better than a blank
+# fallback circle. Each target is verified to exist in assets/icons.
+_ICON_ALIASES = {
+    "book-open": "book",
+    "pen-tool": "pen",
+    "cloud-rain": "cloud",
+    "arrow-left-right": "repeat",
+    "arrow-right-left": "repeat",
+    "move-horizontal": "repeat",
+    "smile": "star",
+    "ship": "navigation",
+}
+
 
 def list_icons() -> list[str]:
     """Return all available icon names."""
@@ -41,8 +55,14 @@ def get_icon_svg(name: str, color: str = "currentColor") -> str:
 
     path = (_ASSETS_DIR / f"{name}.svg").resolve()
     if not path.is_relative_to(_ASSETS_DIR) or not path.exists():
-        logger.warning("Icon '{}' not found in assets, using fallback circle", name)
-        return _FALLBACK_SVG.format(color=color)
+        alias = _ICON_ALIASES.get(name)
+        alias_path = (_ASSETS_DIR / f"{alias}.svg").resolve() if alias else None
+        if alias_path is not None and alias_path.is_relative_to(_ASSETS_DIR) and alias_path.exists():
+            logger.info("Icon '{}' not in set, using alias '{}'", name, alias)
+            path = alias_path
+        else:
+            logger.warning("Icon '{}' not found in assets, using fallback circle", name)
+            return _FALLBACK_SVG.format(color=color)
 
     svg = path.read_text(encoding="utf-8")
     # Replace stroke color
