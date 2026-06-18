@@ -11,8 +11,10 @@ shape (rect, text box, path, etc.), producing fully editable output.
 from __future__ import annotations
 
 import shutil
+import struct
 import tempfile
 import zipfile
+import zlib
 from pathlib import Path
 
 from loguru import logger
@@ -29,6 +31,27 @@ XLINK_NS = "http://www.w3.org/1999/xlink"
 NS_CT = "http://schemas.openxmlformats.org/package/2006/content-types"
 NS_RELS = "http://schemas.openxmlformats.org/package/2006/relationships"
 IMAGE_REL_TYPE = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image"
+
+
+def _build_transparent_png() -> bytes:
+    """A valid 1×1 transparent PNG, assembled from stdlib (never a corrupt literal)."""
+    def _chunk(tag: bytes, data: bytes) -> bytes:
+        body = tag + data
+        return struct.pack(">I", len(data)) + body + struct.pack(">I", zlib.crc32(body) & 0xFFFFFFFF)
+
+    sig = b"\x89PNG\r\n\x1a\n"
+    ihdr = struct.pack(">IIBBBBB", 1, 1, 8, 6, 0, 0, 0)  # 1×1, 8-bit, RGBA
+    idat = zlib.compress(b"\x00\x00\x00\x00\x00")  # one scanline: filter 0 + RGBA(0,0,0,0)
+    return sig + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", idat) + _chunk(b"IEND", b"")
+
+
+# Raster fallback for the dual a:blip(PNG)+asvg:svgBlip(SVG) embed structure.
+# Modern Office (2016+) renders the SVG; older viewers fall back to this. The
+# point is to ALWAYS keep a raster primary: an <a:blip> that points straight at
+# an .svg is not reliably rendered by PowerPoint, so when cairosvg is missing we
+# embed this instead of degrading to an svg-only blip. (Borrowed from OfficeCLI's
+# SvgImageHelper transparent-PNG fallback.)
+_TRANSPARENT_PNG_1X1 = _build_transparent_png()
 
 
 def assemble_pptx(svg_paths: list[Path], output_path: Path,
@@ -240,9 +263,15 @@ def _embed_single_slide_fallback(extract_dir: Path, media_dir: Path,
     png_name = f"image{slide_num}.png"
     shutil.copy(svg_path, media_dir / svg_name)
     png_ok = _svg_to_png(svg_path, media_dir / png_name)
+    if not png_ok:
+        # No cairosvg raster — embed a 1×1 transparent PNG so the canonical
+        # PNG-primary + svgBlip structure stays well-formed (a bare a:blip
+        # pointing at an .svg may not render at all in PowerPoint).
+        (media_dir / png_name).write_bytes(_TRANSPARENT_PNG_1X1)
+        png_ok = True
 
-    png_rid = "rId2" if png_ok else ""
-    svg_rid = "rId3" if png_ok else "rId2"
+    png_rid = "rId2"
+    svg_rid = "rId3"
 
     slide_xml = _make_slide_xml(slide_num, png_rid, svg_rid, png_ok)
 
@@ -310,8 +339,11 @@ def _assemble_svg_embed(svg_paths: list[Path], output_path: Path) -> Path:
             # Generate PNG fallback
             png_ok = _svg_to_png(svg_path, media_dir / png_name)
             if not png_ok:
-                svg_rid = "rId2"
-                png_rid = ""
+                # Transparent raster fallback instead of pointing the primary
+                # a:blip straight at the .svg (which PowerPoint may not render).
+                # Modern Office still picks up the SVG via the svgBlip extension.
+                (media_dir / png_name).write_bytes(_TRANSPARENT_PNG_1X1)
+                png_ok = True
 
             # Write slide XML
             slide_xml = _make_slide_xml(i, png_rid, svg_rid, png_ok)

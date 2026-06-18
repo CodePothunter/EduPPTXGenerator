@@ -36,6 +36,13 @@ XLINK_NS = "http://www.w3.org/1999/xlink"
 # 1 SVG pixel = 9525 EMU (at 96 DPI)
 EMU_PER_PX = 9525
 
+# PowerPoint stores DrawingML coordinates as signed 32-bit EMU; values beyond
+# this are silently truncated and corrupt the geometry. A stray giant coordinate
+# from a malformed SVG (e.g. x="999999999") would otherwise wreck the whole
+# slide, so px_to_emu clamps defensively. Normal 1280×720 content (max ~12.2M
+# EMU) never approaches this bound.
+_EMU_INT32_MAX = 2_147_483_647
+
 # DrawingML font size: 1/100 of a point.  1px ≈ 0.75pt → 75 hundredths-pt
 FONT_PX_TO_HUNDREDTHS_PT = 75
 
@@ -156,7 +163,12 @@ class ConvertContext:
 # ---------------------------------------------------------------------------
 
 def px_to_emu(px: float) -> int:
-    return round(px * EMU_PER_PX)
+    emu = round(px * EMU_PER_PX)
+    if emu > _EMU_INT32_MAX:
+        return _EMU_INT32_MAX
+    if emu < -_EMU_INT32_MAX:
+        return -_EMU_INT32_MAX
+    return emu
 
 def _f(val: str | None, default: float = 0.0, font_size: float = 16.0) -> float:
     """Parse SVG numeric value, supporting px and em units."""
