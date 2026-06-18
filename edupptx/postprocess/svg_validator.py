@@ -30,6 +30,10 @@ CARD_OVERFLOW_TOLERANCE = 6
 SHALLOW_CARD_OVERFLOW_TOLERANCE = 12
 CONTENT_BOTTOM_LIMIT = 680
 TEXT_COLUMN_TOLERANCE = 60
+# Vertical slack (px) before a text block whose bottom exceeds its own card is
+# flagged as overflow. _wrap_long_text only wraps to card *width*; a paragraph
+# wrapped correctly can still have more lines than the card is tall.
+TEXT_CARD_OVERFLOW_LIMIT = 20
 SUBTITLE_MAX_CHARS = 24
 MIN_TEXT_WRAP_WIDTH = 96.0
 IMAGE_FRAME_RATIO_TOLERANCE = 0.01
@@ -131,6 +135,7 @@ def validate_and_fix(svg_content: str, page: PagePlan | None = None) -> tuple[st
     _clamp_text_baseline_y(root, warnings)
     _check_image_hrefs(root, warnings)
     _warn_layout_issues(root, warnings, page)
+    _warn_text_overflows_card(root, warnings)
 
     fixed = etree.tostring(root, encoding="unicode", xml_declaration=False)
     return fixed, warnings
@@ -2124,12 +2129,30 @@ def _normalize_stacked_card_heights(root: etree._Element, warnings: list[str]) -
             )
 
 
+def _image_has_alt(img: etree._Element) -> bool:
+    if (img.get("aria-label") or img.get("data-alt") or "").strip():
+        return True
+    for child in img:
+        if child.tag == f"{{{SVG_NS}}}title" and (child.text or "").strip():
+            return True
+    return False
+
+
 def _check_image_hrefs(root: etree._Element, warnings: list[str]) -> None:
     xlink_href = "{http://www.w3.org/1999/xlink}href"
+    missing_alt = 0
     for img in root.iter(f"{{{SVG_NS}}}image"):
         href = img.get("href") or img.get(xlink_href) or ""
         if not href or not href.strip():
             warnings.append("Found <image> with empty href")
+        if not _image_has_alt(img):
+            missing_alt += 1
+    # Reported as a minor note (see _needs_llm_review); does not force an LLM
+    # pass on its own, since our generated <image> nodes rarely carry alt text.
+    if missing_alt:
+        warnings.append(
+            f"图片缺少 alt 文本：{missing_alt} 张 <image> 无 aria-label/title（无障碍提示，非阻断）"
+        )
 
 
 def _warn_layout_issues(
@@ -2220,3 +2243,56 @@ def _warn_layout_issues(
                     f"差 {ty-cy:.0f}px。应设 text y = circle cy"
                 )
                 break
+
+    # 3. Multiple font families inside a single text box — an AI-slop tell.
+    # Reported as a minor note (see _needs_llm_review); rare, since the generator
+    # is instructed to use one font stack everywhere.
+    for t in texts:
+        fonts = set()
+        own = t.get("font-family")
+        if own and own.strip():
+            fonts.add(own.strip())
+        for tspan in t.iter(f"{{{SVG_NS}}}tspan"):
+            ff = tspan.get("font-family")
+            if ff and ff.strip():
+                fonts.add(ff.strip())
+        if len(fonts) > 1:
+            warnings.append(
+                f"同框多字体：单个 <text> 内出现 {len(fonts)} 种字体（{', '.join(sorted(fonts))}），应统一为一种"
+            )
+
+
+def _warn_text_overflows_card(root: etree._Element, warnings: list[str]) -> None:
+    """Report text whose wrapped lines spill past the bottom of their own card.
+
+    Pure geometry, no LLM. Uses the start-position container matcher (not
+    _find_parent_card, which only matches text that already fits within ~28px)
+    so genuinely large vertical overflow is caught rather than skipped.
+    Borrowed from OfficeCLI's `view issues` overflow heuristic.
+    """
+    for text_el in root.iter(f"{{{SVG_NS}}}text"):
+        if _element_in_defs(text_el) or _has_translated_group_ancestor(text_el):
+            continue
+        if _is_footer_page_number_text(text_el):
+            continue
+        try:
+            tx = float(text_el.get("x", "0"))
+            ty = float(text_el.get("y", "0"))
+        except (ValueError, TypeError):
+            continue
+        text_bottom = _get_text_bottom_y(text_el)
+        container = _find_text_container_rect(root, tx, ty, text_bottom)
+        if container is None:
+            continue
+        box = _rect_box(container)
+        if box is None:
+            continue
+        _, cy, _, ch = box
+        card_bottom = cy + ch
+        overflow = text_bottom - card_bottom
+        if overflow > TEXT_CARD_OVERFLOW_LIMIT:
+            content = _text_content(text_el)[:18]
+            warnings.append(
+                f"文字超出卡片下边界 {overflow:.0f}px：\"{content}…\"（文字底 y={text_bottom:.0f} "
+                f"> 卡片底 y={card_bottom:.0f}）。应减少正文行数或增高卡片，使文字落在卡片内"
+            )

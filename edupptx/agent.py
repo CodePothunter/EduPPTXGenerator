@@ -64,6 +64,8 @@ def _needs_llm_review(page: PagePlan | None, warnings: list[str]) -> bool:
         "Clamped",
         "viewBox fixed",
         "Fixed <circle>",
+        "同框多字体",
+        "图片缺少 alt 文本",
     )
     for w in warnings:
         if not any(w.startswith(p) for p in minor_patterns):
